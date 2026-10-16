@@ -1,0 +1,9 @@
+agent/
+tests/
+tools/
+models/
+data/
+agent_data/
+*.zip
+.pytest_cache/
+__pycache__/

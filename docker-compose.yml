@@ -1,0 +1,14 @@
+services:
+  vigia:
+    build: .
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - vigia-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"   # publicar con HTTPS por delante (Caddy, Nginx o Cloudflare Tunnel)
+    restart: unless-stopped
+
+volumes:
+  vigia-data:

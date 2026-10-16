@@ -1,0 +1,19 @@
+# Linux (systemd): copiar a /etc/systemd/system/ y ajustar rutas y token.
+#   sudo systemctl enable --now vigia-agent
+[Unit]
+Description=Agente Vigía (cámaras Hikvision)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/vigia
+Environment=VIGIA_SERVER=https://vigia.tuempresa.com
+Environment=VIGIA_AGENT_TOKEN=PEGAR_TOKEN
+Environment=VIGIA_AGENT_DATA=/var/lib/vigia-agent
+ExecStart=/opt/vigia/.venv/bin/python -m agent
+Restart=always
+RestartSec=5
+User=vigia
+
+[Install]
+WantedBy=multi-user.target
