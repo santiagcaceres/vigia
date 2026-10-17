@@ -10,17 +10,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
+
+import httpx
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
-from core.rules import RULE_TYPES, SEVERITY, parse_config
+from core.rules import EVENT_TYPES, SEVERITY, parse_config
 from core.scorer import FEATURE_NAMES, LABELS
 
-from . import training
-from .db import (ROLES, Agent, Camera, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
+from . import hpp, training
+from .db import (ROLES, Agent, Alarm, Camera, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
@@ -64,6 +68,14 @@ class Settings:
     resend_api_key: str | None = None
     email_from: str | None = None
     report_link_days: int = 14
+    # Hik-Partner Pro OpenAPI (alarmas de los DVR por webhook)
+    hpp_app_key: str | None = None
+    hpp_secret_key: str | None = None
+    hpp_sign_secret: str | None = None
+    alarm_timezone: str = "America/Montevideo"  # hora de los DVR que todavía no tienen cámara asignada
+    alarm_merge_seconds: float = 20.0  # disparos seguidos de la misma cámara se juntan en una alarma
+    alarm_max_window_seconds: float = 120.0
+    alarm_ready_delay_seconds: float = 20.0  # el DVR tarda en tener disponible lo recién grabado
     missing: list[str] = field(default_factory=list)
 
     @classmethod
@@ -92,6 +104,10 @@ class Settings:
             resend_api_key=os.getenv("RESEND_API_KEY") or None,
             email_from=os.getenv("EMAIL_FROM") or None,
             report_link_days=int(os.getenv("REPORT_LINK_DAYS", "14")),
+            hpp_app_key=os.getenv("HPP_APP_KEY") or None,
+            hpp_secret_key=os.getenv("HPP_SECRET_KEY") or None,
+            hpp_sign_secret=os.getenv("HPP_WEBHOOK_SECRET") or None,
+            alarm_timezone=os.getenv("ALARM_TIMEZONE", "America/Montevideo"),
         )
         if st.on_vercel:
             st.serve_public = False  # Vercel sirve public/ desde su CDN
@@ -139,6 +155,12 @@ class AgentIn(BaseModel):
     process_imports: bool = True
 
 
+class AlarmCfgIn(BaseModel):
+    event_types: list[Literal[hpp.VIDEO_EVENT_TYPES]] = list(hpp.DEFAULT_EVENT_TYPES)  # type: ignore[valid-type]
+    pre_seconds: float = Field(10.0, ge=0, le=60)
+    post_seconds: float = Field(20.0, ge=3, le=90)
+
+
 class CameraIn(BaseModel):
     client_id: int
     agent_id: int | None = None
@@ -156,6 +178,9 @@ class CameraIn(BaseModel):
     detector: Literal["yolo", "motion"] = "yolo"
     process_fps: float = Field(5.0, gt=0, le=15)
     enabled: bool = True
+    mode: Literal["vivo", "alarmas"] = "vivo"
+    hpp_serial: str | None = Field(None, max_length=32)
+    alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
 
 
 class ZoneIn(BaseModel):
@@ -196,6 +221,21 @@ class IncidentIn(BaseModel):
 class TrainIn(BaseModel):
     client_id: int | None = None
     target_recall: float = Field(0.9, ge=0.5, le=1.0)
+
+
+class AlarmDoneIn(BaseModel):
+    result: Literal["con_persona", "sin_persona"]
+    event_uuid: str | None = Field(None, max_length=40)
+    stats: dict = {}
+
+
+class AlarmFailIn(BaseModel):
+    error: str = Field(max_length=500)
+    retry: bool = True
+
+
+class HppSetupIn(BaseModel):
+    all_devices: bool = False  # True: suscribir todos los equipos de la cuenta HPP
 
 
 class ClipDoneIn(BaseModel):
@@ -339,12 +379,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def camera_dict(c: Camera, user: User, status: dict | None = None) -> dict:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
              "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": c.rules or {},
-             "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status}
+             "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
+             "mode": c.mode or "vivo"}
         if user.role != "cliente":
             d.update(host=c.host, username=c.username, has_password=bool(c.password_enc), channel=c.channel,
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
-                     nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc))
+                     nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
+                     hpp_serial=c.hpp_serial, alarm_cfg=alarm_cfg_of(c))
         return d
+
+    def alarm_cfg_of(c: Camera) -> dict:
+        return {**AlarmCfgIn().model_dump(), **(c.alarm_cfg or {})}
 
     def event_dict(e: Event, cam_name: str | None = None, client_name: str | None = None) -> dict:
         return {
@@ -355,6 +400,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "features": e.features or {}, "label": e.label, "note": e.note, "labeled_at": iso(e.labeled_at),
             "snapshot_url": f"/api/events/{e.id}/snapshot" if e.snapshot_path else None,
             "clip_url": f"/api/events/{e.id}/clip" if e.clip_path else None, "clip_source": e.clip_source,
+            "alarm": (e.meta or {}).get("alarm"),
         }
 
     def import_dict(i: VideoImport, cam_name=None) -> dict:
@@ -445,7 +491,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/meta")
     def meta(_: User = Depends(current_user)) -> dict:
-        return {"rule_types": list(RULE_TYPES), "severity": SEVERITY, "labels": list(LABELS),
+        return {"rule_types": list(EVENT_TYPES), "alarm_types": list(hpp.VIDEO_EVENT_TYPES), "severity": SEVERITY,
+                "labels": list(LABELS),
                 "zone_types": ["shelf", "checkout", "exit", "restricted"], "roles": list(ROLES)}
 
     # ------------------------------------------------------------ clientes y usuarios
@@ -569,6 +616,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(422, "El agente pertenece a otro cliente")
         if not body.host and not body.source_url:
             raise HTTPException(422, "Indicá la IP del NVR/cámara o una URL RTSP")
+        body.hpp_serial = (body.hpp_serial or "").strip().upper() or None
+        if body.mode == "alarmas" and not body.hpp_serial:
+            raise HTTPException(422, "En modo alarmas indicá el número de serie del DVR en Hik-Partner Pro")
+        if body.mode == "alarmas" and not body.alarm_cfg.event_types:
+            raise HTTPException(422, "Elegí al menos un tipo de alarma")
 
     @app.post("/api/cameras", status_code=201)
     def create_camera(body: CameraIn, user: User = Depends(admin_only), s=Depends(db)) -> dict:
@@ -665,16 +717,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "settings": {"clip_pre_seconds": st.clip_pre_seconds, "clip_post_seconds": st.clip_post_seconds},
             "filter_model": model_spec(s, ag.client_id) if ag.client_id is not None else None,
             "cameras": [{
-                "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": clients[c.client_id].name,
-                "enabled": c.enabled, "detector": c.detector, "process_fps": c.process_fps,
-                "connection": {"host": c.host, "username": c.username, "password": box.decrypt(c.password_enc),
-                               "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
-                               "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
-                               "playback_time": c.playback_time, "timezone": clients[c.client_id].timezone,
-                               "source_url": box.decrypt(c.source_url_enc) or None},
-                "analysis": camera_analysis(c),
-                "filter_model": models[c.client_id],
+                **agent_camera_cfg(c, clients[c.client_id]), "filter_model": models[c.client_id],
             } for c in cams],
+        }
+
+    def agent_camera_cfg(c: Camera, client: Client) -> dict:
+        return {
+            "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": client.name,
+            "enabled": c.enabled, "detector": c.detector, "process_fps": c.process_fps,
+            "mode": c.mode or "vivo", "alarm_cfg": alarm_cfg_of(c),
+            "connection": {"host": c.host, "username": c.username, "password": box.decrypt(c.password_enc),
+                           "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
+                           "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
+                           "playback_time": c.playback_time, "timezone": client.timezone,
+                           "source_url": box.decrypt(c.source_url_enc) or None},
+            "analysis": camera_analysis(c),
         }
 
     @app.post("/api/agent/status")
@@ -682,7 +739,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         a = s.get(Agent, ag.id)
         a.last_status = {"cameras": payload.get("cameras", [])[:200],
                          "outbox_pending": payload.get("outbox_pending"), "version": payload.get("version"),
-                         "at": iso(utcnow())}
+                         "at": iso(utcnow()),
+                         **{k: payload[k] for k in ("alarms_with_person", "alarms_discarded", "alarms_failed")
+                            if isinstance(payload.get(k), int)}}
         a.last_seen = utcnow()
         s.commit()
         return {"ok": True}
@@ -694,12 +753,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             m = json.loads(meta)
             uuid = str(m["uuid"])
             cam = agent_camera(s, ag, int(m["camera_id"]))
-            if m["type"] not in RULE_TYPES:
+            if m["type"] not in EVENT_TYPES:
                 raise ValueError(f"tipo desconocido {m['type']}")
             if not uuid.isalnum() or len(uuid) > 40:
                 raise ValueError("uuid inválido")
             source = m.get("source", "vivo")
-            if source not in ("vivo", "importado"):
+            if source not in ("vivo", "importado", "alarma"):
                 raise ValueError("source inválido")
         except HTTPException:
             raise
@@ -711,6 +770,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not imp or imp.claimed_by != ag.id or imp.camera_id != cam.id:
                 raise HTTPException(404, "Importación no encontrada para este agente")
             import_id = imp.id
+        alarm = None
+        if source == "alarma":
+            alarm = s.get(Alarm, int(m.get("alarm_id") or 0))
+            if not alarm or alarm.claimed_by != ag.id or alarm.camera_id != cam.id:
+                raise HTTPException(404, "Alarma no encontrada para este agente")
         existing = s.query(Event).filter_by(uuid=uuid).first()
         if existing:
             return {"id": existing.id, "duplicate": True}
@@ -727,11 +791,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    description=str(m.get("description", ""))[:500], track_id=int(m.get("track_id") or 0),
                    video_ts=float(m.get("video_ts") or 0), occurred_at=parse_occurred_at(m.get("occurred_at")),
                    features={k: float(v) for k, v in (m.get("features") or {}).items() if k in FEATURE_NAMES},
-                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size")},
+                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size"),
+                         **({"alarm": {"id": alarm.id, "dvr_event": alarm.event_type, "triggers": alarm.triggers,
+                                       "stats": m.get("clip_stats") or {}}} if alarm else {})},
                    score=m.get("score"), alert=bool(m.get("alert", True)), snapshot_path=snap_path)
         s.add(ev)
         s.commit()
-        if ev.alert and source == "vivo":
+        if ev.alert and source in ("vivo", "alarma"):
             operator_alerts.new_clip(s.get(Client, cam.client_id).name, cam.name, ev, data)
         return {"id": ev.id}
 
@@ -831,10 +897,261 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return {"ok": True}
 
+    # ------------------------------------------------------------ alarmas de Hik-Partner Pro
+    hpp_sign_secret = st.hpp_sign_secret or st.hpp_secret_key
+
+    def hpp_client() -> hpp.HppClient:
+        if not (st.hpp_app_key and st.hpp_secret_key):
+            raise HTTPException(503, "Falta configurar HPP_APP_KEY y HPP_SECRET_KEY en Vercel")
+        return hpp.HppClient(st.hpp_app_key, st.hpp_secret_key)
+
+    def webhook_url() -> str:
+        if not st.public_url:
+            raise HTTPException(503, "Falta PUBLIC_URL (la dirección pública del panel)")
+        return st.public_url.rstrip("/") + "/api/hpp/webhook"
+
+    def alarm_dict(a: Alarm, cam_name: str | None = None, client_name: str | None = None) -> dict:
+        return {"id": a.id, "client_id": a.client_id, "client_name": client_name, "camera_id": a.camera_id,
+                "camera_name": cam_name, "device_serial": a.device_serial, "channel": a.channel,
+                "event_type": a.event_type, "target": a.target, "first_at": iso(a.first_at),
+                "last_at": iso(a.last_at), "triggers": a.triggers, "status": a.status, "attempts": a.attempts,
+                "error": a.error, "stats": a.stats or {}, "event_id": a.event_id, "received_at": iso(a.received_at)}
+
+    def ingest_alarm(s, al: hpp.HppAlarm) -> str:
+        """Guarda una alarma recibida. Devuelve qué se hizo con ella."""
+        serial = al.device_serial.strip().upper()
+        cam = (s.query(Camera).filter(Camera.hpp_serial == serial, Camera.channel == al.channel)
+               .order_by(Camera.id).first())
+        client = s.get(Client, cam.client_id) if cam else None
+        occurred = al.occurred_utc(client.timezone if client else st.alarm_timezone)
+        if cam is not None:
+            if not cam.enabled or (cam.mode or "vivo") != "alarmas":
+                return "ignorada"
+            if al.event_type not in alarm_cfg_of(cam)["event_types"]:
+                return "ignorada"
+        elif al.event_type not in hpp.VIDEO_EVENT_TYPES:
+            return "ignorada"
+        if al.target and al.target.lower() not in ("human", "person", "persona"):
+            return "no_persona_dvr"  # el propio DVR (AcuSense) dice que fue un vehículo u otra cosa
+        status = "pendiente" if cam else "sin_camara"
+        merge = timedelta(seconds=st.alarm_merge_seconds)
+        q = s.query(Alarm).filter(Alarm.device_serial == serial, Alarm.channel == al.channel,
+                                  Alarm.status == status, Alarm.last_at >= occurred - merge,
+                                  Alarm.first_at <= occurred + merge,
+                                  Alarm.first_at >= occurred - timedelta(seconds=st.alarm_max_window_seconds))
+        prev = q.order_by(Alarm.id.desc()).first()
+        if prev is not None:  # disparos seguidos: una sola alarma con una ventana más larga
+            prev.first_at, prev.last_at = min(prev.first_at, occurred), max(prev.last_at, occurred)
+            prev.triggers += 1
+            if al.event_type != prev.event_type and al.event_type not in prev.event_type:
+                prev.event_type = (prev.event_type + "+" + al.event_type)[:40]
+            s.commit()
+            return "agrupada"
+        a = Alarm(dedup_key=f"{serial}:{al.channel}:{al.event_type}:{al.trigger_time}"[:160],
+                  client_id=cam.client_id if cam else None, camera_id=cam.id if cam else None,
+                  device_serial=serial, channel=al.channel, event_type=al.event_type, target=al.target,
+                  first_at=occurred, last_at=occurred, status=status, raw=al.raw)
+        s.add(a)
+        try:
+            s.commit()
+        except IntegrityError:  # reenvío de la misma alarma
+            s.rollback()
+            return "duplicada"
+        return "nueva" if cam else "sin_camara"
+
+    @app.get("/api/hpp/webhook")
+    def hpp_webhook_check(x_hook_batch_id: str = Header(""), x_hook_timestamp: str = Header("")):
+        """HPP valida la URL al registrarla: espera la firma en el encabezado X-Hook-Signature."""
+        if not hpp_sign_secret:
+            raise HTTPException(503, "Hik-Partner Pro no configurado")
+        return Response(status_code=200, headers={
+            "X-Hook-Signature": hpp.sign(hpp_sign_secret, x_hook_timestamp, x_hook_batch_id)})
+
+    @app.post("/api/hpp/webhook")
+    async def hpp_webhook(request: Request, x_hook_batch_id: str = Header(""), x_hook_timestamp: str = Header(""),
+                          x_hook_signature: str = Header("")):
+        if not hpp_sign_secret:
+            raise HTTPException(503, "Hik-Partner Pro no configurado")
+        if not hpp.verify(hpp_sign_secret, x_hook_timestamp, x_hook_batch_id, x_hook_signature):
+            raise HTTPException(401, "Firma inválida")
+        try:
+            body = json.loads(await request.body())
+        except ValueError as exc:
+            raise HTTPException(400, "JSON inválido") from exc
+        _, messages = hpp.extract_messages(body)
+        result: Counter = Counter()
+        with Session() as s:
+            for msg in messages[:500]:
+                al = hpp.parse_message(msg)
+                if al is None:
+                    result["sin_datos"] += 1
+                    continue
+                try:
+                    result[ingest_alarm(s, al)] += 1
+                except Exception:
+                    log.exception("No se pudo guardar una alarma de HPP")
+                    s.rollback()
+                    result["error"] += 1
+        if result.get("sin_datos"):
+            log.info("Webhook HPP con mensajes no reconocidos: %s", json.dumps(body)[:1000])
+        return {"ok": True, **result}
+
+    @app.get("/api/hpp/status")
+    def hpp_status(check: bool = False, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+        last = s.query(Alarm).order_by(Alarm.id.desc()).first()
+        d = {"configured": bool(st.hpp_app_key and st.hpp_secret_key), "webhook_url":
+             (st.public_url.rstrip("/") + "/api/hpp/webhook") if st.public_url else None,
+             "last_alarm_at": iso(last.received_at) if last else None,
+             "cameras": s.query(Camera).filter(Camera.mode == "alarmas").count()}
+        if check and d["configured"]:
+            try:
+                d["remote"] = hpp_client().webhook_config()
+            except (hpp.HppError, httpx.HTTPError) as exc:
+                d["error"] = str(exc)
+        return d
+
+    @app.post("/api/hpp/setup")
+    def hpp_setup(body: HppSetupIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+        """Registra el webhook en HPP y suscribe los DVR de las cámaras en modo alarmas."""
+        serials = sorted({c.hpp_serial for c in s.query(Camera).filter(Camera.hpp_serial.isnot(None))})
+        if not serials and not body.all_devices:
+            raise HTTPException(422, "No hay cámaras con número de serie de HPP; cargalas o suscribí todos los equipos")
+        try:
+            hpp_client().setup_webhook(webhook_url(), st.hpp_sign_secret, None if body.all_devices else serials)
+        except (hpp.HppError, httpx.HTTPError) as exc:
+            raise HTTPException(502, f"Hik-Partner Pro: {exc}") from exc
+        return {"ok": True, "webhook_url": webhook_url(), "serials": None if body.all_devices else serials}
+
+    @app.get("/api/hpp/devices")
+    def hpp_devices(_: User = Depends(admin_only), s=Depends(db)) -> list[dict]:
+        """Equipos y canales de la cuenta HPP, para dar de alta las cámaras sin tipear series."""
+        hc = hpp_client()
+        known = {(c.hpp_serial, c.channel): c.id for c in s.query(Camera).filter(Camera.hpp_serial.isnot(None))}
+        out = []
+        try:
+            for d in hc.devices()[:60]:
+                serial = str(d.get("deviceSerial") or "").upper()
+                chans = []
+                if d.get("deviceCategory") in (None, 1, 2, 7):  # cámaras, NVR/DVR y domos
+                    try:
+                        chans = [{"channel": int(c.get("channelNo") or 1), "name": c.get("channelName"),
+                                  "online": c.get("status") == 1,
+                                  "camera_id": known.get((serial, int(c.get("channelNo") or 1)))}
+                                 for c in hc.channels(serial)]
+                    except hpp.HppError as exc:
+                        chans = [{"error": str(exc)}]
+                out.append({"serial": serial, "name": d.get("deviceName"), "model": d.get("deviceType"),
+                            "online": d.get("deviceOnlineStatus") == 1, "channels": chans})
+        except (hpp.HppError, httpx.HTTPError) as exc:
+            raise HTTPException(502, f"Hik-Partner Pro: {exc}") from exc
+        return out
+
+    @app.get("/api/alarms")
+    def list_alarms(status: str | None = None, client_id: int | None = None, camera_id: int | None = None,
+                    limit: int = Query(100, ge=1, le=500), _: User = Depends(staff), s=Depends(db)) -> dict:
+        conds = []
+        if status:
+            conds.append(Alarm.status == status)
+        if client_id is not None:
+            conds.append(Alarm.client_id == client_id)
+        if camera_id is not None:
+            conds.append(Alarm.camera_id == camera_id)
+        rows = s.execute(select(Alarm, Camera.name, Client.name).outerjoin(Camera, Camera.id == Alarm.camera_id)
+                         .outerjoin(Client, Client.id == Alarm.client_id).where(*conds)
+                         .order_by(Alarm.id.desc()).limit(limit)).all()
+        since = utcnow() - timedelta(days=7)
+        cq = select(Alarm.status, func.count()).where(Alarm.received_at >= since)
+        if client_id is not None:
+            cq = cq.where(Alarm.client_id == client_id)
+        counts = dict(s.execute(cq.group_by(Alarm.status)).all())
+        return {"items": [alarm_dict(a, cn, kn) for a, cn, kn in rows], "counts_7d": counts}
+
+    @app.post("/api/alarms/{aid}/retry")
+    def retry_alarm(aid: int, _: User = Depends(staff), s=Depends(db)) -> dict:
+        a = get_or_404(s, Alarm, aid, "Alarma")
+        if a.camera_id is None:
+            cam = (s.query(Camera).filter(Camera.hpp_serial == a.device_serial, Camera.channel == a.channel)
+                   .order_by(Camera.id).first())
+            if not cam:
+                raise HTTPException(409, "Todavía no hay una cámara con esa serie y canal")
+            a.camera_id, a.client_id = cam.id, cam.client_id
+        if a.status in ("procesando", "con_persona"):
+            raise HTTPException(409, "Esa alarma ya fue analizada o se está analizando")
+        a.status, a.attempts, a.error, a.claimed_by, a.claimed_at = "pendiente", 0, None, None, None
+        s.commit()
+        return alarm_dict(a)
+
+    @app.get("/api/agent/alarms/next")
+    def agent_next_alarm(ag: Agent = Depends(current_agent), s=Depends(db)):
+        """Entrega a la PC central la próxima alarma lista para bajar su tramo de video."""
+        now = utcnow()
+        mine = agent_cameras_q(s, ag).filter(Camera.mode == "alarmas", Camera.enabled.is_(True))
+        cams = {c.id: c for c in mine}
+        if not cams:
+            return Response(status_code=204)
+        stale = now - STALE_CLAIM
+        candidates = (s.query(Alarm)
+                      .filter(Alarm.camera_id.in_(list(cams)),
+                              or_(Alarm.status == "pendiente",
+                                  (Alarm.status == "procesando") & (Alarm.claimed_at < stale)))
+                      .order_by(Alarm.first_at).limit(20).all())
+        for a in candidates:
+            cam = cams[a.camera_id]
+            cfg = alarm_cfg_of(cam)
+            if a.last_at + timedelta(seconds=cfg["post_seconds"] + st.alarm_ready_delay_seconds) > now:
+                continue  # todavía se está grabando el "después"
+            if a.attempts >= 3:
+                a.status, a.error = "error", a.error or "Se agotaron los intentos"
+                s.commit()
+                continue
+            prev_status, prev_claim = a.status, a.claimed_at
+            res = s.execute(update(Alarm)
+                            .where(Alarm.id == a.id, Alarm.status == prev_status,
+                                   (Alarm.claimed_at == prev_claim) if prev_claim else Alarm.claimed_at.is_(None))
+                            .values(status="procesando", claimed_by=ag.id, claimed_at=now, attempts=a.attempts + 1))
+            s.commit()
+            if res.rowcount != 1:
+                continue
+            client = s.get(Client, cam.client_id)
+            tz = ZoneInfo(client.timezone)
+            start = (a.first_at - timedelta(seconds=cfg["pre_seconds"])).replace(tzinfo=timezone.utc).astimezone(tz)
+            end = (a.last_at + timedelta(seconds=cfg["post_seconds"])).replace(tzinfo=timezone.utc).astimezone(tz)
+            return {"alarm_id": a.id, "event_type": a.event_type, "triggers": a.triggers,
+                    "start": start.isoformat(), "end": end.isoformat(),
+                    "camera": agent_camera_cfg(cam, client), "filter_model": model_spec(s, cam.client_id)}
+        return Response(status_code=204)
+
+    def claimed_alarm(s, ag: Agent, aid: int) -> Alarm:
+        a = s.get(Alarm, aid)
+        if not a or a.claimed_by != ag.id or a.status != "procesando":
+            raise HTTPException(409, "Esta alarma ya no está asignada a este agente")
+        return a
+
+    @app.post("/api/agent/alarms/{aid}/done")
+    def agent_alarm_done(aid: int, body: AlarmDoneIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        a = claimed_alarm(s, ag, aid)
+        if body.result == "con_persona":
+            ev = s.query(Event).filter_by(uuid=body.event_uuid or "").first()
+            if not ev or ev.camera_id != a.camera_id:
+                raise HTTPException(422, "Falta el evento de la alarma")
+            a.event_id = ev.id
+        a.status, a.stats, a.error = body.result, body.stats, None
+        s.commit()
+        return {"ok": True}
+
+    @app.post("/api/agent/alarms/{aid}/fail")
+    def agent_alarm_fail(aid: int, body: AlarmFailIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        a = claimed_alarm(s, ag, aid)
+        a.error = body.error
+        a.status = "pendiente" if body.retry and a.attempts < 3 else "error"
+        a.claimed_by = a.claimed_at = None
+        s.commit()
+        return {"ok": True, "status": a.status}
+
     # ------------------------------------------------------------ eventos
     @app.get("/api/events")
     def list_events(client_id: int | None = None, camera_id: int | None = None, type: str | None = None,
-                    label: str | None = None, source: Literal["vivo", "importado"] | None = None,
+                    label: str | None = None, source: Literal["vivo", "importado", "alarma"] | None = None,
                     alert: bool | None = None, since: datetime | None = None, until: datetime | None = None,
                     import_id: int | None = None, order: Literal["reciente", "antiguo"] = "reciente",
                     limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
@@ -1000,7 +1317,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client_id = scope_client(user, client_id)
         q = (select(Event.type, Event.label, Event.alert, Event.occurred_at, Camera.name)
              .join(Camera, Camera.id == Event.camera_id)
-             .where(Event.occurred_at >= utcnow() - timedelta(days=days), Event.source == "vivo"))
+             .where(Event.occurred_at >= utcnow() - timedelta(days=days), Event.source.in_(("vivo", "alarma"))))
         if client_id is not None:
             q = q.where(Event.client_id == client_id)
         rows = s.execute(q).all()
@@ -1222,7 +1539,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not st.cron_secret or not secrets.compare_digest(authorization, f"Bearer {st.cron_secret}"):
             raise HTTPException(401, "No autorizado")
         cutoff = utcnow() - timedelta(days=st.retention_days)
-        old = (s.query(Event).filter(Event.source == "vivo", Event.received_at < cutoff)
+        old = (s.query(Event).filter(Event.source.in_(("vivo", "alarma")), Event.received_at < cutoff)
                .order_by(Event.id).limit(2000).all())
         unlabeled = [e for e in old if not e.label]
         labeled = [e for e in old if e.label and (e.snapshot_path or e.clip_path)]
@@ -1232,6 +1549,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s.delete(e)
         for e in labeled:
             e.snapshot_path = e.clip_path = None
+        # alarmas sin evento (sin persona, sin cámara, error): solo sirven de estadística, se guardan 14 días
+        s.query(Alarm).filter(Alarm.event_id.is_(None), Alarm.status != "procesando",
+                              Alarm.received_at < utcnow() - timedelta(days=14)).delete(synchronize_session=False)
         s.query(SessionToken).filter(SessionToken.expires_at < utcnow()).delete()
         s.commit()
         return {"deleted": len(unlabeled), "media_removed": len(labeled), "retention_days": st.retention_days}

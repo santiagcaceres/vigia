@@ -28,6 +28,53 @@ alertas reales de las falsas.
 - **Supabase** guarda la base de datos y los archivos. Las tablas quedan cerradas a la API
   pública de Supabase (RLS activado, sin políticas): solo el servidor puede leerlas.
 
+## Modo alarmas de Hik-Partner Pro (lo recomendado)
+
+Es el modo más barato y el que reemplaza el trabajo de "mirar los clips que manda Hik-Partner Pro":
+
+```
+DVR del cliente ──alarma (movimiento / intrusión / línea)──► Hik-Partner Pro ──webhook──► Vigía (Vercel)
+                                                                                            │
+PC central ◄──── "bajá 30 s de la cámara 2 del DVR E44…" ───────────────────────────────────┘
+   │  baja SOLO ese tramo del DVR (VPN), lo analiza
+   ├─ sin personas ─► se descarta sola (nadie la mira)
+   └─ con persona  ─► evento con clip ─► empleados etiquetan ─► entrena el modelo de ese cliente
+                                                     └─► una persona decide "Avisar al cliente"
+```
+
+- **El DVR ya hace de primer filtro**: solo se analizan los segundos alrededor de cada alarma, no
+  24 h de video. Una PC central alcanza para muchos locales y el consumo de internet del local es
+  mínimo (solo el tramo de cada alarma).
+- **Lo que más trabajo ahorra**: las alarmas de movimiento sin ninguna persona (luces, sombras,
+  insectos) se descartan solas.
+- **Configuración por cámara**: qué alarmas del DVR se analizan, cuántos segundos antes y después,
+  zonas (góndola, caja, salida) y reglas. Cada cliente tiene su propio modelo entrenado.
+
+**Lo que da y lo que no da Hik-Partner Pro** (guía oficial *OpenAPI V2.15.500*):
+- Da **las alarmas** (equipo, canal, hora, tipo) por webhook, gratis, con la API key que se saca
+  sola en el portal: *Site & Device → My Service → API Integration*.
+- **No da el video.** Reproducir y descargar video requiere el kit HPNetSDK con una clave "VSaaS"
+  que se pide **por mail a Hikvision** (pendiente). Mientras tanto, la PC central baja el tramo de
+  video **del DVR por VPN** (ver Paso 5b). Cuando Hikvision dé la clave, se agrega esa fuente en
+  `agent/alarms.py` (`ClipFetcher`) sin cambiar nada más.
+
+**Puesta en marcha:**
+1. En Vercel, cargar `HPP_APP_KEY`, `HPP_SECRET_KEY` (de *API Integration* en HPP) y, opcional,
+   `HPP_WEBHOOK_SECRET` (8 a 32 letras y números; si no, se usa la SecretKey). `PUBLIC_URL` tiene
+   que ser la dirección HTTPS del panel. Volver a desplegar.
+2. En el panel, **Alarmas HPP → Ver equipos de HPP**: lista los DVR y canales de la cuenta, con un
+   link "cargar" que crea la cámara con la serie y el canal ya puestos. Completar la IP de VPN del
+   DVR, usuario y clave, y el **agente = el central**.
+3. **Alarmas HPP → Conectar**: registra el webhook en HPP y suscribe los DVR cargados.
+4. En el DVR (desde HPP, configuración remota): activar la detección de movimiento o, mejor,
+   **intrusión / cruce de línea** en las cámaras que miran góndolas, con "Notificar al centro de
+   vigilancia" activado. Si el DVR es AcuSense (filtra personas/vehículos), las alarmas de
+   vehículos se descartan solas.
+5. Dibujar las zonas de cada cámara (Paso 6).
+
+En **Alarmas HPP** se ve cada alarma y qué pasó con ella (descartada, con persona, error, cámara no
+cargada) y cuántas se descartaron solas en la semana.
+
 ## Puesta en marcha
 
 ### Paso 1. Supabase (5 min)
@@ -65,6 +112,9 @@ alertas reales de las falsas.
    | `OPERATOR_TELEGRAM_CHAT_ID` | Opcional. Chat de **tu equipo** que recibe "hay clip para revisar" |
    | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_WHATSAPP_FROM` | Opcional. Para avisar a clientes por WhatsApp |
    | `RESEND_API_KEY` / `EMAIL_FROM` | Opcional. Para avisar a clientes por email |
+   | `HPP_APP_KEY` / `HPP_SECRET_KEY` | Opcional. API key de Hik-Partner Pro para recibir las alarmas de los DVR |
+   | `HPP_WEBHOOK_SECRET` | Opcional. Clave para firmar el webhook de HPP (si no, se usa la SecretKey) |
+   | `PUBLIC_URL` | La dirección HTTPS del panel (para los links de aviso y el webhook de HPP) |
 
    Para generar un texto al azar: en el navegador, F12 → Consola, pegar
    `crypto.randomUUID() + crypto.randomUUID()` y Enter.
@@ -274,7 +324,7 @@ permite **revocar** un link.
 ```bash
 pip install -r requirements.txt -r requirements-agent.txt pytest
 uvicorn server.main:create_app --factory --port 8000   # sin variables: SQLite y disco local
-python -m pytest                                        # 52 pruebas
+python -m pytest                                        # 77 pruebas (24 piden Postgres)
 ```
 
 - **Postgres:** con `VIGIA_TEST_PG=postgresql://…` las pruebas del servidor corren también
@@ -295,7 +345,7 @@ index.py           punto de entrada de Vercel
 server/            API (FastAPI): base de datos, almacenamiento, entrenamiento, alertas
 public/            panel web
 core/              detección, seguimiento, reglas, modelo de filtro (compartido)
-agent/             agente para la PC del local (cámaras + videos importados)
+agent/             agente (cámaras en vivo, alarmas de HPP, videos importados)
 models/            detector de personas (ONNX) para el agente
 tools/             demo y exportación de modelos
 tests/             pruebas

@@ -4,6 +4,9 @@
 
 Descarga del servidor la lista de cámaras de su cliente, las analiza en tiempo real y sube
 los eventos con foto y clip. Si se corta internet sigue analizando y guarda todo en disco.
+
+Las cámaras en modo "alarmas" no se miran en vivo: solo se analiza el tramo de video de cada
+alarma que el DVR manda a Hik-Partner Pro (ver agent/alarms.py).
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import httpx
 from core.detectors import Detector, build_detector
 from core.scorer import Scorer
 
+from .alarms import AlarmRunner
 from .imports import ImportJobRunner
 from .outbox import Outbox, ServerClient
 from .worker import CameraWorker
@@ -34,10 +38,12 @@ STATUS_EVERY_SECONDS = 30
 
 class Agent:
     def __init__(self, server: str, token: str, data_dir: Path, model_path: str | None, verify: bool | str = True,
-                 process_imports: bool = True):
+                 process_imports: bool = True, alarm_workers: int = 2):
         self.client = ServerClient(server, token, verify=verify)
         self.process_imports = process_imports
         self.imports: ImportJobRunner | None = None
+        self.alarms: AlarmRunner | None = None
+        self.alarm_workers = alarm_workers
         self.data_dir = Path(data_dir)
         self.outbox = Outbox(self.data_dir / "outbox", self.client)
         self.model_path = model_path
@@ -63,7 +69,12 @@ class Agent:
                 w.fingerprint = ""
             log.info("Modelo de filtro: %s", self._scorer_id or "ninguno (se alertan todos los eventos)")
 
-        wanted = {c["id"]: c for c in cfg.get("cameras", []) if c.get("enabled", True)}
+        cams = [c for c in cfg.get("cameras", []) if c.get("enabled", True)]
+        if self.alarms is None and any(c.get("mode") == "alarmas" for c in cams):
+            self.alarms = AlarmRunner(self.client, self.model_path, self.data_dir / "alarmas", self.alarm_workers)
+            self.alarms.start()
+            log.info("Alarmas de Hik-Partner Pro: activado (%d en paralelo)", self.alarm_workers)
+        wanted = {c["id"]: c for c in cams if c.get("mode", "vivo") == "vivo"}
         for cid in list(self.workers):
             w = self.workers[cid]
             if cid not in wanted or w.fingerprint != CameraWorker.fingerprint_of(wanted[cid]):
@@ -108,7 +119,8 @@ class Agent:
                 last_status = now
                 try:
                     self.client.status({"cameras": [w.status() for w in self.workers.values()],
-                                        "outbox_pending": self.outbox.pending(), "version": VERSION})
+                                        "outbox_pending": self.outbox.pending(), "version": VERSION,
+                                        **(self.alarms.status() if self.alarms else {})})
                 except httpx.HTTPError:
                     pass
             self._stop.wait(1.0)
@@ -120,6 +132,8 @@ class Agent:
     def shutdown(self) -> None:
         if self.imports:
             self.imports.stop()
+        if self.alarms:
+            self.alarms.stop()
         for w in self.workers.values():
             w.stop()
         for w in self.workers.values():
@@ -137,13 +151,16 @@ def main() -> None:
                    help="Modelo ONNX de detección de personas")
     p.add_argument("--insecure", action="store_true", help="No verificar HTTPS (solo pruebas)")
     p.add_argument("--no-imports", action="store_true", help="No analizar videos importados en esta PC")
+    p.add_argument("--alarm-workers", type=int, default=int(os.getenv("VIGIA_ALARM_WORKERS", "2")),
+                   help="Alarmas de HPP que se bajan y analizan en paralelo")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not a.server or not a.token:
         p.error("Faltan --server y --token (o VIGIA_SERVER y VIGIA_AGENT_TOKEN)")
-    agent = Agent(a.server, a.token, Path(a.data), a.model, verify=not a.insecure, process_imports=not a.no_imports)
+    agent = Agent(a.server, a.token, Path(a.data), a.model, verify=not a.insecure, process_imports=not a.no_imports,
+                  alarm_workers=max(1, a.alarm_workers))
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
     agent.run()

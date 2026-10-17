@@ -1,6 +1,9 @@
 "use strict";
 
-const TYPE_NAMES = { salida_sin_pago: "Salida sin pago", merodeo: "Merodeo", zona_restringida: "Zona restringida", fuera_de_horario: "Fuera de horario" };
+const TYPE_NAMES = { salida_sin_pago: "Salida sin pago", merodeo: "Merodeo", zona_restringida: "Zona restringida", fuera_de_horario: "Fuera de horario", alarma_dvr: "Alarma con persona" };
+const ALARM_TYPES = { VMD: "Movimiento", fielddetection: "Intrusión", linedetection: "Cruce de línea", regionEntrance: "Entrada a zona", regionExiting: "Salida de zona" };
+const ALARM_STATUS = { pendiente: ["", "Esperando"], procesando: ["", "Analizando"], con_persona: ["ok", "Con persona → a revisar"], sin_persona: ["", "Sin personas (descartada)"], sin_camara: ["warn", "Cámara no cargada"], error: ["bad", "Error"] };
+const alarmTypeName = (t) => String(t || "").split("+").map((x) => ALARM_TYPES[x] || x).join(" + ");
 const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal", falso_positivo: "Falso positivo" };
 const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo" };
 const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida" };
@@ -78,7 +81,7 @@ async function boot() {
   $("#app").classList.remove("hidden");
   $("#user-name").textContent = `${S.me.username} · ${S.me.role}`;
   const links = S.me.role === "cliente" ? [["#/avisos", "Incidentes"], ["#/eventos", "Eventos"]] : [["#/eventos", "Eventos"]];
-  if (isStaff()) links.push(["#/revisar", "Revisar y etiquetar"], ["#/avisos", "Avisos a clientes"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
+  if (isStaff()) links.push(["#/revisar", "Revisar y etiquetar"], ["#/alarmas", "Alarmas HPP"], ["#/avisos", "Avisos a clientes"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
   links.push(["#/camaras", "Cámaras"]);
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
@@ -104,6 +107,7 @@ async function route() {
     if (h.startsWith("#/videos") && isStaff()) return await importsView(v);
     if (h.startsWith("#/entrenamiento") && isStaff()) return await trainingView(v);
     if (h.startsWith("#/avisos")) return await reportsView(v);
+    if (h.startsWith("#/alarmas") && isStaff()) return await alarmsView(v);
     if (h.startsWith("#/admin") && isAdmin()) return await adminView(v);
     return await eventsView(v);
   } catch (e) { v.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -123,7 +127,7 @@ async function eventsView(v) {
       <label>Cámara<select id="f-camera">${options(S.cameras.map((c) => [c.id, c.name]), q.get("camera_id"), "Todas")}</select></label>
       <label>Tipo<select id="f-type">${options(Object.entries(TYPE_NAMES), q.get("type"), "Todos")}</select></label>
       <label>Revisión<select id="f-label">${options([["sin_etiqueta", "Sin revisar"], ...Object.entries(LABEL_NAMES)], q.get("label"), "Todas")}</select></label>
-      <label>Origen<select id="f-source">${options([["vivo", "En vivo"], ["importado", "Videos importados"]], q.get("source"), "Todos")}</select></label>
+      <label>Origen<select id="f-source">${options([["alarma", "Alarmas de Hik-Partner Pro"], ["vivo", "En vivo"], ["importado", "Videos importados"]], q.get("source"), "Todos")}</select></label>
       <label>Alerta<select id="f-alert">${options([["true", "Solo alertas"], ["false", "Filtrados por el modelo"]], q.get("alert"), "Todos")}</select></label>
     </div>
     <div id="list" class="grid"></div>
@@ -157,7 +161,7 @@ function eventCard(e) {
     <div class="body">
       <div class="row">${typeChip(e)}${labelChip(e.label)}${e.alert ? "" : `<span class="chip" title="El modelo lo consideró poco probable">filtrado</span>`}</div>
       <div class="title">${esc(e.camera_name)}${S.me.role !== "cliente" ? ` · <span class="muted">${esc(e.client_name)}</span>` : ""}</div>
-      <div class="muted">${fmtDate(e.occurred_at)}${e.source === "importado" ? " · video importado" : ""}${e.score != null ? ` · puntaje ${pct(e.score)}` : ""}</div>
+      <div class="muted">${fmtDate(e.occurred_at)}${e.source === "importado" ? " · video importado" : ""}${e.source === "alarma" ? " · alarma " + esc(alarmTypeName(e.alarm?.dvr_event)) : ""}${e.score != null ? ` · puntaje ${pct(e.score)}` : ""}</div>
     </div></div>`;
 }
 
@@ -198,7 +202,7 @@ async function eventView(v, id) {
         <dl class="kv">
           ${S.me.role !== "cliente" ? `<dt>Cliente</dt><dd>${esc(e.client_name)}</dd>` : ""}
           <dt>Fecha</dt><dd>${fmtDate(e.occurred_at)}</dd>
-          <dt>Origen</dt><dd>${e.source === "importado" ? `<a href="#/video/${e.import_id}">Video importado</a> (seg. ${fmtSec(e.video_ts)})` : "En vivo"}</dd>
+          <dt>Origen</dt><dd>${e.source === "importado" ? `<a href="#/video/${e.import_id}">Video importado</a> (seg. ${fmtSec(e.video_ts)})` : e.source === "alarma" ? `Alarma del DVR: ${esc(alarmTypeName(e.alarm?.dvr_event))}${e.alarm?.triggers > 1 ? ` (${e.alarm.triggers} disparos)` : ""}` : "En vivo"}</dd>
           <dt>Clip</dt><dd>${e.clip_url ? ({ nvr: "Grabación del NVR", buffer: "Buffer del agente", video: "Del video importado" }[e.clip_source] || "Clip") + ` · <a href="${e.clip_url}" download>Descargar</a>` : "—"}</dd>
           ${e.score != null ? `<dt>Puntaje</dt><dd>${pct(e.score)} ${e.alert ? "" : "(no se envió alerta)"}</dd>` : ""}
         </dl>
@@ -298,8 +302,8 @@ async function camerasView(v) {
       <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
       <tbody>${S.cameras.map((c) => { const ag = agents.find((a) => a.id === c.agent_id); return `<tr>
         <td><b>${esc(c.name)}</b>${c.enabled ? "" : ` <span class="chip">deshabilitada</span>`}</td>
-        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
-        <td>${statusChip(c.status)}</td>
+        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${c.mode === "alarmas" ? `<span class="chip">Alarmas HPP</span> ${esc(c.hpp_serial || "")} · canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
+        <td>${c.mode === "alarmas" ? `<a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : statusChip(c.status)}</td>
         <td>${(c.zones || []).length}</td>
         <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isAdmin() ? `<button class="small" data-edit="${c.id}">Editar</button>` : ""}</td>
       </tr>`; }).join("") || `<tr><td colspan="7" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
@@ -307,27 +311,39 @@ async function camerasView(v) {
   const form = (c = {}) => {
     $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
       <h3>${c.id ? "Editar cámara" : "Nueva cámara"}</h3>
-      <p class="muted">Datos del NVR o cámara Hikvision (los mismos que usa iVMS-4200). Si la cámara está en un NVR, la IP es la del NVR y el canal es el número de cámara en el NVR.</p>
+      <p class="muted">Datos del DVR/NVR o cámara Hikvision (los mismos que usa iVMS-4200). Si la cámara está en un DVR, la IP es la del DVR (la de la VPN) y el canal es el número de cámara en el DVR.</p>
       <form class="form" id="cf">
         <label>Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id)}</select></label>
         <label>Agente<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? `${a.name} (Central)` : `${a.name} (${clientName(a.client_id)})`]), c.agent_id, "Cualquiera del cliente")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
+        <label>Modo<select name="mode">${options([["alarmas", "Alarmas de Hik-Partner Pro (recomendado)"], ["vivo", "En vivo 24 h"]], c.mode || "alarmas")}</select></label>
+        <label class="alarm-only">N.º de serie del DVR en Hik-Partner Pro<input name="hpp_serial" value="${esc(c.hpp_serial || "")}" placeholder="E44034229"></label>
+        <fieldset class="alarm-only"><legend>Alarmas del DVR que se analizan</legend>${Object.entries(ALARM_TYPES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="alarm_type" value="${k}" ${((c.alarm_cfg || {}).event_types || ["VMD", "fielddetection", "linedetection"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</fieldset>
+        <label class="alarm-only">Segundos de video antes de la alarma<input name="pre_seconds" type="number" min="0" max="60" value="${(c.alarm_cfg || {}).pre_seconds ?? 10}"></label>
+        <label class="alarm-only">Segundos de video después<input name="post_seconds" type="number" min="3" max="90" value="${(c.alarm_cfg || {}).post_seconds ?? 20}"></label>
         <label>IP del NVR o cámara<input name="host" value="${esc(c.host || "")}" placeholder="192.168.1.64"></label>
         <label>Canal<input name="channel" type="number" min="1" value="${c.channel || 1}"></label>
         <label>Usuario<input name="username" value="${esc(c.username || "admin")}"></label>
         <label>Clave<input name="password" type="password" placeholder="${c.has_password ? "(sin cambios)" : ""}" autocomplete="new-password"></label>
         <label>Puerto RTSP<input name="rtsp_port" type="number" value="${c.rtsp_port || 554}"></label>
         <label>Puerto HTTP<input name="http_port" type="number" value="${c.http_port || 80}"></label>
-        <label>Stream para analizar<select name="detect_stream">${options([["sub", "Secundario (recomendado)"], ["main", "Principal"]], c.detect_stream || "sub")}</select></label>
+        <label class="live-only">Stream para analizar<select name="detect_stream">${options([["sub", "Secundario (recomendado)"], ["main", "Principal"]], c.detect_stream || "sub")}</select></label>
         <label>Detector<select name="detector">${options([["yolo", "Personas (YOLO)"], ["motion", "Movimiento (solo pruebas)"]], c.detector || "yolo")}</select></label>
         <label>Cuadros por segundo a analizar<input name="process_fps" type="number" step="0.5" min="1" max="15" value="${c.process_fps || 5}"></label>
         <label>Hora de grabación del NVR<select name="playback_time">${options([["local", "Hora local (habitual)"], ["utc", "UTC"]], c.playback_time || "local")}</select></label>
-        <label>URL RTSP manual (opcional)<input name="source_url" placeholder="Solo para otras marcas"></label>
-        <label class="inline"><input type="checkbox" name="nvr_clips" ${c.nvr_clips !== false ? "checked" : ""}> Bajar clip de la grabación del NVR</label>
+        <label class="live-only">URL RTSP manual (opcional)<input name="source_url" placeholder="Solo para otras marcas"></label>
+        <label class="inline live-only"><input type="checkbox" name="nvr_clips" ${c.nvr_clips !== false ? "checked" : ""}> Bajar clip de la grabación del NVR</label>
         <label class="inline"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> Habilitada</label>
         <div class="row"><button class="primary" type="submit">Guardar</button><button type="button" id="cancel">Cancelar</button></div>
       </form></div>`;
     $("#cancel").addEventListener("click", () => ($("#cam-form").innerHTML = ""));
+    const syncMode = () => {
+      const alarms = $("#cf [name=mode]").value === "alarmas";
+      $$("#cf .alarm-only").forEach((el) => el.classList.toggle("hidden", !alarms));
+      $$("#cf .live-only").forEach((el) => el.classList.toggle("hidden", alarms));
+    };
+    $("#cf [name=mode]").addEventListener("change", syncMode);
+    syncMode();
     $("#cf").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);
@@ -337,6 +353,8 @@ async function camerasView(v) {
         rtsp_port: +f.get("rtsp_port"), http_port: +f.get("http_port"), detect_stream: f.get("detect_stream"),
         detector: f.get("detector"), process_fps: +f.get("process_fps"), playback_time: f.get("playback_time"),
         source_url: f.get("source_url") || null, nvr_clips: !!f.get("nvr_clips"), enabled: !!f.get("enabled"),
+        mode: f.get("mode"), hpp_serial: f.get("hpp_serial") || null,
+        alarm_cfg: { event_types: f.getAll("alarm_type"), pre_seconds: +f.get("pre_seconds"), post_seconds: +f.get("post_seconds") },
       };
       try {
         await api(c.id ? "PUT" : "POST", c.id ? "/api/cameras/" + c.id : "/api/cameras", body);
@@ -345,7 +363,100 @@ async function camerasView(v) {
     });
   };
   $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Administración", true); form(); });
+  const pre = new URLSearchParams(location.hash.split("?")[1] || "");
+  if (pre.get("nueva")) form({ mode: "alarmas", hpp_serial: pre.get("serie"), channel: +pre.get("canal") || 1, name: pre.get("nombre") || "" });
   $$("[data-edit]").forEach((b) => b.addEventListener("click", () => form(S.cameras.find((c) => c.id === +b.dataset.edit))));
+}
+
+// ------------------------------------------------------------------ alarmas de Hik-Partner Pro
+async function alarmsView(v) {
+  await loadCameras();
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  const p = new URLSearchParams(); ["status", "client_id", "camera_id"].forEach((k) => q.get(k) && p.set(k, q.get(k)));
+  const data = await api("GET", "/api/alarms?" + p.toString());
+  const c = data.counts_7d || {};
+  const total = Object.values(c).reduce((a, b) => a + b, 0);
+  const tile = (n, t, hint) => `<div class="panel stat"><span class="n">${n}</span><span>${t}</span>${hint ? `<span class="muted">${hint}</span>` : ""}</div>`;
+  v.innerHTML = `
+    <h1>Alarmas de Hik-Partner Pro</h1>
+    <p class="muted">Cada alarma de un DVR (movimiento, intrusión, cruce de línea) llega acá. La PC central baja ese tramo de video y lo analiza:
+      si no hay ninguna persona se descarta sola; si hay, pasa a <a href="#/revisar">Revisar y etiquetar</a>.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
+      ${tile(total, "Alarmas (7 días)")}
+      ${tile(c.sin_persona || 0, "Descartadas solas", total ? `${pct((c.sin_persona || 0) / total)} sin personas` : "")}
+      ${tile(c.con_persona || 0, "Con persona", "para revisar")}
+      ${tile((c.pendiente || 0) + (c.procesando || 0), "En cola")}
+      ${tile((c.error || 0) + (c.sin_camara || 0), "Con problemas", "error o cámara no cargada")}
+    </div>
+    <div id="hpp"></div>
+    <div class="toolbar" style="margin-top:14px">
+      <label>Estado<select id="f-status">${options(Object.entries(ALARM_STATUS).map(([k, [, t]]) => [k, t]), q.get("status"), "Todos")}</select></label>
+      <label>Cliente<select id="f-client">${options(S.clients.map((x) => [x.id, x.name]), q.get("client_id"), "Todos")}</select></label>
+      <label>Cámara<select id="f-camera">${options(S.cameras.filter((x) => x.mode === "alarmas").map((x) => [x.id, x.name]), q.get("camera_id"), "Todas")}</select></label>
+    </div>
+    <div class="table-wrap panel" style="padding:0"><table>
+      <thead><tr><th>Hora</th><th>Cámara</th><th>Alarma</th><th>Resultado</th><th></th></tr></thead>
+      <tbody>${data.items.map((a) => { const [cls, txt] = ALARM_STATUS[a.status] || ["", a.status]; return `<tr>
+        <td>${fmtDate(a.first_at)}${a.triggers > 1 ? `<div class="muted">${a.triggers} disparos</div>` : ""}</td>
+        <td>${a.camera_name ? `${esc(a.camera_name)}<div class="muted">${esc(a.client_name)}</div>` : `<span class="mono">${esc(a.device_serial)} · canal ${a.channel}</span>`}</td>
+        <td>${esc(alarmTypeName(a.event_type))}</td>
+        <td><span class="chip ${cls}" title="${esc(a.error || "")}">${esc(txt)}</span>${a.error ? `<div class="muted">${esc(a.error)}</div>` : ""}${a.stats && a.stats.frames ? `<div class="muted">persona en ${a.stats.person_frames} de ${a.stats.frames} cuadros</div>` : ""}</td>
+        <td class="row">${a.event_id ? `<a class="btn small" href="#/evento/${a.event_id}">Ver clip</a>` : ""}
+          ${a.status === "sin_camara" && isAdmin() ? `<a class="btn small" href="#/camaras?nueva=1&serie=${encodeURIComponent(a.device_serial)}&canal=${a.channel}">Cargar cámara</a>` : ""}
+          ${["error", "sin_camara", "sin_persona"].includes(a.status) ? `<button class="small" data-retry="${a.id}">Reintentar</button>` : ""}</td>
+      </tr>`; }).join("") || `<tr><td colspan="5" class="muted">Todavía no llegaron alarmas${isAdmin() ? ": conectá Hik-Partner Pro abajo" : ""}.</td></tr>`}</tbody></table></div>`;
+  ["status", "client", "camera"].forEach((k) => $("#f-" + k).addEventListener("change", () => {
+    const n = new URLSearchParams();
+    if ($("#f-status").value) n.set("status", $("#f-status").value);
+    if ($("#f-client").value) n.set("client_id", $("#f-client").value);
+    if ($("#f-camera").value) n.set("camera_id", $("#f-camera").value);
+    location.hash = "#/alarmas?" + n.toString();
+  }));
+  $$("[data-retry]", v).forEach((b) => b.addEventListener("click", async () => {
+    try { await api("POST", `/api/alarms/${b.dataset.retry}/retry`); toast("Vuelve a la cola"); route(); } catch (e) { fail(e); }
+  }));
+  every(30000, () => { if (!$("#hpp-out")?.innerHTML) route(); });
+  if (isAdmin()) await hppPanel($("#hpp"));
+}
+
+async function hppPanel(box) {
+  const st = await api("GET", "/api/hpp/status");
+  box.innerHTML = `<div class="panel" style="margin-top:14px">
+    <h3>Conexión con Hik-Partner Pro</h3>
+    ${st.configured ? `<p>API key cargada. Las alarmas llegan a <span class="mono">${esc(st.webhook_url || "(falta PUBLIC_URL)")}</span>.
+        Última alarma recibida: <b>${fmtDate(st.last_alarm_at)}</b>. Cámaras en modo alarmas: <b>${st.cameras}</b>.</p>
+      <div class="row"><button id="hpp-setup" class="primary">Conectar / actualizar suscripción</button>
+        <label class="inline"><input type="checkbox" id="hpp-all"> Todos los equipos de la cuenta (no solo los cargados)</label>
+        <button id="hpp-check">Probar conexión</button><button id="hpp-devices">Ver equipos de HPP</button></div>
+      <div id="hpp-out" style="margin-top:10px"></div>`
+    : `<p>Falta la API key. En el portal de Hik-Partner Pro: <b>Site &amp; Device → My Service → API Integration</b>; copiá AppKey y SecretKey
+        a las variables de Vercel <span class="mono">HPP_APP_KEY</span> y <span class="mono">HPP_SECRET_KEY</span> y volvé a desplegar.</p>`}
+  </div>`;
+  if (!st.configured) return;
+  const out = $("#hpp-out");
+  $("#hpp-setup").addEventListener("click", async () => {
+    try {
+      const r = await api("POST", "/api/hpp/setup", { all_devices: $("#hpp-all").checked });
+      toast("Listo: Hik-Partner Pro va a mandar las alarmas"); out.innerHTML = `<p class="muted">Suscriptos: ${r.serials ? r.serials.map(esc).join(", ") : "todos los equipos"}</p>`;
+    } catch (e) { fail(e); }
+  });
+  $("#hpp-check").addEventListener("click", async () => {
+    try {
+      const r = await api("GET", "/api/hpp/status?check=true");
+      out.innerHTML = r.error ? `<p class="error">${esc(r.error)}</p>` : `<p>Conexión OK. Webhook registrado en HPP: <span class="mono">${esc(JSON.stringify(r.remote || {}))}</span></p>`;
+    } catch (e) { fail(e); }
+  });
+  $("#hpp-devices").addEventListener("click", async () => {
+    out.innerHTML = `<p class="muted">Consultando Hik-Partner Pro…</p>`;
+    try {
+      const devs = await api("GET", "/api/hpp/devices");
+      out.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Equipo</th><th>Serie</th><th>Canales</th></tr></thead><tbody>${devs.map((d) => `<tr>
+        <td>${esc(d.name)} <span class="muted">${esc(d.model || "")}</span> ${d.online ? `<span class="chip ok">en línea</span>` : `<span class="chip bad">desconectado</span>`}</td>
+        <td class="mono">${esc(d.serial)}</td>
+        <td>${(d.channels || []).map((c) => c.error ? `<span class="muted">${esc(c.error)}</span>` : `<div>${c.channel}: ${esc(c.name || "")} ${c.camera_id ? `<span class="chip ok">cargada</span>` : `<a href="#/camaras?nueva=1&serie=${encodeURIComponent(d.serial)}&canal=${c.channel}&nombre=${encodeURIComponent(c.name || "")}">cargar</a>`}</div>`).join("") || "—"}</td>
+      </tr>`).join("") || `<tr><td colspan="3" class="muted">La cuenta no tiene equipos.</td></tr>`}</tbody></table></div>`;
+    } catch (e) { out.innerHTML = ""; fail(e); }
+  });
 }
 
 // ------------------------------------------------------------------ editor de zonas
@@ -743,7 +854,7 @@ async function adminView(v) {
     <p class="muted">Un agente <b>central</b> corre en tu PC y atiende las cámaras que le asignes, de cualquier cliente (llega a cada DVR por VPN). Un agente <b>de local</b> corre en una PC del cliente y atiende solo sus cámaras.</p>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
       <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? `<span class="chip">Central</span>` : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
-        <td>${fmtDate(a.last_seen)}</td><td>${a.status?.outbox_pending ?? "—"}</td><td><button class="small" data-rotate="${a.id}">Nuevo token</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
+        <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${a.status.alarms_with_person} con persona · ${a.status.alarms_discarded} descartadas · ${a.status.alarms_failed} con error</div>` : ""}</td><td>${a.status?.outbox_pending ?? "—"}</td><td><button class="small" data-rotate="${a.id}">Nuevo token</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
     <form class="form panel" id="af" style="margin-top:10px">
       <label>Tipo<select name="client_id">${options(S.clients.map((c) => [c.id, "De local: " + c.name]), "", "Central (mi PC, cámaras de varios clientes)")}</select></label>
       <label>Nombre<input name="name" required placeholder="PC central"></label>

@@ -66,6 +66,9 @@ main { padding: 20px 16px 60px; max-width: 1400px; margin: 0 auto; }
 .two { display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); }
 @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
 .form { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); align-items: end; }
+.form fieldset { grid-column: 1 / -1; margin: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 10px;
+  display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.form fieldset legend { color: var(--muted); padding: 0 4px; }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; cursor: pointer;
   transition: transform .08s ease, border-color .08s ease; }

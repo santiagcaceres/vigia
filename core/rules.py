@@ -27,8 +27,14 @@ MERODEO = "merodeo"
 ZONA_RESTRINGIDA = "zona_restringida"
 FUERA_DE_HORARIO = "fuera_de_horario"
 RULE_TYPES = (SALIDA_SIN_PAGO, MERODEO, ZONA_RESTRINGIDA, FUERA_DE_HORARIO)
+# Alarma del DVR (llegada por Hik-Partner Pro) con persona, sin ninguna regla disparada en el clip.
+ALARMA_DVR = "alarma_dvr"
+EVENT_TYPES = RULE_TYPES + (ALARMA_DVR,)
+# De más a menos grave: para elegir el tipo de un clip de alarma donde se disparan varias reglas.
+RULE_PRIORITY = (SALIDA_SIN_PAGO, ZONA_RESTRINGIDA, MERODEO, FUERA_DE_HORARIO)
 
-SEVERITY = {SALIDA_SIN_PAGO: "alta", ZONA_RESTRINGIDA: "alta", MERODEO: "media", FUERA_DE_HORARIO: "media"}
+SEVERITY = {SALIDA_SIN_PAGO: "alta", ZONA_RESTRINGIDA: "alta", MERODEO: "media", FUERA_DE_HORARIO: "media",
+            ALARMA_DVR: "baja"}
 DEFAULT_COOLDOWNS = {SALIDA_SIN_PAGO: 8.0, MERODEO: 30.0, ZONA_RESTRINGIDA: 15.0, FUERA_DE_HORARIO: 300.0}
 _NUMERIC_KEYS = ("shelf_dwell_seconds", "checkout_min_seconds", "loiter_seconds", "restricted_min_seconds")
 
@@ -229,6 +235,13 @@ class RuleEngine:
         self._last_fired[key] = ts
         feats = track_features(t, st, ts, visible, size, wall)
         events.append(RuleEvent(rule, SEVERITY[rule], t.id, zone, description, ts, t.bbox, feats))
+
+    def current_features(self, tracks: list[Track], ts: float, frame_size: tuple[int, int],
+                         wall_time: datetime | None = None) -> dict[int, dict[str, float]]:
+        """Medidas actuales de cada persona visible (llamar después de update con el mismo cuadro)."""
+        visible = sum(1 for t in tracks if t.visible)
+        return {t.id: track_features(t, self._states[t.id], ts, visible, frame_size, wall_time)
+                for t in tracks if t.visible and t.id in self._states}
 
 
 def track_features(t: Track, st: _TrackState, ts: float, visible: int,

@@ -197,3 +197,17 @@ class ServerClient:
 
     def import_fail(self, iid: int, error: str) -> None:
         self.http.post(f"/api/agent/imports/{iid}/fail", json={"error": error[:500]})
+
+    # ---- alarmas de Hik-Partner Pro ----
+    def next_alarm(self) -> dict | None:
+        r = self.http.get("/api/agent/alarms/next")
+        r.raise_for_status()
+        return None if r.status_code == 204 else r.json()
+
+    def alarm_done(self, aid: int, result: str, stats: dict, event_uuid: str | None = None) -> None:
+        r = self.http.post(f"/api/agent/alarms/{aid}/done",
+                           json={"result": result, "stats": stats, "event_uuid": event_uuid})
+        self._rejected(r, f"el resultado de la alarma {aid}")
+
+    def alarm_fail(self, aid: int, error: str, retry: bool = True) -> None:
+        self.http.post(f"/api/agent/alarms/{aid}/fail", json={"error": error[:500], "retry": retry})

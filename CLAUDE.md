@@ -44,7 +44,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   onnxruntime en el build de Vercel. No romper eso.
 - **public/**: panel (SPA sin framework) + `aviso.html`, la página pública del clip.
 
-### Modo central (lo que se usa)
+### Modo alarmas de Hik-Partner Pro (el camino elegido, oct 2026)
+Reemplaza a los empleados del socio que hoy miran los clips en el portal de HPP. Flujo:
+alarma del DVR → HPP → **webhook** `POST /api/hpp/webhook` (firmado HMAC) → tabla `alarms`
+(agrupa disparos seguidos de la misma cámara) → la PC central la pide (`/api/agent/alarms/next`),
+**baja solo ese tramo** del DVR, lo analiza con `core/clip_analysis.py` → sin personas: se
+descarta sola; con persona: evento `source="alarma"` con clip → empleados etiquetan → modelo.
+Cámara con `mode="alarmas"`, `hpp_serial` (serie del DVR en HPP), `channel` y `alarm_cfg`
+(tipos de alarma, segundos antes/después). El agente no mira en vivo esas cámaras.
+- **La OpenAPI de HPP (guía V2.15.500, copia en github SYSCOM-Labs/API-DOCS) da alarmas y fotos,
+  NO video.** Video = HPNetSDK con clave "VSaaS" que se pide por mail a Hikvision (pendiente).
+  Hasta entonces el tramo se baja **por VPN** del DVR (`download_nvr_clip`). Para sumar HPNetSDK:
+  otro `ClipFetcher` en `agent/alarms.py`.
+- API key de HPP: el socio la saca solo en el portal (Site & Device → My Service → API
+  Integration). Variables `HPP_APP_KEY`, `HPP_SECRET_KEY`, `HPP_WEBHOOK_SECRET` (opcional).
+- El formato exacto del cuerpo del webhook no está documentado: se parsea tolerante y se guarda
+  `raw`. **Verificar con la primera alarma real** (logs de Vercel + `alarms.raw`).
+
+### Modo central
 `Agent.client_id` NULL = agente **central**: corre en la PC de la empresa y atiende las cámaras
 que se le asignen, **de cualquier cliente**, llegando a cada DVR por **VPN** (Tailscale /
 WireGuard; cajita GL.iNet ~US$30 si el router no soporta). Evita poner una PC por local.
@@ -63,9 +80,9 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 
 - **Hik-Connect NO sirve** para leer video: es un visor cerrado, no expone el stream. Verificado
   contra la documentación de Hikvision. El software no puede "correr sobre Hik-Connect".
-- **Hik-Partner Pro** (el cliente ya lo usa) sirve para **configurar los DVR a distancia**. Su
-  OpenAPI *podría* dar clips de alarma de 7 s, pero **no está confirmado** que entregue video
-  continuo analizable. Hay preguntas pendientes para Hikvision (ver abajo).
+- **Hik-Partner Pro** (el cliente ya lo usa) sirve para **configurar los DVR a distancia** y su
+  OpenAPI REST da **las alarmas** (webhook) pero **no video** (confirmado en la guía V2.15.500:
+  live/playback/descarga = HPNetSDK con clave VSaaS por mail; sacaron `video/by/time`).
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Nunca** abrir puertos del DVR a internet: siempre VPN.
 - El detector es **YOLO11n, licencia AGPL-3.0**. Para vender hay que comprar licencia
@@ -84,7 +101,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 43 tests (SQLite)
+python -m pytest -q                 # 77 tests (24 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR
@@ -93,19 +110,23 @@ python -m agent.hikvision --host IP --user vigia --password ****             # p
 - Sin `DATABASE_URL` usa SQLite local; sin Supabase guarda archivos en disco. Así corre local.
 - **Deploy:** `git push` + lanzar el deploy en Vercel (el proyecto no tiene auto-deploy por git
   configurado; se dispara con la API/MCP de Vercel o desde el panel de Vercel).
-- Las tablas se crean solas (`create_all`) y quedan con RLS activo. Agregar una **columna** a una
-  tabla existente sí requiere migración manual (`ALTER TABLE`) en Supabase.
+- Las tablas se crean solas (`create_all`) y quedan con RLS activo. Las **columnas nuevas** también
+  se agregan solas al arrancar (`add_missing_columns` en `server/db.py`); renombrar o cambiar el
+  tipo de una columna sí requiere migración manual.
 - Ojo: `requirements.txt` es del servidor; `requirements-agent.txt` del agente (OpenCV, onnxruntime).
 
 ## Próximos pasos
 
-1. **Piloto real:** conectar el DVR de prueba (DS-7104HGHI-M1/T + cámara analógica
-   DS-2CE16D0T-LFS) y medir detección y falsas alarmas por hora.
-2. **Detector de ocultamiento** (mano góndola→cuerpo): necesita 30–50 videos etiquetados.
-3. **Licencia del detector** (AGPL) antes de cobrar.
-4. **Preguntas a Hikvision** (TPP): ¿la OpenAPI da video continuo por URL analizable? ¿los clips
-   de alarma pueden durar más de 7 s? ¿costos por equipo/tráfico? ¿sirve en UY/AR?
-5. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
+1. **Conectar HPP:** el socio saca la API key, se carga en Vercel, "Conectar" en Alarmas HPP, y
+   revisar la primera alarma real (formato del webhook, hora del DVR, serie/canal).
+2. **Video de las alarmas:** pedir a Hikvision la clave VSaaS/HPNetSDK (sin VPN), o poner VPN en
+   cada local (router con WireGuard/Tailscale o cajita GL.iNet ~US$30).
+3. **Medir:** % de alarmas descartadas solas y cuántas con persona eran hurto (con las etiquetas).
+4. **Detector de ocultamiento** (mano góndola→cuerpo): necesita 30–50 videos etiquetados.
+5. **Licencia del detector** (AGPL) antes de cobrar.
+6. **Preguntas a Hikvision:** ¿requisitos y costo de la clave VSaaS / HPNetSDK? ¿permite descargar
+   la grabación por horario (o el clip de alarma) por equipo? ¿corre en Windows/Linux? ¿UY/AR?
+7. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
    los archivos a 50 MB).
 
 ## Estilo

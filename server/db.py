@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, event, text
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine,
+                        event, inspect, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -91,6 +92,11 @@ class Camera(Base):
     zones: Mapped[list] = mapped_column(JSON, default=list)
     rules: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # "vivo": el agente mira el stream las 24 h. "alarmas": solo analiza el tramo de video de cada
+    # alarma que el DVR manda a Hik-Partner Pro (mucho más barato: una PC atiende muchos locales).
+    mode: Mapped[str] = mapped_column(String(10), default="vivo")
+    hpp_serial: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # serie del DVR en HPP
+    alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     preview_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -145,6 +151,38 @@ class Event(Base):
     labeled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class Alarm(Base):
+    """Alarma de un DVR recibida desde Hik-Partner Pro (webhook). La PC central baja el tramo
+    de video, lo analiza y, si hay una persona, lo convierte en un evento para revisar.
+
+    Estados: pendiente -> procesando -> con_persona | sin_persona | error.
+    Sin cámara configurada para esa serie/canal: sin_camara. Tipo no vigilado: ignorada.
+    """
+    __tablename__ = "alarms"
+    __table_args__ = (UniqueConstraint("dedup_key", name="uq_alarms_dedup"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dedup_key: Mapped[str] = mapped_column(String(160))
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    camera_id: Mapped[int | None] = mapped_column(ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True,
+                                                  index=True)
+    device_serial: Mapped[str] = mapped_column(String(32), index=True)
+    channel: Mapped[int] = mapped_column(Integer, default=1)
+    event_type: Mapped[str] = mapped_column(String(40))
+    target: Mapped[str | None] = mapped_column(String(20), nullable=True)  # human / vehicle / others (si el DVR lo dice)
+    first_at: Mapped[datetime] = mapped_column(DateTime, index=True)  # UTC, primer disparo
+    last_at: Mapped[datetime] = mapped_column(DateTime)  # UTC, último disparo agrupado en esta alarma
+    triggers: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(20), default="pendiente", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"), nullable=True)
+    claimed_by: Mapped[int | None] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class Incident(Base):
     """Hurto real marcado a mano en un video importado (para medir qué detecta el sistema)."""
     __tablename__ = "incidents"
@@ -189,6 +227,34 @@ class FilterModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+def add_missing_columns(engine) -> list[str]:
+    """create_all no agrega columnas nuevas a tablas que ya existen: las agrega acá (solo columnas
+    que admiten NULL o tienen valor por defecto simple). Así no hace falta migrar a mano."""
+    added = []
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                ddl = col.type.compile(engine.dialect)
+                default = col.default.arg if col.default is not None and col.default.is_scalar else None
+                if isinstance(default, bool):
+                    ddl += " DEFAULT " + ("TRUE" if default else "FALSE")
+                elif isinstance(default, (int, float)):
+                    ddl += f" DEFAULT {default}"
+                elif isinstance(default, str):
+                    ddl += " DEFAULT '" + default.replace("'", "''") + "'"
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl}'))
+                added.append(f"{table.name}.{col.name}")
+    if added:
+        log.warning("Columnas agregadas a la base: %s", ", ".join(added))
+    return added
+
+
 def normalize_url(url: str) -> str:
     """Acepta la cadena de conexión tal como la copia Supabase (postgresql://…)."""
     for prefix in ("postgres://", "postgresql://"):
@@ -215,6 +281,7 @@ def make_session_factory(url: str, create_schema: bool = True):
     if create_schema:
         try:
             Base.metadata.create_all(engine)
+            add_missing_columns(engine)
             if engine.dialect.name == "postgresql":
                 with engine.begin() as conn:
                     # Las tablas quedan cerradas para la API pública de Supabase (anon/authenticated):

@@ -12,7 +12,7 @@ import math
 
 import numpy as np
 
-from .rules import RULE_TYPES
+from .rules import EVENT_TYPES
 
 log = logging.getLogger("vigia.scorer")
 
@@ -25,7 +25,7 @@ FEATURE_NAMES = (
 _LOG_FEATURES = {"track_age_s", "shelf_total_s", "checkout_total_s", "restricted_total_s",
                  "max_shelf_dwell_s", "shelf_visits", "path_len", "people_in_scene"}
 
-VECTOR_NAMES = tuple(FEATURE_NAMES) + tuple(f"regla={r}" for r in RULE_TYPES)
+VECTOR_NAMES = tuple(FEATURE_NAMES) + tuple(f"regla={r}" for r in EVENT_TYPES)
 
 POSITIVE_LABELS = ("hurto", "sospechoso")
 NEGATIVE_LABELS = ("normal", "falso_positivo")
@@ -39,7 +39,7 @@ def vectorize(event_type: str, features: dict) -> np.ndarray:
         if name in _LOG_FEATURES:
             v = math.log1p(max(v, 0.0))
         vals.append(v)
-    vals += [1.0 if event_type == r else 0.0 for r in RULE_TYPES]
+    vals += [1.0 if event_type == r else 0.0 for r in EVENT_TYPES]
     return np.array(vals, dtype=np.float64)
 
 
