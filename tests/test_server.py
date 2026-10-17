@@ -290,6 +290,45 @@ def test_aviso_requiere_clip_permisos_y_aislamiento(app, admin, tmp_path):
     assert u.get("/api/reports", params={"client_id": cid_b}).status_code == 403
 
 
+def test_agente_central_atiende_camaras_de_varios_clientes(app, admin, tmp_path):
+    cid_a, ag_a, cam_a = setup_client(admin, "Cliente A")
+    cid_b, ag_b, cam_b = setup_client(admin, "Cliente B")
+    central = admin.post("/api/agents", json={"client_id": None, "name": "PC central"}).json()
+    assert central["central"] is True and central["client_id"] is None
+    # sin cámaras asignadas no ve nada
+    cfg = TestClient(app).get("/api/agent/config", headers={"X-Agent-Token": central["token"]}).json()
+    assert cfg["central"] is True and cfg["cameras"] == []
+    # se le asignan una cámara de A y una de B (un agente central puede tomar cámaras de cualquier cliente)
+    for cam, cid in ((cam_a, cid_a), (cam_b, cid_b)):
+        body = {"client_id": cid, "agent_id": central["id"], "name": cam["name"], "host": cam["host"],
+                "channel": cam["channel"], "detector": "motion", "process_fps": synthetic.FPS}
+        assert admin.put(f"/api/cameras/{cam['id']}", json=body).status_code == 200, body
+    cfg = TestClient(app).get("/api/agent/config", headers={"X-Agent-Token": central["token"]}).json()
+    assert {c["client_id"] for c in cfg["cameras"]} == {cid_a, cid_b}
+    assert {c["client_name"] for c in cfg["cameras"]} == {"Cliente A", "Cliente B"}
+    assert all("filter_model" in c for c in cfg["cameras"])
+    # el agente del local A ya no ve su cámara (quedó asignada al central)
+    cfg_a = TestClient(app).get("/api/agent/config", headers={"X-Agent-Token": ag_a["token"]}).json()
+    assert cfg_a["cameras"] == []
+    # los eventos del central caen en el cliente correcto
+    _, r = post_event(app, central["token"], cam_b["id"])
+    assert r.status_code == 201
+    ev = admin.get("/api/events").json()["items"][0]
+    assert ev["client_id"] == cid_b and ev["client_name"] == "Cliente B"
+    # un agente de local no puede usar la cámara que ahora es del central
+    _, r = post_event(app, ag_b["token"], cam_b["id"])
+    assert r.status_code == 404
+    # un agente de local no puede asignarse a cámaras de otro cliente
+    bad = {"client_id": cid_a, "agent_id": ag_b["id"], "name": "x", "host": "1.2.3.4"}
+    assert admin.post("/api/cameras", json=bad).status_code == 422
+    # videos importados: el central toma los de sus cámaras asignadas
+    video = synthetic.write_video(synthetic.render("hurto"), tmp_path / "v.mp4")
+    iid = upload_import(admin, cam_a["id"], video)
+    assert agent_client(app, ag_a["token"]).next_job() is None
+    job = agent_client(app, central["token"]).next_job()
+    assert job and job["import_id"] == iid
+
+
 def test_link_de_aviso_vence(app, admin, tmp_path):
     _, ag, cam = setup_client(admin)
     ev = event_with_clip(app, admin, ag, cam, tmp_path)

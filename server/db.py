@@ -56,9 +56,12 @@ class SessionToken(Base):
 
 
 class Agent(Base):
+    """PC que corre el análisis. Con client_id es el agente de un local; con client_id NULL es
+    un agente *central* (la PC de la empresa) que atiende las cámaras que se le asignen, de
+    cualquier cliente, llegando a cada DVR por VPN."""
     __tablename__ = "agents"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     process_imports: Mapped[bool] = mapped_column(Boolean, default=True)

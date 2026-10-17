@@ -32,7 +32,9 @@ class CameraWorker:
     def __init__(self, cam_cfg: dict, detector: Detector, scorer: Scorer | None, outbox: Outbox,
                  client: ServerClient | None, clip_pool: ThreadPoolExecutor, settings: dict):
         self.id: int = cam_cfg["id"]
-        self.name: str = cam_cfg["name"]
+        # en modo central conviven cámaras de varios clientes: el log las distingue por cliente
+        self.name: str = (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
+                          else cam_cfg["name"])
         self.fingerprint = self.fingerprint_of(cam_cfg)
         self.hik = HikCamera.from_config(cam_cfg["connection"])
         self.process_fps = float(cam_cfg.get("process_fps", 5))

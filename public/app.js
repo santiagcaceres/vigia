@@ -295,14 +295,14 @@ async function camerasView(v) {
     <div class="row"><h1>Cámaras</h1><span class="spacer"></span>${isAdmin() ? `<button id="add" class="primary">Agregar cámara</button>` : ""}</div>
     <div id="cam-form"></div>
     <div class="table-wrap panel" style="margin-top:12px;padding:0"><table>
-      <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
-      <tbody>${S.cameras.map((c) => `<tr>
+      <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
+      <tbody>${S.cameras.map((c) => { const ag = agents.find((a) => a.id === c.agent_id); return `<tr>
         <td><b>${esc(c.name)}</b>${c.enabled ? "" : ` <span class="chip">deshabilitada</span>`}</td>
-        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td>` : ""}
+        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
         <td>${statusChip(c.status)}</td>
         <td>${(c.zones || []).length}</td>
         <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isAdmin() ? `<button class="small" data-edit="${c.id}">Editar</button>` : ""}</td>
-      </tr>`).join("") || `<tr><td colspan="6" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
+      </tr>`; }).join("") || `<tr><td colspan="7" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
   if (!isAdmin()) return;
   const form = (c = {}) => {
     $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
@@ -310,7 +310,7 @@ async function camerasView(v) {
       <p class="muted">Datos del NVR o cámara Hikvision (los mismos que usa iVMS-4200). Si la cámara está en un NVR, la IP es la del NVR y el canal es el número de cámara en el NVR.</p>
       <form class="form" id="cf">
         <label>Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id)}</select></label>
-        <label>Agente<select name="agent_id">${options(agents.map((a) => [a.id, `${a.name} (${clientName(a.client_id)})`]), c.agent_id, "Cualquiera del cliente")}</select></label>
+        <label>Agente<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? `${a.name} (Central)` : `${a.name} (${clientName(a.client_id)})`]), c.agent_id, "Cualquiera del cliente")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
         <label>IP del NVR o cámara<input name="host" value="${esc(c.host || "")}" placeholder="192.168.1.64"></label>
         <label>Canal<input name="channel" type="number" min="1" value="${c.channel || 1}"></label>
@@ -739,13 +739,14 @@ async function adminView(v) {
       <button class="primary" type="submit">Crear cliente</button>
     </form>
 
-    <h2>Agentes (una PC por local)</h2>
+    <h2>Agentes</h2>
+    <p class="muted">Un agente <b>central</b> corre en tu PC y atiende las cámaras que le asignes, de cualquier cliente (llega a cada DVR por VPN). Un agente <b>de local</b> corre en una PC del cliente y atiende solo sus cámaras.</p>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
-      <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
+      <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? `<span class="chip">Central</span>` : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
         <td>${fmtDate(a.last_seen)}</td><td>${a.status?.outbox_pending ?? "—"}</td><td><button class="small" data-rotate="${a.id}">Nuevo token</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
     <form class="form panel" id="af" style="margin-top:10px">
-      <label>Cliente<select name="client_id" required>${options(S.clients.map((c) => [c.id, c.name]), "")}</select></label>
-      <label>Nombre<input name="name" required placeholder="PC del local Centro"></label>
+      <label>Tipo<select name="client_id">${options(S.clients.map((c) => [c.id, "De local: " + c.name]), "", "Central (mi PC, cámaras de varios clientes)")}</select></label>
+      <label>Nombre<input name="name" required placeholder="PC central"></label>
       <button class="primary" type="submit">Crear agente</button>
     </form>
     <div id="token"></div>
@@ -772,7 +773,7 @@ async function adminView(v) {
   });
   $("#af").addEventListener("submit", async (e) => {
     e.preventDefault(); const f = new FormData(e.target);
-    try { const a = await api("POST", "/api/agents", { client_id: +f.get("client_id"), name: f.get("name") }); e.target.reset(); showToken(a); } catch (err) { fail(err); }
+    try { const a = await api("POST", "/api/agents", { client_id: f.get("client_id") ? +f.get("client_id") : null, name: f.get("name") }); e.target.reset(); showToken(a); } catch (err) { fail(err); }
   });
   $("#uf").addEventListener("submit", async (e) => {
     e.preventDefault(); const f = new FormData(e.target);

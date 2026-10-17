@@ -134,7 +134,7 @@ class PasswordIn(BaseModel):
 
 
 class AgentIn(BaseModel):
-    client_id: int
+    client_id: int | None = None  # None = agente central (atiende cámaras asignadas de cualquier cliente)
     name: str = Field(min_length=1, max_length=120)
     process_imports: bool = True
 
@@ -332,8 +332,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def agent_dict(a: Agent) -> dict:
         online = bool(a.last_seen and utcnow() - a.last_seen < timedelta(minutes=3))
-        return {"id": a.id, "client_id": a.client_id, "name": a.name, "last_seen": iso(a.last_seen),
-                "online": online, "status": a.last_status or {}, "process_imports": a.process_imports}
+        return {"id": a.id, "client_id": a.client_id, "central": a.client_id is None, "name": a.name,
+                "last_seen": iso(a.last_seen), "online": online, "status": a.last_status or {},
+                "process_imports": a.process_imports}
 
     def camera_dict(c: Camera, user: User, status: dict | None = None) -> dict:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
@@ -511,7 +512,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/agents", status_code=201)
     def create_agent(body: AgentIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
-        get_or_404(s, Client, body.client_id, "Cliente")
+        if body.client_id is not None:
+            get_or_404(s, Client, body.client_id, "Cliente")
         token = new_token()
         a = Agent(client_id=body.client_id, name=body.name, token_hash=token_hash(token),
                   process_imports=body.process_imports)
@@ -563,7 +565,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         get_or_404(s, Client, body.client_id, "Cliente")
         if body.agent_id is not None:
             ag = get_or_404(s, Agent, body.agent_id, "Agente")
-            if ag.client_id != body.client_id:
+            if ag.client_id is not None and ag.client_id != body.client_id:
                 raise HTTPException(422, "El agente pertenece a otro cliente")
         if not body.host and not body.source_url:
             raise HTTPException(422, "Indicá la IP del NVR/cámara o una URL RTSP")
@@ -619,15 +621,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return resp
 
     # ------------------------------------------------------------ API del agente
+    def agent_owns(ag: Agent, c: Camera) -> bool:
+        """Un agente de local atiende las cámaras de su cliente (no asignadas a otro agente);
+        un agente central solo las que se le asignaron explícitamente."""
+        if ag.client_id is None:
+            return c.agent_id == ag.id
+        return c.client_id == ag.client_id and c.agent_id in (None, ag.id)
+
+    def agent_cameras_q(s, ag: Agent):
+        if ag.client_id is None:
+            return s.query(Camera).filter(Camera.agent_id == ag.id)
+        return s.query(Camera).filter(Camera.client_id == ag.client_id,
+                                      or_(Camera.agent_id == ag.id, Camera.agent_id.is_(None)))
+
     def agent_camera(s, ag: Agent, cam_id: int) -> Camera:
         c = s.get(Camera, cam_id)
-        if not c or c.client_id != ag.client_id:
+        if not c or not agent_owns(ag, c):
             raise HTTPException(404, "Cámara no encontrada para este agente")
         return c
 
     def agent_event_or_404(s, ag: Agent, uuid: str) -> Event:
         ev = s.query(Event).filter_by(uuid=uuid).first()
-        if not ev or ev.client_id != ag.client_id:
+        cam = s.get(Camera, ev.camera_id) if ev else None
+        if not ev or not cam or not agent_owns(ag, cam):
             raise HTTPException(404, "Evento no encontrado")
         return ev
 
@@ -640,22 +656,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/agent/config")
     def agent_config(ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
-        client = s.get(Client, ag.client_id)
-        cams = s.query(Camera).filter(Camera.client_id == ag.client_id,
-                                      or_(Camera.agent_id == ag.id, Camera.agent_id.is_(None))).all()
+        cams = agent_cameras_q(s, ag).order_by(Camera.id).all()
+        clients = {c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))} if cams else {}
+        models = {cid: model_spec(s, cid) for cid in clients}  # cada cliente puede tener su propio modelo
         return {
-            "agent_id": ag.id, "client_id": ag.client_id, "process_imports": ag.process_imports,
+            "agent_id": ag.id, "client_id": ag.client_id, "central": ag.client_id is None,
+            "process_imports": ag.process_imports,
             "settings": {"clip_pre_seconds": st.clip_pre_seconds, "clip_post_seconds": st.clip_post_seconds},
-            "filter_model": model_spec(s, ag.client_id),
+            "filter_model": model_spec(s, ag.client_id) if ag.client_id is not None else None,
             "cameras": [{
-                "id": c.id, "name": c.name, "enabled": c.enabled, "detector": c.detector,
-                "process_fps": c.process_fps,
+                "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": clients[c.client_id].name,
+                "enabled": c.enabled, "detector": c.detector, "process_fps": c.process_fps,
                 "connection": {"host": c.host, "username": c.username, "password": box.decrypt(c.password_enc),
                                "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
                                "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
-                               "playback_time": c.playback_time, "timezone": client.timezone,
+                               "playback_time": c.playback_time, "timezone": clients[c.client_id].timezone,
                                "source_url": box.decrypt(c.source_url_enc) or None},
                 "analysis": camera_analysis(c),
+                "filter_model": models[c.client_id],
             } for c in cams],
         }
 
@@ -690,7 +708,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         import_id = None
         if source == "importado":
             imp = s.get(VideoImport, int(m.get("import_id") or 0))
-            if not imp or imp.client_id != ag.client_id or imp.claimed_by != ag.id or imp.camera_id != cam.id:
+            if not imp or imp.claimed_by != ag.id or imp.camera_id != cam.id:
                 raise HTTPException(404, "Importación no encontrada para este agente")
             import_id = imp.id
         existing = s.query(Event).filter_by(uuid=uuid).first()
@@ -755,8 +773,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not ag.process_imports:
             return Response(status_code=204)
         stale = utcnow() - STALE_CLAIM
+        mine = agent_cameras_q(s, ag).with_entities(Camera.id)
         candidates = (s.query(VideoImport)
-                      .filter(VideoImport.client_id == ag.client_id,
+                      .filter(VideoImport.camera_id.in_(mine),
                               or_(VideoImport.status == "en_cola",
                                   (VideoImport.status == "procesando") & (VideoImport.claimed_at < stale)))
                       .order_by(VideoImport.id).limit(5).all())
@@ -1038,11 +1057,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if client_id is not None:
             q = q.filter(VideoImport.client_id == client_id)
         out = []
-        online = {a.client_id for a in s.query(Agent).all()
-                  if a.process_imports and a.last_seen and utcnow() - a.last_seen < timedelta(minutes=3)}
+        online = [a for a in s.query(Agent).all()
+                  if a.process_imports and a.last_seen and utcnow() - a.last_seen < timedelta(minutes=3)]
         for i, n in q.order_by(VideoImport.id.desc()).all():
             d = import_dict(i, n)
-            d["agent_available"] = i.client_id in online
+            cam = s.get(Camera, i.camera_id)
+            d["agent_available"] = any(agent_owns(a, cam) for a in online)
             out.append(d)
         return out
 

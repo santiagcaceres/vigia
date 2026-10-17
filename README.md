@@ -93,7 +93,7 @@ Desde la web del NVR o desde iVMS-4200 (Configuración remota):
    - Crear un **agente** para ese cliente. Copiá el token: se muestra una sola vez.
 2. En **Cámaras > Agregar cámara**: IP del NVR, canal, usuario y clave (los mismos datos que usa iVMS).
 
-### Paso 5. Instalar el agente en la PC del local
+### Paso 5. Instalar el agente (en la PC del local, o en tu PC central: ver Paso 5b)
 
 **Windows:**
 1. Instalar [Python 3.12](https://www.python.org/downloads/) y marcar "Add python.exe to PATH".
@@ -123,6 +123,47 @@ dibujar las zonas.
 **Capacidad:** el detector de personas tardó unos 120 ms por cuadro en la CPU de prueba. Una PC
 de oficina maneja de 2 a 4 cámaras a 5 cuadros por segundo. Para más cámaras, bajar a 3 cuadros
 por segundo, usar una PC con GPU NVIDIA, o exportar el modelo a 416 con `tools/export_model.py`.
+
+### Paso 5b. Modo central: una sola PC para todos los clientes (recomendado)
+
+En vez de una PC por local, **tu PC central corre un único agente** que atiende las cámaras de
+todos los clientes. En cada local no va ninguna computadora: solo hace falta que tu PC llegue al
+DVR del cliente por **VPN**.
+
+**1. Crear el agente central.** Administración → Agentes → Tipo **"Central"** → Crear. Copiá el token.
+
+**2. En tu PC central** (Windows): los mismos pasos del Paso 5, con el token del agente central.
+Instalá además [Tailscale](https://tailscale.com/download) (VPN; gratis hasta 100 equipos) e iniciá
+sesión.
+
+**3. En cada local, llegar al DVR por VPN.** Elegí una:
+- **Router del cliente con VPN (US$0):** muchos routers (MikroTik, Ubiquiti, TP-Link Omada,
+  GL.iNet, OpenWrt) traen WireGuard o Tailscale. Se configura como *subnet router* o se mapea el
+  puerto 554 del DVR.
+- **Cajita VPN (~US$30–40, una vez):** un mini router **GL.iNet** (p. ej. GL-MT3000 o GL-SFT1200)
+  enchufado por cable al router del cliente, con Tailscale activado en su firmware y un
+  **mapeo de puertos** 554 (RTSP) y 80 (ISAPI) → IP del DVR. En Vigía la cámara se carga con
+  **host = IP de Tailscale de la cajita**. Así no importa que dos locales usen la misma red
+  (192.168.1.x), porque cada cajita tiene su propia IP de VPN.
+- **Nunca** abrir los puertos del DVR a internet: los DVR expuestos se atacan constantemente.
+
+**4. Preparar el DVR sin ir al local:** con **Hik-Partner Pro** podés entrar a la configuración
+remota del DVR y hacer el Paso 3 (usuario `vigia`, RTSP, flujo secundario H.264) desde tu oficina.
+
+**5. Cargar la cámara** en el panel con el **agente = el central**, host = IP de VPN, canal, usuario
+`vigia`. En un minuto aparece En línea.
+
+**Ancho de banda:** cada cámara consume ~0,25–0,5 Mbps de **subida** del local (flujo secundario),
+las 24 h. Con 4 cámaras, 1–2 Mbps (unos 400–500 GB/mes). Fibra: sin problema. Internet móvil con
+tope de datos: no sirve.
+
+**Capacidad de la PC central:** el detector tarda ~120 ms por cuadro en CPU. A 5 cuadros/seg por
+cámara, una PC de oficina maneja 2–4 cámaras; con más locales, bajar a 3 cuadros/seg o usar una
+placa NVIDIA (decenas de cámaras). **Medilo** con tus cámaras antes de prometer cupo.
+
+**Futuro sin VPN:** si Hikvision te aprueba como Technology Partner, su protocolo **ISUP** permite
+que el DVR se conecte *saliente* a tu PC (sin VPN ni cajita). Requiere su SDK; se evalúa cuando
+tengas el acceso.
 
 ### Paso 6. Zonas
 

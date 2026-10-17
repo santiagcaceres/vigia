@@ -79,7 +79,9 @@ class Agent:
             except Exception as exc:
                 log.error("Cámara %s: no se pudo crear el detector: %s", c["name"], exc)
                 continue
-            w = CameraWorker(c, det, self.scorer, self.outbox, self.client, self.clip_pool, cfg.get("settings", {}))
+            # modo central: cada cámara trae el modelo de su cliente; si no, se usa el del agente
+            scorer = Scorer.maybe(c["filter_model"]) if c.get("filter_model") is not None else self.scorer
+            w = CameraWorker(c, det, scorer, self.outbox, self.client, self.clip_pool, cfg.get("settings", {}))
             self.workers[cid] = w
             w.start()
             log.info("Iniciada cámara %s", c["name"])
