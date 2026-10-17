@@ -28,7 +28,10 @@ class Client(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Argentina/Buenos_Aires")
+    # Contacto del cliente: se usa SOLO cuando un empleado decide avisarle de un hurto.
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contact_whatsapp: Mapped[str | None] = mapped_column(String(32), nullable=True)  # formato +5989...
+    contact_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -147,6 +150,28 @@ class Incident(Base):
     start_s: Mapped[float] = mapped_column(Float)
     end_s: Mapped[float] = mapped_column(Float)
     note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class ClientReport(Base):
+    """Aviso que un empleado le manda al cliente con el clip de un posible hurto.
+
+    Genera un link público, temporal y sin login, para que el dueño vea el clip desde
+    el celular. Se envía por los canales que tenga configurados el cliente (portal siempre,
+    + Telegram / WhatsApp / email / webhook si están disponibles).
+    """
+    __tablename__ = "client_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    public_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    message: Mapped[str] = mapped_column(String(1000), default="")
+    channels: Mapped[list] = mapped_column(JSON, default=list)   # canales intentados
+    delivery: Mapped[dict] = mapped_column(JSON, default=dict)   # resultado por canal
+    status: Mapped[str] = mapped_column(String(12), default="enviado")  # enviado | parcial | error
+    sent_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    viewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
 
 
 class FilterModel(Base):

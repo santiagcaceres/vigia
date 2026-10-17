@@ -27,6 +27,7 @@ class StorageError(RuntimeError):
 
 class Storage:
     def put(self, path: str, data: bytes, content_type: str) -> None: ...
+    def get(self, path: str) -> bytes: ...
     def signed_download_url(self, path: str, expires_in: int = 3600) -> str: ...
     def signed_upload_url(self, path: str) -> str: ...
     def exists(self, path: str) -> bool: ...
@@ -66,6 +67,12 @@ class SupabaseStorage(Storage):
         r = self.http.post(f"{self.base}/object/{self.bucket}/{self._p(path)}", content=data,
                            headers={"Content-Type": content_type, "x-upsert": "true"})
         self._check(r, "subir")
+
+    def get(self, path: str) -> bytes:
+        r = self.http.get(f"{self.base}/object/{self.bucket}/{self._p(path)}")
+        if r.status_code >= 400:
+            raise StorageError(f"Supabase Storage (descargar) respondió {r.status_code}")
+        return r.content
 
     def signed_download_url(self, path: str, expires_in: int = 3600) -> str:
         r = self.http.post(f"{self.base}/object/sign/{self.bucket}/{self._p(path)}", json={"expiresIn": expires_in})
@@ -126,6 +133,9 @@ class LocalStorage(Storage):
         f = self.file(path)
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(data)
+
+    def get(self, path: str) -> bytes:
+        return self.file(path).read_bytes()
 
     def signed_download_url(self, path: str, expires_in: int = 3600) -> str:
         return self._url("get", path, expires_in)

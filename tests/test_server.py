@@ -1,5 +1,6 @@
 import json
 import uuid as uuidlib
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,7 @@ from agent.imports import ImportJobRunner
 from agent.outbox import ServerClient
 from core import synthetic
 from core.scorer import Scorer
-from server.db import Event
+from server.db import ClientReport, Event, utcnow
 from server.main import Settings, create_app
 
 ADMIN = ("admin", "clave-admin-123")
@@ -218,6 +219,87 @@ def test_agente_sin_importaciones_no_recibe_trabajos(app, admin, tmp_path):
     video = synthetic.write_video(synthetic.render("hurto"), tmp_path / "v.mp4")
     upload_import(admin, cam["id"], video)
     assert agent_client(app, ag2["token"]).next_job() is None
+
+
+def event_with_clip(app, admin, ag, cam, tmp_path, name="c.mp4"):
+    uid, r = post_event(app, ag["token"], cam["id"])
+    assert r.status_code == 201, r.text
+    clip = tmp_path / name
+    clip.write_bytes(b"0" * 2048)
+    agent_client(app, ag["token"]).put_clip(uid, clip, "nvr")
+    return next(e for e in admin.get("/api/events").json()["items"] if e["uuid"] == uid)
+
+
+def token_of(link: str) -> str:
+    return link.split("t=", 1)[1]
+
+
+def test_aviso_al_cliente_flujo_completo(app, admin, tmp_path):
+    _, ag, cam = setup_client(admin)
+    ev = event_with_clip(app, admin, ag, cam, tmp_path)
+    # crear el aviso (solo portal, sin canales externos configurados)
+    r = admin.post(f"/api/events/{ev['id']}/report", json={"message": "Mirá esto", "channels": ["portal"]})
+    assert r.status_code == 201, r.text
+    rep = r.json()
+    assert rep["status"] == "enviado" and rep["delivery"]["portal"]["ok"] is True
+    assert "aviso.html?t=" in rep["link"]
+    token = token_of(rep["link"])
+
+    pub = TestClient(app)  # sin login: página pública por token
+    view = pub.get(f"/api/r/{token}")
+    assert view.status_code == 200
+    body = view.json()
+    assert body["message"] == "Mirá esto" and body["has_clip"] is True and body["client_name"] == "Kiosco Centro"
+    # al abrirlo queda marcado como visto
+    assert admin.get("/api/reports").json()["items"][0]["viewed_at"] is not None
+    # el clip público redirige a la URL firmada
+    assert pub.get(f"/api/r/{token}/clip", follow_redirects=False).status_code == 307
+    assert pub.get(f"/api/r/{token}/clip").content == b"0" * 2048
+
+    # revocar: el link deja de servir
+    assert admin.delete(f"/api/reports/{rep['id']}").status_code == 204
+    assert pub.get(f"/api/r/{token}").status_code == 404
+
+
+def test_aviso_requiere_clip_permisos_y_aislamiento(app, admin, tmp_path):
+    cid_a, ag_a, cam_a = setup_client(admin, "Cliente A")
+    cid_b, ag_b, cam_b = setup_client(admin, "Cliente B")
+    # evento sin clip: no se puede avisar
+    uid, _ = post_event(app, ag_a["token"], cam_a["id"])
+    ev_sin = next(e for e in admin.get("/api/events").json()["items"] if e["uuid"] == uid)
+    assert admin.post(f"/api/events/{ev_sin['id']}/report", json={}).status_code == 409
+
+    ev_a = event_with_clip(app, admin, ag_a, cam_a, tmp_path, "a.mp4")
+    ev_b = event_with_clip(app, admin, ag_b, cam_b, tmp_path, "b.mp4")
+    admin.post(f"/api/events/{ev_a['id']}/report", json={})
+    admin.post(f"/api/events/{ev_b['id']}/report", json={})
+
+    # el entrenador puede enviar; el cliente no
+    admin.post("/api/users", json={"username": "lucia", "password": "entrena-123", "role": "entrenador"})
+    t = login(app, "lucia", "entrena-123")
+    assert t.post(f"/api/events/{ev_a['id']}/report", json={}).status_code == 201
+
+    admin.post("/api/users", json={"username": "duenoA", "password": "clave-dueno", "role": "cliente",
+                                   "client_id": cid_a})
+    u = login(app, "duenoA", "clave-dueno")
+    assert u.post(f"/api/events/{ev_a['id']}/report", json={}).status_code == 403
+    # el cliente solo ve sus propios avisos
+    items = u.get("/api/reports").json()["items"]
+    assert items and all(i["client_id"] == cid_a for i in items)
+    assert "delivery" not in items[0]  # no ve por qué canal se envió
+    assert u.get("/api/reports", params={"client_id": cid_b}).status_code == 403
+
+
+def test_link_de_aviso_vence(app, admin, tmp_path):
+    _, ag, cam = setup_client(admin)
+    ev = event_with_clip(app, admin, ag, cam, tmp_path)
+    rep = admin.post(f"/api/events/{ev['id']}/report", json={}).json()
+    token = token_of(rep["link"])
+    with app.state.Session() as s:
+        r = s.query(ClientReport).first()
+        r.expires_at = utcnow() - timedelta(minutes=1)
+        s.commit()
+    assert TestClient(app).get(f"/api/r/{token}").status_code == 410
 
 
 def test_entrenamiento_activacion_y_modelo_en_agente(app, admin):

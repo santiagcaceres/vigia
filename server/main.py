@@ -20,10 +20,10 @@ from core.rules import RULE_TYPES, SEVERITY, parse_config
 from core.scorer import FEATURE_NAMES, LABELS
 
 from . import training
-from .db import (ROLES, Agent, Camera, Client, Event, FilterModel, Incident, SessionToken, User, VideoImport, iso,
-                 make_session_factory, utcnow)
+from .db import (ROLES, Agent, Camera, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
+                 VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
-from .services import Alerts, active_model, parse_occurred_at
+from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
 from .storage import LocalStorage, Storage, StorageError, SupabaseStorage
 
 log = logging.getLogger("vigia.server")
@@ -54,6 +54,16 @@ class Settings:
     clip_post_seconds: float = 6.0
     serve_public: bool = True
     on_vercel: bool = False
+    # Aviso interno al operador (equipo propio) de que hay clips para revisar
+    operator_chat_id: str | None = None
+    operator_webhook: str | None = None
+    # Canales para avisar al cliente (opcionales, se activan si están configurados)
+    twilio_sid: str | None = None
+    twilio_token: str | None = None
+    twilio_whatsapp_from: str | None = None
+    resend_api_key: str | None = None
+    email_from: str | None = None
+    report_link_days: int = 14
     missing: list[str] = field(default_factory=list)
 
     @classmethod
@@ -74,6 +84,14 @@ class Settings:
             clip_pre_seconds=float(os.getenv("CLIP_PRE_SECONDS", "6")),
             clip_post_seconds=float(os.getenv("CLIP_POST_SECONDS", "6")),
             on_vercel=bool(os.getenv("VERCEL")),
+            operator_chat_id=os.getenv("OPERATOR_TELEGRAM_CHAT_ID") or None,
+            operator_webhook=os.getenv("OPERATOR_WEBHOOK_URL") or None,
+            twilio_sid=os.getenv("TWILIO_ACCOUNT_SID") or None,
+            twilio_token=os.getenv("TWILIO_AUTH_TOKEN") or None,
+            twilio_whatsapp_from=os.getenv("TWILIO_WHATSAPP_FROM") or None,
+            resend_api_key=os.getenv("RESEND_API_KEY") or None,
+            email_from=os.getenv("EMAIL_FROM") or None,
+            report_link_days=int(os.getenv("REPORT_LINK_DAYS", "14")),
         )
         if st.on_vercel:
             st.serve_public = False  # Vercel sirve public/ desde su CDN
@@ -97,6 +115,8 @@ class ClientIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     timezone: str = "America/Argentina/Buenos_Aires"
     telegram_chat_id: str | None = None
+    contact_whatsapp: str | None = Field(None, max_length=32)
+    contact_email: str | None = Field(None, max_length=200)
     webhook_url: str | None = None
 
 
@@ -154,6 +174,12 @@ class LabelIn(BaseModel):
     note: str | None = Field(None, max_length=500)
 
 
+class ReportIn(BaseModel):
+    message: str | None = Field(None, max_length=1000)
+    channels: list[str] | None = None
+    expires_days: int | None = Field(None, ge=1, le=90)
+
+
 class ImportIn(BaseModel):
     camera_id: int
     filename: str = Field(min_length=1, max_length=255)
@@ -207,7 +233,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("No se pudo verificar el bucket de Supabase: %s", exc)
     else:
         storage = LocalStorage(st.data_dir / "files", box.secret + ":files")
-    alerts = Alerts(st.telegram_token, st.public_url)
+    operator_alerts = OperatorAlerts(st.telegram_token, st.operator_chat_id, st.operator_webhook, st.public_url)
+    notifier = ClientNotifier(st.telegram_token, st.twilio_sid, st.twilio_token, st.twilio_whatsapp_from,
+                              st.resend_api_key, st.email_from)
     secure_cookie = bool(st.public_url and st.public_url.startswith("https")) or st.on_vercel
 
     with Session() as s:  # usuario administrador inicial
@@ -295,7 +323,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def client_dict(c: Client) -> dict:
         return {"id": c.id, "name": c.name, "timezone": c.timezone, "telegram_chat_id": c.telegram_chat_id,
-                "webhook_url": c.webhook_url, "created_at": iso(c.created_at)}
+                "contact_whatsapp": c.contact_whatsapp, "contact_email": c.contact_email,
+                "webhook_url": c.webhook_url, "notify_channels": notifier.available(c),
+                "created_at": iso(c.created_at)}
 
     def user_dict(u: User) -> dict:
         return {"id": u.id, "username": u.username, "role": u.role, "client_id": u.client_id, "active": u.active}
@@ -335,6 +365,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def delete_event_media(events: list[Event]) -> None:
         storage.remove([p for e in events for p in (e.snapshot_path, e.clip_path) if p])
+
+    def report_link(token: str) -> str:
+        base = (st.public_url or "").rstrip("/")
+        return f"{base}/aviso.html?t={token}"
+
+    def report_dict(r: ClientReport, for_client: bool, ev: Event | None = None,
+                    cam_name: str | None = None, client_name: str | None = None) -> dict:
+        d = {"id": r.id, "event_id": r.event_id, "client_id": r.client_id, "client_name": client_name,
+             "camera_name": cam_name, "message": r.message, "status": r.status,
+             "sent_at": iso(r.sent_at), "viewed_at": iso(r.viewed_at), "expires_at": iso(r.expires_at),
+             "occurred_at": iso(ev.occurred_at) if ev else None,
+             "has_clip": bool(ev and ev.clip_path), "link": report_link(r.public_token)}
+        if not for_client:  # el cliente no ve a qué canales ni con qué resultado se envió
+            d.update(channels=r.channels or [], delivery=r.delivery or {})
+        return d
 
     # ------------------------------------------------------------ archivos locales (solo sin Supabase)
     if isinstance(storage, LocalStorage):
@@ -669,7 +714,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.add(ev)
         s.commit()
         if ev.alert and source == "vivo":
-            alerts.send(s.get(Client, cam.client_id), cam.name, ev, data)
+            operator_alerts.new_clip(s.get(Client, cam.client_id).name, cam.name, ev, data)
         return {"id": ev.id}
 
     @app.post("/api/agent/events/{uuid}/clip-upload")
@@ -830,6 +875,105 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         e = get_or_404(s, Event, eid, "Evento")
         event_visible(user, e)
         return redirect_to(e.clip_path)
+
+    # ------------------------------------------------------------ avisos al cliente
+    def local_dt(dt: datetime, tz: str) -> datetime:
+        try:
+            from zoneinfo import ZoneInfo
+            return dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz))
+        except Exception:
+            return dt
+
+    def default_message(ev: Event, cam_name: str, client: Client) -> str:
+        when = local_dt(ev.occurred_at, client.timezone).strftime("%d/%m/%Y %H:%M")
+        return (f"Detectamos una situación sospechosa (posible hurto) en la cámara «{cam_name}» "
+                f"el {when}. Te compartimos el clip para que lo revises.")
+
+    @app.post("/api/events/{eid}/report", status_code=201)
+    def send_report(eid: int, body: ReportIn, user: User = Depends(staff), s=Depends(db)) -> dict:
+        ev = get_or_404(s, Event, eid, "Evento")
+        if not ev.clip_path:
+            raise HTTPException(409, "El evento todavía no tiene clip para enviar")
+        client = s.get(Client, ev.client_id)
+        cam = s.get(Camera, ev.camera_id)
+        message = (body.message or "").strip() or default_message(ev, cam.name, client)
+        token = secrets.token_urlsafe(24)
+        days = body.expires_days or st.report_link_days
+        rep = ClientReport(event_id=ev.id, client_id=ev.client_id, public_token=token, message=message,
+                           sent_by=user.id, sent_at=utcnow(), expires_at=utcnow() + timedelta(days=days))
+        s.add(rep)
+        s.commit()
+        # la miniatura solo se usa si se va a enviar por Telegram
+        wants = set(body.channels) if body.channels is not None else set(notifier.available(client))
+        snapshot = None
+        if ev.snapshot_path and "telegram" in wants and "telegram" in notifier.available(client):
+            try:
+                snapshot = storage.get(ev.snapshot_path)
+            except Exception:
+                snapshot = None
+        channels, delivery, status = notifier.send(client, cam.name, ev, message, report_link(token),
+                                                    snapshot, body.channels)
+        rep.channels, rep.delivery, rep.status = channels, delivery, status
+        s.commit()
+        return report_dict(rep, for_client=False, ev=ev, cam_name=cam.name, client_name=client.name)
+
+    @app.get("/api/reports")
+    def list_reports(client_id: int | None = None, limit: int = Query(50, ge=1, le=200),
+                     offset: int = Query(0, ge=0), user: User = Depends(current_user), s=Depends(db)) -> dict:
+        client_id = scope_client(user, client_id)
+        conds = []
+        if client_id is not None:
+            conds.append(ClientReport.client_id == client_id)
+        total = s.scalar(select(func.count()).select_from(ClientReport).where(*conds)) or 0
+        rows = s.execute(select(ClientReport, Event, Camera.name, Client.name)
+                         .join(Event, Event.id == ClientReport.event_id)
+                         .join(Camera, Camera.id == Event.camera_id)
+                         .join(Client, Client.id == ClientReport.client_id).where(*conds)
+                         .order_by(ClientReport.sent_at.desc(), ClientReport.id.desc())
+                         .limit(limit).offset(offset)).all()
+        for_client = user.role == "cliente"
+        return {"items": [report_dict(r, for_client, ev, cn, kn) for r, ev, cn, kn in rows],
+                "total": total, "limit": limit, "offset": offset}
+
+    @app.delete("/api/reports/{rid}", status_code=204)
+    def revoke_report(rid: int, _: User = Depends(staff), s=Depends(db)) -> None:
+        r = get_or_404(s, ClientReport, rid, "Aviso")
+        s.delete(r)
+        s.commit()
+
+    # --- vista pública del clip (sin login, por link con token; solo lectura) ---
+    def _report_by_token(s, token: str) -> ClientReport:
+        r = s.query(ClientReport).filter_by(public_token=token).first()
+        if not r:
+            raise HTTPException(404, "El enlace no existe")
+        if r.expires_at < utcnow():
+            raise HTTPException(410, "El enlace venció")
+        return r
+
+    @app.get("/api/r/{token}")
+    def public_report(token: str, s=Depends(db)) -> dict:
+        r = _report_by_token(s, token)
+        if not r.viewed_at:
+            r.viewed_at = utcnow()
+            s.commit()
+        ev = s.get(Event, r.event_id)
+        cam = s.get(Camera, ev.camera_id) if ev else None
+        client = s.get(Client, r.client_id)
+        return {"client_name": client.name if client else "", "camera_name": cam.name if cam else "",
+                "message": r.message, "occurred_at": iso(ev.occurred_at) if ev else None,
+                "has_clip": bool(ev and ev.clip_path), "has_snapshot": bool(ev and ev.snapshot_path)}
+
+    @app.get("/api/r/{token}/clip")
+    def public_report_clip(token: str, s=Depends(db)):
+        r = _report_by_token(s, token)
+        ev = s.get(Event, r.event_id)
+        return redirect_to(ev.clip_path if ev else None)
+
+    @app.get("/api/r/{token}/snapshot")
+    def public_report_snapshot(token: str, s=Depends(db)):
+        r = _report_by_token(s, token)
+        ev = s.get(Event, r.event_id)
+        return redirect_to(ev.snapshot_path if ev else None)
 
     @app.get("/api/stats")
     def stats(client_id: int | None = None, days: int = Query(30, ge=1, le=365),

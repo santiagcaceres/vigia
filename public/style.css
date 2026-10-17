@@ -84,6 +84,7 @@ main { padding: 20px 16px 60px; max-width: 1400px; margin: 0 auto; }
 .chip.label-falso_positivo { background: var(--falso_positivo); border-color: var(--falso_positivo); color: #111; }
 .chip.ok { border-color: var(--ok); color: var(--ok); }
 .chip.bad { border-color: var(--accent); color: var(--accent-2); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }

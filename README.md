@@ -61,7 +61,10 @@ alertas reales de las falsas.
    | `SECRET_KEY` | Texto al azar (ver abajo). **No lo pierdas**: cifra las claves de las cámaras |
    | `ADMIN_PASSWORD` | La clave con la que vas a entrar como `admin` |
    | `CRON_SECRET` | Otro texto al azar (protege la limpieza diaria) |
-   | `TELEGRAM_BOT_TOKEN` | Opcional, para alertas por Telegram |
+   | `TELEGRAM_BOT_TOKEN` | Opcional. Para avisar a tu equipo y/o a los clientes por Telegram |
+   | `OPERATOR_TELEGRAM_CHAT_ID` | Opcional. Chat de **tu equipo** que recibe "hay clip para revisar" |
+   | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_WHATSAPP_FROM` | Opcional. Para avisar a clientes por WhatsApp |
+   | `RESEND_API_KEY` / `EMAIL_FROM` | Opcional. Para avisar a clientes por email |
 
    Para generar un texto al azar: en el navegador, F12 → Consola, pegar
    `crypto.randomUUID() + crypto.randomUUID()` y Enter.
@@ -172,6 +175,31 @@ es lo primero que hay que hacer en el piloto (ver "Cómo medir").
 - **Activar:** solo si el resultado no pierde casos reales que te importen.
 - **Efecto:** con el modelo activo, los eventos poco probables se guardan igual pero no
   generan alerta.
+
+## Avisar al cliente ("nos robaron")
+
+El ciclo pensado es: el clip sospechoso llega a **tu** panel → tu equipo lo revisa y etiqueta
+(eso entrena al agente) → si es un hurto, **una persona** decide avisarle al cliente. Nunca se
+le avisa al cliente de forma automática: así un falso positivo no termina en una acusación.
+
+**Cómo se avisa:** en el detalle de un evento con clip, botón **"Avisar al cliente"**. Se puede
+editar el texto (por defecto dice "posible hurto", no una acusación) y elegir los canales. Se
+genera un **link privado y temporal** (14 días por defecto) a una página donde el dueño ve el
+clip desde el celular, sin instalar nada ni iniciar sesión.
+
+**Canales** (se usan los que el cliente tenga cargados en Administración):
+- **Portal / link:** siempre disponible, gratis. El cliente también ve sus avisos entrando al
+  panel como usuario "cliente" (menú **Incidentes**).
+- **Telegram:** gratis. Requiere `TELEGRAM_BOT_TOKEN` y el chat del cliente.
+- **WhatsApp:** lo mejor para un comercio. Requiere cuenta de WhatsApp Business API (Twilio) y
+  las variables `TWILIO_*`.
+- **Email:** requiere una cuenta de Resend (`RESEND_API_KEY`, `EMAIL_FROM`).
+
+**Avisos a clientes** (menú del equipo): lista todo lo enviado, si el cliente ya lo abrió, y
+permite **revocar** un link.
+
+> El aviso interno "hay un clip para revisar" le llega a **tu equipo**, no al cliente, si cargás
+> `OPERATOR_TELEGRAM_CHAT_ID` (o `OPERATOR_WEBHOOK_URL`).
 
 ## Cómo medir antes de prometer
 

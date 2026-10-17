@@ -6,6 +6,8 @@ const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso
 const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida" };
 const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030" };
 const STATE_NAMES = { en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida" };
+const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
+const REPORT_STATUS = { enviado: ["ok", "Enviado"], parcial: ["warn", "Enviado en parte"], error: ["bad", "No se pudo enviar"] };
 
 const S = { me: null, clients: [], cameras: [], lastList: [], timers: [], keyHandler: null };
 
@@ -75,8 +77,8 @@ async function boot() {
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#user-name").textContent = `${S.me.username} · ${S.me.role}`;
-  const links = [["#/eventos", "Eventos"]];
-  if (isStaff()) links.push(["#/revisar", "Revisar y etiquetar"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
+  const links = S.me.role === "cliente" ? [["#/avisos", "Incidentes"], ["#/eventos", "Eventos"]] : [["#/eventos", "Eventos"]];
+  if (isStaff()) links.push(["#/revisar", "Revisar y etiquetar"], ["#/avisos", "Avisos a clientes"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
   links.push(["#/camaras", "Cámaras"]);
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
@@ -101,6 +103,7 @@ async function route() {
     if ((m = h.match(/^#\/video\/(\d+)/)) && isStaff()) return await importView(v, +m[1]);
     if (h.startsWith("#/videos") && isStaff()) return await importsView(v);
     if (h.startsWith("#/entrenamiento") && isStaff()) return await trainingView(v);
+    if (h.startsWith("#/avisos")) return await reportsView(v);
     if (h.startsWith("#/admin") && isAdmin()) return await adminView(v);
     return await eventsView(v);
   } catch (e) { v.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -200,10 +203,12 @@ async function eventView(v, id) {
           ${e.score != null ? `<dt>Puntaje</dt><dd>${pct(e.score)} ${e.alert ? "" : "(no se envió alerta)"}</dd>` : ""}
         </dl>
         <div style="margin-top:14px">${labelPanel(e)}</div>
+        ${isStaff() ? `<div id="report-area" style="margin-top:16px"></div>` : ""}
         <div style="margin-top:12px">${isStaff() ? featuresHtml(e) : ""}</div>
       </div>
     </div>`;
   if (!isStaff()) return;
+  renderReportArea($("#report-area"), e);
   const setLabel = async (label) => {
     const r = await api("PATCH", "/api/events/" + id, { label, note: $("#note").value || null });
     toast("Guardado: " + LABEL_NAMES[r.label]);
@@ -618,6 +623,101 @@ async function trainingView(v) {
   });
 }
 
+// ------------------------------------------------------------------ avisos al cliente
+function defaultReportMessage(e) {
+  return `Detectamos una situación sospechosa (posible hurto) en la cámara «${e.camera_name}» el ${fmtDate(e.occurred_at)}. Te compartimos el clip para que lo revises.`;
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("Link copiado"); }
+  catch (_) { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast("Link copiado"); }
+}
+
+function deliveryHtml(rep) {
+  const parts = Object.entries(rep.delivery || {}).map(([ch, r]) =>
+    `<span class="chip ${r.ok ? "ok" : "bad"}" title="${esc(r.detail || "")}">${esc(CHANNEL_NAMES[ch] || ch)}</span>`);
+  return `<div class="row" style="flex-wrap:wrap;gap:6px">${parts.join("")}</div>
+    <div class="row" style="margin-top:8px"><a class="btn small" href="${esc(rep.link)}" target="_blank" rel="noopener">Abrir el link</a>
+      <button class="small" data-copy="${esc(rep.link)}">Copiar link</button></div>`;
+}
+
+function renderReportArea(area, e) {
+  if (!area) return;
+  if (!e.clip_url) { area.innerHTML = `<p class="muted">Cuando llegue el clip vas a poder avisarle al cliente desde acá.</p>`; return; }
+  const client = S.clients.find((c) => c.id === e.client_id) || {};
+  const channels = client.notify_channels || ["portal"];
+  area.innerHTML = `<button id="open-report" class="primary">Avisar al cliente</button>
+    <span class="muted" style="margin-left:8px">Le manda el clip al dueño del local.</span>`;
+  $("#open-report", area).addEventListener("click", () => {
+    area.innerHTML = `<div class="panel">
+      <h3>Avisar al cliente · ${esc(client.name || "")}</h3>
+      <p class="muted">Se genera un link al clip que vence en 14 días. Revisá el texto: describí lo que se ve, sin acusar a una persona concreta.</p>
+      <label>Mensaje<textarea id="rep-msg" rows="3">${esc(defaultReportMessage(e))}</textarea></label>
+      <div style="margin:8px 0"><span class="muted">Enviar por:</span><br>
+        ${channels.map((ch) => `<label class="inline" style="margin-right:12px"><input type="checkbox" class="rep-ch" value="${ch}" checked ${ch === "portal" ? "disabled" : ""}> ${esc(CHANNEL_NAMES[ch] || ch)}</label>`).join("")}
+        ${channels.length <= 1 ? `<br><span class="muted">Este cliente solo tiene el link/portal. Agregá Telegram, WhatsApp o email en Administración para enviarle directo.</span>` : ""}
+      </div>
+      <div class="row"><button id="rep-send" class="primary">Enviar aviso</button><button id="rep-cancel">Cancelar</button></div>
+      <div id="rep-result" style="margin-top:12px"></div>
+    </div>`;
+    $("#rep-cancel", area).addEventListener("click", () => renderReportArea(area, e));
+    $("#rep-send", area).addEventListener("click", async () => {
+      const btn = $("#rep-send", area); btn.disabled = true;
+      const chans = $$(".rep-ch", area).filter((x) => x.checked).map((x) => x.value);
+      try {
+        const rep = await api("POST", `/api/events/${e.id}/report`, { message: $("#rep-msg", area).value, channels: chans });
+        const [cls, txt] = REPORT_STATUS[rep.status] || ["", rep.status];
+        $("#rep-result", area).innerHTML = `<div class="row"><span class="chip ${cls}">${esc(txt)}</span></div>
+          <div style="margin-top:8px">${deliveryHtml(rep)}</div>
+          <p class="muted" style="margin-top:8px">Queda registrado en <a href="#/avisos">Avisos a clientes</a>.</p>`;
+        $$("[data-copy]", area).forEach((b) => b.addEventListener("click", () => copyText(b.dataset.copy)));
+      } catch (err) { fail(err); btn.disabled = false; }
+    });
+  });
+}
+
+async function reportsView(v) {
+  const forClient = S.me.role === "cliente";
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  v.innerHTML = `
+    <h1>${forClient ? "Incidentes" : "Avisos a clientes"}</h1>
+    <p class="muted">${forClient
+      ? "Clips que te enviamos cuando detectamos una situación sospechosa en tus cámaras."
+      : "Cada aviso le manda al cliente un link al clip. El texto por defecto dice «posible hurto», no una acusación."}</p>
+    ${forClient ? "" : `<div class="toolbar"><label>Cliente<select id="rp-client">${options(S.clients.map((c) => [c.id, c.name]), q.get("client_id"), "Todos")}</select></label></div>`}
+    <div id="rp-body"></div>`;
+  if (!forClient) $("#rp-client").addEventListener("change", () => {
+    const val = $("#rp-client").value;
+    location.hash = "#/avisos" + (val ? "?client_id=" + val : "");
+  });
+  const p = new URLSearchParams(); if (q.get("client_id")) p.set("client_id", q.get("client_id")); p.set("limit", 100);
+  const data = await api("GET", "/api/reports?" + p.toString());
+  if (!data.items.length) { $("#rp-body").innerHTML = `<div class="empty">${forClient ? "Todavía no recibiste avisos." : "Todavía no enviaste avisos."}</div>`; return; }
+  if (forClient) {
+    $("#rp-body").innerHTML = `<div class="grid">${data.items.map((r) => `<div class="card">
+      <div class="body"><div class="row"><span class="chip bad">Posible hurto</span></div>
+        <p>${esc(r.message)}</p>
+        <div class="muted">${fmtDate(r.occurred_at || r.sent_at)}</div>
+        <div class="row" style="margin-top:8px">${r.has_clip ? `<a class="btn small" href="${esc(r.link)}" target="_blank" rel="noopener">Ver el clip</a>` : `<span class="muted">Clip no disponible</span>`}</div>
+      </div></div>`).join("")}</div>`;
+    return;
+  }
+  $("#rp-body").innerHTML = `<div class="table-wrap panel" style="padding:0"><table>
+    <thead><tr><th>Cliente</th><th>Cámara</th><th>Enviado</th><th>Estado</th><th>Visto</th><th>Vence</th><th></th></tr></thead>
+    <tbody>${data.items.map((r) => { const [cls, txt] = REPORT_STATUS[r.status] || ["", r.status]; return `<tr>
+      <td>${esc(r.client_name)}</td><td>${esc(r.camera_name)}</td><td>${fmtDate(r.sent_at)}</td>
+      <td><span class="chip ${cls}">${esc(txt)}</span></td>
+      <td>${r.viewed_at ? `<span class="chip ok">Sí</span>` : "No"}</td><td>${fmtDate(r.expires_at)}</td>
+      <td class="row"><a class="btn small" href="#/evento/${r.event_id}">Evento</a>
+        <button class="small" data-copy="${esc(r.link)}">Copiar link</button>
+        <button class="small ghost" data-revoke="${r.id}">Revocar</button></td></tr>`; }).join("")}</tbody></table></div>`;
+  $$("[data-copy]", v).forEach((b) => b.addEventListener("click", () => copyText(b.dataset.copy)));
+  $$("[data-revoke]", v).forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("El link deja de funcionar para el cliente. ¿Revocar este aviso?")) return;
+    try { await api("DELETE", "/api/reports/" + b.dataset.revoke); toast("Aviso revocado"); route(); } catch (e) { fail(e); }
+  }));
+}
+
 // ------------------------------------------------------------------ administración
 async function adminView(v) {
   const [users, agents] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/agents")]);
@@ -626,11 +726,14 @@ async function adminView(v) {
   v.innerHTML = `
     <h1>Administración</h1>
     <h2>Clientes</h2>
-    <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Nombre</th><th>Zona horaria</th><th>Telegram</th><th>Webhook</th></tr></thead>
-      <tbody>${S.clients.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td class="mono">${esc(c.webhook_url || "—")}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">Sin clientes.</td></tr>`}</tbody></table></div>
+    <p class="muted">El contacto del cliente se usa solo cuando un empleado decide avisarle de un hurto desde el detalle del evento.</p>
+    <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Nombre</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th></tr></thead>
+      <tbody>${S.clients.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin clientes.</td></tr>`}</tbody></table></div>
     <form class="form panel" id="cf" style="margin-top:10px">
       <label>Nombre<input name="name" required></label>
       <label>Zona horaria<input name="timezone" value="America/Argentina/Buenos_Aires"></label>
+      <label>WhatsApp del cliente (opcional)<input name="contact_whatsapp" placeholder="+59891234567"></label>
+      <label>Email del cliente (opcional)<input name="contact_email" type="email" placeholder="dueno@local.com"></label>
       <label>Chat de Telegram (opcional)<input name="telegram_chat_id" placeholder="-1001234567890"></label>
       <label>Webhook (opcional)<input name="webhook_url" placeholder="https://…"></label>
       <button class="primary" type="submit">Crear cliente</button>
@@ -664,7 +767,7 @@ async function adminView(v) {
   };
   $("#cf").addEventListener("submit", async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-    for (const k of ["telegram_chat_id", "webhook_url"]) if (!f[k]) f[k] = null;
+    for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
     try { await api("POST", "/api/clients", f); toast("Cliente creado"); route(); } catch (err) { fail(err); }
   });
   $("#af").addEventListener("submit", async (e) => {

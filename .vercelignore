@@ -2,6 +2,7 @@ agent/
 tests/
 tools/
 models/
+docs/
 data/
 agent_data/
 *.zip
