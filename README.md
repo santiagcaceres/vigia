@@ -239,6 +239,17 @@ salida sin pago necesita góndola, caja y salida vistas por la misma cámara.
 un indicio para revisar, no una prueba. La precisión todavía **no se midió con video real**:
 es lo primero que hay que hacer en el piloto (ver "Cómo medir").
 
+## Usuarios y roles
+
+| Rol | Qué hace |
+|---|---|
+| **Administrador** | Crea usuarios (otros administradores, empleados, clientes) y agentes; conecta Hik-Partner Pro. |
+| **Empleado** | Revisa y etiqueta los clips; crea clientes y configura sus cámaras (alta, edición, zonas). |
+| **Cliente** | El dueño del comercio: solo ve sus eventos y los avisos que le mandaron. |
+
+Los usuarios se crean en **Administración → Usuarios**. Ahí también se le cambia la clave a alguien
+o se lo desactiva. Cada uno puede cambiar su propia clave con **Mi clave**.
+
 ## Guía para la persona que entrena
 
 **Revisar y etiquetar (todos los días):** mirar el clip y apretar una tecla:
@@ -324,7 +335,7 @@ permite **revocar** un link.
 ```bash
 pip install -r requirements.txt -r requirements-agent.txt pytest
 uvicorn server.main:create_app --factory --port 8000   # sin variables: SQLite y disco local
-python -m pytest                                        # 77 pruebas (24 piden Postgres)
+python -m pytest                                        # 79 pruebas (24 piden Postgres)
 ```
 
 - **Postgres:** con `VIGIA_TEST_PG=postgresql://…` las pruebas del servidor corren también

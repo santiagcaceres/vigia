@@ -68,6 +68,13 @@ WireGuard; cajita GL.iNet ~US$30 si el router no soporta). Evita poner una PC po
 `agent_owns()` / `agent_cameras_q()` deciden qué ve cada agente. Cada cámara recibe el
 `filter_model` de **su** cliente, así un agente corre varios modelos a la vez.
 
+### Roles
+- **admin** (habrá 3: Santiago, el socio y uno más): crean usuarios y agentes, conectan HPP.
+- **entrenador** (en el panel se llama **"Empleado"**; el valor interno sigue siendo `entrenador`):
+  revisan y etiquetan, **crean clientes y configuran cámaras** (alta, edición, zonas). No borran
+  cámaras ni ven usuarios/agentes.
+- **cliente**: el dueño del comercio, solo ve lo suyo.
+
 ### Flujo de aviso al cliente (clave del producto)
 El clip llega al operador → empleados revisan y etiquetan (1 hurto, 2 sospechoso, 3 normal,
 4 falso positivo) → eso entrena el modelo → **una persona** decide avisar al cliente. **Nunca
@@ -101,7 +108,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 77 tests (24 se saltean sin Postgres)
+python -m pytest -q                 # 79 tests (24 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR

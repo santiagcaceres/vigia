@@ -155,7 +155,34 @@ def test_entrenador_etiqueta(app, admin):
     r = t.patch(f"/api/events/{ev['id']}", json={"label": "hurto", "note": "se ve el bolsillo"})
     assert r.status_code == 200 and r.json()["label"] == "hurto"
     assert t.get("/api/events", params={"label": "sin_etiqueta"}).json()["total"] == 0
-    assert t.post("/api/clients", json={"name": "x"}).status_code == 403
+    # el empleado da de alta clientes y configura cámaras, pero no maneja usuarios ni agentes
+    cid = t.post("/api/clients", json={"name": "Kiosco Norte"}).json()["id"]
+    r = t.post("/api/cameras", json={"client_id": cid, "name": "Caja", "host": "100.64.0.9", "channel": 2})
+    assert r.status_code == 201, r.text
+    assert t.put(f"/api/cameras/{r.json()['id']}", json={**r.json(), "client_id": cid, "name": "Caja 1"}).status_code == 200
+    assert t.put(f"/api/clients/{cid}", json={"name": "Kiosco Norte 2"}).status_code == 200
+    assert t.delete(f"/api/cameras/{r.json()['id']}").status_code == 403
+    assert t.get("/api/users").status_code == 403
+    assert t.post("/api/users", json={"username": "otro", "password": "clave-1234", "role": "admin"}).status_code == 403
+    assert t.post("/api/agents", json={"name": "x"}).status_code == 403
+    assert t.post("/api/hpp/setup", json={}).status_code == 403
+
+
+def test_varios_admins_y_gestion_de_empleados(app, admin):
+    for name in ("socio", "tercero"):
+        r = admin.post("/api/users", json={"username": name, "password": "clave-admin-2", "role": "admin"})
+        assert r.status_code == 201
+    socio = login(app, "socio", "clave-admin-2")
+    emp = socio.post("/api/users", json={"username": "ana", "password": "empleada-1", "role": "entrenador"}).json()
+    login(app, "ana", "empleada-1")
+    # resetear la clave y desactivar a un empleado
+    r = socio.put(f"/api/users/{emp['id']}", json={"username": "ana", "password": "nueva-clave-1", "role": "entrenador"})
+    assert r.status_code == 200
+    login(app, "ana", "nueva-clave-1")
+    socio.put(f"/api/users/{emp['id']}", json={"username": "ana", "role": "entrenador", "active": False})
+    assert TestClient(app).post("/api/login", json={"username": "ana", "password": "nueva-clave-1"}).status_code == 401
+    assert socio.put(f"/api/users/{emp['id']}", json={"username": "socio", "role": "entrenador"}).status_code == 409
+    assert len([u for u in socio.get("/api/users").json() if u["role"] == "admin"]) == 3
 
 
 def upload_import(admin, cam_id, video: Path, recorded_at="2026-10-10T15:00"):

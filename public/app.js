@@ -12,6 +12,7 @@ const STATE_NAMES = { en_linea: "En línea", sin_conexion: "Sin conexión", reco
 const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
 const REPORT_STATUS = { enviado: ["ok", "Enviado"], parcial: ["warn", "Enviado en parte"], error: ["bad", "No se pudo enviar"] };
 
+const ROLE_NAMES = { admin: "Administrador", entrenador: "Empleado", cliente: "Cliente" };
 const S = { me: null, clients: [], cameras: [], lastList: [], timers: [], keyHandler: null };
 
 // ------------------------------------------------------------------ utilidades
@@ -73,15 +74,23 @@ $("#login-form").addEventListener("submit", async (e) => {
   } catch (err) { $("#login-error").textContent = err.message; }
 });
 $("#logout").addEventListener("click", async () => { await api("POST", "/api/logout").catch(() => {}); showLogin(); });
+$("#my-password").addEventListener("click", async () => {
+  const current = prompt("Tu clave actual:");
+  if (!current) return;
+  const nueva = prompt("Clave nueva (mínimo 8 caracteres):");
+  if (!nueva) return;
+  try { await api("POST", "/api/me/password", { current, new: nueva }); toast("Clave cambiada"); } catch (e) { fail(e); }
+});
 
 async function boot() {
   try { S.me = await api("GET", "/api/me", undefined, { noRedirect: true }); } catch (_) { return showLogin(); }
   S.clients = await api("GET", "/api/clients");
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
-  $("#user-name").textContent = `${S.me.username} · ${S.me.role}`;
+  $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
   const links = S.me.role === "cliente" ? [["#/avisos", "Incidentes"], ["#/eventos", "Eventos"]] : [["#/eventos", "Eventos"]];
-  if (isStaff()) links.push(["#/revisar", "Revisar y etiquetar"], ["#/alarmas", "Alarmas HPP"], ["#/avisos", "Avisos a clientes"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
+  if (isStaff()) links.push(["#/revisar", "Revisar"], ["#/alarmas", "Alarmas"], ["#/avisos", "Avisos"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
+  if (isStaff()) links.push(["#/clientes", "Clientes"]);
   links.push(["#/camaras", "Cámaras"]);
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
@@ -109,6 +118,7 @@ async function route() {
     if (h.startsWith("#/avisos")) return await reportsView(v);
     if (h.startsWith("#/alarmas") && isStaff()) return await alarmsView(v);
     if (h.startsWith("#/admin") && isAdmin()) return await adminView(v);
+    if (h.startsWith("#/clientes") && isStaff()) return await clientsView(v);
     return await eventsView(v);
   } catch (e) { v.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
@@ -296,7 +306,7 @@ async function camerasView(v) {
   await loadCameras();
   const agents = isStaff() ? await api("GET", "/api/agents") : [];
   v.innerHTML = `
-    <div class="row"><h1>Cámaras</h1><span class="spacer"></span>${isAdmin() ? `<button id="add" class="primary">Agregar cámara</button>` : ""}</div>
+    <div class="row"><h1>Cámaras</h1><span class="spacer"></span>${isStaff() ? `<button id="add" class="primary">Agregar cámara</button>` : ""}</div>
     <div id="cam-form"></div>
     <div class="table-wrap panel" style="margin-top:12px;padding:0"><table>
       <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
@@ -305,9 +315,9 @@ async function camerasView(v) {
         ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${c.mode === "alarmas" ? `<span class="chip">Alarmas HPP</span> ${esc(c.hpp_serial || "")} · canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
         <td>${c.mode === "alarmas" ? `<a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : statusChip(c.status)}</td>
         <td>${(c.zones || []).length}</td>
-        <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isAdmin() ? `<button class="small" data-edit="${c.id}">Editar</button>` : ""}</td>
+        <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isStaff() ? `<button class="small" data-edit="${c.id}">Editar</button>` : ""}</td>
       </tr>`; }).join("") || `<tr><td colspan="7" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
-  if (!isAdmin()) return;
+  if (!isStaff()) return;
   const form = (c = {}) => {
     $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
       <h3>${c.id ? "Editar cámara" : "Nueva cámara"}</h3>
@@ -362,7 +372,7 @@ async function camerasView(v) {
       } catch (e) { fail(e); }
     });
   };
-  $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Administración", true); form(); });
+  $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Clientes", true); form(); });
   const pre = new URLSearchParams(location.hash.split("?")[1] || "");
   if (pre.get("nueva")) form({ mode: "alarmas", hpp_serial: pre.get("serie"), channel: +pre.get("canal") || 1, name: pre.get("nombre") || "" });
   $$("[data-edit]").forEach((b) => b.addEventListener("click", () => form(S.cameras.find((c) => c.id === +b.dataset.edit))));
@@ -402,7 +412,7 @@ async function alarmsView(v) {
         <td>${esc(alarmTypeName(a.event_type))}</td>
         <td><span class="chip ${cls}" title="${esc(a.error || "")}">${esc(txt)}</span>${a.error ? `<div class="muted">${esc(a.error)}</div>` : ""}${a.stats && a.stats.frames ? `<div class="muted">persona en ${a.stats.person_frames} de ${a.stats.frames} cuadros</div>` : ""}</td>
         <td class="row">${a.event_id ? `<a class="btn small" href="#/evento/${a.event_id}">Ver clip</a>` : ""}
-          ${a.status === "sin_camara" && isAdmin() ? `<a class="btn small" href="#/camaras?nueva=1&serie=${encodeURIComponent(a.device_serial)}&canal=${a.channel}">Cargar cámara</a>` : ""}
+          ${a.status === "sin_camara" && isStaff() ? `<a class="btn small" href="#/camaras?nueva=1&serie=${encodeURIComponent(a.device_serial)}&canal=${a.channel}">Cargar cámara</a>` : ""}
           ${["error", "sin_camara", "sin_persona"].includes(a.status) ? `<button class="small" data-retry="${a.id}">Reintentar</button>` : ""}</td>
       </tr>`; }).join("") || `<tr><td colspan="5" class="muted">Todavía no llegaron alarmas${isAdmin() ? ": conectá Hik-Partner Pro abajo" : ""}.</td></tr>`}</tbody></table></div>`;
   ["status", "client", "camera"].forEach((k) => $("#f-" + k).addEventListener("change", () => {
@@ -416,7 +426,7 @@ async function alarmsView(v) {
     try { await api("POST", `/api/alarms/${b.dataset.retry}/retry`); toast("Vuelve a la cola"); route(); } catch (e) { fail(e); }
   }));
   every(30000, () => { if (!$("#hpp-out")?.innerHTML) route(); });
-  if (isAdmin()) await hppPanel($("#hpp"));
+  await hppPanel($("#hpp"));
 }
 
 async function hppPanel(box) {
@@ -425,15 +435,16 @@ async function hppPanel(box) {
     <h3>Conexión con Hik-Partner Pro</h3>
     ${st.configured ? `<p>API key cargada. Las alarmas llegan a <span class="mono">${esc(st.webhook_url || "(falta PUBLIC_URL)")}</span>.
         Última alarma recibida: <b>${fmtDate(st.last_alarm_at)}</b>. Cámaras en modo alarmas: <b>${st.cameras}</b>.</p>
-      <div class="row"><button id="hpp-setup" class="primary">Conectar / actualizar suscripción</button>
+      <div class="row">${isAdmin() ? `<button id="hpp-setup" class="primary">Conectar / actualizar suscripción</button>
         <label class="inline"><input type="checkbox" id="hpp-all"> Todos los equipos de la cuenta (no solo los cargados)</label>
-        <button id="hpp-check">Probar conexión</button><button id="hpp-devices">Ver equipos de HPP</button></div>
+        <button id="hpp-check">Probar conexión</button>` : ""}<button id="hpp-devices">Ver equipos de HPP</button></div>
       <div id="hpp-out" style="margin-top:10px"></div>`
-    : `<p>Falta la API key. En el portal de Hik-Partner Pro: <b>Site &amp; Device → My Service → API Integration</b>; copiá AppKey y SecretKey
+    : !isAdmin() ? `<p class="muted">Todavía no está conectado. Lo configura un administrador.</p>` : `<p>Falta la API key. En el portal de Hik-Partner Pro: <b>Site &amp; Device → My Service → API Integration</b>; copiá AppKey y SecretKey
         a las variables de Vercel <span class="mono">HPP_APP_KEY</span> y <span class="mono">HPP_SECRET_KEY</span> y volvé a desplegar.</p>`}
   </div>`;
   if (!st.configured) return;
   const out = $("#hpp-out");
+  if (isAdmin()) {
   $("#hpp-setup").addEventListener("click", async () => {
     try {
       const r = await api("POST", "/api/hpp/setup", { all_devices: $("#hpp-all").checked });
@@ -446,6 +457,7 @@ async function hppPanel(box) {
       out.innerHTML = r.error ? `<p class="error">${esc(r.error)}</p>` : `<p>Conexión OK. Webhook registrado en HPP: <span class="mono">${esc(JSON.stringify(r.remote || {}))}</span></p>`;
     } catch (e) { fail(e); }
   });
+  }
   $("#hpp-devices").addEventListener("click", async () => {
     out.innerHTML = `<p class="muted">Consultando Hik-Partner Pro…</p>`;
     try {
@@ -766,7 +778,7 @@ function renderReportArea(area, e) {
       <label>Mensaje<textarea id="rep-msg" rows="3">${esc(defaultReportMessage(e))}</textarea></label>
       <div style="margin:8px 0"><span class="muted">Enviar por:</span><br>
         ${channels.map((ch) => `<label class="inline" style="margin-right:12px"><input type="checkbox" class="rep-ch" value="${ch}" checked ${ch === "portal" ? "disabled" : ""}> ${esc(CHANNEL_NAMES[ch] || ch)}</label>`).join("")}
-        ${channels.length <= 1 ? `<br><span class="muted">Este cliente solo tiene el link/portal. Agregá Telegram, WhatsApp o email en Administración para enviarle directo.</span>` : ""}
+        ${channels.length <= 1 ? `<br><span class="muted">Este cliente solo tiene el link/portal. Agregá Telegram, WhatsApp o email en Clientes para enviarle directo.</span>` : ""}
       </div>
       <div class="row"><button id="rep-send" class="primary">Enviar aviso</button><button id="rep-cancel">Cancelar</button></div>
       <div id="rep-result" style="margin-top:12px"></div>
@@ -829,26 +841,55 @@ async function reportsView(v) {
   }));
 }
 
-// ------------------------------------------------------------------ administración
+// ------------------------------------------------------------------ clientes (administradores y empleados)
+async function clientsView(v) {
+  S.clients = await api("GET", "/api/clients");
+  await loadCameras();
+  const nCams = (id) => S.cameras.filter((c) => c.client_id === id).length;
+  v.innerHTML = `
+    <div class="row"><h1>Clientes</h1><span class="spacer"></span><button id="add" class="primary">Nuevo cliente</button></div>
+    <p class="muted">Cada cliente es un comercio. Sus cámaras se cargan en <a href="#/camaras">Cámaras</a>. El contacto se usa solo cuando alguien decide avisarle de un posible hurto.</p>
+    <div id="client-form"></div>
+    <div class="table-wrap panel" style="padding:0;margin-top:12px"><table><thead><tr><th>Nombre</th><th>Cámaras</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th><th></th></tr></thead>
+      <tbody>${S.clients.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${nCams(c.id)}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td>
+        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small" href="#/camaras">Cámaras</a></td></tr>`).join("") || `<tr><td colspan="8" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
+  const form = (c = {}) => {
+    $("#client-form").innerHTML = `<form class="form panel" id="cf" style="margin-top:12px">
+      <label>Nombre<input name="name" required value="${esc(c.name || "")}"></label>
+      <label>Zona horaria<input name="timezone" value="${esc(c.timezone || "America/Montevideo")}"></label>
+      <label>WhatsApp del cliente (opcional)<input name="contact_whatsapp" value="${esc(c.contact_whatsapp || "")}" placeholder="+59891234567"></label>
+      <label>Email del cliente (opcional)<input name="contact_email" type="email" value="${esc(c.contact_email || "")}" placeholder="dueno@local.com"></label>
+      <label>Chat de Telegram (opcional)<input name="telegram_chat_id" value="${esc(c.telegram_chat_id || "")}" placeholder="-1001234567890"></label>
+      <label>Webhook (opcional)<input name="webhook_url" value="${esc(c.webhook_url || "")}" placeholder="https://…"></label>
+      <div class="row"><button class="primary" type="submit">${c.id ? "Guardar" : "Crear cliente"}</button><button type="button" id="cancel">Cancelar</button></div>
+    </form>`;
+    $("#cancel").addEventListener("click", () => ($("#client-form").innerHTML = ""));
+    $("#cf").addEventListener("submit", async (e) => {
+      e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+      for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
+      try { await api(c.id ? "PUT" : "POST", c.id ? "/api/clients/" + c.id : "/api/clients", f); toast(c.id ? "Cliente guardado" : "Cliente creado"); route(); } catch (err) { fail(err); }
+    });
+  };
+  $("#add").addEventListener("click", () => form());
+  $$("[data-edit]", v).forEach((b) => b.addEventListener("click", () => form(S.clients.find((c) => c.id === +b.dataset.edit))));
+}
+
+// ------------------------------------------------------------------ administración (solo administradores)
 async function adminView(v) {
   const [users, agents] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/agents")]);
   S.clients = await api("GET", "/api/clients");
-  const roleNames = { admin: "Administrador", entrenador: "Entrenador", cliente: "Cliente" };
+  const admins = users.filter((u) => u.role === "admin" && u.active).length;
   v.innerHTML = `
     <h1>Administración</h1>
-    <h2>Clientes</h2>
-    <p class="muted">El contacto del cliente se usa solo cuando un empleado decide avisarle de un hurto desde el detalle del evento.</p>
-    <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Nombre</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th></tr></thead>
-      <tbody>${S.clients.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin clientes.</td></tr>`}</tbody></table></div>
-    <form class="form panel" id="cf" style="margin-top:10px">
-      <label>Nombre<input name="name" required></label>
-      <label>Zona horaria<input name="timezone" value="America/Argentina/Buenos_Aires"></label>
-      <label>WhatsApp del cliente (opcional)<input name="contact_whatsapp" placeholder="+59891234567"></label>
-      <label>Email del cliente (opcional)<input name="contact_email" type="email" placeholder="dueno@local.com"></label>
-      <label>Chat de Telegram (opcional)<input name="telegram_chat_id" placeholder="-1001234567890"></label>
-      <label>Webhook (opcional)<input name="webhook_url" placeholder="https://…"></label>
-      <button class="primary" type="submit">Crear cliente</button>
-    </form>
+    <h2>Usuarios</h2>
+    <p class="muted"><b>Administradores</b> (${admins} activos): crean usuarios y agentes y conectan Hik-Partner Pro.
+      <b>Empleados</b>: revisan y etiquetan los clips, crean clientes y configuran sus cámaras.
+      <b>Clientes</b>: el dueño del comercio; solo ve lo suyo.</p>
+    <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Usuario</th><th>Rol</th><th>Cliente</th><th>Activo</th><th></th></tr></thead>
+      <tbody>${users.map((u) => `<tr><td>${esc(u.username)}${u.id === S.me.id ? ` <span class="chip">vos</span>` : ""}</td><td>${ROLE_NAMES[u.role]}</td><td>${u.client_id ? esc(clientName(u.client_id)) : "—"}</td><td>${u.active ? "Sí" : `<span class="chip bad">No</span>`}</td>
+        <td><button class="small" data-user="${u.id}">Editar</button></td></tr>`).join("")}</tbody></table></div>
+    <div id="user-form"></div>
+    <div class="row" style="margin-top:10px"><button id="new-user" class="primary">Nuevo usuario</button></div>
 
     <h2>Agentes</h2>
     <p class="muted">Un agente <b>central</b> corre en tu PC y atiende las cámaras que le asignes, de cualquier cliente (llega a cada DVR por VPN). Un agente <b>de local</b> corre en una PC del cliente y atiende solo sus cámaras.</p>
@@ -860,38 +901,34 @@ async function adminView(v) {
       <label>Nombre<input name="name" required placeholder="PC central"></label>
       <button class="primary" type="submit">Crear agente</button>
     </form>
-    <div id="token"></div>
-
-    <h2>Usuarios</h2>
-    <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Usuario</th><th>Rol</th><th>Cliente</th><th>Activo</th></tr></thead>
-      <tbody>${users.map((u) => `<tr><td>${esc(u.username)}</td><td>${roleNames[u.role]}</td><td>${u.client_id ? esc(clientName(u.client_id)) : "—"}</td><td>${u.active ? "Sí" : "No"}</td></tr>`).join("")}</tbody></table></div>
-    <form class="form panel" id="uf" style="margin-top:10px">
-      <label>Usuario<input name="username" required minlength="3"></label>
-      <label>Clave (mín. 8)<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
-      <label>Rol<select name="role">${options(Object.entries(roleNames), "entrenador")}</select></label>
-      <label>Cliente (solo rol cliente)<select name="client_id">${options(S.clients.map((c) => [c.id, c.name]), "", "—")}</select></label>
-      <button class="primary" type="submit">Crear usuario</button>
+    <div id="token"></div>`;
+  const userForm = (u = {}) => {
+    $("#user-form").innerHTML = `<form class="form panel" id="uf" style="margin-top:10px">
+      <label>Usuario<input name="username" required minlength="3" value="${esc(u.username || "")}"></label>
+      <label>${u.id ? "Nueva clave (vacío = sin cambios)" : "Clave (mín. 8)"}<input name="password" type="password" ${u.id ? "" : "required"} minlength="8" autocomplete="new-password"></label>
+      <label>Rol<select name="role">${options(Object.entries(ROLE_NAMES), u.role || "entrenador")}</select></label>
+      <label>Cliente (solo rol cliente)<select name="client_id">${options(S.clients.map((c) => [c.id, c.name]), u.client_id, "—")}</select></label>
+      ${u.id ? `<label class="inline"><input type="checkbox" name="active" ${u.active ? "checked" : ""}> Activo</label>` : ""}
+      <div class="row"><button class="primary" type="submit">${u.id ? "Guardar" : "Crear usuario"}</button><button type="button" id="ucancel">Cancelar</button></div>
     </form>`;
+    $("#ucancel").addEventListener("click", () => ($("#user-form").innerHTML = ""));
+    $("#uf").addEventListener("submit", async (e) => {
+      e.preventDefault(); const f = new FormData(e.target);
+      const body = { username: f.get("username"), password: f.get("password") || null, role: f.get("role"),
+        client_id: f.get("client_id") ? +f.get("client_id") : null, active: u.id ? !!f.get("active") : true };
+      try { await api(u.id ? "PUT" : "POST", u.id ? "/api/users/" + u.id : "/api/users", body); toast(u.id ? "Usuario guardado" : "Usuario creado"); route(); } catch (err) { fail(err); }
+    });
+  };
+  $("#new-user").addEventListener("click", () => userForm());
+  $$("[data-user]", v).forEach((b) => b.addEventListener("click", () => userForm(users.find((u) => u.id === +b.dataset.user))));
   const showToken = (a) => {
     $("#token").innerHTML = `<div class="panel" style="margin-top:10px"><b>Token del agente "${esc(a.name)}"</b> — copialo ahora, no se vuelve a mostrar.
       <div class="token-box mono" style="margin:8px 0">${esc(a.token)}</div>
-      <p class="muted">En la PC del local:</p><div class="token-box mono">python -m agent --server ${esc(location.origin)} --token ${esc(a.token)}</div></div>`;
+      <p class="muted">En la PC del agente:</p><div class="token-box mono">python -m agent --server ${esc(location.origin)} --token ${esc(a.token)}</div></div>`;
   };
-  $("#cf").addEventListener("submit", async (e) => {
-    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-    for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
-    try { await api("POST", "/api/clients", f); toast("Cliente creado"); route(); } catch (err) { fail(err); }
-  });
   $("#af").addEventListener("submit", async (e) => {
     e.preventDefault(); const f = new FormData(e.target);
     try { const a = await api("POST", "/api/agents", { client_id: f.get("client_id") ? +f.get("client_id") : null, name: f.get("name") }); e.target.reset(); showToken(a); } catch (err) { fail(err); }
-  });
-  $("#uf").addEventListener("submit", async (e) => {
-    e.preventDefault(); const f = new FormData(e.target);
-    try {
-      await api("POST", "/api/users", { username: f.get("username"), password: f.get("password"), role: f.get("role"), client_id: f.get("client_id") ? +f.get("client_id") : null });
-      toast("Usuario creado"); route();
-    } catch (err) { fail(err); }
   });
   $$("[data-rotate]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("El token anterior deja de funcionar. ¿Generar uno nuevo?")) return;

@@ -323,6 +323,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return user
         return dep
 
+    # admin: usuarios, agentes y conexión con HPP. entrenador (= "empleado" en el panel): revisa y etiqueta,
+    # crea clientes y configura cámaras. cliente: solo ve lo suyo.
     admin_only = require("admin")
     staff = require("admin", "entrenador")
 
@@ -504,7 +506,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [client_dict(c) for c in q.all()]
 
     @app.post("/api/clients", status_code=201)
-    def create_client(body: ClientIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+    def create_client(body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
         if s.query(Client).filter_by(name=body.name).first():
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         c = Client(**body.model_dump())
@@ -513,7 +515,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return client_dict(c)
 
     @app.put("/api/clients/{cid}")
-    def update_client(cid: int, body: ClientIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+    def update_client(cid: int, body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Client, cid, "Cliente")
         for k, v in body.model_dump().items():
             setattr(c, k, v)
@@ -543,6 +545,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         u = get_or_404(s, User, uid, "Usuario")
         if u.id == me_.id and (body.role != "admin" or not body.active):
             raise HTTPException(422, "No podés quitarte el rol de administrador ni desactivarte")
+        if body.role == "cliente" and not body.client_id:
+            raise HTTPException(422, "Un usuario de cliente necesita client_id")
+        other = s.query(User).filter(User.username == body.username, User.id != uid).first()
+        if other:
+            raise HTTPException(409, "Ese usuario ya existe")
         u.username, u.role, u.active = body.username, body.role, body.active
         u.client_id = body.client_id if body.role == "cliente" else None
         if body.password:
@@ -623,7 +630,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "Elegí al menos un tipo de alarma")
 
     @app.post("/api/cameras", status_code=201)
-    def create_camera(body: CameraIn, user: User = Depends(admin_only), s=Depends(db)) -> dict:
+    def create_camera(body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         check_camera_body(s, body)
         c = Camera(**body.model_dump(exclude={"password", "source_url"}), password_enc=box.encrypt(body.password),
                    source_url_enc=box.encrypt(body.source_url))
@@ -632,7 +639,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return camera_dict(c, user)
 
     @app.put("/api/cameras/{cam_id}")
-    def update_camera(cam_id: int, body: CameraIn, user: User = Depends(admin_only), s=Depends(db)) -> dict:
+    def update_camera(cam_id: int, body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         check_camera_body(s, body)
         for k, v in body.model_dump(exclude={"password", "source_url"}).items():
@@ -997,7 +1004,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, **result}
 
     @app.get("/api/hpp/status")
-    def hpp_status(check: bool = False, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+    def hpp_status(check: bool = False, _: User = Depends(staff), s=Depends(db)) -> dict:
         last = s.query(Alarm).order_by(Alarm.id.desc()).first()
         d = {"configured": bool(st.hpp_app_key and st.hpp_secret_key), "webhook_url":
              (st.public_url.rstrip("/") + "/api/hpp/webhook") if st.public_url else None,
@@ -1023,7 +1030,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "webhook_url": webhook_url(), "serials": None if body.all_devices else serials}
 
     @app.get("/api/hpp/devices")
-    def hpp_devices(_: User = Depends(admin_only), s=Depends(db)) -> list[dict]:
+    def hpp_devices(_: User = Depends(staff), s=Depends(db)) -> list[dict]:
         """Equipos y canales de la cuenta HPP, para dar de alta las cámaras sin tipear series."""
         hc = hpp_client()
         known = {(c.hpp_serial, c.channel): c.id for c in s.query(Camera).filter(Camera.hpp_serial.isnot(None))}
