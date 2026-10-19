@@ -13,14 +13,22 @@ código, comentarios, interfaz y trato con el usuario.
 | Repo | github.com/santiagcaceres/vigia (privado) |
 | Dueño | Santiago Cáceres, Uruguay (America/Montevideo) |
 
+**Publicado:** commit `be1cf3d` (17 oct 2026), rama `main` = producción. El proyecto Vercel
+**no** tiene auto-deploy: después de `git push` hay que lanzar el deploy a mano (MCP de Vercel
+con `gitSource` = rama + sha, o desde el panel de Vercel) y verificar `/api/health`.
+
 **Secretos:** viven en las variables de entorno de Vercel (`DATABASE_URL`, `SUPABASE_URL`,
 `SUPABASE_SECRET_KEY`, `SECRET_KEY`, `ADMIN_PASSWORD`, `CRON_SECRET`, `PUBLIC_URL`).
 Nunca los pongas en el repo. El usuario tiene la clave de `admin` y los tokens de agente.
 `SECRET_KEY` cifra las claves de las cámaras: si se pierde, hay que recargarlas.
+**Todavía no cargadas:** `HPP_APP_KEY`, `HPP_SECRET_KEY`, `HPP_WEBHOOK_SECRET` (opcional); sin
+ellas la parte de Hik-Partner Pro queda apagada y el resto funciona igual.
 
 **Ya creado en la base:** cliente `Casa (prueba)` (id 1); agente `PC de casa` (id 1, de local);
 agente `PC central` (id 2, `client_id` NULL); cámara `Demo noticiero (video)` (id 1, deshabilitada,
-asignada al agente central, con zonas y reglas para probar con videos subidos).
+asignada al agente central, con zonas y reglas para probar con videos subidos). Usuarios: solo
+`admin` (faltan crear los otros 2 administradores y los empleados; lo hace un admin desde el panel).
+Tablas `alarms` y columnas `cameras.mode/hpp_serial/alarm_cfg` ya existen (se crearon solas).
 En CAMARAS quedaron tablas de una app anterior (`profiles`, `videos`, `video_batches`,
 `video_detections`, y `clients_v0_old` renombrada); son inertes, no las usa Vigía.
 
@@ -42,7 +50,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
 - **core/**: detector YOLO (ONNX, CPU), tracker, zonas/reglas, scorer, clips. El servidor solo
   importa `core.rules`, `core.scorer` (y sus deps `geometry`, `tracker`): **no** mete OpenCV ni
   onnxruntime en el build de Vercel. No romper eso.
-- **public/**: panel (SPA sin framework) + `aviso.html`, la página pública del clip.
+- **public/**: panel (SPA sin framework) + `aviso.html`, la página pública del clip. Pantallas:
+  Eventos, Revisar, Alarmas (HPP), Avisos, Videos, Entrenamiento, Clientes, Cámaras,
+  Administración (solo admin), botón "Mi clave".
+
+Archivos clave del modo alarmas: `server/hpp.py` (firma del webhook, parseo de alarmas, cliente
+de la OpenAPI), `core/clip_analysis.py` (un clip → un resultado), `agent/alarms.py` (cola en la
+PC central, `--alarm-workers N`), `tests/test_alarms.py` (flujo completo).
 
 ### Modo alarmas de Hik-Partner Pro (el camino elegido, oct 2026)
 Reemplaza a los empleados del socio que hoy miran los clips en el portal de HPP. Flujo:
@@ -60,6 +74,12 @@ Cámara con `mode="alarmas"`, `hpp_serial` (serie del DVR en HPP), `channel` y `
   Integration). Variables `HPP_APP_KEY`, `HPP_SECRET_KEY`, `HPP_WEBHOOK_SECRET` (opcional).
 - El formato exacto del cuerpo del webhook no está documentado: se parsea tolerante y se guarda
   `raw`. **Verificar con la primera alarma real** (logs de Vercel + `alarms.raw`).
+- Tipos de evento: los 4 de reglas + `alarma_dvr` (alarma con persona pero sin regla disparada,
+  severidad baja). `core.scorer.VECTOR_NAMES` cambió: un modelo viejo se ignora y hay que
+  reentrenar (hoy no hay ninguno entrenado, así que no afecta).
+- En clips cortos la regla "merodeo" (45 s en góndola) casi nunca llega a dispararse; igual se
+  miden los tiempos en góndola/caja y los usa el modelo.
+- Alarmas sin evento (sin persona, sin cámara, error) se borran a los 14 días en el cron diario.
 
 ### Modo central
 `Agent.client_id` NULL = agente **central**: corre en la PC de la empresa y atiende las cámaras
@@ -121,6 +141,28 @@ python -m agent.hikvision --host IP --user vigia --password ****             # p
   se agregan solas al arrancar (`add_missing_columns` en `server/db.py`); renombrar o cambiar el
   tipo de una columna sí requiere migración manual.
 - Ojo: `requirements.txt` es del servidor; `requirements-agent.txt` del agente (OpenCV, onnxruntime).
+- En la sesión cloud de Claude Code: `pip install -r requirements.txt -r requirements-agent.txt
+  pytest scikit-learn`; Postgres local con `initdb` como usuario `postgres` en `/var/tmp/vigia-pg`
+  (puerto 54329); capturas del panel con Playwright usando
+  `executable_path="/opt/pw-browsers/chromium"` contra `uvicorn ... --port 8011` con SQLite.
+
+## Pendiente del socio (pedido por WhatsApp el 17 oct)
+
+1. AppKey/SecretKey de la OpenAPI de HPP (por privado, no por grupo).
+2. Local para el piloto: nombre, serie del DVR, canales que miran góndola/caja/puerta, tipo de
+   internet y router (para decidir VPN en router o cajita GL.iNet).
+3. Usuario `vigia` en ese DVR con vista en vivo + reproducción (creado a distancia desde HPP).
+4. Cómo están configuradas las alarmas del DVR (movimiento / intrusión / cruce de línea, en qué
+   cámaras).
+5. Clips de hurtos reales (ideal ≥ 30) y de falsas alarmas, con fecha, local y cámara.
+6. Cómo trabajan hoy los empleados: alarmas por día por local, % falsas, a quién avisan y cómo.
+7. Consulta a Hikvision por la clave VSaaS / HPNetSDK (requisitos, costo, Uruguay).
+8. Si el contrato con los clientes permite usar sus videos para entrenar.
+
+**Lunes 20 oct:** Santiago tendrá acceso al video en vivo de un DVR. Plan: desde la PC central
+`python -m agent.hikvision --host IP --user vigia --password ****` (lista canales y prueba el
+stream); cargar la cámara con agente = central (modo "En vivo 24 h" o "Alarmas de HPP"); dibujar
+zonas. Lo primero a verificar: hora de la grabación del DVR (opción `playback_time`).
 
 ## Próximos pasos
 
