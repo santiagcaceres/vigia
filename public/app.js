@@ -8,6 +8,7 @@ const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal"
 const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo" };
 const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida" };
 const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030" };
+const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
 const STATE_NAMES = { en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida" };
 const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
 const REPORT_STATUS = { enviado: ["ok", "Enviado"], parcial: ["warn", "Enviado en parte"], error: ["bad", "No se pudo enviar"] };
@@ -312,7 +313,7 @@ async function camerasView(v) {
       <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
       <tbody>${S.cameras.map((c) => { const ag = agents.find((a) => a.id === c.agent_id); return `<tr>
         <td><b>${esc(c.name)}</b>${c.enabled ? "" : ` <span class="chip">deshabilitada</span>`}</td>
-        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${c.mode === "alarmas" ? `<span class="chip">Alarmas HPP</span> ${esc(c.hpp_serial || "")} · canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
+        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${esc(BRAND_NAMES[c.brand] || c.brand || "")} · ${c.mode === "alarmas" ? `<span class="chip">Alarmas HPP</span> ${esc(c.hpp_serial || "")} · canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
         <td>${c.mode === "alarmas" ? `<a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : statusChip(c.status)}</td>
         <td>${(c.zones || []).length}</td>
         <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isStaff() ? `<button class="small" data-edit="${c.id}">Editar</button>` : ""}</td>
@@ -321,17 +322,18 @@ async function camerasView(v) {
   const form = (c = {}) => {
     $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
       <h3>${c.id ? "Editar cámara" : "Nueva cámara"}</h3>
-      <p class="muted">Datos del DVR/NVR o cámara Hikvision (los mismos que usa iVMS-4200). Si la cámara está en un DVR, la IP es la del DVR (la de la VPN) y el canal es el número de cámara en el DVR.</p>
+      <p class="muted">Datos del grabador (DVR/NVR) o cámara: los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). Si la cámara está en un grabador, la IP es la del grabador (la de la VPN) y el canal es el número de cámara en él.</p>
       <form class="form" id="cf">
         <label>Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id)}</select></label>
         <label>Agente<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? `${a.name} (Central)` : `${a.name} (${clientName(a.client_id)})`]), c.agent_id, "Cualquiera del cliente")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
+        <label>Marca<select name="brand">${options(Object.entries(BRAND_NAMES), c.brand || "hikvision")}</select><small id="brand-note" class="muted"></small></label>
         <label>Modo<select name="mode">${options([["alarmas", "Alarmas de Hik-Partner Pro (recomendado)"], ["vivo", "En vivo 24 h"]], c.mode || "alarmas")}</select></label>
         <label class="alarm-only">N.º de serie del DVR en Hik-Partner Pro<input name="hpp_serial" value="${esc(c.hpp_serial || "")}" placeholder="E44034229"></label>
         <fieldset class="alarm-only"><legend>Alarmas del DVR que se analizan</legend>${Object.entries(ALARM_TYPES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="alarm_type" value="${k}" ${((c.alarm_cfg || {}).event_types || ["VMD", "fielddetection", "linedetection"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</fieldset>
         <label class="alarm-only">Segundos de video antes de la alarma<input name="pre_seconds" type="number" min="0" max="60" value="${(c.alarm_cfg || {}).pre_seconds ?? 10}"></label>
         <label class="alarm-only">Segundos de video después<input name="post_seconds" type="number" min="3" max="90" value="${(c.alarm_cfg || {}).post_seconds ?? 20}"></label>
-        <label>IP del NVR o cámara<input name="host" value="${esc(c.host || "")}" placeholder="192.168.1.64"></label>
+        <label>IP del grabador o cámara<input name="host" value="${esc(c.host || "")}" placeholder="192.168.1.64"></label>
         <label>Canal<input name="channel" type="number" min="1" value="${c.channel || 1}"></label>
         <label>Usuario<input name="username" value="${esc(c.username || "admin")}"></label>
         <label>Clave<input name="password" type="password" placeholder="${c.has_password ? "(sin cambios)" : ""}" autocomplete="new-password"></label>
@@ -340,26 +342,33 @@ async function camerasView(v) {
         <label class="live-only">Stream para analizar<select name="detect_stream">${options([["sub", "Secundario (recomendado)"], ["main", "Principal"]], c.detect_stream || "sub")}</select></label>
         <label>Detector<select name="detector">${options([["yolo", "Personas (YOLO)"], ["motion", "Movimiento (solo pruebas)"]], c.detector || "yolo")}</select></label>
         <label>Cuadros por segundo a analizar<input name="process_fps" type="number" step="0.5" min="1" max="15" value="${c.process_fps || 5}"></label>
-        <label>Hora de grabación del NVR<select name="playback_time">${options([["local", "Hora local (habitual)"], ["utc", "UTC"]], c.playback_time || "local")}</select></label>
+        <label>Hora de grabación del equipo<select name="playback_time">${options([["local", "Hora local (habitual)"], ["utc", "UTC"]], c.playback_time || "local")}</select></label>
         <label class="live-only">URL RTSP manual (opcional)<input name="source_url" placeholder="Solo para otras marcas"></label>
-        <label class="inline live-only"><input type="checkbox" name="nvr_clips" ${c.nvr_clips !== false ? "checked" : ""}> Bajar clip de la grabación del NVR</label>
+        <label class="inline live-only"><input type="checkbox" name="nvr_clips" ${c.nvr_clips !== false ? "checked" : ""}> Bajar clip de la grabación del equipo</label>
         <label class="inline"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> Habilitada</label>
         <div class="row"><button class="primary" type="submit">Guardar</button><button type="button" id="cancel">Cancelar</button></div>
       </form></div>`;
     $("#cancel").addEventListener("click", () => ($("#cam-form").innerHTML = ""));
     const syncMode = () => {
-      const alarms = $("#cf [name=mode]").value === "alarmas";
+      // el modo "alarmas" usa Hik-Partner Pro: solo existe para Hikvision
+      const esHik = $("#cf [name=brand]").value === "hikvision";
+      const modo = $("#cf [name=mode]");
+      modo.querySelector('option[value=alarmas]').disabled = !esHik;
+      if (!esHik && modo.value === "alarmas") modo.value = "vivo";
+      const alarms = esHik && modo.value === "alarmas";
       $$("#cf .alarm-only").forEach((el) => el.classList.toggle("hidden", !alarms));
       $$("#cf .live-only").forEach((el) => el.classList.toggle("hidden", alarms));
+      $("#brand-note").textContent = esHik ? "" : "Dahua se analiza en vivo: el modo por alarmas es de Hik-Partner Pro (Hikvision).";
     };
     $("#cf [name=mode]").addEventListener("change", syncMode);
+    $("#cf [name=brand]").addEventListener("change", syncMode);
     syncMode();
     $("#cf").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);
       const body = {
         client_id: +f.get("client_id"), agent_id: f.get("agent_id") ? +f.get("agent_id") : null, name: f.get("name"),
-        host: f.get("host"), channel: +f.get("channel"), username: f.get("username"), password: f.get("password") || null,
+        brand: f.get("brand"), host: f.get("host"), channel: +f.get("channel"), username: f.get("username"), password: f.get("password") || null,
         rtsp_port: +f.get("rtsp_port"), http_port: +f.get("http_port"), detect_stream: f.get("detect_stream"),
         detector: f.get("detector"), process_fps: +f.get("process_fps"), playback_time: f.get("playback_time"),
         source_url: f.get("source_url") || null, nvr_clips: !!f.get("nvr_clips"), enabled: !!f.get("enabled"),

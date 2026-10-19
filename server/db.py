@@ -77,6 +77,7 @@ class Camera(Base):
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
     agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     name: Mapped[str] = mapped_column(String(120))
+    brand: Mapped[str] = mapped_column(String(20), default="hikvision")  # hikvision | dahua
     host: Mapped[str] = mapped_column(String(255), default="")
     username: Mapped[str] = mapped_column(String(120), default="admin")
     password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)

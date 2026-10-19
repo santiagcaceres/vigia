@@ -15,7 +15,7 @@ from core.clips import write_mp4
 from core.detectors import Detector
 from core.scorer import Scorer
 
-from .hikvision import HikCamera, download_nvr_clip
+from .cameras import build_camera, download_nvr_clip
 from .outbox import Outbox, ServerClient
 
 log = logging.getLogger("vigia.worker")
@@ -36,7 +36,7 @@ class CameraWorker:
         self.name: str = (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
                           else cam_cfg["name"])
         self.fingerprint = self.fingerprint_of(cam_cfg)
-        self.hik = HikCamera.from_config(cam_cfg["connection"])
+        self.hik = build_camera(cam_cfg["connection"])
         self.process_fps = float(cam_cfg.get("process_fps", 5))
         self.clip_pre = float(settings.get("clip_pre_seconds", 6))
         self.clip_post = float(settings.get("clip_post_seconds", 6))
