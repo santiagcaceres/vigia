@@ -211,3 +211,12 @@ class ServerClient:
 
     def alarm_fail(self, aid: int, error: str, retry: bool = True) -> None:
         self.http.post(f"/api/agent/alarms/{aid}/fail", json={"error": error[:500], "retry": retry})
+
+    # ---- alarmas que avisa el propio grabador ----
+    def post_device_alarm(self, camera_id: int, event_type: str, occurred_at: str, target: str | None = None,
+                          raw: dict | None = None) -> dict:
+        r = self.http.post("/api/agent/alarms", json={"camera_id": camera_id, "event_type": event_type,
+                                                      "occurred_at": occurred_at, "target": target, "raw": raw or {}})
+        if self._rejected(r, f"la alarma de la cámara {camera_id}"):
+            return {}
+        return r.json()

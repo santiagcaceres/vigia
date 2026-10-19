@@ -5,8 +5,9 @@
 Descarga del servidor la lista de cámaras de su cliente, las analiza en tiempo real y sube
 los eventos con foto y clip. Si se corta internet sigue analizando y guarda todo en disco.
 
-Las cámaras en modo "alarmas" no se miran en vivo: solo se analiza el tramo de video de cada
-alarma que el DVR manda a Hik-Partner Pro (ver agent/alarms.py).
+Las cámaras en modo "alarmas" (Hik-Partner Pro) o "alarmas_equipo" (el grabador avisa solo)
+no se miran en vivo: solo se analiza el tramo de video de cada alarma (ver agent/alarms.py y
+agent/device_alarms.py).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from core.detectors import Detector, build_detector
 from core.scorer import Scorer
 
 from .alarms import AlarmRunner
+from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
 from .outbox import Outbox, ServerClient
 from .worker import CameraWorker
@@ -49,6 +51,7 @@ class Agent:
         self.model_path = model_path
         self.clip_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="clips")
         self.workers: dict[int, CameraWorker] = {}
+        self.listeners: dict[int, DeviceAlarmListener] = {}
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
@@ -70,10 +73,23 @@ class Agent:
             log.info("Modelo de filtro: %s", self._scorer_id or "ninguno (se alertan todos los eventos)")
 
         cams = [c for c in cfg.get("cameras", []) if c.get("enabled", True)]
-        if self.alarms is None and any(c.get("mode") == "alarmas" for c in cams):
+        if self.alarms is None and any(c.get("mode") in ("alarmas", "alarmas_equipo") for c in cams):
             self.alarms = AlarmRunner(self.client, self.model_path, self.data_dir / "alarmas", self.alarm_workers)
             self.alarms.start()
-            log.info("Alarmas de Hik-Partner Pro: activado (%d en paralelo)", self.alarm_workers)
+            log.info("Análisis de alarmas: activado (%d en paralelo)", self.alarm_workers)
+        # cámaras cuyo grabador avisa las alarmas: un hilo escuchando por cámara
+        listen = {c["id"]: c for c in cams if c.get("mode") == "alarmas_equipo"}
+        for cid in list(self.listeners):
+            lst = self.listeners[cid]
+            if cid not in listen or lst.fingerprint != DeviceAlarmListener.fingerprint_of(listen[cid]):
+                log.info("Dejando de escuchar alarmas de %s", lst.name)
+                lst.stop()
+                del self.listeners[cid]
+        for cid, c in listen.items():
+            if cid not in self.listeners:
+                lst = DeviceAlarmListener(c, self.client)
+                self.listeners[cid] = lst
+                lst.start()
         wanted = {c["id"]: c for c in cams if c.get("mode", "vivo") == "vivo"}
         for cid in list(self.workers):
             w = self.workers[cid]
@@ -118,7 +134,8 @@ class Agent:
             if now - last_status >= STATUS_EVERY_SECONDS:
                 last_status = now
                 try:
-                    self.client.status({"cameras": [w.status() for w in self.workers.values()],
+                    self.client.status({"cameras": [w.status() for w in self.workers.values()]
+                                        + [l.status() for l in self.listeners.values()],
                                         "outbox_pending": self.outbox.pending(), "version": VERSION,
                                         **(self.alarms.status() if self.alarms else {})})
                 except httpx.HTTPError:
@@ -134,6 +151,8 @@ class Agent:
             self.imports.stop()
         if self.alarms:
             self.alarms.stop()
+        for lst in self.listeners.values():
+            lst.stop()
         for w in self.workers.values():
             w.stop()
         for w in self.workers.values():
@@ -152,7 +171,7 @@ def main() -> None:
     p.add_argument("--insecure", action="store_true", help="No verificar HTTPS (solo pruebas)")
     p.add_argument("--no-imports", action="store_true", help="No analizar videos importados en esta PC")
     p.add_argument("--alarm-workers", type=int, default=int(os.getenv("VIGIA_ALARM_WORKERS", "2")),
-                   help="Alarmas de HPP que se bajan y analizan en paralelo")
+                   help="Alarmas que se bajan y analizan en paralelo")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,

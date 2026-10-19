@@ -13,7 +13,7 @@ código, comentarios, interfaz y trato con el usuario.
 | Repo | github.com/santiagcaceres/vigia (privado) |
 | Dueño | Santiago Cáceres, Uruguay (America/Montevideo) |
 
-**Publicado:** commit `be1cf3d` (17 oct 2026), rama `main` = producción. El proyecto Vercel
+**Publicado:** ver `git log origin/main` (el último deploy de producción apunta a `main`). El proyecto Vercel
 **no** tiene auto-deploy: después de `git push` hay que lanzar el deploy a mano (MCP de Vercel
 con `gitSource` = rama + sha, o desde el panel de Vercel) y verificar `/api/health`.
 
@@ -28,7 +28,8 @@ ellas la parte de Hik-Partner Pro queda apagada y el resto funciona igual.
 agente `PC central` (id 2, `client_id` NULL); cámara `Demo noticiero (video)` (id 1, deshabilitada,
 asignada al agente central, con zonas y reglas para probar con videos subidos). Usuarios: solo
 `admin` (faltan crear los otros 2 administradores y los empleados; lo hace un admin desde el panel).
-Tablas `alarms` y columnas `cameras.mode/hpp_serial/alarm_cfg` ya existen (se crearon solas).
+Tablas `alarms` y columnas `cameras.mode/hpp_serial/alarm_cfg/brand`, `alarms.source` ya existen.
+`cameras.mode` se amplió a varchar(20) con migración manual (19 oct).
 En CAMARAS quedaron tablas de una app anterior (`profiles`, `videos`, `video_batches`,
 `video_detections`, y `clients_v0_old` renombrada); son inertes, no las usa Vigía.
 
@@ -87,24 +88,30 @@ Cámara con `mode="alarmas"`, `hpp_serial` (serie del DVR en HPP), `channel` y `
   miden los tiempos en góndola/caja y los usa el modelo.
 - Alarmas sin evento (sin persona, sin cámara, error) se borran a los 14 días en el cron diario.
 
-### Alarmas desde el equipo (LO MÁS SIMPLE Y BARATO: hacer esto primero)
+### Alarmas desde el equipo (`mode="alarmas_equipo"`, IMPLEMENTADO 19 oct, el modo por defecto)
 Criterio elegido: **mínimo costo y mínima intrusión en el local del cliente.**
 - **En el local no se instala nada** (ni PC ni software): solo hace falta llegar al grabador
   por VPN, que es necesaria igual para bajar el video.
 - **El propio grabador avisa sus alarmas** por una conexión HTTP larga. No hace falta ninguna
   nube, ni API key, ni que el cliente esté en HPP o DoLynk Care.
-- **Funciona igual para las dos marcas** (verificado oct 2026):
-  - Dahua: `GET /cgi-bin/eventManager.cgi?action=attach&channel=<N>&codes=[VideoMotion,CrossLineDetection]`
-    con auth digest. Devuelve líneas `Code=VideoMotion;action=Start;index=0` a medida que ocurren.
-  - Hikvision: `GET /ISAPI/Event/notification/alertStream` (digest), multipart XML por evento.
-    **Confirmar el path contra un equipo real antes de darlo por hecho.**
-- **Reusa todo lo que ya existe** del modo alarmas: al disparo, `download_nvr_clip` del tramo
-  [alarma − pre, alarma + post] y `analyze_clip`; si no hay personas se descarta solo.
-- Encaje sugerido: `Camera.mode = "alarmas_equipo"` + en el agente un listener por cámara que
-  alimente el mismo pipeline de `AlarmRunner` (hoy alimentado por `/api/agent/alarms/next`).
+- **Funciona igual para las dos marcas** (según documentación; **confirmar con un equipo real**):
+  - Dahua: `GET /cgi-bin/eventManager.cgi?action=attach&codes=[VideoMotion,CrossLineDetection,...]`
+    (digest). Líneas `Code=VideoMotion;action=Start;index=0`. Se toma `index+1` como canal (ojo:
+    verificar que sea así en el DVR real); solo `action=Start`.
+  - Hikvision: `GET /ISAPI/Event/notification/alertStream` (digest), multipart XML por evento;
+    los latidos `videoloss inactive` se ignoran; se usa `channelID`/`dynChannelID`.
+- Cómo quedó: `agent/device_events.py` (parsers puros + streams, normaliza a los nombres de HPP:
+  VMD / fielddetection / linedetection...), `agent/device_alarms.py` (`DeviceAlarmListener`, un hilo
+  por cámara, reconecta con backoff, no repite el mismo tipo en 8 s) → `POST /api/agent/alarms`
+  (`store_alarm`, el mismo que usa el webhook de HPP, con `Alarm.source="equipo"`) → el resto es
+  idéntico: agrupado, espera del "después", `/api/agent/alarms/next`, `AlarmRunner`, `analyze_clip`.
+- El agente informa el estado del listener en `cameras[].state` = `escuchando` / `sin_conexion`
+  (se ve en la pantalla Cámaras). En el panel: modo "Alarmas del propio grabador (recomendado)".
+- Si el grabador no distingue persona/vehículo, igual filtra el detector de personas al analizar.
 - **Por qué antes que HPP:** mientras no llegue la clave VSaaS, el modo HPP **no ahorra la VPN**,
   porque el video sale del grabador igual. HPP se mantiene para cuando llegue esa clave y porque
-  reemplaza a los empleados del socio que miran el portal.
+  reemplaza a los empleados del socio que miran el portal. El modo `alarmas` (HPP) sigue siendo
+  solo Hikvision y exige `hpp_serial`; `alarmas_equipo` no exige nada más que host/usuario/clave.
 
 ### Modo central
 `Agent.client_id` NULL = agente **central**: corre en la PC de la empresa y atiende las cámaras
@@ -157,7 +164,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 79 tests (24 se saltean sin Postgres)
+python -m pytest -q                 # 98 tests (unos 30 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
@@ -190,14 +197,17 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 8. Si el contrato con los clientes permite usar sus videos para entrenar.
 
 **Lunes 20 oct:** Santiago tendrá acceso al video en vivo de un DVR. Plan: desde la PC central
-`python -m agent.hikvision --host IP --user vigia --password ****` (lista canales y prueba el
-stream); cargar la cámara con agente = central (modo "En vivo 24 h" o "Alarmas de HPP"); dibujar
-zonas. Lo primero a verificar: hora de la grabación del DVR (opción `playback_time`).
+`python -m agent.hikvision` (o `agent.dahua`) `--host IP --user vigia --password ****` (lista
+canales y prueba el stream); cargar la cámara con agente = central en modo **"Alarmas del propio
+grabador"**; activar movimiento/intrusión en el grabador; dibujar zonas; provocar una alarma y
+seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_time`).
 
 ## Próximos pasos
 
-1. **Alarmas desde el equipo** (ver sección arriba): es el camino más simple, más barato y menos
-   invasivo, y deja a Dahua a la par de Hikvision. Hacer esto primero.
+1. **Probar `alarmas_equipo` con un grabador real** (lunes 20 oct, con el acceso en vivo): cargar
+   la cámara en ese modo, generar movimiento y mirar en Alarmas que llegue, que el canal coincida
+   y que el clip bajado sea del momento correcto (`playback_time`). Si Dahua trae `index` con otra
+   numeración, ajustar `parse_dahua_line`.
 2. **VPN por local:** router del cliente con WireGuard/Tailscale (US$0) o cajita GL.iNet (~US$30).
    Nunca abrir puertos del DVR a internet.
 3. **Piloto y medición:** % de alarmas descartadas solas y, de las que tienen persona, cuántas

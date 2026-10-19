@@ -95,7 +95,7 @@ class Camera(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # "vivo": el agente mira el stream las 24 h. "alarmas": solo analiza el tramo de video de cada
     # alarma que el DVR manda a Hik-Partner Pro (mucho más barato: una PC atiende muchos locales).
-    mode: Mapped[str] = mapped_column(String(10), default="vivo")
+    mode: Mapped[str] = mapped_column(String(20), default="vivo")  # vivo | alarmas | alarmas_equipo
     hpp_serial: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # serie del DVR en HPP
     alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -158,6 +158,7 @@ class Alarm(Base):
 
     Estados: pendiente -> procesando -> con_persona | sin_persona | error.
     Sin cámara configurada para esa serie/canal: sin_camara. Tipo no vigilado: ignorada.
+    Origen (`source`): "hpp" (webhook de Hik-Partner Pro) o "equipo" (el grabador le avisó al agente).
     """
     __tablename__ = "alarms"
     __table_args__ = (UniqueConstraint("dedup_key", name="uq_alarms_dedup"),)
@@ -169,6 +170,7 @@ class Alarm(Base):
     device_serial: Mapped[str] = mapped_column(String(32), index=True)
     channel: Mapped[int] = mapped_column(Integer, default=1)
     event_type: Mapped[str] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(10), default="hpp")  # hpp | equipo
     target: Mapped[str | None] = mapped_column(String(20), nullable=True)  # human / vehicle / others (si el DVR lo dice)
     first_at: Mapped[datetime] = mapped_column(DateTime, index=True)  # UTC, primer disparo
     last_at: Mapped[datetime] = mapped_column(DateTime)  # UTC, último disparo agrupado en esta alarma

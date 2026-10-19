@@ -28,9 +28,16 @@ alertas reales de las falsas.
 - **Supabase** guarda la base de datos y los archivos. Las tablas quedan cerradas a la API
   pública de Supabase (RLS activado, sin políticas): solo el servidor puede leerlas.
 
-## Modo alarmas de Hik-Partner Pro (lo recomendado)
+## Modo alarmas: el grabador avisa, Vigía analiza solo ese tramo (lo recomendado)
 
-Es el modo más barato y el que reemplaza el trabajo de "mirar los clips que manda Hik-Partner Pro":
+Es el modo más barato y el que reemplaza el trabajo de "mirar los clips de las alarmas". Hay dos
+formas de enterarse de una alarma; las dos terminan en el mismo análisis:
+
+- **Alarmas del propio grabador** (Hikvision y Dahua, sin nube ni API key, **el modo por defecto**):
+  la PC central se queda conectada al grabador por la VPN y el equipo le avisa cada alarma
+  (movimiento, intrusión, cruce de línea). Solo hay que activar esas detecciones en el grabador.
+- **Alarmas por Hik-Partner Pro** (solo Hikvision): HPP avisa por webhook. Sirve cuando no se
+  quiere que la PC esté conectada todo el tiempo al equipo; igual necesita VPN para bajar el video.
 
 ```
 DVR del cliente ──alarma (movimiento / intrusión / línea)──► Hik-Partner Pro ──webhook──► Vigía (Vercel)
@@ -351,7 +358,7 @@ permite **revocar** un link.
 ```bash
 pip install -r requirements.txt -r requirements-agent.txt pytest
 uvicorn server.main:create_app --factory --port 8000   # sin variables: SQLite y disco local
-python -m pytest                                        # 79 pruebas (24 piden Postgres)
+python -m pytest                                        # 98 pruebas (unas 30 piden Postgres)
 ```
 
 - **Postgres:** con `VIGIA_TEST_PG=postgresql://…` las pruebas del servidor corren también

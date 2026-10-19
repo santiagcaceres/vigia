@@ -179,7 +179,9 @@ class CameraIn(BaseModel):
     detector: Literal["yolo", "motion"] = "yolo"
     process_fps: float = Field(5.0, gt=0, le=15)
     enabled: bool = True
-    mode: Literal["vivo", "alarmas"] = "vivo"
+    # vivo: el agente mira el stream 24 h. alarmas: Hik-Partner Pro avisa (webhook). alarmas_equipo:
+    # el propio grabador avisa (conexión larga desde el agente); vale para cualquier marca.
+    mode: Literal["vivo", "alarmas", "alarmas_equipo"] = "vivo"
     hpp_serial: str | None = Field(None, max_length=32)
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
 
@@ -222,6 +224,14 @@ class IncidentIn(BaseModel):
 class TrainIn(BaseModel):
     client_id: int | None = None
     target_recall: float = Field(0.9, ge=0.5, le=1.0)
+
+
+class DeviceAlarmIn(BaseModel):
+    camera_id: int
+    event_type: Literal[hpp.VIDEO_EVENT_TYPES]  # type: ignore[valid-type]
+    occurred_at: str  # ISO con zona (hora de la PC central en la zona del cliente)
+    target: str | None = Field(None, max_length=20)
+    raw: dict = {}
 
 
 class AlarmDoneIn(BaseModel):
@@ -628,8 +638,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body.hpp_serial = (body.hpp_serial or "").strip().upper() or None
         if body.mode == "alarmas" and not body.hpp_serial:
             raise HTTPException(422, "En modo alarmas indicá el número de serie del DVR en Hik-Partner Pro")
-        if body.mode == "alarmas" and not body.alarm_cfg.event_types:
+        if body.mode in ("alarmas", "alarmas_equipo") and not body.alarm_cfg.event_types:
             raise HTTPException(422, "Elegí al menos un tipo de alarma")
+        if body.mode == "alarmas" and body.brand != "hikvision":
+            raise HTTPException(422, "Las alarmas por Hik-Partner Pro son solo para Hikvision; "
+                                     "usá «alarmas del propio grabador»")
 
     @app.post("/api/cameras", status_code=201)
     def create_camera(body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
@@ -922,7 +935,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def alarm_dict(a: Alarm, cam_name: str | None = None, client_name: str | None = None) -> dict:
         return {"id": a.id, "client_id": a.client_id, "client_name": client_name, "camera_id": a.camera_id,
-                "camera_name": cam_name, "device_serial": a.device_serial, "channel": a.channel,
+                "camera_name": cam_name, "device_serial": a.device_serial, "channel": a.channel, "source": a.source,
                 "event_type": a.event_type, "target": a.target, "first_at": iso(a.first_at),
                 "last_at": iso(a.last_at), "triggers": a.triggers, "status": a.status, "attempts": a.attempts,
                 "error": a.error, "stats": a.stats or {}, "event_id": a.event_id, "received_at": iso(a.received_at)}
@@ -941,11 +954,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return "ignorada"
         elif al.event_type not in hpp.VIDEO_EVENT_TYPES:
             return "ignorada"
-        if al.target and al.target.lower() not in ("human", "person", "persona"):
-            return "no_persona_dvr"  # el propio DVR (AcuSense) dice que fue un vehículo u otra cosa
+        return store_alarm(s, cam, serial, al.channel, al.event_type, occurred, al.target, al.raw,
+                           dedup_key=f"{serial}:{al.channel}:{al.event_type}:{al.trigger_time}", source="hpp")
+
+    def store_alarm(s, cam: Camera | None, serial: str, channel: int, event_type: str, occurred: datetime,
+                    target: str | None, raw: dict, dedup_key: str, source: str) -> str:
+        """Guarda una alarma (de HPP o del propio grabador) agrupando los disparos seguidos."""
+        if target and target.lower() not in ("human", "person", "persona"):
+            return "no_persona_dvr"  # el propio equipo (AcuSense / SMD) dice que fue un vehículo u otra cosa
         status = "pendiente" if cam else "sin_camara"
         merge = timedelta(seconds=st.alarm_merge_seconds)
-        q = s.query(Alarm).filter(Alarm.device_serial == serial, Alarm.channel == al.channel,
+        q = s.query(Alarm).filter(Alarm.device_serial == serial, Alarm.channel == channel,
                                   Alarm.status == status, Alarm.last_at >= occurred - merge,
                                   Alarm.first_at <= occurred + merge,
                                   Alarm.first_at >= occurred - timedelta(seconds=st.alarm_max_window_seconds))
@@ -953,14 +972,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if prev is not None:  # disparos seguidos: una sola alarma con una ventana más larga
             prev.first_at, prev.last_at = min(prev.first_at, occurred), max(prev.last_at, occurred)
             prev.triggers += 1
-            if al.event_type != prev.event_type and al.event_type not in prev.event_type:
-                prev.event_type = (prev.event_type + "+" + al.event_type)[:40]
+            if event_type != prev.event_type and event_type not in prev.event_type:
+                prev.event_type = (prev.event_type + "+" + event_type)[:40]
             s.commit()
             return "agrupada"
-        a = Alarm(dedup_key=f"{serial}:{al.channel}:{al.event_type}:{al.trigger_time}"[:160],
-                  client_id=cam.client_id if cam else None, camera_id=cam.id if cam else None,
-                  device_serial=serial, channel=al.channel, event_type=al.event_type, target=al.target,
-                  first_at=occurred, last_at=occurred, status=status, raw=al.raw)
+        a = Alarm(dedup_key=dedup_key[:160], client_id=cam.client_id if cam else None,
+                  camera_id=cam.id if cam else None, device_serial=serial, channel=channel,
+                  event_type=event_type, target=target, first_at=occurred, last_at=occurred, status=status,
+                  raw=raw, source=source)
         s.add(a)
         try:
             s.commit()
@@ -968,6 +987,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s.rollback()
             return "duplicada"
         return "nueva" if cam else "sin_camara"
+
+    @app.post("/api/agent/alarms", status_code=201)
+    def agent_device_alarm(body: DeviceAlarmIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """El agente avisa una alarma que le mandó el propio grabador (modo alarmas_equipo)."""
+        cam = agent_camera(s, ag, body.camera_id)
+        if (cam.mode or "vivo") != "alarmas_equipo" or not cam.enabled:
+            raise HTTPException(409, "La cámara no está en modo «alarmas del propio grabador»")
+        if body.event_type not in alarm_cfg_of(cam)["event_types"]:
+            return {"result": "ignorada"}
+        client = s.get(Client, cam.client_id)
+        occurred = hpp.parse_device_time(body.occurred_at, client.timezone)
+        serial = cam.hpp_serial or f"CAM{cam.id}"
+        result = store_alarm(s, cam, serial, cam.channel, body.event_type, occurred, body.target,
+                             {"brand": cam.brand, **body.raw}, dedup_key=f"equipo:{cam.id}:{body.event_type}:{body.occurred_at}",
+                             source="equipo")
+        return {"result": result}
 
     @app.get("/api/hpp/webhook")
     def hpp_webhook_check(x_hook_batch_id: str = Header(""), x_hook_timestamp: str = Header("")):
@@ -1095,7 +1130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_next_alarm(ag: Agent = Depends(current_agent), s=Depends(db)):
         """Entrega a la PC central la próxima alarma lista para bajar su tramo de video."""
         now = utcnow()
-        mine = agent_cameras_q(s, ag).filter(Camera.mode == "alarmas", Camera.enabled.is_(True))
+        mine = agent_cameras_q(s, ag).filter(Camera.mode.in_(("alarmas", "alarmas_equipo")), Camera.enabled.is_(True))
         cams = {c.id: c for c in mine}
         if not cams:
             return Response(status_code=204)
