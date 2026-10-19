@@ -27,17 +27,17 @@ from core.clip_analysis import analyze_clip
 from core.detectors import Detector, build_detector
 from core.scorer import Scorer
 
-from .hikvision import HikCamera, download_nvr_clip
+from .cameras import BaseCamera, build_camera, download_nvr_clip
 from .outbox import ServerClient
 
 log = logging.getLogger("vigia.alarms")
 IDLE_POLL_SECONDS = 10
 
 # (cámara, inicio, fin, archivo destino) -> True si dejó el clip
-ClipFetcher = Callable[[HikCamera, datetime, datetime, Path], bool]
+ClipFetcher = Callable[[BaseCamera, datetime, datetime, Path], bool]
 
 
-def fetch_from_dvr(cam: HikCamera, start: datetime, end: datetime, out: Path) -> bool:
+def fetch_from_dvr(cam: BaseCamera, start: datetime, end: datetime, out: Path) -> bool:
     return download_nvr_clip(cam, start, end, out, timeout=180)
 
 
@@ -95,7 +95,7 @@ class AlarmRunner:
         name = f"{cam.get('client_name', '')} · {cam['name']}"
         tmp = Path(tempfile.mkdtemp(dir=self.work_dir))
         try:
-            hik = HikCamera.from_config(cam["connection"])
+            hik = build_camera(cam["connection"])
             start, end = datetime.fromisoformat(job["start"]), datetime.fromisoformat(job["end"])
             clip = tmp / "alarma.mp4"
             if not self.fetch(hik, start, end, clip):

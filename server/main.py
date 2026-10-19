@@ -165,6 +165,7 @@ class CameraIn(BaseModel):
     client_id: int
     agent_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
+    brand: Literal["hikvision", "dahua"] = "hikvision"
     host: str = Field("", max_length=255)
     username: str = "admin"
     password: str | None = None
@@ -384,7 +385,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
              "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
              "mode": c.mode or "vivo"}
         if user.role != "cliente":
-            d.update(host=c.host, username=c.username, has_password=bool(c.password_enc), channel=c.channel,
+            d.update(brand=c.brand, host=c.host, username=c.username, has_password=bool(c.password_enc),
+                     channel=c.channel,
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
                      hpp_serial=c.hpp_serial, alarm_cfg=alarm_cfg_of(c))
@@ -733,7 +735,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": client.name,
             "enabled": c.enabled, "detector": c.detector, "process_fps": c.process_fps,
             "mode": c.mode or "vivo", "alarm_cfg": alarm_cfg_of(c),
-            "connection": {"host": c.host, "username": c.username, "password": box.decrypt(c.password_enc),
+            "connection": {"brand": c.brand, "host": c.host, "username": c.username,
+                           "password": box.decrypt(c.password_enc),
                            "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
                            "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
                            "playback_time": c.playback_time, "timezone": client.timezone,

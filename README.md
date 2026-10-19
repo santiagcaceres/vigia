@@ -1,4 +1,4 @@
-# Vigía: detección de hurtos en cámaras Hikvision
+# Vigía: detección de hurtos en cámaras Hikvision y Dahua
 
 Sistema para varios clientes, con varias cámaras por cliente. Mira las cámaras en tiempo real y,
 cuando detecta un comportamiento sospechoso, guarda el clip y avisa. Incluye un panel donde una
@@ -125,23 +125,37 @@ cargada) y cuántas se descartaron solas en la semana.
 > El plan Hobby de Vercel es solo para uso personal **no comercial**. Para vender el servicio
 > se necesita Vercel Pro.
 
-### Paso 3. Preparar el NVR Hikvision (en cada cliente)
+### Paso 3. Preparar el grabador (en cada cliente)
 
-Desde la web del NVR o desde iVMS-4200 (Configuración remota):
+Vigía funciona con **Hikvision** y **Dahua**. Lo más simple es entrar por el navegador a
+`http://IP-DEL-GRABADOR`; también sirve iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua).
 
 1. **Crear un usuario solo para Vigía**, con permiso de "Vista en vivo" y "Reproducción". No uses `admin`.
-2. **Activar RTSP** y verificar el puerto (554 por defecto). Habilitar ISAPI si aparece en
-   *Red > Avanzado > Integración*.
-3. **Configurar el stream secundario en H.264** (no H.265), con 640x360 o 704x576 y 10 a 15 fps.
-   **Desactivar H.264+ / H.265+**.
-4. **Anotar el canal de cada cámara en el NVR:** la cámara 1 es el canal 1, la 2 el canal 2, etc.
+2. **Activar RTSP** y verificar el puerto (554 por defecto).
+   - Hikvision: habilitar ISAPI si aparece en *Red > Avanzado > Integración*.
+   - Dahua: *Red > Puerto* (RTSP). La API CGI viene habilitada.
+3. **Configurar el stream secundario (sub) en H.264** (no H.265), con 640x360 o 704x576 y 10 a 15 fps.
+   **Desactivar H.264+ / H.265+ (Dahua: "Smart Codec")**.
+4. **Anotar el canal de cada cámara:** la cámara 1 es el canal 1, la 2 el canal 2, etc.
+
+Probar la conexión desde la PC del agente:
+
+```bash
+python -m agent.hikvision --host IP --user vigia --password ****   # Hikvision
+python -m agent.dahua     --host IP --user vigia --password ****   # Dahua
+```
+
+**Las apps de nube no sirven para esto.** Ni Hik-Connect (Hikvision) ni DMSS/SmartPSS (Dahua)
+entregan el video a software de terceros: son visores. Vigía se conecta al grabador, en la red
+del local o por VPN. Esas apps sí sirven para *configurar* los equipos a distancia.
 
 ### Paso 4. Cargar cliente, agente y cámaras en el panel
 
 1. En **Administración**:
    - Crear el **cliente**.
    - Crear un **agente** para ese cliente. Copiá el token: se muestra una sola vez.
-2. En **Cámaras > Agregar cámara**: IP del NVR, canal, usuario y clave (los mismos datos que usa iVMS).
+2. En **Cámaras > Agregar cámara**: **marca** (Hikvision o Dahua), IP del grabador, canal, usuario y clave
+   (los mismos datos que usás en iVMS-4200 o SmartPSS Lite).
 
 ### Paso 5. Instalar el agente (en la PC del local, o en tu PC central: ver Paso 5b)
 
@@ -197,8 +211,10 @@ sesión.
   (192.168.1.x), porque cada cajita tiene su propia IP de VPN.
 - **Nunca** abrir los puertos del DVR a internet: los DVR expuestos se atacan constantemente.
 
-**4. Preparar el DVR sin ir al local:** con **Hik-Partner Pro** podés entrar a la configuración
-remota del DVR y hacer el Paso 3 (usuario `vigia`, RTSP, flujo secundario H.264) desde tu oficina.
+**4. Preparar el grabador sin ir al local:** con **Hik-Partner Pro** (Hikvision) o **DoLynk Care**
+(Dahua) entrás a la configuración remota y hacés el Paso 3 (usuario `vigia`, RTSP, flujo
+secundario H.264) desde tu oficina. También podés hacerlo por la web del equipo una vez
+montada la VPN.
 
 **5. Cargar la cámara** en el panel con el **agente = el central**, host = IP de VPN, canal, usuario
 `vigia`. En un minuto aparece En línea.
@@ -264,7 +280,7 @@ o se lo desactiva. Cada uno puede cambiar su propia clave con **Mi clave**.
 `S` saltea, `R` repite el clip. Si dudás, saltealo.
 
 **Videos (grabaciones viejas):**
-1. En iVMS-4200, exportá la grabación en **MP4**.
+1. Exportá la grabación en **MP4** (iVMS-4200 en Hikvision, SmartPSS Lite en Dahua).
 2. Subila eligiendo la cámara y la hora de inicio. El agente de ese cliente la analiza; tiene
    que estar encendido.
 3. Marcá los hurtos reales que viste: el sistema te dice cuántos detectó y cuántas falsas
