@@ -363,7 +363,7 @@ permite **revocar** un link.
 ```bash
 pip install -r requirements.txt -r requirements-agent.txt pytest
 uvicorn server.main:create_app --factory --port 8000   # sin variables: SQLite y disco local
-python -m pytest                                        # 102 pruebas (unas 30 piden Postgres)
+python -m pytest                                        # 104 pruebas (unas 30 piden Postgres)
 ```
 
 - **Postgres:** con `VIGIA_TEST_PG=postgresql://…` las pruebas del servidor corren también

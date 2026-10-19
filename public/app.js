@@ -87,17 +87,15 @@ $("#my-password").addEventListener("click", async () => {
 
 async function boot() {
   try { S.me = await api("GET", "/api/me", undefined, { noRedirect: true }); } catch (_) { return showLogin(); }
-  S.clients = await api("GET", "/api/clients");
+  await loadClients(true);
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
-  const links = S.me.role === "cliente" ? [["#/avisos", "Incidentes"], ["#/eventos", "Eventos"]] : [["#/eventos", "Eventos"]];
-  if (isStaff()) links.push(["#/revisar", "Revisar"], ["#/alarmas", "Alarmas"], ["#/avisos", "Avisos"], ["#/videos", "Videos"], ["#/entrenamiento", "Entrenamiento"]);
-  if (isStaff()) links.push(["#/clientes", "Clientes"]);
-  links.push(["#/camaras", "Cámaras"]);
+  const links = S.me.role === "cliente"
+    ? [["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
+    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/camaras", "Cámaras"], ["#/alertas", "Alertas"], ["#/prueba", "Prueba"]];
   if (isAdmin()) links.push(["#/admin", "Administración"]);
-  $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("")
-    + (isStaff() ? `<a href="guia.html" target="_blank" rel="noopener" title="Cómo conectar el grabador de un cliente">Guía</a>` : "");
+  $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
   route();
 }
 
@@ -105,8 +103,9 @@ window.addEventListener("hashchange", route);
 async function route() {
   if (!S.me) return;
   S.timers.forEach(clearInterval); S.timers = []; S.keyHandler = null;
-  const h = location.hash || "#/eventos";
-  $$("#nav a").forEach((a) => a.classList.toggle("active", h.startsWith(a.getAttribute("href"))));
+  const h = location.hash || (isStaff() ? "#/resumen" : "#/alertas");
+  const section = h.startsWith("#/evento") || h.startsWith("#/revisar") || h.startsWith("#/alarmas") ? "#/alertas" : h;
+  $$("#nav a").forEach((a) => a.classList.toggle("active", section.startsWith(a.getAttribute("href"))));
   const old = $("#view"), v = old.cloneNode(false); // nodo nuevo: descarta listeners de la vista anterior
   old.replaceWith(v);
   window.scrollTo(0, 0);
@@ -123,11 +122,23 @@ async function route() {
     if (h.startsWith("#/alarmas") && isStaff()) return await alarmsView(v);
     if (h.startsWith("#/admin") && isAdmin()) return await adminView(v);
     if (h.startsWith("#/clientes") && isStaff()) return await clientsView(v);
+    if (h.startsWith("#/resumen") && isStaff()) return await summaryView(v);
+    if (h.startsWith("#/prueba") && isStaff()) return await pruebaView(v);
     return await eventsView(v);
   } catch (e) { v.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
-async function loadCameras() { S.cameras = await api("GET", "/api/cameras"); return S.cameras; }
+const CACHE_MS = 20000;
+async function loadCameras(force = false) {
+  if (!force && S.cameras.length && Date.now() - (S._camsAt || 0) < CACHE_MS) return S.cameras;
+  S.cameras = await api("GET", "/api/cameras"); S._camsAt = Date.now();
+  return S.cameras;
+}
+async function loadClients(force = false) {
+  if (!force && S.clients.length && Date.now() - (S._clientsAt || 0) < CACHE_MS) return S.clients;
+  S.clients = await api("GET", "/api/clients"); S._clientsAt = Date.now();
+  return S.clients;
+}
 
 // ------------------------------------------------------------------ eventos
 async function eventsView(v) {
@@ -135,13 +146,14 @@ async function eventsView(v) {
   const q = new URLSearchParams(location.hash.split("?")[1] || "");
   const stats = await api("GET", "/api/stats?days=30" + (q.get("client_id") ? "&client_id=" + q.get("client_id") : ""));
   v.innerHTML = `
-    <h1>Eventos</h1><p class="muted">Últimos 30 días en vivo: ${stats.total} eventos, ${stats.alerts} alertas enviadas, ${stats.by_label.sin_etiqueta || 0} sin revisar.</p>
+    <div class="row"><h1>Alertas</h1><span class="spacer"></span>${isStaff() ? `<a class="btn" href="#/alarmas">Alarmas del grabador</a><a class="btn primary" href="#/revisar">Revisar pendientes (${stats.by_label.sin_etiqueta || 0})</a>` : ""}</div>
+    <p class="muted">Últimos 30 días: ${stats.total} alertas, ${stats.by_label.sin_etiqueta || 0} sin revisar. Cada alerta es un indicio para revisar, no una prueba.</p>
     <div class="toolbar">
       ${S.me.role !== "cliente" ? `<label>Cliente<select id="f-client">${options(S.clients.map((c) => [c.id, c.name]), q.get("client_id"), "Todos")}</select></label>` : ""}
       <label>Cámara<select id="f-camera">${options(S.cameras.map((c) => [c.id, c.name]), q.get("camera_id"), "Todas")}</select></label>
       <label>Tipo<select id="f-type">${options(Object.entries(TYPE_NAMES), q.get("type"), "Todos")}</select></label>
       <label>Revisión<select id="f-label">${options([["sin_etiqueta", "Sin revisar"], ...Object.entries(LABEL_NAMES)], q.get("label"), "Todas")}</select></label>
-      <label>Origen<select id="f-source">${options([["alarma", "Alarmas de Hik-Partner Pro"], ["vivo", "En vivo"], ["importado", "Videos importados"]], q.get("source"), "Todos")}</select></label>
+      <label>Origen<select id="f-source">${options([["alarma", "Alarmas del grabador"], ["vivo", "En vivo"], ["prueba", "Prueba (pantalla)"], ["importado", "Videos importados"]], q.get("source"), "Todos")}</select></label>
       <label>Alerta<select id="f-alert">${options([["true", "Solo alertas"], ["false", "Filtrados por el modelo"]], q.get("alert"), "Todos")}</select></label>
     </div>
     <div id="list" class="grid"></div>
@@ -150,7 +162,7 @@ async function eventsView(v) {
   ids.forEach((k) => $("#f-" + k)?.addEventListener("change", () => {
     const p = new URLSearchParams();
     ids.forEach((x) => { const el = $("#f-" + x); if (el && el.value) p.set(x === "client" ? "client_id" : x === "camera" ? "camera_id" : x, el.value); });
-    location.hash = "#/eventos?" + p.toString();
+    location.hash = "#/alertas?" + p.toString();
   }));
   let offset = 0;
   S.lastList = [];
@@ -175,7 +187,7 @@ function eventCard(e) {
     <div class="body">
       <div class="row">${typeChip(e)}${labelChip(e.label)}${e.alert ? "" : `<span class="chip" title="El modelo lo consideró poco probable">filtrado</span>`}</div>
       <div class="title">${esc(e.camera_name)}${S.me.role !== "cliente" ? ` · <span class="muted">${esc(e.client_name)}</span>` : ""}</div>
-      <div class="muted">${fmtDate(e.occurred_at)}${e.source === "importado" ? " · video importado" : ""}${e.source === "alarma" ? " · alarma " + esc(alarmTypeName(e.alarm?.dvr_event)) : ""}${e.score != null ? ` · puntaje ${pct(e.score)}` : ""}</div>
+      <div class="muted">${fmtDate(e.occurred_at)}${e.source === "importado" ? " · video importado" : ""}${e.source === "alarma" ? " · alarma " + esc(alarmTypeName(e.alarm?.dvr_event)) : ""}${e.source === "prueba" ? " · prueba desde la pantalla" : ""}${e.score != null ? ` · puntaje ${pct(e.score)}` : ""}</div>
     </div></div>`;
 }
 
@@ -205,7 +217,7 @@ async function eventView(v, id) {
   const i = S.lastList.indexOf(id);
   const prev = i > 0 ? S.lastList[i - 1] : null, next = i >= 0 && i < S.lastList.length - 1 ? S.lastList[i + 1] : null;
   v.innerHTML = `
-    <div class="row"><a href="#/eventos">← Eventos</a><span class="spacer"></span>
+    <div class="row"><a href="#/alertas">← Alertas</a><span class="spacer"></span>
       ${prev ? `<a class="btn" href="#/evento/${prev}">← Anterior</a>` : ""}${next ? `<a class="btn" href="#/evento/${next}">Siguiente →</a>` : ""}</div>
     <div class="two" style="margin-top:12px">
       <div>${mediaHtml(e, false)}</div>
@@ -216,8 +228,8 @@ async function eventView(v, id) {
         <dl class="kv">
           ${S.me.role !== "cliente" ? `<dt>Cliente</dt><dd>${esc(e.client_name)}</dd>` : ""}
           <dt>Fecha</dt><dd>${fmtDate(e.occurred_at)}</dd>
-          <dt>Origen</dt><dd>${e.source === "importado" ? `<a href="#/video/${e.import_id}">Video importado</a> (seg. ${fmtSec(e.video_ts)})` : e.source === "alarma" ? `Alarma del DVR: ${esc(alarmTypeName(e.alarm?.dvr_event))}${e.alarm?.triggers > 1 ? ` (${e.alarm.triggers} disparos)` : ""}` : "En vivo"}</dd>
-          <dt>Clip</dt><dd>${e.clip_url ? ({ nvr: "Grabación del NVR", buffer: "Buffer del agente", video: "Del video importado" }[e.clip_source] || "Clip") + ` · <a href="${e.clip_url}" download>Descargar</a>` : "—"}</dd>
+          <dt>Origen</dt><dd>${e.source === "importado" ? `<a href="#/video/${e.import_id}">Video importado</a> (seg. ${fmtSec(e.video_ts)})` : e.source === "alarma" ? `Alarma del DVR: ${esc(alarmTypeName(e.alarm?.dvr_event))}${e.alarm?.triggers > 1 ? ` (${e.alarm.triggers} disparos)` : ""}` : e.source === "prueba" ? "Prueba desde la pantalla de HPP" : "En vivo"}</dd>
+          <dt>Clip</dt><dd>${e.clip_url ? ({ nvr: "Grabación del grabador", buffer: "Buffer del agente", video: "Del video importado", prueba: "Grabado de la pantalla" }[e.clip_source] || "Clip") + ` · <a href="${e.clip_url}" download>Descargar</a>` : "—"}</dd>
           ${e.score != null ? `<dt>Puntaje</dt><dd>${pct(e.score)} ${e.alert ? "" : "(no se envió alerta)"}</dd>` : ""}
         </dl>
         <div style="margin-top:14px">${labelPanel(e)}</div>
@@ -317,7 +329,7 @@ async function camerasView(v) {
       <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
       <tbody>${S.cameras.map((c) => { const ag = agents.find((a) => a.id === c.agent_id); return `<tr>
         <td><b>${esc(c.name)}</b>${c.enabled ? "" : ` <span class="chip">deshabilitada</span>`}</td>
-        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${esc(BRAND_NAMES[c.brand] || c.brand || "")} · ${isAlarmMode(c.mode) ? `<span class="chip">${MODE_NAMES[c.mode]}</span> ${c.mode === "alarmas" ? esc(c.hpp_serial || "") + " · " : ""}canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
+        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${esc(BRAND_NAMES[c.brand] || c.brand || "")} · ${isAlarmMode(c.mode) ? `<span class="chip">${MODE_NAMES[c.mode]}</span> ${c.mode === "alarmas" ? esc(c.hpp_serial || "") + " · " : ""}canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</td>` : ""}
         <td>${c.mode === "alarmas" ? "" : statusChip(c.status)}${isAlarmMode(c.mode) ? ` <a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : ""}</td>
         <td>${(c.zones || []).length}</td>
         <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isStaff() ? `<button class="small" data-edit="${c.id}">Editar</button><button class="small" data-probe="${c.id}" title="Prueba desde el servidor que el grabador responda con el usuario y la clave cargados">Probar conexión</button>` : ""}</td>
@@ -326,10 +338,10 @@ async function camerasView(v) {
   const form = (c = {}) => {
     $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
       <h3>${c.id ? "Editar cámara" : "Nueva cámara"}</h3>
-      <p class="muted">Datos del grabador (DVR/NVR): los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). Si el grabador se expone por el router del cliente, la IP es la <b>IP pública o el DDNS</b> del cliente y los puertos son los <b>externos</b> que abriste en el router. Si llegás por VPN, la IP interna y los puertos normales. Paso a paso en la <a href="guia.html" target="_blank" rel="noopener">guía de conexión</a>.</p>
+      <p class="muted">Datos del grabador (DVR/NVR): los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). La IP es la <b>IP pública o el DDNS</b> del cliente y los puertos son los <b>externos</b> que abriste en su router. Paso a paso en la <a href="guia.html" target="_blank" rel="noopener">guía de conexión</a>.</p>
       <form class="form" id="cf">
         <label>Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id)}</select></label>
-        <label>Agente<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? `${a.name} (Central)` : `${a.name} (${clientName(a.client_id)})`]), c.agent_id, "Cualquiera del cliente")}</select></label>
+        <label>PC central (agente)<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? a.name : `${a.name} (${clientName(a.client_id)})`]), c.agent_id ?? (agents.find((a) => a.central) || {}).id, "—")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
         <label>Marca<select name="brand">${options(Object.entries(BRAND_NAMES), c.brand || "hikvision")}</select><small id="brand-note" class="muted"></small></label>
         <label>Modo<select name="mode">${options([["alarmas_equipo", "Alarmas del propio grabador (recomendado)"], ["alarmas", "Alarmas por Hik-Partner Pro (solo Hikvision)"], ["vivo", "En vivo 24 h"]], c.mode || "alarmas_equipo")}</select><small id="mode-note" class="muted"></small></label>
@@ -384,11 +396,11 @@ async function camerasView(v) {
       };
       try {
         await api(c.id ? "PUT" : "POST", c.id ? "/api/cameras/" + c.id : "/api/cameras", body);
-        toast("Cámara guardada. El agente la toma en menos de un minuto."); route();
+        toast("Cámara guardada. La PC central la toma en menos de un minuto."); S._camsAt = 0; route();
       } catch (e) { fail(e); }
     });
   };
-  $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Clientes", true); form(); });
+  $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Clientes", true); if (!agents.length) return toast("Primero creá la PC central en Administración", true); form(); });
   $$("[data-probe]").forEach((b) => b.addEventListener("click", async () => {
     const c = S.cameras.find((x) => x.id === +b.dataset.probe);
     const out = $("#probe-out");
@@ -875,9 +887,39 @@ async function reportsView(v) {
   }));
 }
 
+// ------------------------------------------------------------------ resumen
+async function summaryView(v) {
+  const [stats, pend, alarms] = await Promise.all([
+    api("GET", "/api/stats?days=7"),
+    api("GET", "/api/events?label=sin_etiqueta&limit=8"),
+    api("GET", "/api/alarms?limit=1").catch(() => ({ counts_7d: {} })),
+  ]);
+  await Promise.all([loadCameras(), loadClients()]);
+  const c7 = alarms.counts_7d || {};
+  const alarmsTotal = Object.values(c7).reduce((a, b) => a + b, 0);
+  const online = S.cameras.filter((c) => c.enabled !== false && c.status && c.status.agent_online && ["en_linea", "escuchando"].includes(c.status.state));
+  const trouble = S.cameras.filter((c) => c.enabled !== false && !online.includes(c));
+  const tile = (n, t, hint, href) => `<a class="panel stat" href="${href}" style="text-decoration:none;color:inherit"><span class="n">${n}</span><span>${t}</span>${hint ? `<span class="muted">${hint}</span>` : ""}</a>`;
+  v.innerHTML = `
+    <h1>Resumen</h1>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
+      ${tile(pend.total, "Alertas sin revisar", "a etiquetar", "#/revisar")}
+      ${tile(stats.total, "Alertas (7 días)", `${stats.by_label.hurto || 0} hurtos confirmados`, "#/alertas")}
+      ${tile(alarmsTotal, "Alarmas del grabador (7 días)", alarmsTotal ? `${pct((c7.sin_persona || 0) / alarmsTotal)} descartadas solas` : "", "#/alarmas")}
+      ${tile(`${online.length}/${S.cameras.filter((c) => c.enabled !== false).length}`, "Cámaras conectadas", trouble.length ? `${trouble.length} con problemas` : "", "#/camaras")}
+      ${tile(S.clients.length, "Clientes", "", "#/clientes")}
+    </div>
+    ${trouble.length ? `<div class="panel" style="margin-top:14px"><b>Cámaras con problemas</b><div class="table-wrap"><table><tbody>${trouble.map((c) => `<tr><td>${esc(clientName(c.client_id))} · ${esc(c.name)}</td><td>${statusChip(c.status)}</td><td><a href="#/camaras">ver</a></td></tr>`).join("")}</tbody></table></div></div>` : ""}
+    <div class="row" style="margin-top:18px"><h2 style="margin:0">Últimas alertas sin revisar</h2><span class="spacer"></span><a class="btn primary" href="#/revisar">Revisar</a></div>
+    <div class="grid" style="margin-top:10px">${pend.items.map(eventCard).join("") || `<div class="empty">No hay alertas pendientes. Cuando una cámara detecte algo, aparece acá.</div>`}</div>
+    <p class="muted" style="margin-top:22px">Más: <a href="#/avisos">Avisos enviados a clientes</a> · <a href="#/videos">Videos para entrenar</a> · <a href="#/entrenamiento">Entrenamiento del modelo</a> · <a href="guia.html" target="_blank" rel="noopener">Guía de conexión</a></p>`;
+  S.lastList = pend.items.map((e) => e.id);
+  v.addEventListener("click", (e) => { const c = e.target.closest(".card[data-id]"); if (c) location.hash = "#/evento/" + c.dataset.id; });
+}
+
 // ------------------------------------------------------------------ clientes (administradores y empleados)
 async function clientsView(v) {
-  S.clients = await api("GET", "/api/clients");
+  await loadClients(true);
   await loadCameras();
   const nCams = (id) => S.cameras.filter((c) => c.client_id === id).length;
   v.innerHTML = `
@@ -901,7 +943,7 @@ async function clientsView(v) {
     $("#cf").addEventListener("submit", async (e) => {
       e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
       for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
-      try { await api(c.id ? "PUT" : "POST", c.id ? "/api/clients/" + c.id : "/api/clients", f); toast(c.id ? "Cliente guardado" : "Cliente creado"); route(); } catch (err) { fail(err); }
+      try { await api(c.id ? "PUT" : "POST", c.id ? "/api/clients/" + c.id : "/api/clients", f); toast(c.id ? "Cliente guardado" : "Cliente creado"); S._clientsAt = 0; route(); } catch (err) { fail(err); }
     });
   };
   $("#add").addEventListener("click", () => form());
@@ -911,7 +953,7 @@ async function clientsView(v) {
 // ------------------------------------------------------------------ administración (solo administradores)
 async function adminView(v) {
   const [users, agents] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/agents")]);
-  S.clients = await api("GET", "/api/clients");
+  await loadClients();
   const admins = users.filter((u) => u.role === "admin" && u.active).length;
   v.innerHTML = `
     <h1>Administración</h1>
@@ -926,13 +968,12 @@ async function adminView(v) {
     <div class="row" style="margin-top:10px"><button id="new-user" class="primary">Nuevo usuario</button></div>
 
     <h2>Agentes</h2>
-    <p class="muted">Un agente <b>central</b> corre en tu PC y atiende las cámaras que le asignes, de cualquier cliente (llega a cada DVR por VPN). Un agente <b>de local</b> corre en una PC del cliente y atiende solo sus cámaras.</p>
+    <p class="muted">El <b>agente</b> es el programa que corre en la PC central: llega a los grabadores de todos los clientes por internet (puertos abiertos en el router de cada uno), baja el tramo de cada alarma y lo analiza. Con una PC alcanza; si se suma otra, se reparten las cámaras.</p>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
-      <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? `<span class="chip">Central</span>` : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
+      <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? "Todos" : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
         <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${a.status.alarms_with_person} con persona · ${a.status.alarms_discarded} descartadas · ${a.status.alarms_failed} con error</div>` : ""}</td><td>${a.status?.outbox_pending ?? "—"}</td><td><button class="small" data-rotate="${a.id}">Nuevo token</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
     <form class="form panel" id="af" style="margin-top:10px">
-      <label>Tipo<select name="client_id">${options(S.clients.map((c) => [c.id, "De local: " + c.name]), "", "Central (mi PC, cámaras de varios clientes)")}</select></label>
-      <label>Nombre<input name="name" required placeholder="PC central"></label>
+      <label>Nombre de la PC<input name="name" required placeholder="PC central"></label>
       <button class="primary" type="submit">Crear agente</button>
     </form>
     <div id="token"></div>`;
@@ -958,11 +999,11 @@ async function adminView(v) {
   const showToken = (a) => {
     $("#token").innerHTML = `<div class="panel" style="margin-top:10px"><b>Token del agente "${esc(a.name)}"</b> — copialo ahora, no se vuelve a mostrar.
       <div class="token-box mono" style="margin:8px 0">${esc(a.token)}</div>
-      <p class="muted">En la PC del agente:</p><div class="token-box mono">python -m agent --server ${esc(location.origin)} --token ${esc(a.token)}</div></div>`;
+      <p class="muted">En la PC central:</p><div class="token-box mono">python -m agent --server ${esc(location.origin)} --token ${esc(a.token)}</div></div>`;
   };
   $("#af").addEventListener("submit", async (e) => {
     e.preventDefault(); const f = new FormData(e.target);
-    try { const a = await api("POST", "/api/agents", { client_id: f.get("client_id") ? +f.get("client_id") : null, name: f.get("name") }); e.target.reset(); showToken(a); } catch (err) { fail(err); }
+    try { const a = await api("POST", "/api/agents", { client_id: null, name: f.get("name") }); e.target.reset(); showToken(a); } catch (err) { fail(err); }
   });
   $$("[data-rotate]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("El token anterior deja de funcionar. ¿Generar uno nuevo?")) return;

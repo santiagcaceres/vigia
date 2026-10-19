@@ -282,15 +282,43 @@ def make_session_factory(url: str, create_schema: bool = True):
         # y sin sentencias preparadas, que el pooler en modo transacción no admite.
         engine = create_engine(url, poolclass=NullPool, connect_args={"prepare_threshold": None})
     if create_schema:
-        try:
-            Base.metadata.create_all(engine)
-            add_missing_columns(engine)
-            if engine.dialect.name == "postgresql":
-                with engine.begin() as conn:
-                    # Las tablas quedan cerradas para la API pública de Supabase (anon/authenticated):
-                    # solo este servidor, conectado como dueño de la base, puede leerlas.
-                    for table in Base.metadata.sorted_tables:
-                        conn.execute(text(f'ALTER TABLE "{table.name}" ENABLE ROW LEVEL SECURITY'))
-        except Exception:
-            log.exception("No se pudo crear o verificar el esquema (¿otra instancia lo está creando?)")
+        ensure_schema(engine)
     return engine, sessionmaker(engine, expire_on_commit=False)
+
+
+# Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
+# vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
+# arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
+SCHEMA_VERSION = "2026-10-19.3"
+
+
+class SchemaMeta(Base):
+    __tablename__ = "schema_meta"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[str] = mapped_column(String(80))
+
+
+def ensure_schema(engine) -> bool:
+    """Crea o actualiza el esquema si hace falta. Devuelve True si tuvo que tocar algo."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT value FROM schema_meta WHERE key = 'version'")).first()
+        if row and row[0] == SCHEMA_VERSION:
+            return False
+    except Exception:
+        pass  # la tabla todavía no existe: hay que crear todo
+    try:
+        Base.metadata.create_all(engine)
+        add_missing_columns(engine)
+        with engine.begin() as conn:
+            if engine.dialect.name == "postgresql":
+                # Las tablas quedan cerradas para la API pública de Supabase (anon/authenticated):
+                # solo este servidor, conectado como dueño de la base, puede leerlas.
+                for table in Base.metadata.sorted_tables:
+                    conn.execute(text(f'ALTER TABLE "{table.name}" ENABLE ROW LEVEL SECURITY'))
+            conn.execute(text("DELETE FROM schema_meta WHERE key = 'version'"))
+            conn.execute(text("INSERT INTO schema_meta (key, value) VALUES ('version', :v)"), {"v": SCHEMA_VERSION})
+        return True
+    except Exception:
+        log.exception("No se pudo crear o verificar el esquema (¿otra instancia lo está creando?)")
+        return False

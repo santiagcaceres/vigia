@@ -16,6 +16,9 @@ código, comentarios, interfaz y trato con el usuario.
 **Publicado:** ver `git log origin/main` (el último deploy de producción apunta a `main`). El proyecto Vercel
 **no** tiene auto-deploy: después de `git push` hay que lanzar el deploy a mano (MCP de Vercel
 con `gitSource` = rama + sha, o desde el panel de Vercel) y verificar `/api/health`.
+**Arranque en frío:** `ensure_schema` (server/db.py) guarda `SCHEMA_VERSION` en la tabla
+`schema_meta` y solo corre `create_all`/`ALTER` cuando cambia. **Subir `SCHEMA_VERSION` al agregar
+tablas o columnas**, si no, en producción no se crean.
 
 **Secretos:** viven en las variables de entorno de Vercel (`DATABASE_URL`, `SUPABASE_URL`,
 `SUPABASE_SECRET_KEY`, `SECRET_KEY`, `ADMIN_PASSWORD`, `CRON_SECRET`, `PUBLIC_URL`).
@@ -57,9 +60,21 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
 - **core/**: detector YOLO (ONNX, CPU), tracker, zonas/reglas, scorer, clips. El servidor solo
   importa `core.rules`, `core.scorer` (y sus deps `geometry`, `tracker`): **no** mete OpenCV ni
   onnxruntime en el build de Vercel. No romper eso.
-- **public/**: panel (SPA sin framework) + `aviso.html`, la página pública del clip. Pantallas:
-  Eventos, Revisar, Alarmas (HPP), Avisos, Videos, Entrenamiento, Clientes, Cámaras,
-  Administración (solo admin), botón "Mi clave".
+- **public/**: panel (SPA sin framework) + `aviso.html` (página pública del clip) + `guia.html` +
+  `prueba.js`. Menú (pedido del dueño, 19 oct): **Resumen, Clientes, Cámaras, Alertas, Prueba** y
+  Administración (solo admin). Las demás vistas siguen existiendo por URL y se llega desde botones:
+  `#/revisar` (desde Alertas y Resumen), `#/alarmas` (alarmas del grabador), `#/avisos`, `#/videos`,
+  `#/entrenamiento` (links "Más" al pie del Resumen). `#/eventos` fue renombrado `#/alertas`.
+  Clientes y cámaras se cachean 20 s en el navegador (`loadClients`/`loadCameras`) para que
+  cambiar de pestaña no vuelva a pedir todo.
+- **Pestaña Prueba** (`public/prueba.js`): comparte la pantalla (`getDisplayMedia`) de la ventana de
+  HPP / iVMS / SmartPSS con la cámara en vivo y corre el detector de personas **en el navegador**
+  con ONNX Runtime Web (jsdelivr 1.19.2, wasm 1 hilo) sobre `public/models/personas.onnx` (copia
+  del de `models/`, 10 MB; si se reexporta el modelo, copiar a los dos lados). El usuario marca el
+  recuadro de la cámara y una zona; si una persona (punto de los pies) queda en la zona más de N s,
+  guarda una alerta: `POST /api/events/manual` (foto) → PUT del clip webm de 12 s a la URL firmada →
+  `POST /api/events/{id}/clip-done`. `Event.source="prueba"`, `clip_source="prueba"`. Es un puente
+  para probar con video real sin tocar el local; no reemplaza al agente.
 
 `server/probe.py` + `POST /api/cameras/{id}/probe`: prueba desde Vercel que el DVR responda por HTTP
 (ISAPI deviceInfo / CGI magicBox) con el usuario y la clave cargados, lista los canales y avisa si
@@ -121,8 +136,9 @@ Criterio elegido: **mínimo costo y mínima intrusión en el local del cliente.*
 
 ### Modo central
 `Agent.client_id` NULL = agente **central**: corre en la PC de la empresa y atiende las cámaras
-que se le asignen, **de cualquier cliente**, llegando a cada DVR por **VPN** (Tailscale /
-WireGuard; cajita GL.iNet ~US$30 si el router no soporta). Evita poner una PC por local.
+que se le asignen, **de cualquier cliente**, llegando a cada DVR por internet (puertos abiertos en
+el router del cliente). El panel solo crea agentes centrales (los "de local" siguen en el modelo de
+datos pero ya no se ofrecen).
 `agent_owns()` / `agent_cameras_q()` deciden qué ve cada agente. Cada cámara recibe el
 `filter_model` de **su** cliente, así un agente corre varios modelos a la vez.
 
@@ -158,11 +174,11 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   o DDNS + dos puertos externos no estándar redirigidos a 554 y 80) y usar el mismo enlace RTSP de
   siempre. Es la opción más riesgosa de las que se compararon; las mitigaciones están en
   `public/guia.html` (usuario `vigia` mínimo, clave larga, puertos altos, firmware, bloqueo por
-  intentos). Para locales con PC siempre prendida se prefiere **Tailscale subnet router** (sin abrir
-  nada). Otras opciones evaluadas y descartadas por ahora: RTMP saliente desde el DVR (solo modelos
-  nuevos), FTP de clips (Hikvision solo sube fotos), capturar la pantalla de HPP (frágil, 24 h de
-  CPU), foto de alarma de HPP (no es video). La definitiva para Hikvision sigue siendo la clave
-  VSaaS/HPNetSDK (pendiente de pedir).
+  intentos). **No va ninguna PC ni aparato en el local del cliente** (el dueño lo descartó): la PC
+  central llega directo al DVR por los puertos del router de Antel. La captura de pantalla de HPP
+  quedó como pestaña **Prueba** (puente para probar, no servicio). Descartadas por ahora: Tailscale
+  en PC del local, RTMP saliente, FTP de clips, foto de alarma de HPP. La definitiva para Hikvision
+  sigue siendo la clave VSaaS/HPNetSDK (pendiente de pedir).
 - El detector es **YOLO11n, licencia AGPL-3.0**. Para vender hay que comprar licencia
   Enterprise de Ultralytics o cambiar a un modelo Apache-2.0 (YOLOX, RT-DETR). **Pendiente.**
 
@@ -179,7 +195,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 102 tests (unos 30 se saltean sin Postgres)
+python -m pytest -q                 # 104 tests (unos 30 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
@@ -190,8 +206,8 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 - **Deploy:** `git push` + lanzar el deploy en Vercel (el proyecto no tiene auto-deploy por git
   configurado; se dispara con la API/MCP de Vercel o desde el panel de Vercel).
 - Las tablas se crean solas (`create_all`) y quedan con RLS activo. Las **columnas nuevas** también
-  se agregan solas al arrancar (`add_missing_columns` en `server/db.py`); renombrar o cambiar el
-  tipo de una columna sí requiere migración manual.
+  se agregan solas al arrancar (`add_missing_columns`), pero **solo si se sube `SCHEMA_VERSION`** en
+  `server/db.py`. Renombrar o cambiar el tipo de una columna sí requiere migración manual.
 - Ojo: `requirements.txt` es del servidor; `requirements-agent.txt` del agente (OpenCV, onnxruntime).
 - En la sesión cloud de Claude Code: `pip install -r requirements.txt -r requirements-agent.txt
   pytest scikit-learn`; Postgres local con `initdb` como usuario `postgres` en `/var/tmp/vigia-pg`
@@ -224,7 +240,7 @@ seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_t
    y que el clip bajado sea del momento correcto (`playback_time`). Si Dahua trae `index` con otra
    numeración, ajustar `parse_dahua_line`.
 2. **Conectar cada local según `public/guia.html`:** DVR por el router (IP pública/DDNS + puertos
-   externos) o Tailscale en una PC del local. Anotar por cliente qué camino se usó.
+   externos). Hasta que un local tenga los puertos abiertos, probar con la pestaña **Prueba**.
 3. **Piloto y medición:** % de alarmas descartadas solas y, de las que tienen persona, cuántas
    eran hurto (con las etiquetas de los empleados). Sin esto no se puede prometer precisión.
 4. **Conectar HPP** (solo Hikvision, opcional): el socio saca la API key, se carga en Vercel,

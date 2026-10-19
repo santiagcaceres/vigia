@@ -249,6 +249,10 @@ class HppSetupIn(BaseModel):
     all_devices: bool = False  # True: suscribir todos los equipos de la cuenta HPP
 
 
+class ManualClipIn(BaseModel):
+    ext: Literal["webm", "mp4"] = "webm"
+
+
 class ClipDoneIn(BaseModel):
     source: Literal["nvr", "buffer", "video"] = "buffer"
 
@@ -1209,7 +1213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------ eventos
     @app.get("/api/events")
     def list_events(client_id: int | None = None, camera_id: int | None = None, type: str | None = None,
-                    label: str | None = None, source: Literal["vivo", "importado", "alarma"] | None = None,
+                    label: str | None = None, source: Literal["vivo", "importado", "alarma", "prueba"] | None = None,
                     alert: bool | None = None, since: datetime | None = None, until: datetime | None = None,
                     import_id: int | None = None, order: Literal["reciente", "antiguo"] = "reciente",
                     limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
@@ -1243,6 +1247,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                          .order_by(*ordering).limit(limit).offset(offset)).all()
         return {"items": [event_dict(e, cn, kn) for e, cn, kn in rows], "total": total, "limit": limit,
                 "offset": offset}
+
+    @app.post("/api/events/manual", status_code=201)
+    def manual_event(meta: str = Form(...), snapshot: UploadFile = File(...), user: User = Depends(staff),
+                     s=Depends(db)) -> dict:
+        """Evento creado desde la pestaña Prueba (análisis en el navegador de la pantalla de HPP).
+        Devuelve una URL firmada para subir el clip grabado; después se llama a clip-done."""
+        try:
+            m = json.loads(meta)
+            cam = get_or_404(s, Camera, int(m["camera_id"]), "Cámara")
+            etype = m.get("type") if m.get("type") in EVENT_TYPES else "alarma_dvr"
+            ext = m.get("ext") if m.get("ext") in ("webm", "mp4") else "webm"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(422, f"Metadatos inválidos: {exc}") from exc
+        data = snapshot.file.read(5 * 1024 * 1024 + 1)
+        if len(data) > 5 * 1024 * 1024:
+            raise HTTPException(413, "Imagen demasiado grande")
+        uid = secrets.token_hex(16)
+        snap_path = f"c{cam.client_id}/cam{cam.id}/{uid}.jpg"
+        clip_path = f"c{cam.client_id}/cam{cam.id}/{uid}.{ext}"
+        try:
+            storage.put(snap_path, data, "image/jpeg")
+            upload_url = storage.signed_upload_url(clip_path)
+        except StorageError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        ev = Event(uuid=uid, client_id=cam.client_id, camera_id=cam.id, source="prueba", type=etype,
+                   severity=SEVERITY[etype], zone=(m.get("zone") or None),
+                   description=str(m.get("description", "Prueba desde la pantalla"))[:500],
+                   occurred_at=parse_occurred_at(m.get("occurred_at")),
+                   features={k: float(v) for k, v in (m.get("features") or {}).items() if k in FEATURE_NAMES},
+                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size"), "prueba": True,
+                         "clip_path": clip_path}, score=None, alert=True, snapshot_path=snap_path)
+        s.add(ev)
+        s.commit()
+        return {**event_dict(ev, cam.name, s.get(Client, cam.client_id).name), "upload_url": upload_url,
+                "content_type": "video/webm" if ext == "webm" else "video/mp4"}
+
+    @app.post("/api/events/{eid}/clip-done")
+    def manual_clip_done(eid: int, body: ManualClipIn, _: User = Depends(staff), s=Depends(db)) -> dict:
+        e = get_or_404(s, Event, eid, "Evento")
+        path = (e.meta or {}).get("clip_path") if e.source == "prueba" else None
+        if not path:
+            raise HTTPException(409, "Este evento no espera un clip")
+        if not storage.exists(path):
+            raise HTTPException(409, "El clip no llegó al almacenamiento")
+        e.clip_path, e.clip_source = path, "prueba"
+        s.commit()
+        return event_dict(e, s.get(Camera, e.camera_id).name, s.get(Client, e.client_id).name)
 
     @app.get("/api/events/{eid}")
     def get_event(eid: int, user: User = Depends(current_user), s=Depends(db)) -> dict:
@@ -1375,7 +1428,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client_id = scope_client(user, client_id)
         q = (select(Event.type, Event.label, Event.alert, Event.occurred_at, Camera.name)
              .join(Camera, Camera.id == Event.camera_id)
-             .where(Event.occurred_at >= utcnow() - timedelta(days=days), Event.source.in_(("vivo", "alarma"))))
+             .where(Event.occurred_at >= utcnow() - timedelta(days=days), Event.source.in_(("vivo", "alarma", "prueba"))))
         if client_id is not None:
             q = q.where(Event.client_id == client_id)
         rows = s.execute(q).all()
@@ -1597,7 +1650,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not st.cron_secret or not secrets.compare_digest(authorization, f"Bearer {st.cron_secret}"):
             raise HTTPException(401, "No autorizado")
         cutoff = utcnow() - timedelta(days=st.retention_days)
-        old = (s.query(Event).filter(Event.source.in_(("vivo", "alarma")), Event.received_at < cutoff)
+        old = (s.query(Event).filter(Event.source.in_(("vivo", "alarma", "prueba")), Event.received_at < cutoff)
                .order_by(Event.id).limit(2000).all())
         unlabeled = [e for e in old if not e.label]
         labeled = [e for e in old if e.label and (e.snapshot_path or e.clip_path)]

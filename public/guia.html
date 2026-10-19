@@ -61,7 +61,7 @@
     <code>rtsp://usuario:clave@IP-o-DDNS:puerto/...</code> (el mismo que se usa en VLC u OBS). Para que ese enlace
     funcione desde afuera del local, el router del cliente tiene que <b>redirigir dos puertos</b> al grabador.
     Eso deja el grabador alcanzable desde internet: por eso la sección 8 (seguridad) no es opcional.
-    Si el local tiene una PC prendida siempre, la alternativa con Tailscale (sección 8) evita abrir puertos.
+    No hace falta instalar nada en el local: ni PC ni aparatos.
   </div>
 
   <h2 id="datos">1. Qué pedirle al cliente</h2>
@@ -131,7 +131,7 @@
     <li>Sirve también activarlo en el router, si lo ofrece (muchos ZTE/Huawei de Antel traen NO-IP o DynDNS).</li>
     <li>Resultado: un nombre tipo <code>almacenpocitos.ddns.net</code> que se carga en el panel como "IP del grabador". Si no hace falta, se carga la IP pública (se ve en <a href="https://www.cual-es-mi-ip.net" target="_blank" rel="noopener">cual-es-mi-ip.net</a> desde una PC del local).</li>
   </ul>
-  <div class="card warn">Si el cliente tiene internet móvil (4G/5G) o Antel lo puso detrás de CG-NAT (la IP pública que ve el router empieza con <code>100.64</code> a <code>100.127</code>), <b>no se puede redirigir puertos</b>. Para esos locales queda la alternativa con Tailscale en una PC (sección 8).</div>
+  <div class="card warn">Si el cliente tiene internet móvil (4G/5G) o Antel lo puso detrás de CG-NAT (la IP pública que ve el router empieza con <code>100.64</code> a <code>100.127</code>), <b>no se puede redirigir puertos</b>: hay que pedirle a Antel una IP pública (en fibra suele venir) o cambiar el plan. Mientras tanto ese local se puede probar desde la pestaña <b>Prueba</b> del panel (análisis de la pantalla de HPP).</div>
 
   <h2 id="probar">5. Probar desde afuera del local</h2>
   <ol>
@@ -156,7 +156,7 @@ Dahua:     rtsp://vigia:CLAVE@IP-o-DDNS:38554/cam/realmonitor?channel=1&amp;subt
         <tr><td>Puerto RTSP / Puerto HTTP</td><td>Los <b>externos</b> que abriste en el router (ej. 38554 y 38080)</td></tr>
         <tr><td>Canal</td><td>El número de la cámara en el grabador</td></tr>
         <tr><td>Usuario / Clave</td><td><code>vigia</code> y su clave</td></tr>
-        <tr><td>Agente</td><td>La PC central</td></tr>
+        <tr><td>PC central (agente)</td><td>La PC central, ya seleccionada</td></tr>
         <tr><td>Alarmas que se analizan</td><td>Movimiento siempre; Intrusión / Cruce de línea si el grabador las tiene configuradas</td></tr>
       </table>
     </li>
@@ -183,10 +183,9 @@ Dahua:     rtsp://vigia:CLAVE@IP-o-DDNS:38554/cam/realmonitor?channel=1&amp;subt
     </ul>
   </div>
   <div class="card ok">
-    <b>Alternativa sin abrir puertos (si el local tiene una PC siempre prendida):</b> instalar <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a>
-    en esa PC con la cuenta de Vigía, activarla como <i>subnet router</i> de la red del local (<code>tailscale up --advertise-routes=192.168.1.0/24</code>)
-    y aprobar la ruta en el panel de Tailscale. La cámara se carga con la IP interna del grabador (<code>192.168.1.64</code>) y los puertos normales (554 / 80).
-    Nada queda expuesto a internet.
+    <b>Mientras el local no tiene los puertos abiertos:</b> la pestaña <b>Prueba</b> del panel permite compartir la ventana de Hik-Partner Pro
+    (o iVMS-4200 / SmartPSS) con la cámara en vivo y analizar ese video en el navegador. Sirve para probar el detector con video real y juntar
+    clips, no como servicio definitivo (la imagen llega comprimida y depende de que la ventana quede abierta).
   </div>
 
   <h2 id="problemas">9. Si algo falla</h2>
