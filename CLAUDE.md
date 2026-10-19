@@ -67,6 +67,25 @@ Cámara con `mode="alarmas"`, `hpp_serial` (serie del DVR en HPP), `channel` y `
 - El formato exacto del cuerpo del webhook no está documentado: se parsea tolerante y se guarda
   `raw`. **Verificar con la primera alarma real** (logs de Vercel + `alarms.raw`).
 
+### Alarmas desde el equipo (LO MÁS SIMPLE Y BARATO: hacer esto primero)
+Criterio elegido: **mínimo costo y mínima intrusión en el local del cliente.**
+- **En el local no se instala nada** (ni PC ni software): solo hace falta llegar al grabador
+  por VPN, que es necesaria igual para bajar el video.
+- **El propio grabador avisa sus alarmas** por una conexión HTTP larga. No hace falta ninguna
+  nube, ni API key, ni que el cliente esté en HPP o DoLynk Care.
+- **Funciona igual para las dos marcas** (verificado oct 2026):
+  - Dahua: `GET /cgi-bin/eventManager.cgi?action=attach&channel=<N>&codes=[VideoMotion,CrossLineDetection]`
+    con auth digest. Devuelve líneas `Code=VideoMotion;action=Start;index=0` a medida que ocurren.
+  - Hikvision: `GET /ISAPI/Event/notification/alertStream` (digest), multipart XML por evento.
+    **Confirmar el path contra un equipo real antes de darlo por hecho.**
+- **Reusa todo lo que ya existe** del modo alarmas: al disparo, `download_nvr_clip` del tramo
+  [alarma − pre, alarma + post] y `analyze_clip`; si no hay personas se descarta solo.
+- Encaje sugerido: `Camera.mode = "alarmas_equipo"` + en el agente un listener por cámara que
+  alimente el mismo pipeline de `AlarmRunner` (hoy alimentado por `/api/agent/alarms/next`).
+- **Por qué antes que HPP:** mientras no llegue la clave VSaaS, el modo HPP **no ahorra la VPN**,
+  porque el video sale del grabador igual. HPP se mantiene para cuando llegue esa clave y porque
+  reemplaza a los empleados del socio que miran el portal.
+
 ### Modo central
 `Agent.client_id` NULL = agente **central**: corre en la PC de la empresa y atiende las cámaras
 que se le asignen, **de cualquier cliente**, llegando a cada DVR por **VPN** (Tailscale /
@@ -135,16 +154,21 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 
 ## Próximos pasos
 
-1. **Conectar HPP:** el socio saca la API key, se carga en Vercel, "Conectar" en Alarmas HPP, y
-   revisar la primera alarma real (formato del webhook, hora del DVR, serie/canal).
-2. **Video de las alarmas:** pedir a Hikvision la clave VSaaS/HPNetSDK (sin VPN), o poner VPN en
-   cada local (router con WireGuard/Tailscale o cajita GL.iNet ~US$30).
-3. **Medir:** % de alarmas descartadas solas y cuántas con persona eran hurto (con las etiquetas).
-4. **Detector de ocultamiento** (mano góndola→cuerpo): necesita 30–50 videos etiquetados.
-5. **Licencia del detector** (AGPL) antes de cobrar.
-6. **Preguntas a Hikvision:** ¿requisitos y costo de la clave VSaaS / HPNetSDK? ¿permite descargar
-   la grabación por horario (o el clip de alarma) por equipo? ¿corre en Windows/Linux? ¿UY/AR?
-7. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
+1. **Alarmas desde el equipo** (ver sección arriba): es el camino más simple, más barato y menos
+   invasivo, y deja a Dahua a la par de Hikvision. Hacer esto primero.
+2. **VPN por local:** router del cliente con WireGuard/Tailscale (US$0) o cajita GL.iNet (~US$30).
+   Nunca abrir puertos del DVR a internet.
+3. **Piloto y medición:** % de alarmas descartadas solas y, de las que tienen persona, cuántas
+   eran hurto (con las etiquetas de los empleados). Sin esto no se puede prometer precisión.
+4. **Conectar HPP** (solo Hikvision, opcional): el socio saca la API key, se carga en Vercel,
+   "Conectar" en Alarmas HPP, y revisar la primera alarma real (formato del webhook, hora del
+   DVR, serie/canal).
+5. **Preguntas a Hikvision:** ¿requisitos y costo de la clave VSaaS / HPNetSDK? ¿permite bajar la
+   grabación por horario (o el clip de alarma)? ¿corre en Windows/Linux? ¿UY/AR? Si la dan,
+   los clientes Hikvision se quedan sin VPN (otro `ClipFetcher` en `agent/alarms.py`).
+6. **Detector de ocultamiento** (mano góndola→cuerpo): necesita 30–50 videos etiquetados.
+7. **Licencia del detector** (AGPL) antes de cobrar.
+8. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
    los archivos a 50 MB).
 
 ## Estilo
