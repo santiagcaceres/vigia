@@ -61,6 +61,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Eventos, Revisar, Alarmas (HPP), Avisos, Videos, Entrenamiento, Clientes, Cámaras,
   Administración (solo admin), botón "Mi clave".
 
+`server/probe.py` + `POST /api/cameras/{id}/probe`: prueba desde Vercel que el DVR responda por HTTP
+(ISAPI deviceInfo / CGI magicBox) con el usuario y la clave cargados, lista los canales y avisa si
+está expuesto con puertos estándar. Botón "Probar conexión" en Cámaras. `public/guia.html` es la
+guía paso a paso (datos a pedir, usuario en el DVR, puertos en el router de Antel, DDNS, prueba en
+VLC, carga en el panel, seguridad, fallas comunes); link "Guía" en el menú.
+
 Archivos clave del modo alarmas: `server/hpp.py` (firma del webhook, parseo de alarmas, cliente
 de la OpenAPI), `core/clip_analysis.py` (un clip → un resultado), `agent/alarms.py` (cola en la
 PC central, `--alarm-workers N`), `tests/test_alarms.py` (flujo completo).
@@ -147,7 +153,16 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
   y otros en UTC. Se elige por cámara con `playback_time`; si el clip llega corrido, probar la otra.
-- **Nunca** abrir puertos del DVR a internet: siempre VPN.
+- **Cómo se llega al DVR (decisión del dueño, 19 oct 2026):** la cajita GL.iNet quedó descartada
+  (en Uruguay cuesta ~12.000 UYU). Se eligió **exponer el DVR por el router del cliente** (IP pública
+  o DDNS + dos puertos externos no estándar redirigidos a 554 y 80) y usar el mismo enlace RTSP de
+  siempre. Es la opción más riesgosa de las que se compararon; las mitigaciones están en
+  `public/guia.html` (usuario `vigia` mínimo, clave larga, puertos altos, firmware, bloqueo por
+  intentos). Para locales con PC siempre prendida se prefiere **Tailscale subnet router** (sin abrir
+  nada). Otras opciones evaluadas y descartadas por ahora: RTMP saliente desde el DVR (solo modelos
+  nuevos), FTP de clips (Hikvision solo sube fotos), capturar la pantalla de HPP (frágil, 24 h de
+  CPU), foto de alarma de HPP (no es video). La definitiva para Hikvision sigue siendo la clave
+  VSaaS/HPNetSDK (pendiente de pedir).
 - El detector es **YOLO11n, licencia AGPL-3.0**. Para vender hay que comprar licencia
   Enterprise de Ultralytics o cambiar a un modelo Apache-2.0 (YOLOX, RT-DETR). **Pendiente.**
 
@@ -164,7 +179,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 98 tests (unos 30 se saltean sin Postgres)
+python -m pytest -q                 # 102 tests (unos 30 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
@@ -208,8 +223,8 @@ seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_t
    la cámara en ese modo, generar movimiento y mirar en Alarmas que llegue, que el canal coincida
    y que el clip bajado sea del momento correcto (`playback_time`). Si Dahua trae `index` con otra
    numeración, ajustar `parse_dahua_line`.
-2. **VPN por local:** router del cliente con WireGuard/Tailscale (US$0) o cajita GL.iNet (~US$30).
-   Nunca abrir puertos del DVR a internet.
+2. **Conectar cada local según `public/guia.html`:** DVR por el router (IP pública/DDNS + puertos
+   externos) o Tailscale en una PC del local. Anotar por cliente qué camino se usó.
 3. **Piloto y medición:** % de alarmas descartadas solas y, de las que tienen persona, cuántas
    eran hurto (con las etiquetas de los empleados). Sin esto no se puede prometer precisión.
 4. **Conectar HPP** (solo Hikvision, opcional): el socio saca la API key, se carga en Vercel,

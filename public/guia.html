@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vigía · Guía de conexión</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23e5484d'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a333f; --text:#e6edf3; --muted:#8b98a8; --accent:#e5484d; --warn:#e3a008; --ok:#2fb344; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg:#f5f6f8; --panel:#fff; --line:#dde1e6; --text:#1b1f24; --muted:#5f6b7a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:20px; }
+  .dot { width:14px; height:14px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 5px rgba(229,72,77,.22); }
+  h1 { font-size:26px; margin:18px 0 6px; }
+  h2 { font-size:20px; margin:36px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:18px 0 6px; }
+  .muted { color:var(--muted); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:12px 0; }
+  .warn { border-left:4px solid var(--warn); }
+  .ok { border-left:4px solid var(--ok); }
+  .bad { border-left:4px solid var(--accent); }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; background: rgba(127,127,127,.12); padding: 1px 5px; border-radius: 5px; }
+  pre { background: rgba(127,127,127,.12); padding: 12px 14px; border-radius: 8px; overflow:auto; font-size:14px; }
+  table { width:100%; border-collapse: collapse; font-size:15px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align: top; }
+  th { color:var(--muted); font-weight:600; font-size:13px; text-transform: uppercase; letter-spacing:.03em; }
+  ol li, ul li { margin: 6px 0; }
+  .toc a { display:inline-block; margin: 4px 10px 4px 0; }
+  a { color: #4c9ffe; }
+  .print { float:right; font-size:14px; }
+  @media print { .print, .toc { display:none; } body { background:#fff; color:#000; } .card { border-color:#999; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="dot"></span>Vigía <span class="muted" style="font-weight:400">· Guía de conexión</span>
+    <a class="print" href="javascript:print()">Imprimir</a></div>
+  <h1>Conectar el grabador de un cliente a Vigía</h1>
+  <p class="muted">Cómo llegar al DVR/NVR del cliente a través de su router, qué pedirle y cómo cargarlo en el panel.
+    Vale para Hikvision y Dahua. Tiempo estimado: 30 a 45 minutos por local la primera vez.</p>
+
+  <p class="toc">
+    <a href="#datos">1. Qué pedirle al cliente</a>
+    <a href="#usuario">2. Usuario en el grabador</a>
+    <a href="#router">3. Abrir los puertos en el router</a>
+    <a href="#ddns">4. IP fija o DDNS</a>
+    <a href="#probar">5. Probar desde afuera</a>
+    <a href="#panel">6. Cargar en el panel</a>
+    <a href="#agente">7. La PC central</a>
+    <a href="#seguridad">8. Seguridad</a>
+    <a href="#problemas">9. Si algo falla</a>
+  </p>
+
+  <div class="card warn">
+    <b>Cómo funciona esta conexión.</b> La PC central lee el video del grabador por internet con un enlace
+    <code>rtsp://usuario:clave@IP-o-DDNS:puerto/...</code> (el mismo que se usa en VLC u OBS). Para que ese enlace
+    funcione desde afuera del local, el router del cliente tiene que <b>redirigir dos puertos</b> al grabador.
+    Eso deja el grabador alcanzable desde internet: por eso la sección 8 (seguridad) no es opcional.
+    Si el local tiene una PC prendida siempre, la alternativa con Tailscale (sección 8) evita abrir puertos.
+  </div>
+
+  <h2 id="datos">1. Qué pedirle al cliente</h2>
+  <p>Lo mínimo para dejar un local andando. Las claves se piden por privado, nunca por un grupo de WhatsApp.</p>
+  <table>
+    <tr><th>Dato</th><th>Para qué</th><th>Dónde lo consigue el cliente</th></tr>
+    <tr><td><b>Marca y modelo del grabador</b></td><td>Hikvision o Dahua; define las rutas de video</td><td>Etiqueta del equipo o pantalla de inicio del DVR</td></tr>
+    <tr><td><b>Usuario y clave de administrador del grabador</b></td><td>Solo para crear el usuario <code>vigia</code> y ver la configuración; después no se usa</td><td>Quien instaló las cámaras. Si no la tienen, se recupera con el instalador</td></tr>
+    <tr><td><b>Acceso al router del cliente</b> (usuario y clave, o que alguien del local los tenga a mano)</td><td>Redirigir los puertos</td><td>Etiqueta del router (Antel: suele estar abajo del equipo) o el instalador</td></tr>
+    <tr><td><b>IP del grabador dentro del local</b> (ej. <code>192.168.1.64</code>)</td><td>A dónde redirige el router</td><td>Pantalla del DVR: Configuración → Red. O en la lista de equipos del router</td></tr>
+    <tr><td><b>Tipo de internet y si la IP cambia</b></td><td>Decidir si hace falta DDNS</td><td>Antel fibra en general tiene IP pública que cambia cada tanto</td></tr>
+    <tr><td><b>Qué mira cada cámara</b> (canal: góndola, caja, puerta, depósito)</td><td>Elegir qué canales cargar y dibujar las zonas</td><td>Mirando la grilla del DVR</td></tr>
+    <tr><td><b>WhatsApp o email del dueño</b></td><td>Para avisarle cuando un empleado confirma un posible hurto</td><td>—</td></tr>
+  </table>
+  <p class="muted">Conviene hacer todo esto en una llamada o visita con alguien que esté frente al DVR y al router.</p>
+
+  <h2 id="usuario">2. Crear el usuario <code>vigia</code> en el grabador</h2>
+  <p>Nunca usar la clave de <code>admin</code> del cliente en Vigía. Se crea un usuario propio, con permisos mínimos.</p>
+  <div class="card">
+    <h3>Hikvision</h3>
+    <ol>
+      <li>Entrar por navegador a <code>http://IP-del-grabador</code> (o desde el monitor del DVR, o a distancia con Hik-Partner Pro).</li>
+      <li><b>Configuración → Sistema → Gestión de usuarios → Agregar.</b> Usuario <code>vigia</code>, nivel <b>Operador</b>.</li>
+      <li>Permisos: marcar solo <b>Vista en vivo remota</b> y <b>Reproducción remota</b> en todas las cámaras. Nada más.</li>
+      <li><b>Configuración → Red → Avanzado → Integración:</b> habilitar <b>Hikvision-CGI / ISAPI</b> con autenticación <b>digest</b>, y activar <b>RTSP</b> (puerto 554 por defecto).</li>
+      <li><b>Configuración → Video:</b> el <b>flujo secundario</b> en <b>H.264</b> (no H.265, sin H.264+), 640×360 o 704×576, 10 a 15 fps.</li>
+    </ol>
+    <h3>Dahua</h3>
+    <ol>
+      <li>Entrar por navegador a <code>http://IP-del-grabador</code> (o desde el monitor, o a distancia con DoLynk Care).</li>
+      <li><b>Configuración → Sistema → Cuenta → Agregar usuario.</b> Usuario <code>vigia</code>, grupo <b>user</b>.</li>
+      <li>Permisos: solo <b>Monitor (vista en vivo)</b> y <b>Reproducción</b> en todos los canales.</li>
+      <li><b>Configuración → Red → Puerto:</b> verificar RTSP (554) y HTTP (80). La API CGI viene habilitada.</li>
+      <li><b>Configuración → Cámara → Codificación:</b> el <b>flujo secundario</b> en <b>H.264</b>, sin "Smart Codec", 704×576 o 640×480, 10 a 15 fps.</li>
+    </ol>
+  </div>
+
+  <h2 id="router">3. Abrir los puertos en el router del cliente</h2>
+  <p>El router tiene que redirigir dos puertos de internet hacia la IP del grabador. Se usan <b>puertos externos no estándar</b>
+    (no 554 ni 80) para que el grabador no aparezca en los escaneos más comunes.</p>
+  <table>
+    <tr><th>Servicio</th><th>Puerto interno (en el grabador)</th><th>Puerto externo sugerido (en internet)</th><th>Protocolo</th></tr>
+    <tr><td>RTSP (video)</td><td>554</td><td>un número entre 20000 y 60000, ej. <code>38554</code></td><td>TCP</td></tr>
+    <tr><td>HTTP (datos del equipo y alarmas)</td><td>80</td><td>otro número, ej. <code>38080</code></td><td>TCP</td></tr>
+  </table>
+  <p>Usá un número distinto por cliente y anotalo en el panel. No abrir ningún otro puerto (ni 8000, ni 37777, ni "DMZ").</p>
+  <div class="card">
+    <h3>Router de Antel (ZTE, Huawei, Sagemcom, Nokia)</h3>
+    <ol>
+      <li>Entrar a <code>http://192.168.1.1</code> con el usuario y la clave de la etiqueta del router.</li>
+      <li>Buscar <b>Aplicación → Port Forwarding</b> (ZTE), <b>Reenvío → NAT → Servidor virtual</b> (Huawei) o <b>Access Control / NAT</b> (Sagemcom).</li>
+      <li>Agregar una regla por puerto: nombre <code>Vigia RTSP</code>, protocolo TCP, puerto externo (WAN) <code>38554</code>, IP interna = la del grabador, puerto interno <code>554</code>. Repetir con <code>38080 → 80</code>.</li>
+      <li>Guardar y, si el router lo pide, reiniciar.</li>
+      <li>Si el menú no deja crear reglas o pide "modo avanzado", hay que llamar a Antel y pedir que habiliten la administración del router o lo pasen a "bridge" con un router propio. Es frecuente con los routers más nuevos.</li>
+    </ol>
+    <h3>Otros routers (TP-Link, Mercusys, Tenda, MikroTik)</h3>
+    <p>Mismo concepto: <b>Reenvío de puertos / Servidor virtual / NAT</b>. Dos reglas, TCP, externo → IP del grabador + puerto interno.</p>
+    <h3>Importante: IP fija para el grabador dentro del local</h3>
+    <p>Si el router le cambia la IP interna al grabador, la regla deja de funcionar. En el router, <b>reservar</b> la IP del grabador
+      (DHCP → Reserva / Binding, por MAC), o en el grabador ponerle IP fija fuera del rango DHCP.</p>
+  </div>
+
+  <h2 id="ddns">4. La IP pública del cliente: fija o DDNS</h2>
+  <p>El enlace necesita la IP pública del cliente. Antel la cambia cada tanto (reinicios, cortes), así que conviene un nombre <b>DDNS</b> que la siga:</p>
+  <ul>
+    <li><b>El propio grabador</b> trae DDNS gratis: Hikvision <b>Configuración → Red → DDNS</b> (proveedores NO-IP / DynDNS, o <b>Hik-Connect DDNS</b> si tienen cuenta); Dahua <b>Red → DDNS</b> (Dahua DDNS gratis o NO-IP).</li>
+    <li>Sirve también activarlo en el router, si lo ofrece (muchos ZTE/Huawei de Antel traen NO-IP o DynDNS).</li>
+    <li>Resultado: un nombre tipo <code>almacenpocitos.ddns.net</code> que se carga en el panel como "IP del grabador". Si no hace falta, se carga la IP pública (se ve en <a href="https://www.cual-es-mi-ip.net" target="_blank" rel="noopener">cual-es-mi-ip.net</a> desde una PC del local).</li>
+  </ul>
+  <div class="card warn">Si el cliente tiene internet móvil (4G/5G) o Antel lo puso detrás de CG-NAT (la IP pública que ve el router empieza con <code>100.64</code> a <code>100.127</code>), <b>no se puede redirigir puertos</b>. Para esos locales queda la alternativa con Tailscale en una PC (sección 8).</div>
+
+  <h2 id="probar">5. Probar desde afuera del local</h2>
+  <ol>
+    <li>Desde una PC que <b>no</b> esté en la red del local (o el celular con datos móviles), abrir en el navegador
+      <code>http://IP-o-DDNS:38080</code>. Tiene que aparecer la pantalla de inicio de sesión del grabador. Si no carga, la regla del puerto HTTP está mal.</li>
+    <li>En VLC (Medio → Abrir ubicación de red) pegar el enlace RTSP del canal, con el puerto externo:
+      <pre>Hikvision: rtsp://vigia:CLAVE@IP-o-DDNS:38554/Streaming/Channels/102
+Dahua:     rtsp://vigia:CLAVE@IP-o-DDNS:38554/cam/realmonitor?channel=1&amp;subtype=1</pre>
+      (<code>102</code> = canal 1, flujo secundario; <code>202</code> = canal 2). Tiene que verse el video en unos segundos.</li>
+    <li>En el panel, después de cargar la cámara, el botón <b>Probar conexión</b> hace la misma prueba del punto 1 desde el servidor y muestra el modelo y los canales que ve.</li>
+  </ol>
+
+  <h2 id="panel">6. Cargar en el panel</h2>
+  <ol>
+    <li><b>Clientes → Nuevo cliente:</b> nombre del local, zona horaria y contacto del dueño.</li>
+    <li><b>Cámaras → Agregar cámara</b>, una por canal que interese:
+      <table>
+        <tr><th>Campo</th><th>Qué poner</th></tr>
+        <tr><td>Marca</td><td>Hikvision o Dahua</td></tr>
+        <tr><td>Modo</td><td><b>Alarmas del propio grabador</b> (recomendado): solo se analiza el tramo de cada alarma</td></tr>
+        <tr><td>IP del grabador</td><td>La IP pública o el nombre DDNS del cliente (no la 192.168…)</td></tr>
+        <tr><td>Puerto RTSP / Puerto HTTP</td><td>Los <b>externos</b> que abriste en el router (ej. 38554 y 38080)</td></tr>
+        <tr><td>Canal</td><td>El número de la cámara en el grabador</td></tr>
+        <tr><td>Usuario / Clave</td><td><code>vigia</code> y su clave</td></tr>
+        <tr><td>Agente</td><td>La PC central</td></tr>
+        <tr><td>Alarmas que se analizan</td><td>Movimiento siempre; Intrusión / Cruce de línea si el grabador las tiene configuradas</td></tr>
+      </table>
+    </li>
+    <li>Guardar y apretar <b>Probar conexión</b>. Si dice OK y lista los canales, la red está bien.</li>
+    <li>En el grabador, activar la <b>detección de movimiento</b> (o intrusión) en esos canales, con sensibilidad media y, si se puede, zona de detección sobre góndolas y caja.</li>
+    <li>Cuando el agente mande la primera imagen (hasta 5 minutos), entrar a <b>Zonas y reglas</b> y dibujar góndola, caja y salida sobre el piso.</li>
+    <li>Provocar una alarma (caminar frente a la cámara) y mirar en <b>Alarmas</b> que llegue, se baje el clip y aparezca "Con persona".</li>
+  </ol>
+
+  <h2 id="agente">7. La PC central</h2>
+  <p>Una sola PC en la oficina corre el agente para todos los clientes. Instalación en el README del proyecto; en resumen:</p>
+  <pre>python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN-DEL-AGENTE-CENTRAL</pre>
+  <p>El token se genera en <b>Administración → Agentes</b>. En <b>Cámaras</b> cada cámara muestra "Escuchando alarmas" cuando la PC central llegó al grabador, o el error en caso contrario.</p>
+
+  <h2 id="seguridad">8. Seguridad (obligatorio al abrir puertos)</h2>
+  <div class="card bad">
+    <ul>
+      <li><b>Usuario <code>vigia</code> con permisos mínimos</b> (solo ver y reproducir) y <b>clave larga</b> (12+ caracteres, letras, números y símbolos), distinta por cliente.</li>
+      <li><b>Cambiar la clave de <code>admin</code> del grabador</b> si sigue siendo la de fábrica o una fácil. Es lo primero que prueban los atacantes.</li>
+      <li><b>Puertos externos no estándar</b> y solo los dos necesarios. Nunca DMZ, nunca 8000/37777 (SDK), nunca el puerto del menú de administración del router.</li>
+      <li><b>Firmware del grabador actualizado</b>: los DVR viejos tienen fallas que permiten entrar sin clave. Se actualiza desde la web del equipo o con la app del fabricante.</li>
+      <li>Si el grabador lo permite, <b>bloqueo por intentos fallidos</b> (Hikvision: Seguridad → Bloqueo de IP ilegal; Dahua: Seguridad → Protección contra ataques).</li>
+      <li><b>Avisar al cliente por escrito</b> que el grabador queda accesible desde internet para el servicio y que se tomaron estas medidas.</li>
+    </ul>
+  </div>
+  <div class="card ok">
+    <b>Alternativa sin abrir puertos (si el local tiene una PC siempre prendida):</b> instalar <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a>
+    en esa PC con la cuenta de Vigía, activarla como <i>subnet router</i> de la red del local (<code>tailscale up --advertise-routes=192.168.1.0/24</code>)
+    y aprobar la ruta en el panel de Tailscale. La cámara se carga con la IP interna del grabador (<code>192.168.1.64</code>) y los puertos normales (554 / 80).
+    Nada queda expuesto a internet.
+  </div>
+
+  <h2 id="problemas">9. Si algo falla</h2>
+  <table>
+    <tr><th>Síntoma</th><th>Causa más probable</th></tr>
+    <tr><td>"No se pudo conectar" o "No respondió a tiempo" en Probar conexión</td><td>El puerto HTTP externo no está redirigido, o la IP pública cambió (poner DDNS). Probar <code>http://IP:puerto</code> desde el celular con datos.</td></tr>
+    <tr><td>"rechazó el usuario o la clave (401)"</td><td>Clave mal cargada, o el usuario no tiene permisos remotos. Probar entrar por navegador con <code>vigia</code>.</td></tr>
+    <tr><td>"respondió 403/404"</td><td>Marca equivocada en el panel, o ISAPI/CGI deshabilitado en el grabador.</td></tr>
+    <tr><td>Probar conexión OK pero en Cámaras dice "Sin conexión"</td><td>El puerto RTSP externo no está redirigido (es otro puerto distinto del HTTP). Probar el enlace en VLC desde afuera.</td></tr>
+    <tr><td>Se ve en VLC pero el video se corta</td><td>Poca subida de internet en el local o flujo secundario en H.265 / muy alto. Bajar a 640×360, 10 fps, H.264.</td></tr>
+    <tr><td>El clip de la alarma muestra otro momento</td><td>Hora del grabador mal, o la opción "Hora de grabación del equipo" (local / UTC) al revés. Sincronizar el reloj del DVR y probar la otra opción.</td></tr>
+    <tr><td>Llegan alarmas pero siempre "Sin personas"</td><td>Sensibilidad del grabador muy alta (luces, insectos). Bajar sensibilidad o usar intrusión en vez de movimiento. Es lo esperado: esas se descartan solas.</td></tr>
+    <tr><td>No llega ninguna alarma</td><td>La detección no está activada en ese canal del grabador, o el canal cargado no coincide (en Dahua probar canal ± 1).</td></tr>
+  </table>
+  <p class="muted" style="margin-top:28px">Vigía · guía interna para administradores y empleados.</p>
+</div>
+</body>
+</html>

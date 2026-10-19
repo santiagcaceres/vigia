@@ -134,6 +134,11 @@ cargada) y cuántas se descartaron solas en la semana.
 
 ### Paso 3. Preparar el grabador (en cada cliente)
 
+> La guía completa para conectar el grabador de un cliente **a través de su router** (qué pedirle,
+> usuario `vigia`, puertos en el router de Antel, DDNS, prueba en VLC, carga en el panel, seguridad y
+> fallas comunes) está en el panel: menú **Guía** (`/guia.html`). Lo que sigue es el resumen.
+
+
 Vigía funciona con **Hikvision** y **Dahua**. Lo más simple es entrar por el navegador a
 `http://IP-DEL-GRABADOR`; también sirve iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua).
 
@@ -358,7 +363,7 @@ permite **revocar** un link.
 ```bash
 pip install -r requirements.txt -r requirements-agent.txt pytest
 uvicorn server.main:create_app --factory --port 8000   # sin variables: SQLite y disco local
-python -m pytest                                        # 98 pruebas (unas 30 piden Postgres)
+python -m pytest                                        # 102 pruebas (unas 30 piden Postgres)
 ```
 
 - **Postgres:** con `VIGIA_TEST_PG=postgresql://…` las pruebas del servidor corren también

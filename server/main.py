@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from core.rules import EVENT_TYPES, SEVERITY, parse_config
 from core.scorer import FEATURE_NAMES, LABELS
 
-from . import hpp, training
+from . import hpp, probe, training
 from .db import (ROLES, Agent, Alarm, Camera, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
@@ -685,6 +685,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         storage.remove([c.preview_path] if c.preview_path else [])
         s.delete(c)
         s.commit()
+
+    @app.post("/api/cameras/{cam_id}/probe")
+    def camera_probe(cam_id: int, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """Prueba desde el servidor que el grabador responda por HTTP con el usuario y la clave cargados.
+        Sirve para los grabadores expuestos por el router del cliente (IP pública o DDNS)."""
+        c = get_or_404(s, Camera, cam_id, "Cámara")
+        if not c.host:
+            raise HTTPException(422, "La cámara no tiene IP o DDNS cargado")
+        res = probe.probe(c.brand, c.host, c.http_port, c.username, box.decrypt(c.password_enc))
+        res["public"] = probe.is_public_host(c.host)
+        res["rtsp_url"] = probe.rtsp_url(c.brand, c.host, c.rtsp_port, c.channel, c.username, "CLAVE")
+        res["standard_ports"] = res["public"] and (c.rtsp_port == 554 or c.http_port == 80)
+        return res
 
     @app.get("/api/cameras/{cam_id}/preview")
     def camera_preview(cam_id: int, user: User = Depends(current_user), s=Depends(db)):

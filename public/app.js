@@ -96,7 +96,8 @@ async function boot() {
   if (isStaff()) links.push(["#/clientes", "Clientes"]);
   links.push(["#/camaras", "Cámaras"]);
   if (isAdmin()) links.push(["#/admin", "Administración"]);
-  $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
+  $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("")
+    + (isStaff() ? `<a href="guia.html" target="_blank" rel="noopener" title="Cómo conectar el grabador de un cliente">Guía</a>` : "");
   route();
 }
 
@@ -309,7 +310,8 @@ async function camerasView(v) {
   await loadCameras();
   const agents = isStaff() ? await api("GET", "/api/agents") : [];
   v.innerHTML = `
-    <div class="row"><h1>Cámaras</h1><span class="spacer"></span>${isStaff() ? `<button id="add" class="primary">Agregar cámara</button>` : ""}</div>
+    <div class="row"><h1>Cámaras</h1><span class="spacer"></span>${isStaff() ? `<a class="btn" href="guia.html" target="_blank" rel="noopener">Guía de conexión</a><button id="add" class="primary">Agregar cámara</button>` : ""}</div>
+    <div id="probe-out"></div>
     <div id="cam-form"></div>
     <div class="table-wrap panel" style="margin-top:12px;padding:0"><table>
       <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
@@ -318,13 +320,13 @@ async function camerasView(v) {
         ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${esc(BRAND_NAMES[c.brand] || c.brand || "")} · ${isAlarmMode(c.mode) ? `<span class="chip">${MODE_NAMES[c.mode]}</span> ${c.mode === "alarmas" ? esc(c.hpp_serial || "") + " · " : ""}canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) + (ag.central ? " <span class=\"chip\">Central</span>" : "") : `<span class="muted">Cualquiera del cliente</span>`}</td>` : ""}
         <td>${c.mode === "alarmas" ? "" : statusChip(c.status)}${isAlarmMode(c.mode) ? ` <a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : ""}</td>
         <td>${(c.zones || []).length}</td>
-        <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isStaff() ? `<button class="small" data-edit="${c.id}">Editar</button>` : ""}</td>
+        <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isStaff() ? `<button class="small" data-edit="${c.id}">Editar</button><button class="small" data-probe="${c.id}" title="Prueba desde el servidor que el grabador responda con el usuario y la clave cargados">Probar conexión</button>` : ""}</td>
       </tr>`; }).join("") || `<tr><td colspan="7" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
   if (!isStaff()) return;
   const form = (c = {}) => {
     $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
       <h3>${c.id ? "Editar cámara" : "Nueva cámara"}</h3>
-      <p class="muted">Datos del grabador (DVR/NVR) o cámara: los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). Si la cámara está en un grabador, la IP es la del grabador (la de la VPN) y el canal es el número de cámara en él.</p>
+      <p class="muted">Datos del grabador (DVR/NVR): los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). Si el grabador se expone por el router del cliente, la IP es la <b>IP pública o el DDNS</b> del cliente y los puertos son los <b>externos</b> que abriste en el router. Si llegás por VPN, la IP interna y los puertos normales. Paso a paso en la <a href="guia.html" target="_blank" rel="noopener">guía de conexión</a>.</p>
       <form class="form" id="cf">
         <label>Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id)}</select></label>
         <label>Agente<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? `${a.name} (Central)` : `${a.name} (${clientName(a.client_id)})`]), c.agent_id, "Cualquiera del cliente")}</select></label>
@@ -335,12 +337,12 @@ async function camerasView(v) {
         <fieldset class="alarm-only"><legend>Alarmas del grabador que se analizan</legend>${Object.entries(ALARM_TYPES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="alarm_type" value="${k}" ${((c.alarm_cfg || {}).event_types || ["VMD", "fielddetection", "linedetection"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</fieldset>
         <label class="alarm-only">Segundos de video antes de la alarma<input name="pre_seconds" type="number" min="0" max="60" value="${(c.alarm_cfg || {}).pre_seconds ?? 10}"></label>
         <label class="alarm-only">Segundos de video después<input name="post_seconds" type="number" min="3" max="90" value="${(c.alarm_cfg || {}).post_seconds ?? 20}"></label>
-        <label>IP del grabador o cámara<input name="host" value="${esc(c.host || "")}" placeholder="192.168.1.64"></label>
+        <label>IP pública, DDNS o IP del grabador<input name="host" value="${esc(c.host || "")}" placeholder="almacen.ddns.net o 192.168.1.64"></label>
         <label>Canal<input name="channel" type="number" min="1" value="${c.channel || 1}"></label>
         <label>Usuario<input name="username" value="${esc(c.username || "admin")}"></label>
         <label>Clave<input name="password" type="password" placeholder="${c.has_password ? "(sin cambios)" : ""}" autocomplete="new-password"></label>
-        <label>Puerto RTSP<input name="rtsp_port" type="number" value="${c.rtsp_port || 554}"></label>
-        <label>Puerto HTTP<input name="http_port" type="number" value="${c.http_port || 80}"></label>
+        <label>Puerto RTSP (externo si va por router)<input name="rtsp_port" type="number" value="${c.rtsp_port || 554}"></label>
+        <label>Puerto HTTP (externo si va por router)<input name="http_port" type="number" value="${c.http_port || 80}"></label>
         <label class="live-only">Stream para analizar<select name="detect_stream">${options([["sub", "Secundario (recomendado)"], ["main", "Principal"]], c.detect_stream || "sub")}</select></label>
         <label>Detector<select name="detector">${options([["yolo", "Personas (YOLO)"], ["motion", "Movimiento (solo pruebas)"]], c.detector || "yolo")}</select></label>
         <label>Cuadros por segundo a analizar<input name="process_fps" type="number" step="0.5" min="1" max="15" value="${c.process_fps || 5}"></label>
@@ -387,6 +389,24 @@ async function camerasView(v) {
     });
   };
   $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Clientes", true); form(); });
+  $$("[data-probe]").forEach((b) => b.addEventListener("click", async () => {
+    const c = S.cameras.find((x) => x.id === +b.dataset.probe);
+    const out = $("#probe-out");
+    out.innerHTML = `<div class="panel" style="margin-top:12px"><p class="muted">Probando ${esc(c.name)} desde el servidor (hasta 10 segundos)…</p></div>`;
+    try {
+      const r = await api("POST", `/api/cameras/${c.id}/probe`);
+      const chans = (r.channels || []).map((x) => `${x.channel}: ${esc(x.name || "")}${x.channel === c.channel ? " <span class=\"chip ok\">esta cámara</span>" : ""}`).join("<br>");
+      out.innerHTML = `<div class="panel" style="margin-top:12px">
+        <div class="row"><b>${esc(c.name)}</b> ${r.ok ? `<span class="chip ok">El grabador responde</span>` : `<span class="chip bad">No responde</span>`}</div>
+        ${r.ok ? `<p>Modelo: <span class="mono">${esc(r.model || r.deviceType || "—")}</span> · Serie: <span class="mono">${esc(r.serialNumber || "—")}</span></p>
+          <p>Canales que ve:<br>${chans || "<span class=\"muted\">no informa canales (en una cámara suelta es normal)</span>"}</p>
+          ${!(r.channels || []).some((x) => x.channel === c.channel) && (r.channels || []).length ? `<p class="error">El canal ${c.channel} no está en la lista: revisá el número de canal.</p>` : ""}
+          <p class="muted">Esto prueba el puerto HTTP. El video (puerto RTSP) lo prueba el agente: mirá el estado en la tabla en un minuto, o probá en VLC desde afuera del local:<br><span class="mono">${esc(r.rtsp_url)}</span></p>`
+        : `<p class="error">${esc(r.error)}</p><p class="muted">Enlace para probar en VLC desde afuera del local: <span class="mono">${esc(r.rtsp_url)}</span></p>`}
+        ${r.public && r.standard_ports ? `<p class="error">Este grabador está expuesto a internet con los puertos estándar (554 / 80). Conviene cambiarlos en el router por puertos altos (ver guía, sección 3 y 8).</p>` : ""}
+      </div>`;
+    } catch (e) { out.innerHTML = ""; fail(e); }
+  }));
   const pre = new URLSearchParams(location.hash.split("?")[1] || "");
   if (pre.get("nueva")) form({ mode: "alarmas", hpp_serial: pre.get("serie"), channel: +pre.get("canal") || 1, name: pre.get("nombre") || "" });
   $$("[data-edit]").forEach((b) => b.addEventListener("click", () => form(S.cameras.find((c) => c.id === +b.dataset.edit))));
