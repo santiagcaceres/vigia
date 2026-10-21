@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -161,28 +162,94 @@ class Agent:
         self.outbox.stop()
 
 
+SERVIDOR_POR_DEFECTO = "https://vigia-three-ashy.vercel.app"
+ARCHIVO_CONFIG = "agente.env"
+
+
+def base_dir() -> Path:
+    """Carpeta donde vive el programa: la del .exe si está empaquetado, si no la del repo."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def bundled_model() -> Path | None:
+    """Modelo ONNX que viene dentro del .exe (PyInstaller lo descomprime en sys._MEIPASS)."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / "models" / "personas.onnx"
+        if cand.exists():
+            return cand
+    return None
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """Lee `CLAVE=valor` por línea (sin comillas ni comentarios complicados)."""
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def write_env_file(path: Path, values: dict[str, str]) -> None:
+    lines = ["# Configuración del agente Vigía. Borrá este archivo para volver a pedir los datos."]
+    lines += [f"{k}={v}" for k, v in values.items()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def pedir_datos_interactivo(cfg_path: Path, server: str | None, token: str | None) -> tuple[str, str]:
+    """Si faltan servidor o token y hay una consola, los pide y los guarda en agente.env."""
+    if not sys.stdin or not sys.stdin.isatty():
+        return server or "", token or ""
+    print("Agente Vigía: configuración inicial (se guarda en %s)" % cfg_path)
+    if not server:
+        server = input(f"Servidor [{SERVIDOR_POR_DEFECTO}]: ").strip() or SERVIDOR_POR_DEFECTO
+    while not token:
+        token = input("Token del agente (Administración → Agentes en el panel): ").strip()
+    write_env_file(cfg_path, {"VIGIA_SERVER": server, "VIGIA_AGENT_TOKEN": token})
+    print("Guardado. La próxima vez arranca solo.\n")
+    return server, token
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Agente Vigía para cámaras Hikvision")
-    p.add_argument("--server", default=os.getenv("VIGIA_SERVER"), help="URL del servidor central")
-    p.add_argument("--token", default=os.getenv("VIGIA_AGENT_TOKEN"), help="Token del agente (del panel)")
-    p.add_argument("--data", default=os.getenv("VIGIA_AGENT_DATA", "agent_data"))
-    p.add_argument("--model", default=os.getenv("VIGIA_PERSON_MODEL", "models/personas.onnx"),
-                   help="Modelo ONNX de detección de personas")
+    base = base_dir()
+    cfg_path = Path(os.getenv("VIGIA_AGENT_CONFIG", base / ARCHIVO_CONFIG))
+    env = {**read_env_file(cfg_path), **{k: v for k, v in os.environ.items() if k.startswith("VIGIA_")}}
+    modelo_defecto = env.get("VIGIA_PERSON_MODEL") or str(bundled_model() or base / "models" / "personas.onnx")
+    p = argparse.ArgumentParser(description="Agente Vigía para cámaras Hikvision y Dahua")
+    p.add_argument("--server", default=env.get("VIGIA_SERVER"), help="URL del servidor central")
+    p.add_argument("--token", default=env.get("VIGIA_AGENT_TOKEN"), help="Token del agente (del panel)")
+    p.add_argument("--data", default=env.get("VIGIA_AGENT_DATA", str(base / "agent_data")))
+    p.add_argument("--model", default=modelo_defecto, help="Modelo ONNX de detección de personas")
     p.add_argument("--insecure", action="store_true", help="No verificar HTTPS (solo pruebas)")
     p.add_argument("--no-imports", action="store_true", help="No analizar videos importados en esta PC")
-    p.add_argument("--alarm-workers", type=int, default=int(os.getenv("VIGIA_ALARM_WORKERS", "2")),
+    p.add_argument("--alarm-workers", type=int, default=int(env.get("VIGIA_ALARM_WORKERS", "2")),
                    help="Alarmas que se bajan y analizan en paralelo")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not a.server or not a.token:
-        p.error("Faltan --server y --token (o VIGIA_SERVER y VIGIA_AGENT_TOKEN)")
+        a.server, a.token = pedir_datos_interactivo(cfg_path, a.server, a.token)
+    if not a.server or not a.token:
+        p.error(f"Faltan --server y --token (o VIGIA_SERVER y VIGIA_AGENT_TOKEN, o el archivo {cfg_path})")
     agent = Agent(a.server, a.token, Path(a.data), a.model, verify=not a.insecure, process_imports=not a.no_imports,
                   alarm_workers=max(1, a.alarm_workers))
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
-    agent.run()
+    try:
+        agent.run()
+    except Exception:
+        log.exception("El agente se detuvo por un error")
+        if getattr(sys, "frozen", False) and sys.stdin and sys.stdin.isatty():
+            input("Apretá Enter para cerrar...")
+        raise
 
 
 if __name__ == "__main__":

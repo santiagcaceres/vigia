@@ -167,7 +167,8 @@ Dahua:     rtsp://vigia:CLAVE@IP-o-DDNS:38554/cam/realmonitor?channel=1&amp;subt
   </ol>
 
   <h2 id="agente">7. La PC central</h2>
-  <p>Una sola PC en la oficina corre el agente para todos los clientes. Instalación en el README del proyecto; en resumen:</p>
+  <p>Una sola PC en la oficina corre el agente para todos los clientes. No hace falta instalar Python: en GitHub, <b>Actions → "Agente para Windows"</b> (o <b>Releases</b>) se descarga <code>VigiaAgente-windows.zip</code>. Descomprimir, abrir <code>VigiaAgente.exe</code>, Enter para el servidor y pegar el token: queda guardado en <code>agente.env</code> al lado del programa. Si Windows Defender lo frena, "Más información → Ejecutar de todas formas".</p>
+  <p>Con Python instalado, lo mismo desde el código: <code>agent\iniciar_windows.bat</code> o</p>
   <pre>python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN-DEL-AGENTE-CENTRAL</pre>
   <p>El token se genera en <b>Administración → Agentes</b>. En <b>Cámaras</b> cada cámara muestra "Escuchando alarmas" cuando la PC central llegó al grabador, o el error en caso contrario.</p>
 

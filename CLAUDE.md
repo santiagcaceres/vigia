@@ -203,6 +203,11 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 ```
 
 - Sin `DATABASE_URL` usa SQLite local; sin Supabase guarda archivos en disco. Así corre local.
+- **Agente como .exe (21 oct):** `.github/workflows/agente-windows.yml` compila `VigiaAgente.exe` con
+  PyInstaller (`agente_pc.py` + `agente_pc.spec`, modelo ONNX adentro) en `windows-latest`; se lanza a
+  mano (Actions → Run workflow) o con un tag `agente-v*` (también publica en Releases). El agente lee
+  `agente.env` (`VIGIA_SERVER`, `VIGIA_AGENT_TOKEN`) de la carpeta del .exe/repo y, si falta el token y
+  hay consola, lo pide y lo guarda. `agent/iniciar_windows.bat` hace lo mismo con Python instalado.
 - **Deploy:** `git push` + lanzar el deploy en Vercel (el proyecto no tiene auto-deploy por git
   configurado; se dispara con la API/MCP de Vercel o desde el panel de Vercel).
 - Las tablas se crean solas (`create_all`) y quedan con RLS activo. Las **columnas nuevas** también
@@ -226,6 +231,12 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 6. Cómo trabajan hoy los empleados: alarmas por día por local, % falsas, a quién avisan y cómo.
 7. Consulta a Hikvision por la clave VSaaS / HPNetSDK (requisitos, costo, Uruguay).
 8. Si el contrato con los clientes permite usar sus videos para entrenar.
+
+**Hecho el 21 oct (equipo propio de Santiago, cliente "Prueba"):** DVR DS-7104HGHI-M1/T en
+192.168.1.6 (reservada por MAC en el ZTE F6600 de Antel), reenvío TCP 38554→554 y 38080→80,
+IP pública de Antel real (sin CG-NAT, PPPoE, puede cambiar: falta DDNS), RTSP verificado en VLC
+desde datos móviles y otra red, cámara "Habitacion" cargada en modo **vivo** (el DVR no tiene
+disco) y "Probar conexión" devuelve modelo y 4 canales. Falta: correr el agente en la PC central.
 
 **Lunes 20 oct:** Santiago tendrá acceso al video en vivo de un DVR. Plan: desde la PC central
 `python -m agent.hikvision` (o `agent.dahua`) `--host IP --user vigia --password ****` (lista

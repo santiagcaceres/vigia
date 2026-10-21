@@ -1,0 +1,50 @@
+# Compila el agente como un .exe de Windows (no hace falta Python en la PC central).
+# Se dispara a mano desde GitHub (Actions → "Agente para Windows" → Run workflow) o al subir
+# una etiqueta agente-vX.Y.Z. El .exe queda en "Artifacts" de la corrida y, con etiqueta,
+# también en Releases.
+name: Agente para Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["agente-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-agent.txt pyinstaller
+      - name: Compilar
+        run: pyinstaller agente_pc.spec
+      - name: Probar que arranca
+        run: |
+          dist\VigiaAgente.exe --help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Armar carpeta
+        run: |
+          New-Item -ItemType Directory -Force dist\VigiaAgente | Out-Null
+          Copy-Item dist\VigiaAgente.exe dist\VigiaAgente\
+          Copy-Item agent\LEEME-agente.txt dist\VigiaAgente\LEEME.txt
+          Compress-Archive -Path dist\VigiaAgente\* -DestinationPath dist\VigiaAgente-windows.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VigiaAgente-windows
+          path: dist\VigiaAgente-windows.zip
+          retention-days: 30
+      - name: Publicar en Releases
+        if: startsWith(github.ref, 'refs/tags/agente-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/VigiaAgente-windows.zip
+          name: Agente ${{ github.ref_name }}
+          body: "Agente Vigía para Windows. Descomprimir, abrir VigiaAgente.exe y pegar el token del panel."

@@ -1,0 +1,17 @@
+AGENTE VIGÍA PARA WINDOWS
+=========================
+
+1. Descomprimí esta carpeta donde quieras (por ejemplo C:\Vigia).
+2. Abrí VigiaAgente.exe. La primera vez pide:
+   - Servidor: apretá Enter para usar https://vigia-three-ashy.vercel.app
+   - Token: lo generás en el panel, Administración -> Agentes (se muestra una sola vez).
+   Queda guardado en agente.env, al lado del .exe. Borrá ese archivo para cargar otro token.
+3. Dejá la ventana abierta. En el panel, pestaña Cámaras, la cámara pasa a "En línea" en
+   menos de un minuto.
+
+Para que arranque solo con Windows: Programador de tareas -> Crear tarea básica ->
+"Al iniciar sesión" -> Iniciar un programa -> VigiaAgente.exe, y marcar "Reiniciar si falla".
+
+Opcional: instalar ffmpeg (winget install Gyan.FFmpeg) para que los clips pesen menos.
+Si Windows Defender lo frena ("Windows protegió su PC"): Más información -> Ejecutar de todas
+formas. Es un .exe sin firma digital; se compila desde el código del repositorio.

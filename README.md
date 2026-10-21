@@ -169,27 +169,29 @@ del local o por VPN. Esas apps sí sirven para *configurar* los equipos a distan
 2. En **Cámaras > Agregar cámara**: **marca** (Hikvision o Dahua), IP del grabador, canal, usuario y clave
    (los mismos datos que usás en iVMS-4200 o SmartPSS Lite).
 
-### Paso 5. Instalar el agente (en la PC del local, o en tu PC central: ver Paso 5b)
+### Paso 5. Instalar el agente (en tu PC central)
 
-**Windows:**
+**Windows, opción fácil (sin instalar Python):** descargar `VigiaAgente-windows.zip` desde
+GitHub → **Actions → "Agente para Windows"** (artefacto de la última corrida) o desde
+**Releases**. Descomprimir, abrir `VigiaAgente.exe`, Enter para el servidor y pegar el token.
+Queda guardado en `agente.env` al lado del .exe. Si Defender lo frena: "Más información →
+Ejecutar de todas formas". Para generar un .exe nuevo: Actions → Run workflow (o `git tag
+agente-v1.0.0 && git push --tags`, que además lo publica en Releases).
+
+**Windows, con Python:**
 1. Instalar [Python 3.12](https://www.python.org/downloads/) y marcar "Add python.exe to PATH".
 2. Bajar este repositorio (botón **Code → Download ZIP** en GitHub) y descomprimirlo, por ejemplo
    en `C:\vigia`.
-3. Ejecutar `agent\instalar_windows.bat`. Instala las dependencias y ffmpeg.
-4. Probar la conexión con el NVR:
+3. Doble clic en `agent\iniciar_windows.bat`: la primera vez instala las dependencias y pide el
+   servidor y el token (quedan en `agente.env`). Las siguientes veces arranca directo.
+4. Probar la conexión con el grabador, si hace falta:
 
    ```bat
-   .venv\Scripts\python -m agent.hikvision --host 192.168.1.64 --user vigia --password ****
+   .venv\Scripts\python -m agent.hikvision --host 190.133.197.192 --port 38080 --user vigia --password ****
    ```
 
-5. Iniciar el agente:
-
-   ```bat
-   .venv\Scripts\python -m agent --server https://tu-proyecto.vercel.app --token TOKEN
-   ```
-
-6. Para que arranque solo con Windows: Programador de tareas → Crear tarea → "Al iniciar el
-   sistema", con la misma línea del paso 5 y "Reiniciar si falla".
+5. Para que arranque solo con Windows: Programador de tareas → Crear tarea → "Al iniciar
+   sesión", programa `VigiaAgente.exe` (o `agent\iniciar_windows.bat`) y "Reiniciar si falla".
 
 **Linux:** ver `agent/vigia-agent.service`.
 
