@@ -67,6 +67,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   `#/entrenamiento` (links "Más" al pie del Resumen). `#/eventos` fue renombrado `#/alertas`.
   Clientes y cámaras se cachean 20 s en el navegador (`loadClients`/`loadCameras`) para que
   cambiar de pestaña no vuelva a pedir todo.
+- **Cámaras por cliente (21 oct, pedido del dueño):** "Cámaras" salió del menú. Desde Clientes se entra a
+  `#/cliente/:id` ("Cámaras de <cliente>": miniaturas con la última imagen y estado, botón Agregar cámara)
+  y un clic abre la ficha `#/camara/:id` (imagen grande que se refresca cada 30 s, datos de conexión,
+  Zonas y reglas, Editar, Probar conexión, Alertas). `#/camaras` sigue existiendo como tabla general (link
+  desde el Resumen). El formulario y "Probar conexión" son funciones compartidas (`cameraForm`,
+  `probeCamera`). El editor de zonas espera la primera imagen sin recargar (consulta cada 10 s).
 - **Pestaña Prueba** (`public/prueba.js`): comparte la pantalla (`getDisplayMedia`) de la ventana de
   HPP / iVMS / SmartPSS con la cámara en vivo y corre el detector de personas **en el navegador**
   con ONNX Runtime Web (jsdelivr 1.19.2, wasm 1 hilo) sobre `public/models/personas.onnx` (copia

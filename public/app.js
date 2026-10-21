@@ -93,7 +93,7 @@ async function boot() {
   $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
   const links = S.me.role === "cliente"
     ? [["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
-    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/camaras", "Cámaras"], ["#/alertas", "Alertas"], ["#/prueba", "Prueba"]];
+    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/alertas", "Alertas"], ["#/prueba", "Prueba"]];
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
   route();
@@ -104,7 +104,8 @@ async function route() {
   if (!S.me) return;
   S.timers.forEach(clearInterval); S.timers = []; S.keyHandler = null;
   const h = location.hash || (isStaff() ? "#/resumen" : "#/alertas");
-  const section = h.startsWith("#/evento") || h.startsWith("#/revisar") || h.startsWith("#/alarmas") ? "#/alertas" : h;
+  const section = h.startsWith("#/evento") || h.startsWith("#/revisar") || h.startsWith("#/alarmas") ? "#/alertas"
+    : isStaff() && (h.startsWith("#/camara") || h.startsWith("#/cliente")) ? "#/clientes" : h;
   $$("#nav a").forEach((a) => a.classList.toggle("active", section.startsWith(a.getAttribute("href"))));
   const old = $("#view"), v = old.cloneNode(false); // nodo nuevo: descarta listeners de la vista anterior
   old.replaceWith(v);
@@ -114,7 +115,9 @@ async function route() {
     if ((m = h.match(/^#\/evento\/(\d+)/))) return await eventView(v, +m[1]);
     if (h.startsWith("#/revisar") && isStaff()) return await reviewView(v);
     if ((m = h.match(/^#\/camara\/(\d+)\/zonas/)) && isStaff()) return await zonesView(v, +m[1]);
-    if (h.startsWith("#/camaras")) return await camerasView(v);
+    if ((m = h.match(/^#\/camara\/(\d+)/))) return await cameraView(v, +m[1]);
+    if ((m = h.match(/^#\/cliente\/(\d+)/)) && isStaff()) return await clientCamerasView(v, +m[1]);
+    if (h.startsWith("#/camaras")) return await (isStaff() ? camerasView(v) : clientCamerasView(v, S.me.client_id));
     if ((m = h.match(/^#\/video\/(\d+)/)) && isStaff()) return await importView(v, +m[1]);
     if (h.startsWith("#/videos") && isStaff()) return await importsView(v);
     if (h.startsWith("#/entrenamiento") && isStaff()) return await trainingView(v);
@@ -318,29 +321,18 @@ function statusChip(st) {
   return `<span class="chip ${ok ? "ok" : "bad"}" title="${esc(st.error || "")}">${esc(STATE_NAMES[st.state] || st.state)}${ok && st.fps ? ` · ${st.fps} fps` : ""}</span>`;
 }
 
-async function camerasView(v) {
-  await loadCameras();
-  const agents = isStaff() ? await api("GET", "/api/agents") : [];
-  v.innerHTML = `
-    <div class="row"><h1>Cámaras</h1><span class="spacer"></span>${isStaff() ? `<a class="btn" href="guia.html" target="_blank" rel="noopener">Guía de conexión</a><button id="add" class="primary">Agregar cámara</button>` : ""}</div>
-    <div id="probe-out"></div>
-    <div id="cam-form"></div>
-    <div class="table-wrap panel" style="margin-top:12px;padding:0"><table>
-      <thead><tr><th>Cámara</th>${S.me.role !== "cliente" ? "<th>Cliente</th><th>Conexión</th><th>Agente</th>" : ""}<th>Estado</th><th>Zonas</th><th></th></tr></thead>
-      <tbody>${S.cameras.map((c) => { const ag = agents.find((a) => a.id === c.agent_id); return `<tr>
-        <td><b>${esc(c.name)}</b>${c.enabled ? "" : ` <span class="chip">deshabilitada</span>`}</td>
-        ${S.me.role !== "cliente" ? `<td>${esc(clientName(c.client_id))}</td><td class="mono">${esc(BRAND_NAMES[c.brand] || c.brand || "")} · ${isAlarmMode(c.mode) ? `<span class="chip">${MODE_NAMES[c.mode]}</span> ${c.mode === "alarmas" ? esc(c.hpp_serial || "") + " · " : ""}canal ${c.channel}<br>${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}</td><td>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</td>` : ""}
-        <td>${c.mode === "alarmas" ? "" : statusChip(c.status)}${isAlarmMode(c.mode) ? ` <a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : ""}</td>
-        <td>${(c.zones || []).length}</td>
-        <td class="row">${isStaff() ? `<a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a>` : ""}${isStaff() ? `<button class="small" data-edit="${c.id}">Editar</button><button class="small" data-probe="${c.id}" title="Prueba desde el servidor que el grabador responda con el usuario y la clave cargados">Probar conexión</button>` : ""}</td>
-      </tr>`; }).join("") || `<tr><td colspan="7" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
-  if (!isStaff()) return;
-  const form = (c = {}) => {
-    $("#cam-form").innerHTML = `<div class="panel" style="margin-top:12px">
+const previewUrl = (c) => (c.has_preview ? `/api/cameras/${c.id}/preview?t=${Math.floor(Date.now() / 30000)}` : null);
+const camThumb = (c) => (previewUrl(c) ? `<img loading="lazy" src="${previewUrl(c)}" alt="">` : `<div class="thumb-empty">Sin imagen todavía<br><small>la PC central la manda al conectarse</small></div>`);
+const connText = (c) => (c.host === undefined ? esc(MODE_NAMES[c.mode] || "") : `${esc(BRAND_NAMES[c.brand] || c.brand || "")} · ${isAlarmMode(c.mode) ? `${MODE_NAMES[c.mode]} · ${c.mode === "alarmas" ? esc(c.hpp_serial || "") + " · " : ""}canal ${c.channel} · ${esc(c.host)}` : c.has_source_url ? "URL manual" : `${esc(c.host)} · canal ${c.channel} · ${c.detect_stream === "sub" ? "secundario" : "principal"}`}${c.detector === "motion" ? " · movimiento" : ""}`);
+
+/** Formulario de alta/edición de cámara (compartido por la tabla general, la grilla del cliente y la ficha). */
+function cameraForm(box, agents, c = {}, opts = {}) {
+  const lockClient = !!opts.clientId && !c.id;
+  box.innerHTML = `<div class="panel" style="margin-top:12px">
       <h3>${c.id ? "Editar cámara" : "Nueva cámara"}</h3>
       <p class="muted">Datos del grabador (DVR/NVR): los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). La IP es la <b>IP pública o el DDNS</b> del cliente y los puertos son los <b>externos</b> que abriste en su router. Paso a paso en la <a href="guia.html" target="_blank" rel="noopener">guía de conexión</a>.</p>
       <form class="form" id="cf">
-        <label>Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id)}</select></label>
+        <label class="${lockClient ? "hidden" : ""}">Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id ?? opts.clientId)}</select></label>
         <label>PC central (agente)<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? a.name : `${a.name} (${clientName(a.client_id)})`]), c.agent_id ?? (agents.find((a) => a.central) || {}).id, "—")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
         <label>Marca<select name="brand">${options(Object.entries(BRAND_NAMES), c.brand || "hikvision")}</select><small id="brand-note" class="muted"></small></label>
@@ -364,64 +356,140 @@ async function camerasView(v) {
         <label class="inline"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> Habilitada</label>
         <div class="row"><button class="primary" type="submit">Guardar</button><button type="button" id="cancel">Cancelar</button></div>
       </form></div>`;
-    $("#cancel").addEventListener("click", () => ($("#cam-form").innerHTML = ""));
-    const syncMode = () => {
-      // el modo "alarmas" usa Hik-Partner Pro: solo existe para Hikvision
-      const esHik = $("#cf [name=brand]").value === "hikvision";
-      const modo = $("#cf [name=mode]");
-      modo.querySelector('option[value=alarmas]').disabled = !esHik;
-      if (!esHik && modo.value === "alarmas") modo.value = "alarmas_equipo";
-      const alarms = isAlarmMode(modo.value);
-      $$("#cf .alarm-only").forEach((el) => el.classList.toggle("hidden", !alarms));
-      $$("#cf .hpp-only").forEach((el) => el.classList.toggle("hidden", modo.value !== "alarmas"));
-      $$("#cf .live-only").forEach((el) => el.classList.toggle("hidden", alarms));
-      $("#brand-note").textContent = esHik ? "" : "Para Dahua: alarmas del propio grabador o en vivo.";
-      $("#mode-note").textContent = { alarmas_equipo: "El grabador le avisa al agente cada alarma (movimiento, intrusión…) y solo se analiza ese tramo. Sin nube ni API key: activá las detecciones en el grabador.",
-        alarmas: "Las alarmas llegan por el webhook de Hik-Partner Pro (hay que conectar HPP en Alarmas).", vivo: "El agente mira el stream las 24 h (más carga de PC e internet)." }[modo.value] || "";
-    };
-    $("#cf [name=mode]").addEventListener("change", syncMode);
-    $("#cf [name=brand]").addEventListener("change", syncMode);
-    syncMode();
-    $("#cf").addEventListener("submit", async (ev) => {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      const body = {
-        client_id: +f.get("client_id"), agent_id: f.get("agent_id") ? +f.get("agent_id") : null, name: f.get("name"),
-        brand: f.get("brand"), host: f.get("host"), channel: +f.get("channel"), username: f.get("username"), password: f.get("password") || null,
-        rtsp_port: +f.get("rtsp_port"), http_port: +f.get("http_port"), detect_stream: f.get("detect_stream"),
-        detector: f.get("detector"), process_fps: +f.get("process_fps"), playback_time: f.get("playback_time"),
-        source_url: f.get("source_url") || null, nvr_clips: !!f.get("nvr_clips"), enabled: !!f.get("enabled"),
-        mode: f.get("mode"), hpp_serial: f.get("hpp_serial") || null,
-        alarm_cfg: { event_types: f.getAll("alarm_type"), pre_seconds: +f.get("pre_seconds"), post_seconds: +f.get("post_seconds") },
-      };
-      try {
-        await api(c.id ? "PUT" : "POST", c.id ? "/api/cameras/" + c.id : "/api/cameras", body);
-        toast("Cámara guardada. La PC central la toma en menos de un minuto."); S._camsAt = 0; route();
-      } catch (e) { fail(e); }
-    });
+  $("#cancel", box).addEventListener("click", () => (box.innerHTML = ""));
+  const syncMode = () => {
+    // el modo "alarmas" usa Hik-Partner Pro: solo existe para Hikvision
+    const esHik = $("#cf [name=brand]", box).value === "hikvision";
+    const modo = $("#cf [name=mode]", box);
+    modo.querySelector('option[value=alarmas]').disabled = !esHik;
+    if (!esHik && modo.value === "alarmas") modo.value = "alarmas_equipo";
+    const alarms = isAlarmMode(modo.value);
+    $$("#cf .alarm-only", box).forEach((el) => el.classList.toggle("hidden", !alarms));
+    $$("#cf .hpp-only", box).forEach((el) => el.classList.toggle("hidden", modo.value !== "alarmas"));
+    $$("#cf .live-only", box).forEach((el) => el.classList.toggle("hidden", alarms));
+    $("#brand-note", box).textContent = esHik ? "" : "Para Dahua: alarmas del propio grabador o en vivo.";
+    $("#mode-note", box).textContent = { alarmas_equipo: "El grabador le avisa al agente cada alarma (movimiento, intrusión…) y solo se analiza ese tramo. Sin nube ni API key: activá las detecciones en el grabador.",
+      alarmas: "Las alarmas llegan por el webhook de Hik-Partner Pro (hay que conectar HPP en Alarmas).", vivo: "El agente mira el stream las 24 h (más carga de PC e internet)." }[modo.value] || "";
   };
-  $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Clientes", true); if (!agents.length) return toast("Primero creá la PC central en Administración", true); form(); });
-  $$("[data-probe]").forEach((b) => b.addEventListener("click", async () => {
-    const c = S.cameras.find((x) => x.id === +b.dataset.probe);
-    const out = $("#probe-out");
-    out.innerHTML = `<div class="panel" style="margin-top:12px"><p class="muted">Probando ${esc(c.name)} desde el servidor (hasta 10 segundos)…</p></div>`;
+  $("#cf [name=mode]", box).addEventListener("change", syncMode);
+  $("#cf [name=brand]", box).addEventListener("change", syncMode);
+  syncMode();
+  $("#cf", box).addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const body = {
+      client_id: +f.get("client_id"), agent_id: f.get("agent_id") ? +f.get("agent_id") : null, name: f.get("name"),
+      brand: f.get("brand"), host: f.get("host"), channel: +f.get("channel"), username: f.get("username"), password: f.get("password") || null,
+      rtsp_port: +f.get("rtsp_port"), http_port: +f.get("http_port"), detect_stream: f.get("detect_stream"),
+      detector: f.get("detector"), process_fps: +f.get("process_fps"), playback_time: f.get("playback_time"),
+      source_url: f.get("source_url") || null, nvr_clips: !!f.get("nvr_clips"), enabled: !!f.get("enabled"),
+      mode: f.get("mode"), hpp_serial: f.get("hpp_serial") || null,
+      alarm_cfg: { event_types: f.getAll("alarm_type"), pre_seconds: +f.get("pre_seconds"), post_seconds: +f.get("post_seconds") },
+    };
     try {
-      const r = await api("POST", `/api/cameras/${c.id}/probe`);
-      const chans = (r.channels || []).map((x) => `${x.channel}: ${esc(x.name || "")}${x.channel === c.channel ? " <span class=\"chip ok\">esta cámara</span>" : ""}`).join("<br>");
-      out.innerHTML = `<div class="panel" style="margin-top:12px">
-        <div class="row"><b>${esc(c.name)}</b> ${r.ok ? `<span class="chip ok">El grabador responde</span>` : `<span class="chip bad">No responde</span>`}</div>
-        ${r.ok ? `<p>Modelo: <span class="mono">${esc(r.model || r.deviceType || "—")}</span> · Serie: <span class="mono">${esc(r.serialNumber || "—")}</span></p>
-          <p>Canales que ve:<br>${chans || "<span class=\"muted\">no informa canales (en una cámara suelta es normal)</span>"}</p>
-          ${!(r.channels || []).some((x) => x.channel === c.channel) && (r.channels || []).length ? `<p class="error">El canal ${c.channel} no está en la lista: revisá el número de canal.</p>` : ""}
-          <p class="muted">Esto prueba el puerto HTTP. El video (puerto RTSP) lo prueba el agente: mirá el estado en la tabla en un minuto, o probá en VLC desde afuera del local:<br><span class="mono">${esc(r.rtsp_url)}</span></p>`
-        : `<p class="error">${esc(r.error)}</p><p class="muted">Enlace para probar en VLC desde afuera del local: <span class="mono">${esc(r.rtsp_url)}</span></p>`}
-        ${r.public && r.standard_ports ? `<p class="error">Este grabador está expuesto a internet con los puertos estándar (554 / 80). Conviene cambiarlos en el router por puertos altos (ver guía, sección 3 y 8).</p>` : ""}
-      </div>`;
-    } catch (e) { out.innerHTML = ""; fail(e); }
-  }));
+      const saved = await api(c.id ? "PUT" : "POST", c.id ? "/api/cameras/" + c.id : "/api/cameras", body);
+      toast("Cámara guardada. La PC central la toma en menos de un minuto."); S._camsAt = 0;
+      if (opts.onSaved) opts.onSaved(saved); else route();
+    } catch (e) { fail(e); }
+  });
+}
+
+/** "Probar conexión": el servidor entra al grabador por HTTP y muestra modelo y canales. */
+async function probeCamera(c, out) {
+  out.innerHTML = `<div class="panel" style="margin-top:12px"><p class="muted">Probando ${esc(c.name)} desde el servidor (hasta 10 segundos)…</p></div>`;
+  try {
+    const r = await api("POST", `/api/cameras/${c.id}/probe`);
+    const chans = (r.channels || []).map((x) => `${x.channel}: ${esc(x.name || "")}${x.channel === c.channel ? " <span class=\"chip ok\">esta cámara</span>" : ""}`).join("<br>");
+    out.innerHTML = `<div class="panel" style="margin-top:12px">
+      <div class="row"><b>${esc(c.name)}</b> ${r.ok ? `<span class="chip ok">El grabador responde</span>` : `<span class="chip bad">No responde</span>`}</div>
+      ${r.ok ? `<p>Modelo: <span class="mono">${esc(r.model || r.deviceType || "—")}</span> · Serie: <span class="mono">${esc(r.serialNumber || "—")}</span></p>
+        <p>Canales que ve:<br>${chans || "<span class=\"muted\">no informa canales (en una cámara suelta es normal)</span>"}</p>
+        ${!(r.channels || []).some((x) => x.channel === c.channel) && (r.channels || []).length ? `<p class="error">El canal ${c.channel} no está en la lista: revisá el número de canal.</p>` : ""}
+        <p class="muted">Esto prueba el puerto HTTP. El video (puerto RTSP) lo prueba el agente: mirá el estado en un minuto, o probá en VLC desde afuera del local:<br><span class="mono">${esc(r.rtsp_url)}</span></p>`
+      : `<p class="error">${esc(r.error)}</p><p class="muted">Enlace para probar en VLC desde afuera del local: <span class="mono">${esc(r.rtsp_url)}</span></p>`}
+      ${r.public && r.standard_ports ? `<p class="error">Este grabador está expuesto a internet con los puertos estándar (554 / 80). Conviene cambiarlos en el router por puertos altos (ver guía, sección 3 y 8).</p>` : ""}
+    </div>`;
+  } catch (e) { out.innerHTML = ""; fail(e); }
+}
+
+/** Tabla con todas las cámaras de todos los clientes (se llega desde el Resumen; ya no está en el menú). */
+async function camerasView(v) {
+  await loadCameras();
+  const agents = await api("GET", "/api/agents");
+  v.innerHTML = `
+    <div class="row"><h1>Todas las cámaras</h1><span class="spacer"></span><a class="btn" href="guia.html" target="_blank" rel="noopener">Guía de conexión</a><button id="add" class="primary">Agregar cámara</button></div>
+    <p class="muted">Para ver las cámaras de un comercio con su imagen, entrá por <a href="#/clientes">Clientes</a>.</p>
+    <div id="probe-out"></div>
+    <div id="cam-form"></div>
+    <div class="table-wrap panel" style="margin-top:12px;padding:0"><table>
+      <thead><tr><th>Cámara</th><th>Cliente</th><th>Conexión</th><th>Agente</th><th>Estado</th><th>Zonas</th><th></th></tr></thead>
+      <tbody>${S.cameras.map((c) => { const ag = agents.find((a) => a.id === c.agent_id); return `<tr>
+        <td><a href="#/camara/${c.id}"><b>${esc(c.name)}</b></a>${c.enabled ? "" : ` <span class="chip">deshabilitada</span>`}</td>
+        <td><a href="#/cliente/${c.client_id}">${esc(clientName(c.client_id))}</a></td><td class="mono">${connText(c)}</td><td>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</td>
+        <td>${c.mode === "alarmas" ? "" : statusChip(c.status)}${isAlarmMode(c.mode) ? ` <a href="#/alarmas?camera_id=${c.id}">Ver alarmas</a>` : ""}</td>
+        <td>${(c.zones || []).length}</td>
+        <td class="row"><a class="btn small" href="#/camara/${c.id}/zonas">Zonas y reglas</a><button class="small" data-edit="${c.id}">Editar</button><button class="small" data-probe="${c.id}">Probar conexión</button></td>
+      </tr>`; }).join("") || `<tr><td colspan="7" class="muted">Todavía no hay cámaras.</td></tr>`}</tbody></table></div>`;
+  $("#add").addEventListener("click", () => { if (!S.clients.length) return toast("Primero creá un cliente en Clientes", true); if (!agents.length) return toast("Primero creá la PC central en Administración", true); cameraForm($("#cam-form"), agents); });
+  $$("[data-probe]").forEach((b) => b.addEventListener("click", () => probeCamera(S.cameras.find((x) => x.id === +b.dataset.probe), $("#probe-out"))));
   const pre = new URLSearchParams(location.hash.split("?")[1] || "");
-  if (pre.get("nueva")) form({ mode: "alarmas", hpp_serial: pre.get("serie"), channel: +pre.get("canal") || 1, name: pre.get("nombre") || "" });
-  $$("[data-edit]").forEach((b) => b.addEventListener("click", () => form(S.cameras.find((c) => c.id === +b.dataset.edit))));
+  if (pre.get("nueva")) cameraForm($("#cam-form"), agents, { mode: "alarmas", hpp_serial: pre.get("serie"), channel: +pre.get("canal") || 1, name: pre.get("nombre") || "" });
+  $$("[data-edit]").forEach((b) => b.addEventListener("click", () => cameraForm($("#cam-form"), agents, S.cameras.find((c) => c.id === +b.dataset.edit))));
+}
+
+/** "Cámaras de <cliente>": miniaturas con la última imagen; un clic abre la ficha de la cámara. */
+async function clientCamerasView(v, clientId) {
+  await Promise.all([loadClients(), loadCameras()]);
+  const client = S.clients.find((c) => c.id === clientId) || (S.me.role === "cliente" ? { id: clientId, name: S.me.client_name || "mi comercio" } : null);
+  if (!client) { v.innerHTML = `<div class="empty">Cliente no encontrado.</div>`; return; }
+  const agents = isStaff() ? await api("GET", "/api/agents") : [];
+  const cams = S.cameras.filter((c) => c.client_id === clientId);
+  v.innerHTML = `
+    ${isStaff() ? `<div class="row"><a href="#/clientes">← Clientes</a></div>` : ""}
+    <div class="row"><h1>Cámaras de ${esc(client.name)}</h1><span class="spacer"></span>${isStaff() ? `<button id="edit-client" class="small">Editar cliente</button><a class="btn" href="guia.html" target="_blank" rel="noopener">Guía de conexión</a><button id="add" class="primary">Agregar cámara</button>` : ""}</div>
+    <div id="cam-form"></div>
+    <div class="grid cams" style="margin-top:12px">${cams.map((c) => `<a class="card cam" href="#/camara/${c.id}">${camThumb(c)}
+      <div class="body"><div class="row"><span class="title">${esc(c.name)}</span><span class="spacer"></span>${c.enabled ? (c.mode === "alarmas" ? `<span class="chip">${MODE_NAMES[c.mode]}</span>` : statusChip(c.status)) : `<span class="chip">deshabilitada</span>`}</div>
+      <span class="muted mono">${connText(c)}</span></div></a>`).join("") || `<div class="empty">Este cliente todavía no tiene cámaras.${isStaff() ? " Tocá <b>Agregar cámara</b>." : ""}</div>`}</div>`;
+  if (!isStaff()) { every(30000, () => $$("img", v).forEach((i) => { const c = cams.find((x) => "#/camara/" + x.id === i.closest("a").getAttribute("href")); if (c) i.src = previewUrl(c); })); return; }
+  $("#add").addEventListener("click", () => { if (!agents.length) return toast("Primero creá la PC central en Administración", true); cameraForm($("#cam-form"), agents, {}, { clientId }); });
+  $("#edit-client").addEventListener("click", () => (location.hash = `#/clientes?editar=${clientId}`));
+  // cada 30 s se refresca el estado y las imágenes (la PC central manda una captura cada 5 min)
+  every(30000, async () => { S._camsAt = 0; await loadCameras(); if (location.hash.startsWith(`#/cliente/${clientId}`)) clientCamerasView(v, clientId); });
+}
+
+/** Ficha de una cámara: imagen grande, estado, conexión y acciones. */
+async function cameraView(v, id) {
+  const cam = await api("GET", "/api/cameras/" + id);
+  await loadClients();
+  const agents = isStaff() ? await api("GET", "/api/agents") : [];
+  const ag = agents.find((a) => a.id === cam.agent_id);
+  const back = isStaff() ? `#/cliente/${cam.client_id}` : "#/camaras";
+  v.innerHTML = `
+    <div class="row"><a href="${back}">← Cámaras de ${esc(clientName(cam.client_id))}</a></div>
+    <div class="row"><h1>${esc(cam.name)}</h1>${cam.enabled ? (cam.mode === "alarmas" ? `<span class="chip">${MODE_NAMES[cam.mode]}</span>` : statusChip(cam.status)) : `<span class="chip">deshabilitada</span>`}<span class="spacer"></span>
+      ${isStaff() ? `<a class="btn" href="#/camara/${cam.id}/zonas">Zonas y reglas</a><button id="edit">Editar</button><button id="probe">Probar conexión</button>` : ""}
+      <a class="btn" href="#/alertas?camera_id=${cam.id}">Alertas</a>${isAlarmMode(cam.mode) && isStaff() ? `<a class="btn" href="#/alarmas?camera_id=${cam.id}">Alarmas del grabador</a>` : ""}</div>
+    <div id="probe-out"></div>
+    <div id="cam-form"></div>
+    <div class="two" style="margin-top:12px">
+      <div class="panel cam-big">${camThumb(cam)}<p class="muted" style="margin:8px 0 0">${cam.has_preview ? `Última imagen: ${fmtDate(cam.preview_at)}. La PC central manda una nueva cada 5 minutos.` : "Todavía no llegó ninguna imagen: aparece sola cuando la PC central se conecta a la cámara."}</p></div>
+      <div class="panel"><h3 style="margin-top:0">${isStaff() ? "Conexión" : "Detalle"}</h3>
+        <dl class="kv">
+          ${isStaff() ? `<dt>Marca</dt><dd>${esc(BRAND_NAMES[cam.brand] || cam.brand || "—")}</dd>
+          <dt>Modo</dt><dd>${esc(MODE_NAMES[cam.mode] || cam.mode)}</dd>
+          <dt>Grabador</dt><dd class="mono">${cam.has_source_url ? "URL manual" : `${esc(cam.host)} · RTSP ${cam.rtsp_port} · HTTP ${cam.http_port}`}</dd>
+          <dt>Canal</dt><dd>${cam.channel}${cam.mode === "alarmas" ? ` · serie ${esc(cam.hpp_serial || "—")}` : ""}</dd>
+          <dt>Usuario</dt><dd class="mono">${esc(cam.username || "—")}</dd>
+          <dt>PC central</dt><dd>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</dd>` : `<dt>Modo</dt><dd>${esc(MODE_NAMES[cam.mode] || cam.mode)}</dd>`}
+          <dt>Zonas</dt><dd>${(cam.zones || []).length ? (cam.zones || []).map((z) => `${esc(z.name)} (${ZONE_NAMES[z.type] || z.type})`).join(", ") : `<span class="muted">ninguna: sin zonas no se disparan reglas</span>`}</dd>
+          ${cam.status && cam.status.error ? `<dt>Error</dt><dd class="error">${esc(cam.status.error)}</dd>` : ""}
+        </dl></div>
+    </div>`;
+  if (!isStaff()) return;
+  $("#edit").addEventListener("click", () => cameraForm($("#cam-form"), agents, cam, { onSaved: () => cameraView(v, id) }));
+  $("#probe").addEventListener("click", () => probeCamera(cam, $("#probe-out")));
+  every(30000, () => { if (!$("#cam-form").innerHTML && !$("#probe-out").innerHTML) cameraView(v, id); });
 }
 
 // ------------------------------------------------------------------ alarmas de Hik-Partner Pro
@@ -525,7 +593,7 @@ async function zonesView(v, id) {
   let draft = [], selected = -1;
   const enabled = new Set(rules.enabled_rules || Object.keys(TYPE_NAMES));
   v.innerHTML = `
-    <div class="row"><a href="#/camaras">← Cámaras</a></div>
+    <div class="row"><a href="#/camara/${id}">← ${esc(cam.name)}</a></div>
     <h1>${esc(cam.name)} · zonas y reglas</h1>
     <p class="muted">Hacé clic sobre la imagen para marcar los vértices de cada zona; doble clic o "Cerrar zona" para terminarla. Se evalúan los <b>pies</b> de la persona, así que dibujá las zonas sobre el piso.</p>
     <div class="two">
@@ -563,7 +631,14 @@ async function zonesView(v, id) {
   img.onload = () => { hasImg = true; cv.width = img.naturalWidth; cv.height = img.naturalHeight; draw(); };
   img.onerror = () => { cv.width = 1280; cv.height = 720; $("#bg-info").textContent = "Sin vista previa: el agente la envía al conectarse. También podés subir una captura de iVMS."; draw(); };
   if (cam.has_preview) { img.src = `/api/cameras/${id}/preview?t=${Date.now()}`; $("#bg-info").textContent = "Vista previa del " + fmtDate(cam.preview_at); }
-  else img.onerror();
+  else {
+    img.onerror();
+    every(10000, async () => { // la PC central manda la primera imagen al conectarse: esperar sin recargar
+      if (hasImg) return;
+      const c = await api("GET", "/api/cameras/" + id).catch(() => null);
+      if (c && c.has_preview) { img.src = `/api/cameras/${id}/preview?t=${Date.now()}`; $("#bg-info").textContent = "Vista previa del " + fmtDate(c.preview_at); }
+    });
+  }
   $("#bg-file").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) { img.src = URL.createObjectURL(f); $("#bg-info").textContent = "Imagen local: " + f.name; } });
 
   function draw() {
@@ -909,7 +984,7 @@ async function summaryView(v) {
       ${tile(`${online.length}/${S.cameras.filter((c) => c.enabled !== false).length}`, "Cámaras conectadas", trouble.length ? `${trouble.length} con problemas` : "", "#/camaras")}
       ${tile(S.clients.length, "Clientes", "", "#/clientes")}
     </div>
-    ${trouble.length ? `<div class="panel" style="margin-top:14px"><b>Cámaras con problemas</b><div class="table-wrap"><table><tbody>${trouble.map((c) => `<tr><td>${esc(clientName(c.client_id))} · ${esc(c.name)}</td><td>${statusChip(c.status)}</td><td><a href="#/camaras">ver</a></td></tr>`).join("")}</tbody></table></div></div>` : ""}
+    ${trouble.length ? `<div class="panel" style="margin-top:14px"><b>Cámaras con problemas</b><div class="table-wrap"><table><tbody>${trouble.map((c) => `<tr><td>${esc(clientName(c.client_id))} · ${esc(c.name)}</td><td>${statusChip(c.status)}</td><td><a href="#/camara/${c.id}">ver</a></td></tr>`).join("")}</tbody></table></div></div>` : ""}
     <div class="row" style="margin-top:18px"><h2 style="margin:0">Últimas alertas sin revisar</h2><span class="spacer"></span><a class="btn primary" href="#/revisar">Revisar</a></div>
     <div class="grid" style="margin-top:10px">${pend.items.map(eventCard).join("") || `<div class="empty">No hay alertas pendientes. Cuando una cámara detecte algo, aparece acá.</div>`}</div>
     <p class="muted" style="margin-top:22px">Más: <a href="#/avisos">Avisos enviados a clientes</a> · <a href="#/videos">Videos para entrenar</a> · <a href="#/entrenamiento">Entrenamiento del modelo</a> · <a href="guia.html" target="_blank" rel="noopener">Guía de conexión</a></p>`;
@@ -924,11 +999,11 @@ async function clientsView(v) {
   const nCams = (id) => S.cameras.filter((c) => c.client_id === id).length;
   v.innerHTML = `
     <div class="row"><h1>Clientes</h1><span class="spacer"></span><button id="add" class="primary">Nuevo cliente</button></div>
-    <p class="muted">Cada cliente es un comercio. Sus cámaras se cargan en <a href="#/camaras">Cámaras</a>. El contacto se usa solo cuando alguien decide avisarle de un posible hurto.</p>
+    <p class="muted">Cada cliente es un comercio. Tocá el nombre para ver sus cámaras y agregar nuevas. El contacto se usa solo cuando alguien decide avisarle de un posible hurto.</p>
     <div id="client-form"></div>
     <div class="table-wrap panel" style="padding:0;margin-top:12px"><table><thead><tr><th>Nombre</th><th>Cámaras</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th><th></th></tr></thead>
-      <tbody>${S.clients.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${nCams(c.id)}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td>
-        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small" href="#/camaras">Cámaras</a></td></tr>`).join("") || `<tr><td colspan="8" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
+      <tbody>${S.clients.map((c) => `<tr><td><a href="#/cliente/${c.id}"><b>${esc(c.name)}</b></a></td><td><a href="#/cliente/${c.id}">${nCams(c.id)}</a></td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td>
+        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small primary" href="#/cliente/${c.id}">Ver cámaras</a></td></tr>`).join("") || `<tr><td colspan="8" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
   const form = (c = {}) => {
     $("#client-form").innerHTML = `<form class="form panel" id="cf" style="margin-top:12px">
       <label>Nombre<input name="name" required value="${esc(c.name || "")}"></label>
@@ -948,6 +1023,8 @@ async function clientsView(v) {
   };
   $("#add").addEventListener("click", () => form());
   $$("[data-edit]", v).forEach((b) => b.addEventListener("click", () => form(S.clients.find((c) => c.id === +b.dataset.edit))));
+  const editar = +(new URLSearchParams(location.hash.split("?")[1] || "").get("editar") || 0);
+  if (editar) form(S.clients.find((c) => c.id === editar) || {});
 }
 
 // ------------------------------------------------------------------ administración (solo administradores)

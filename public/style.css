@@ -123,3 +123,14 @@ dl.kv dd { margin: 0; }
 .toast.err { border-color: var(--accent); }
 .token-box { background: var(--bg); border: 1px dashed var(--warn); border-radius: 8px; padding: 10px; word-break: break-all; }
 .empty { padding: 40px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: var(--radius); }
+
+/* cámaras por cliente: miniaturas y ficha */
+.grid.cams { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.card.cam { text-decoration: none; color: inherit; display: block; }
+.thumb-empty { aspect-ratio: 16/9; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  background: #111; color: var(--muted); padding: 12px; }
+.cam-big { padding: 0; overflow: hidden; }
+.cam-big img, .cam-big .thumb-empty { width: 100%; aspect-ratio: 16/9; object-fit: contain; background: #000; display: block; }
+.cam-big p { padding: 0 12px 10px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; }
