@@ -112,3 +112,31 @@ def test_planes_carga_y_consulta_de_metricas(app):
         assert u.get("/api/metrics", params={"days": 7}).json()["total"]["people"] == 10
         otro = c.post("/api/clients", json={"name": "Otro"}).json()["id"]
         assert u.get("/api/metrics", params={"client_id": otro}).status_code == 403
+
+
+def test_borrar_cliente_con_todo(app):
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Viejo"}).json()["id"]
+        keep = c.post("/api/clients", json={"name": "Queda"}).json()["id"]
+        ag = c.post("/api/agents", json={"name": "central", "client_id": None}).json()
+        h = {"X-Agent-Token": ag["token"]}
+        cam = c.post("/api/cameras", json={"client_id": cid, "agent_id": ag["id"], "name": "A", "host": "h", "password": "x"}).json()
+        cam2 = c.post("/api/cameras", json={"client_id": keep, "agent_id": ag["id"], "name": "B", "host": "h", "password": "x"}).json()
+        now = datetime.now().replace(minute=0, second=0, microsecond=0).isoformat()
+        c.post("/api/agent/metrics", json={"buckets": [{"camera_id": cam["id"], "bucket_start": now, "data": {"people": 3}},
+                                                       {"camera_id": cam2["id"], "bucket_start": now, "data": {"people": 1}}]}, headers=h)
+        c.post("/api/users", json={"username": "dueno", "password": "clave-dueno-1", "role": "cliente", "client_id": cid})
+        # un empleado no puede borrar clientes
+        c.post("/api/users", json={"username": "empleado", "password": "clave-empl-1", "role": "entrenador"})
+        e = TestClient(app)
+        e.post("/api/login", json={"username": "empleado", "password": "clave-empl-1"})
+        assert e.delete(f"/api/clients/{cid}").status_code == 403
+        assert c.delete(f"/api/clients/{cid}").status_code == 204
+        assert [x["name"] for x in c.get("/api/clients").json()] == ["Queda"]
+        assert [x["name"] for x in c.get("/api/cameras").json()] == ["B"]
+        assert "dueno" not in [u["username"] for u in c.get("/api/users").json()]
+        assert c.get("/api/metrics", params={"client_id": keep}).json()["total"]["people"] == 1
+        # borrar cámara sin alertas (con métricas) y agente
+        assert c.delete(f"/api/cameras/{cam2['id']}").status_code == 204
+        assert c.delete(f"/api/agents/{ag['id']}").status_code == 204

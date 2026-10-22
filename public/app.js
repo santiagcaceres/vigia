@@ -470,7 +470,7 @@ async function cameraView(v, id) {
   v.innerHTML = `
     <div class="row"><a href="${back}">← Cámaras de ${esc(clientName(cam.client_id))}</a></div>
     <div class="row"><h1>${esc(cam.name)}</h1>${cam.enabled ? (cam.mode === "alarmas" ? `<span class="chip">${MODE_NAMES[cam.mode]}</span>` : statusChip(cam.status)) : `<span class="chip">deshabilitada</span>`}<span class="spacer"></span>
-      ${isStaff() ? `<a class="btn" href="#/camara/${cam.id}/zonas">Zonas y reglas</a><button id="edit">Editar</button><button id="probe">Probar conexión</button>` : ""}
+      ${isStaff() ? `<a class="btn" href="#/camara/${cam.id}/zonas">Zonas y reglas</a><button id="edit">Editar</button><button id="probe">Probar conexión</button>` : ""}${isAdmin() ? `<button id="delcam" class="ghost">Eliminar</button>` : ""}
       <a class="btn" href="#/alertas?camera_id=${cam.id}">Alertas</a>${isAlarmMode(cam.mode) && isStaff() ? `<a class="btn" href="#/alarmas?camera_id=${cam.id}">Alarmas del grabador</a>` : ""}</div>
     <div id="probe-out"></div>
     <div id="cam-form"></div>
@@ -493,6 +493,11 @@ async function cameraView(v, id) {
   if (!isStaff()) return;
   $("#edit").addEventListener("click", () => cameraForm($("#cam-form"), agents, cam, { onSaved: () => cameraView(v, id) }));
   $("#probe").addEventListener("click", () => probeCamera(cam, $("#probe-out")));
+  const del = $("#delcam");
+  if (del) del.addEventListener("click", async () => {
+    if (!confirm(`¿Eliminar la cámara "${cam.name}"? Se borran también sus métricas. Si tiene alertas, no se puede: deshabilitala.`)) return;
+    try { await api("DELETE", "/api/cameras/" + cam.id); toast("Cámara eliminada"); S._camsAt = 0; location.hash = `#/cliente/${cam.client_id}`; } catch (e) { fail(e); }
+  });
 }
 
 /** Vista en vivo liviana: latido cada 10 s ("alguien mira") y un cuadro por segundo con los recuadros. */
@@ -1107,7 +1112,7 @@ async function clientsView(v) {
     <div id="client-form"></div>
     <div class="table-wrap panel" style="padding:0;margin-top:12px"><table><thead><tr><th>Nombre</th><th>Cámaras</th><th>Planes</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th><th></th></tr></thead>
       <tbody>${S.clients.map((c) => `<tr><td><a href="#/cliente/${c.id}"><b>${esc(c.name)}</b></a></td><td><a href="#/cliente/${c.id}">${nCams(c.id)}</a></td><td>${(c.plans || []).map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ")}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td>
-        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small" href="#/metricas?client_id=${c.id}">Métricas</a><a class="btn small primary" href="#/cliente/${c.id}">Ver cámaras</a></td></tr>`).join("") || `<tr><td colspan="9" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
+        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small" href="#/metricas?client_id=${c.id}">Métricas</a><a class="btn small primary" href="#/cliente/${c.id}">Ver cámaras</a>${isAdmin() ? `<button class="small ghost" data-delclient="${c.id}" title="Borra el cliente con sus cámaras, alertas, métricas y usuarios">Eliminar</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
   const form = (c = {}) => {
     $("#client-form").innerHTML = `<form class="form panel" id="cf" style="margin-top:12px">
       <label>Nombre<input name="name" required value="${esc(c.name || "")}"></label>
@@ -1129,6 +1134,13 @@ async function clientsView(v) {
   };
   $("#add").addEventListener("click", () => form());
   $$("[data-edit]", v).forEach((b) => b.addEventListener("click", () => form(S.clients.find((c) => c.id === +b.dataset.edit))));
+  $$("[data-delclient]", v).forEach((b) => b.addEventListener("click", async () => {
+    const c = S.clients.find((x) => x.id === +b.dataset.delclient);
+    const typed = prompt(`Esto borra "${c.name}" con TODAS sus cámaras, alertas y clips, alarmas, métricas y usuarios. No se puede deshacer.\n\nEscribí el nombre del cliente para confirmar:`);
+    if (typed === null) return;
+    if (typed.trim() !== c.name) return toast("El nombre no coincide: no se borró nada", true);
+    try { await api("DELETE", "/api/clients/" + c.id); toast("Cliente eliminado"); S._clientsAt = 0; S._camsAt = 0; route(); } catch (e) { fail(e); }
+  }));
   const editar = +(new URLSearchParams(location.hash.split("?")[1] || "").get("editar") || 0);
   if (editar) form(S.clients.find((c) => c.id === editar) || {});
 }
@@ -1161,7 +1173,7 @@ async function adminView(v) {
       </ol></div>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
       <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? "Todos" : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
-        <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${a.status.alarms_with_person} con persona · ${a.status.alarms_discarded} descartadas · ${a.status.alarms_failed} con error</div>` : ""}</td><td>${a.status?.outbox_pending ?? "—"}</td><td><button class="small" data-rotate="${a.id}">Nuevo token</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
+        <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${a.status.alarms_with_person} con persona · ${a.status.alarms_discarded} descartadas · ${a.status.alarms_failed} con error</div>` : ""}</td><td>${a.status?.outbox_pending ?? "—"}</td><td class="row"><button class="small" data-rotate="${a.id}">Nuevo token</button><button class="small ghost" data-delagent="${a.id}">Eliminar</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
     <form class="form panel" id="af" style="margin-top:10px">
       <label>Nombre de la PC<input name="name" required placeholder="PC central"></label>
       <button class="primary" type="submit">Crear agente</button>
@@ -1195,6 +1207,10 @@ async function adminView(v) {
     e.preventDefault(); const f = new FormData(e.target);
     try { const a = await api("POST", "/api/agents", { client_id: null, name: f.get("name") }); e.target.reset(); showToken(a); } catch (err) { fail(err); }
   });
+  $$("[data-delagent]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("¿Eliminar este agente? Sus cámaras quedan sin PC central asignada y el programa que use ese token deja de funcionar.")) return;
+    try { await api("DELETE", "/api/agents/" + b.dataset.delagent); toast("Agente eliminado"); S._camsAt = 0; route(); } catch (e) { fail(e); }
+  }));
   $$("[data-rotate]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("El token anterior deja de funcionar. ¿Generar uno nuevo?")) return;
     try { showToken(await api("POST", `/api/agents/${b.dataset.rotate}/token`)); } catch (err) { fail(err); }

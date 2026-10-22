@@ -558,6 +558,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return client_dict(c)
 
+    @app.delete("/api/clients/{cid}", status_code=204)
+    def delete_client(cid: int, _: User = Depends(admin_only), s=Depends(db)) -> None:
+        """Borra el cliente con todo lo suyo: cámaras, alertas y clips, alarmas, métricas, videos, avisos,
+        modelos y los usuarios de rol cliente. No se puede deshacer (el panel pide escribir el nombre)."""
+        c = get_or_404(s, Client, cid, "Cliente")
+        files: list[str] = []
+        cam_ids = [x.id for x in s.query(Camera).filter_by(client_id=cid)]
+        s.query(ClientReport).filter_by(client_id=cid).delete(synchronize_session=False)
+        for e in s.query(Event).filter_by(client_id=cid):
+            files += [p for p in (e.snapshot_path, e.clip_path) if p]
+        s.query(Event).filter_by(client_id=cid).delete(synchronize_session=False)
+        s.query(Alarm).filter_by(client_id=cid).delete(synchronize_session=False)
+        s.query(CameraMetric).filter_by(client_id=cid).delete(synchronize_session=False)
+        imps = s.query(VideoImport).filter_by(client_id=cid).all()
+        if imps:
+            s.query(Incident).filter(Incident.import_id.in_([i.id for i in imps])).delete(synchronize_session=False)
+            files += [i.storage_path for i in imps if i.storage_path]
+            s.query(VideoImport).filter_by(client_id=cid).delete(synchronize_session=False)
+        s.query(FilterModel).filter_by(client_id=cid).delete(synchronize_session=False)
+        for cam in s.query(Camera).filter_by(client_id=cid):
+            files += ([cam.preview_path] if cam.preview_path else []) + [live_path(cam)]
+        s.query(Camera).filter_by(client_id=cid).delete(synchronize_session=False)
+        users = [u.id for u in s.query(User).filter_by(client_id=cid)]
+        if users:
+            s.query(SessionToken).filter(SessionToken.user_id.in_(users)).delete(synchronize_session=False)
+            s.query(User).filter(User.id.in_(users)).delete(synchronize_session=False)
+        for a in s.query(Agent).filter_by(client_id=cid):  # agentes "de local" de ese cliente
+            s.delete(a)
+        s.delete(c)
+        s.commit()
+        try:
+            storage.remove(files)
+        except StorageError:
+            log.warning("No se pudieron borrar %d archivos del cliente %s", len(files), cid)
+        log.info("Cliente %s borrado (%d cámaras)", cid, len(cam_ids))
+
     @app.get("/api/users")
     def list_users(_: User = Depends(admin_only), s=Depends(db)) -> list[dict]:
         return [user_dict(u) for u in s.query(User).order_by(User.username).all()]
@@ -708,10 +744,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def delete_camera(cam_id: int, _: User = Depends(admin_only), s=Depends(db)) -> None:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         if s.query(Event).filter_by(camera_id=cam_id).first() or s.query(VideoImport).filter_by(camera_id=cam_id).first():
-            raise HTTPException(409, "La cámara tiene eventos o videos: deshabilitala en lugar de borrarla")
-        storage.remove(([c.preview_path] if c.preview_path else []) + [live_path(c)])
+            raise HTTPException(409, "La cámara tiene alertas o videos: deshabilitala en lugar de borrarla")
+        s.query(CameraMetric).filter_by(camera_id=cam_id).delete(synchronize_session=False)
+        s.query(Alarm).filter_by(camera_id=cam_id).delete(synchronize_session=False)
+        files = ([c.preview_path] if c.preview_path else []) + [live_path(c)]
         s.delete(c)
         s.commit()
+        try:
+            storage.remove(files)
+        except StorageError:
+            pass
 
     @app.post("/api/cameras/{cam_id}/probe")
     def camera_probe(cam_id: int, _: User = Depends(staff), s=Depends(db)) -> dict:
