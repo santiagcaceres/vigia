@@ -133,6 +133,7 @@ class RuleEvent:
     ts: float
     bbox: BBox
     features: dict[str, float] = field(default_factory=dict)
+    track_start_ts: float = 0.0  # desde cuándo está la persona en escena (para que el clip arranque ahí)
 
 
 @dataclass
@@ -234,7 +235,7 @@ class RuleEngine:
         st.fired.add(key)
         self._last_fired[key] = ts
         feats = track_features(t, st, ts, visible, size, wall)
-        events.append(RuleEvent(rule, SEVERITY[rule], t.id, zone, description, ts, t.bbox, feats))
+        events.append(RuleEvent(rule, SEVERITY[rule], t.id, zone, description, ts, t.bbox, feats, st.first_ts))
 
     def current_features(self, tracks: list[Track], ts: float, frame_size: tuple[int, int],
                          wall_time: datetime | None = None) -> dict[int, dict[str, float]]:

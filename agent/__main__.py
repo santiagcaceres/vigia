@@ -32,6 +32,7 @@ from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
 from .live import LiveWorker
 from .outbox import Outbox, ServerClient
+from .ventana import Ventana
 from .worker import CameraWorker
 
 log = logging.getLogger("vigia.agent")
@@ -43,7 +44,7 @@ LIVE_EXTEND_SECONDS = 45.0  # cuánto sigue el vivo después del último aviso d
 
 class Agent:
     def __init__(self, server: str, token: str, data_dir: Path, model_path: str | None, verify: bool | str = True,
-                 process_imports: bool = True, alarm_workers: int = 2):
+                 process_imports: bool = True, alarm_workers: int = 2, window: bool = False):
         self.client = ServerClient(server, token, verify=verify)
         self.process_imports = process_imports
         self.imports: ImportJobRunner | None = None
@@ -57,6 +58,7 @@ class Agent:
         self.listeners: dict[int, DeviceAlarmListener] = {}
         self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
         self._cams_cfg: dict[int, dict] = {}
+        self.window = Ventana() if window else None
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
@@ -148,8 +150,34 @@ class Agent:
                     self.apply_live(resp.get("live") or [])
                 except httpx.HTTPError:
                     pass
-            self._stop.wait(1.0)
+            if self.window is not None:
+                if not self.window.show(self.window_tiles()):
+                    log.info("Ventana cerrada; el agente sigue trabajando (Ctrl+C para detenerlo)")
+                    self.window = None
+                    for w in list(self.workers.values()) + list(self.live_workers.values()):
+                        w.show_window = False
+            else:
+                self._stop.wait(1.0)
         self.shutdown()
+
+    def window_tiles(self) -> list:
+        """Una celda por cámara asignada: video con recuadros, o el estado si no se está mirando."""
+        tiles = []
+        for cid, c in sorted(self._cams_cfg.items()):
+            name = f"{c.get('client_name', '')} · {c['name']}" if c.get("client_name") else c["name"]
+            w = self.workers.get(cid)
+            lw = self.live_workers.get(cid)
+            if w is not None:
+                w.show_window = True
+                tiles.append((name, w.display, {"en_linea": "Conectando...", "sin_conexion": "Sin conexion con el grabador",
+                                                 "reconectando": "Reconectando...", "error": "Error: " + str(w.error or "")}
+                              .get(w.state, w.state)))
+            elif lw is not None and lw.thread.is_alive():
+                lw.show_window = True
+                tiles.append((name, lw.display, "Abriendo el stream..."))
+            else:
+                tiles.append((name, None, "Escuchando alarmas del grabador (video solo cuando alguien mira)"))
+        return tiles
 
     # ---- vista en vivo ----
     def live_ids(self) -> list[int]:
@@ -272,8 +300,13 @@ def main() -> None:
     p.add_argument("--no-imports", action="store_true", help="No analizar videos importados en esta PC")
     p.add_argument("--alarm-workers", type=int, default=int(env.get("VIGIA_ALARM_WORKERS", "2")),
                    help="Alarmas que se bajan y analizan en paralelo")
+    p.add_argument("--ventana", dest="ventana", action="store_true", default=None,
+                   help="Mostrar la ventana con las cámaras y los recuadros (en el .exe viene activada)")
+    p.add_argument("--sin-ventana", dest="ventana", action="store_false", help="Sin ventana (servidor sin pantalla)")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
+    if a.ventana is None:
+        a.ventana = env.get("VIGIA_VENTANA", "1" if getattr(sys, "frozen", False) else "0") not in ("0", "no", "false")
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not a.server or not a.token:
@@ -281,7 +314,7 @@ def main() -> None:
     if not a.server or not a.token:
         p.error(f"Faltan --server y --token (o VIGIA_SERVER y VIGIA_AGENT_TOKEN, o el archivo {cfg_path})")
     agent = Agent(a.server, a.token, Path(a.data), a.model, verify=not a.insecure, process_imports=not a.no_imports,
-                  alarm_workers=max(1, a.alarm_workers))
+                  alarm_workers=max(1, a.alarm_workers), window=a.ventana)
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
     try:

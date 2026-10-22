@@ -16,7 +16,7 @@ from core.detectors import Detector
 from core.scorer import Scorer
 
 from .cameras import build_camera, download_nvr_clip
-from .live import LiveStreamer
+from .live import LiveStreamer, hud
 from .outbox import Outbox, ServerClient
 
 log = logging.getLogger("vigia.worker")
@@ -41,7 +41,9 @@ class CameraWorker:
         self.process_fps = float(cam_cfg.get("process_fps", 5))
         self.clip_pre = float(settings.get("clip_pre_seconds", 6))
         self.clip_post = float(settings.get("clip_post_seconds", 6))
-        self.analyzer = Analyzer(cam_cfg.get("analysis", {}), detector, scorer, self.clip_pre, self.clip_post)
+        self.clip_max = float(settings.get("clip_max_seconds", 180))
+        self.analyzer = Analyzer(cam_cfg.get("analysis", {}), detector, scorer, self.clip_pre, self.clip_post,
+                                 clip_max=self.clip_max)
         self.outbox = outbox
         self.client = client
         self.clip_pool = clip_pool
@@ -55,6 +57,9 @@ class CameraWorker:
         self.last_frame_at: float | None = None
         # vista en vivo: sube cuadros con recuadros mientras alguien mira la cámara en el panel
         self.live = LiveStreamer(self.id, self.name, client, self.analyzer.zones)
+        # ventana de la PC central: último cuadro con recuadros (se arma solo si la ventana está abierta)
+        self.show_window = False
+        self.display = None  # np.ndarray | None
 
     @staticmethod
     def fingerprint_of(cam_cfg: dict) -> str:
@@ -116,6 +121,9 @@ class CameraWorker:
             fails = 0
             now = time.monotonic()
             self.last_frame_at = time.time()
+            if self.show_window:  # todos los cuadros, con los recuadros del último análisis
+                self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, now - t0, self.name,
+                                   datetime.now(self.hik.tz))
             if now - last_proc < 1.0 / self.process_fps - 1e-3:
                 continue
             last_proc = now
@@ -149,8 +157,9 @@ class CameraWorker:
         out = self.outbox.clip_path(c.uuid)
         try:
             if self.hik.nvr_clips and f is not None and f.wall_time is not None and not self.hik.source_url:
-                start = f.wall_time - timedelta(seconds=self.clip_pre)
-                end = f.wall_time + timedelta(seconds=self.clip_post)
+                # el mismo tramo que cubre el clip del buffer: desde que apareció la persona hasta que se fue
+                start = f.wall_time - timedelta(seconds=max(0.0, f.ts - c.start_ts))
+                end = f.wall_time + timedelta(seconds=max(self.clip_post, c.end_ts - f.ts))
                 wait = (end - datetime.now(self.hik.tz)).total_seconds() + NVR_WRITE_DELAY_SECONDS
                 if wait > 0:
                     self._stop.wait(wait)

@@ -142,6 +142,8 @@ class LiveWorker:
         self.streamer = LiveStreamer(self.id, self.name, client, parse_zones((cam_cfg.get("analysis") or {}).get("zones")))
         self.state = "iniciando"
         self.error: str | None = None
+        self.show_window = False
+        self.display: np.ndarray | None = None
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name=f"live-cam-{self.id}", daemon=True)
 
@@ -190,7 +192,10 @@ class LiveWorker:
                     last_proc = now
                     ts = now - t0
                     tracks = tracker.update(self.detector.detect(frame), ts)
-                    self.streamer.push(frame, tracks, ts, datetime.now(self.cam.tz))
+                    wall = datetime.now(self.cam.tz)
+                    self.streamer.push(frame, tracks, ts, wall)
+                    if self.show_window:
+                        self.display = hud(frame, self.streamer.zones, tracks, ts, self.name, wall)
             except Exception as exc:
                 log.exception("[%s] vivo: error", self.name)
                 self.state, self.error = "error", str(exc)

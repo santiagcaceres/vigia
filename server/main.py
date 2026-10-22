@@ -54,8 +54,9 @@ class Settings:
     retention_days: int = 60
     max_import_bytes: int = 5 * 1024**3
     session_days: int = 14
-    clip_pre_seconds: float = 6.0
-    clip_post_seconds: float = 6.0
+    clip_pre_seconds: float = 6.0   # mínimo antes de la alerta (el clip arranca cuando apareció la persona)
+    clip_post_seconds: float = 6.0  # después de que la persona se fue
+    clip_max_seconds: float = 180.0  # tope de duración de un clip
     serve_public: bool = True
     on_vercel: bool = False
     # Aviso interno al operador (equipo propio) de que hay clips para revisar
@@ -96,6 +97,7 @@ class Settings:
             retention_days=int(os.getenv("RETENTION_DAYS", "60")),
             clip_pre_seconds=float(os.getenv("CLIP_PRE_SECONDS", "6")),
             clip_post_seconds=float(os.getenv("CLIP_POST_SECONDS", "6")),
+            clip_max_seconds=float(os.getenv("CLIP_MAX_SECONDS", "180")),
             alarm_merge_seconds=float(os.getenv("ALARM_MERGE_SECONDS", "20")),
             alarm_max_window_seconds=float(os.getenv("ALARM_MAX_WINDOW_SECONDS", "120")),
             on_vercel=bool(os.getenv("VERCEL")),
@@ -788,7 +790,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "agent_id": ag.id, "client_id": ag.client_id, "central": ag.client_id is None,
             "process_imports": ag.process_imports,
-            "settings": {"clip_pre_seconds": st.clip_pre_seconds, "clip_post_seconds": st.clip_post_seconds},
+            "settings": {"clip_pre_seconds": st.clip_pre_seconds, "clip_post_seconds": st.clip_post_seconds,
+                         "clip_max_seconds": st.clip_max_seconds},
             "filter_model": model_spec(s, ag.client_id) if ag.client_id is not None else None,
             "cameras": [{
                 **agent_camera_cfg(c, clients[c.client_id]), "filter_model": models[c.client_id],

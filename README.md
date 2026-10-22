@@ -175,7 +175,8 @@ del local o por VPN. Esas apps sí sirven para *configurar* los equipos a distan
 GitHub → **Actions → "Agente para Windows"** (artefacto de la última corrida) o desde
 **Releases**. Descomprimir, abrir `VigiaAgente.exe`, Enter para el servidor y pegar el token.
 Queda guardado en `agente.env` al lado del .exe. Si Defender lo frena: "Más información →
-Ejecutar de todas formas". Para generar un .exe nuevo: Actions → Run workflow (o `git tag
+Ejecutar de todas formas". Abre además la ventana **"Vigia - PC central"**: mosaico con las cámaras y
+los recuadros de la IA en tiempo real (`--sin-ventana` para un servidor sin pantalla). Para generar un .exe nuevo: Actions → Run workflow (o `git tag
 agente-v1.0.0 && git push --tags`, que además lo publica en Releases).
 
 **Windows, con Python:**

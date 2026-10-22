@@ -19,9 +19,16 @@ def redact(text: str) -> str:
     return _CREDENTIALS.sub(r"\1***@", text)
 
 
-def write_mp4(frames: list[tuple[float, np.ndarray]], path: str | Path) -> bool:
-    """Escribe frames (ts, imagen BGR) como MP4 H.264 reproducible en navegadores.
+def _decode(f) -> np.ndarray | None:
+    if isinstance(f, (bytes, bytearray, memoryview)):
+        return cv2.imdecode(np.frombuffer(f, np.uint8), cv2.IMREAD_COLOR)
+    return f
 
+
+def write_mp4(frames: list[tuple[float, np.ndarray | bytes]], path: str | Path) -> bool:
+    """Escribe frames (ts, imagen BGR o JPEG en bytes) como MP4 H.264 reproducible en navegadores.
+
+    Los JPEG se decodifican de a uno, así un clip de 3 minutos no ocupa cientos de MB en memoria.
     Usa ffmpeg si está disponible (H.264). Si no, deja el MP4 de OpenCV (mp4v), que se
     descarga bien pero algunos navegadores no reproducen.
     """
@@ -31,13 +38,19 @@ def write_mp4(frames: list[tuple[float, np.ndarray]], path: str | Path) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     span = frames[-1][0] - frames[0][0]
     fps = max(1.0, min(30.0, (len(frames) - 1) / span)) if span > 0 else 5.0
-    h, w = frames[0][1].shape[:2]
+    first = _decode(frames[0][1])
+    if first is None:
+        return False
+    h, w = first.shape[:2]
     tmp = path.with_name(path.stem + ".raw.mp4")
     vw = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     if not vw.isOpened():
         log.warning("No se pudo abrir VideoWriter para %s", path)
         return False
     for _, f in frames:
+        f = _decode(f)
+        if f is None:
+            continue
         if f.shape[:2] != (h, w):
             f = cv2.resize(f, (w, h))
         vw.write(f)

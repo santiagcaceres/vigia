@@ -53,14 +53,27 @@ class Finding:
 @dataclass
 class _PendingClip:
     uuid: str
-    frames: list[tuple[float, np.ndarray]]
+    frames: list[tuple[float, bytes]]  # (ts, JPEG)
+    start_ts: float
     end_ts: float
+    track_id: int
+    max_end_ts: float
 
 
 @dataclass
 class ClipReady:
+    """Clip listo: cuadros JPEG (ts, bytes) y el tramo que cubre, en segundos del stream."""
     uuid: str
-    frames: list[tuple[float, np.ndarray]] = field(repr=False)
+    frames: list[tuple[float, bytes]] = field(repr=False)
+    start_ts: float = 0.0
+    end_ts: float = 0.0
+
+    def decoded(self):
+        """Cuadros decodificados de a uno (para no tener 3 minutos de video en memoria)."""
+        for ts, jpg in self.frames:
+            img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            if img is not None:
+                yield ts, img
 
 
 def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: RuleEvent | None = None) -> np.ndarray:
@@ -97,8 +110,17 @@ def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: R
 
 
 class Analyzer:
+    """Detecta, sigue, aplica reglas y arma los clips.
+
+    El clip de una alerta cubre **toda la estadía de la persona**: arranca unos segundos antes de
+    que apareciera (`clip_pre` como mínimo) y sigue mientras se la vea, hasta `clip_post` después
+    de que se fue, con tope `clip_max`. Para poder volver hasta 3 minutos atrás sin gastar memoria,
+    el buffer guarda los cuadros ya comprimidos en JPEG (640 px, ~40 KB: 3 min a 5 fps ≈ 36 MB).
+    """
+
     def __init__(self, config: dict, detector: Detector, scorer: Scorer | None = None,
-                 clip_pre: float = 6.0, clip_post: float = 6.0, clip_width: int = 960):
+                 clip_pre: float = 6.0, clip_post: float = 6.0, clip_width: int = 640, clip_max: float = 180.0,
+                 lead_seconds: float = 3.0):
         self.zones, rule_cfg = parse_config(config)
         self.detector = detector
         self.tracker = CentroidTracker()
@@ -107,8 +129,10 @@ class Analyzer:
         self.clip_pre = clip_pre
         self.clip_post = clip_post
         self.clip_width = clip_width
+        self.clip_max = max(clip_max, clip_pre + clip_post)
+        self.lead_seconds = lead_seconds
         self.frames = 0
-        self._buffer: deque[tuple[float, np.ndarray]] = deque()
+        self._buffer: deque[tuple[float, bytes]] = deque()
         self._pending: list[_PendingClip] = []
         self._ready: list[ClipReady] = []
         self.last_tracks: list[Track] = []
@@ -117,17 +141,20 @@ class Analyzer:
         h, w = frame.shape[:2]
         tracks = self.tracker.update(self.detector.detect(frame), ts)
         self.last_tracks = tracks
-        small = self._small(frame)
-        self._buffer.append((ts, small))
-        while self._buffer and ts - self._buffer[0][0] > self.clip_pre:
+        jpg_small = self._small_jpg(frame)
+        self._buffer.append((ts, jpg_small))
+        while self._buffer and ts - self._buffer[0][0] > self.clip_max:
             self._buffer.popleft()
+        visible_ids = {t.id for t in tracks if t.visible}
         still = []
         for p in self._pending:
+            if p.track_id in visible_ids and ts + self.clip_post <= p.max_end_ts:
+                p.end_ts = ts + self.clip_post  # la persona sigue ahí: el clip sigue
             if ts <= p.end_ts:
-                p.frames.append((ts, small))
+                p.frames.append((ts, jpg_small))
                 still.append(p)
             else:
-                self._ready.append(ClipReady(p.uuid, p.frames))
+                self._ready.append(ClipReady(p.uuid, p.frames, p.start_ts, p.frames[-1][0] if p.frames else ts))
         self._pending = still
 
         findings = []
@@ -138,7 +165,11 @@ class Analyzer:
             f = Finding(uuid.uuid4().hex, ev.type, ev.severity, ev.zone, ev.description, ev.track_id, ts, wall,
                         ev.bbox, (w, h), ev.features, None if score is None else round(score, 4), alert,
                         jpg.tobytes() if ok else b"")
-            self._pending.append(_PendingClip(f.uuid, list(self._buffer), ts + self.clip_post))
+            # desde que la persona apareció (con un margen), nunca menos que clip_pre ni más que el tope
+            back = max(self.clip_pre, ts - ev.track_start_ts + self.lead_seconds)
+            start = ts - min(back, self.clip_max - self.clip_post)
+            self._pending.append(_PendingClip(f.uuid, [fr for fr in self._buffer if fr[0] >= start], start,
+                                              ts + self.clip_post, ev.track_id, start + self.clip_max))
             findings.append(f)
         self.frames += 1
         return findings
@@ -149,9 +180,14 @@ class Analyzer:
 
     def flush(self) -> list[ClipReady]:
         """Al terminar el video: entrega también los clips que no llegaron a completarse."""
-        self._ready += [ClipReady(p.uuid, p.frames) for p in self._pending]
+        self._ready += [ClipReady(p.uuid, p.frames, p.start_ts, p.frames[-1][0] if p.frames else p.start_ts)
+                        for p in self._pending]
         self._pending = []
         return self.take_ready_clips()
+
+    def _small_jpg(self, frame: np.ndarray) -> bytes:
+        ok, jpg = cv2.imencode(".jpg", self._small(frame), [cv2.IMWRITE_JPEG_QUALITY, 70])
+        return jpg.tobytes() if ok else b""
 
     def _small(self, frame: np.ndarray) -> np.ndarray:
         h, w = frame.shape[:2]

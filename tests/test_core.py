@@ -136,3 +136,34 @@ def test_detector_yolo_onnx_encuentra_personas():
     dets = OnnxYoloDetector(model).detect(cv2.imread(str(img_path)))
     assert len(dets) == 4  # bus.jpg: cuatro personas
     assert all(d.conf > 0.35 and d.bbox[3] > d.bbox[1] for d in dets)
+
+
+def test_el_clip_cubre_toda_la_estadia_de_la_persona():
+    """El clip arranca cuando apareció la persona (no solo clip_pre antes de la alerta) y sigue
+    mientras se la vea, hasta clip_post después de que se fue, con tope clip_max."""
+    from core.detectors import Detection
+    import numpy as np
+
+    class Fija:
+        """Una persona quieta en la góndola los primeros 40 s; después nadie."""
+        def __init__(self):
+            self.t = 0.0
+
+        def detect(self, frame):
+            return [Detection((100, 100, 160, 300), "persona", 0.9)] if self.t < 40 else []
+
+    det = Fija()
+    zones = [{"name": "g", "type": "shelf", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}]
+    a = Analyzer({"zones": zones, "rules": {"loiter_seconds": 20}}, det, clip_pre=2, clip_post=3, clip_max=60)
+    frame = np.zeros((360, 640, 3), np.uint8)
+    found = []
+    for i in range(50 * 5):  # 50 s a 5 fps
+        det.t = i / 5
+        found += a.process(frame, i / 5)
+    clips = a.flush()
+    assert [f.type for f in found] == ["merodeo"] and 19 <= found[0].ts <= 22
+    c = clips[0]
+    assert c.start_ts <= 1.0  # arrancó cuando apareció (0 s), no 2 s antes de la alerta (~18 s)
+    assert 42 <= c.end_ts <= 44  # siguió hasta 3 s después de que se fue (40 s)
+    assert isinstance(c.frames[0][1], bytes) and c.frames[0][1][:2] == b"\xff\xd8"  # buffer en JPEG
+    assert sum(1 for _ in c.decoded()) == len(c.frames)

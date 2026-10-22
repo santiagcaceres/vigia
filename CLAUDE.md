@@ -85,6 +85,16 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   (~100 MB por hora de visualización por cámara; el plan gratis tiene 5 GB/mes → Supabase Pro si se mira
   mucho). Si el CDN de Supabase devolviera cuadros viejos, pasar a `GET /api/cameras/{id}/live-frame`
   con redirección firmada por cuadro (cuesta invocaciones de Vercel).
+- **Clips de estadía completa (22 oct):** el clip de una alerta en modo vivo arranca cuando la persona
+  **apareció** (`RuleEvent.track_start_ts`, con 3 s de margen; mínimo `clip_pre`) y sigue **mientras se la
+  vea** hasta `clip_post` después de que se fue, con tope `clip_max_seconds` (180, env `CLIP_MAX_SECONDS`,
+  viaja en `settings` al agente). El buffer del `Analyzer` guarda JPEG de 640 px (3 min ≈ 36 MB por cámara);
+  `ClipReady.frames` son `(ts, bytes)` y `write_mp4` decodifica de a uno. Con `nvr_clips`, el tramo que se
+  baja del grabador es el mismo (`ClipReady.start_ts/end_ts`).
+- **Ventana de la PC central (22 oct):** `agent/ventana.py`, mosaico con todas las cámaras asignadas y los
+  recuadros de la IA a la velocidad del stream (`CameraWorker.display`, `LiveWorker.display`). `--ventana` /
+  `--sin-ventana`; en el .exe viene activada (env `VIGIA_VENTANA=0` la apaga). Cerrar la ventana no detiene
+  el agente. Por eso `requirements-agent.txt` pasó a `opencv-python` (no headless).
 - **Pestaña Prueba** (`public/prueba.js`): comparte la pantalla (`getDisplayMedia`) de la ventana de
   HPP / iVMS / SmartPSS con la cámara en vivo y corre el detector de personas **en el navegador**
   con ONNX Runtime Web (jsdelivr 1.19.2, wasm 1 hilo) sobre `public/models/personas.onnx` (copia
