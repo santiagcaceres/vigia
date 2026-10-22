@@ -6,8 +6,9 @@ AGENTE VIGÍA PARA WINDOWS
    - Servidor: apretá Enter para usar https://vigia-three-ashy.vercel.app
    - Token: lo generás en el panel, Administración -> Agentes (se muestra una sola vez).
    Queda guardado en agente.env, al lado del .exe. Borrá ese archivo para cargar otro token.
-3. Se abren dos ventanas: la negra (registro) y "Vigia - PC central", el mosaico con las
-   cámaras en vivo y las personas recuadradas. Podés cerrar el mosaico; el agente sigue.
+3. Se abren dos ventanas: la negra (registro) y "Vigia - PC central": a la izquierda la lista
+   de clientes y cámaras con su estado (elegí cuáles ver; un cliente = todas las suyas) y a la
+   derecha el mosaico en vivo con las personas recuadradas. Podés cerrarla; el agente sigue.
    En el panel, Clientes -> cliente -> cámara, la cámara pasa a "En línea" en menos de un minuto.
 
 Para que arranque solo con Windows: Programador de tareas -> Crear tarea básica ->

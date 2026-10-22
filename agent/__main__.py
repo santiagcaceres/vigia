@@ -32,7 +32,7 @@ from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
 from .live import LiveWorker
 from .outbox import Outbox, ServerClient
-from .ventana import Ventana
+from .ventana import ESTADOS, Ventana
 from .worker import CameraWorker
 
 log = logging.getLogger("vigia.agent")
@@ -58,7 +58,9 @@ class Agent:
         self.listeners: dict[int, DeviceAlarmListener] = {}
         self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
         self._cams_cfg: dict[int, dict] = {}
-        self.window = Ventana() if window else None
+        self.window = Ventana(self.data_dir / "ventana.json") if window else None
+        if self.window is not None and self.window.failed:
+            self.window = None
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
@@ -151,7 +153,9 @@ class Agent:
                 except httpx.HTTPError:
                     pass
             if self.window is not None:
-                if not self.window.show(self.window_tiles()):
+                self.window.set_cameras(self.window_cameras())
+                self.window.refresh(self.window_tiles(self.window.selected_ids()))
+                if not self.window.pump(40):
                     log.info("Ventana cerrada; el agente sigue trabajando (Ctrl+C para detenerlo)")
                     self.window = None
                     for w in list(self.workers.values()) + list(self.live_workers.values()):
@@ -160,23 +164,44 @@ class Agent:
                 self._stop.wait(1.0)
         self.shutdown()
 
-    def window_tiles(self) -> list:
-        """Una celda por cámara asignada: video con recuadros, o el estado si no se está mirando."""
+    # ---- ventana de la PC central ----
+    def _cam_state(self, cid: int) -> str:
+        w = self.workers.get(cid)
+        lw = self.live_workers.get(cid)
+        if w is not None:
+            return ESTADOS.get(w.state, w.state) + (f" · {w.fps:.0f} fps" if w.state == "en_linea" and w.fps else "")
+        if lw is not None and lw.thread.is_alive():
+            return "En vivo (panel)"
+        if cid in self.listeners:
+            lst = self.listeners[cid]
+            return ESTADOS.get(lst.state, lst.state)
+        return "Escuchando alarmas"
+
+    def window_cameras(self) -> list[tuple[int, str, str, str]]:
+        """Todas las cámaras asignadas, para la lista de la izquierda: (id, cliente, nombre, estado)."""
+        return [(cid, c.get("client_name") or "", c["name"], self._cam_state(cid))
+                for cid, c in sorted(self._cams_cfg.items(), key=lambda kv: (kv[1].get("client_name") or "", kv[1]["name"]))]
+
+    def window_tiles(self, ids: set[int]) -> list:
+        """Celdas del mosaico: solo las cámaras elegidas; las demás no gastan en dibujar recuadros."""
         tiles = []
         for cid, c in sorted(self._cams_cfg.items()):
-            name = f"{c.get('client_name', '')} · {c['name']}" if c.get("client_name") else c["name"]
             w = self.workers.get(cid)
             lw = self.live_workers.get(cid)
+            target = w if w is not None else (lw if lw is not None and lw.thread.is_alive() else None)
+            if target is not None:
+                target.show_window = cid in ids
+            if cid not in ids:
+                continue
+            name = f"{c.get('client_name', '')} · {c['name']}" if c.get("client_name") else c["name"]
             if w is not None:
-                w.show_window = True
                 tiles.append((name, w.display, {"en_linea": "Conectando...", "sin_conexion": "Sin conexion con el grabador",
                                                  "reconectando": "Reconectando...", "error": "Error: " + str(w.error or "")}
                               .get(w.state, w.state)))
             elif lw is not None and lw.thread.is_alive():
-                lw.show_window = True
                 tiles.append((name, lw.display, "Abriendo el stream..."))
             else:
-                tiles.append((name, None, "Escuchando alarmas del grabador (video solo cuando alguien mira)"))
+                tiles.append((name, None, "Escuchando alarmas del grabador (video solo cuando alguien mira desde el panel)"))
         return tiles
 
     # ---- vista en vivo ----

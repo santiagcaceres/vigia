@@ -17,7 +17,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    excludes=["tkinter", "matplotlib", "PyQt5", "PySide2", "scipy", "pandas", "sklearn"],
+    excludes=["matplotlib", "PyQt5", "PySide2", "scipy", "pandas", "sklearn"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
