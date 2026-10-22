@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Vigía · Guía de instalación para el cliente</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#e5484d; --ok:#2f8f46; --warn:#b7791f; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 11.5pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 26pt; margin: 0 0 4px; }
+  h2 { font-size: 16pt; margin: 26px 0 8px; padding-top: 10px; border-top: 2px solid var(--accent); page-break-after: avoid; }
+  h3 { font-size: 12.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  ol, ul { margin: 6px 0 6px 22px; padding: 0; }
+  li { margin: 4px 0; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 10.5pt; }
+  pre { font-family: Consolas, "Courier New", monospace; background: var(--bg); border: 1px solid var(--line); padding: 8px 10px; border-radius: 6px; font-size: 10.5pt; white-space: pre-wrap; word-break: break-all; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 10.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); background: #fff; padding: 8px 12px; margin: 10px 0; border-radius: 6px; page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .muted { color: var(--muted); }
+  .cover { margin-bottom: 18px; }
+  .cover .sub { font-size: 13pt; color: var(--muted); }
+  .steps li { margin: 7px 0; }
+  .check { list-style: none; margin-left: 0; }
+  .check li::before { content: "☐ "; }
+  .small { font-size: 10pt; }
+  .fill { display: inline-block; min-width: 170px; border-bottom: 1px dotted #888; }
+  .pb { page-break-before: always; }
+  .toc li { margin: 2px 0; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Vigía · Guía de instalación</h1>
+  <div class="sub">Cómo dejar tu grabador listo para que el sistema vea tus cámaras, paso a paso</div>
+  <p class="muted small">Versión del 22 de octubre de 2026 · Tiempo estimado: 1 a 2 horas · Dificultad: media (si ya entraste alguna vez al router o al grabador, la vas a poder hacer)</p>
+</div>
+
+<div class="box ok">
+  <b>Qué vamos a lograr.</b> Que la PC central de Vigía pueda ver el video de tus cámaras por internet, de forma segura, sin instalar nada en tu local.
+  Para eso hay que hacer tres cosas: (1) crear un usuario en el grabador, (2) abrir dos puertos en el router, y (3) probar desde afuera que se vea.
+  Después, cargamos las cámaras en el sistema y, si querés, instalás el programa de escritorio para verlas con la IA en tu PC.
+</div>
+
+<h3>Contenido</h3>
+<ol class="toc">
+  <li>Antes de empezar: qué necesitás tener a mano</li>
+  <li>El grabador (DVR): usuario, red y detección</li>
+  <li>El router: IP fija para el grabador y dos puertos abiertos</li>
+  <li>Probar desde afuera (celular con datos)</li>
+  <li>Datos que nos tenés que mandar</li>
+  <li>El programa de escritorio (PC central) y la ventana con las cámaras</li>
+  <li>El panel web: cámaras, zonas y alertas</li>
+  <li>Seguridad: lo que no hay que hacer</li>
+  <li>Si algo falla</li>
+</ol>
+
+<h2>1. Antes de empezar</h2>
+<ul class="check">
+  <li>Una PC o notebook <b>conectada al mismo wifi o cable del local</b> (la misma red que el grabador).</li>
+  <li>El <b>usuario y la clave de administrador del grabador</b> (DVR). Si no los tenés, pedíselos a quien lo instaló. Suele ser <code>admin</code>.</li>
+  <li>El <b>usuario y la clave del router</b>. En los routers de Antel están en la etiqueta de abajo (usuario <code>user</code> o <code>admin</code>).</li>
+  <li>Un <b>celular con datos móviles</b> (para probar desde afuera, con el wifi apagado).</li>
+  <li><b>VLC</b> instalado en la PC (<code>videolan.org</code>) y en el celular (gratis, en la tienda de apps).</li>
+  <li>Saber qué marca es el grabador: <b>Hikvision</b> o <b>Dahua</b> (está en el frente del equipo o en la pantalla de inicio).</li>
+</ul>
+<div class="box warn">
+  <b>Importante:</b> el grabador tiene que tener <b>disco duro</b> y estar grabando. Si no graba, el sistema igual puede analizar en vivo, pero no puede recuperar los segundos anteriores a una alerta.
+</div>
+
+<h2>2. El grabador (DVR)</h2>
+
+<h3>2.1 Averiguar la IP del grabador</h3>
+<ol class="steps">
+  <li>En el monitor del grabador: <b>Menú → Configuración → Red</b> (Hikvision) o <b>Configuración → Red → TCP/IP</b> (Dahua). Anotá la <b>dirección IPv4</b> (ejemplo: <code>192.168.1.6</code>) y la <b>dirección MAC</b> (ejemplo: <code>54:8c:81:3a:f7:29</code>).</li>
+  <li>Alternativa: entrá al router (paso 3.1), buscá la lista de equipos conectados (<b>Red local → DHCP → Clientes</b>) y ubicá el que se llama como la marca del grabador.</li>
+  <li>En la PC, abrí el navegador y escribí <code>http://</code> seguido de esa IP, por ejemplo <code>http://192.168.1.6</code>. Tiene que aparecer la pantalla de inicio de sesión del grabador. Entrá con el usuario administrador.</li>
+</ol>
+<p class="small muted">Si Chrome no muestra bien las pantallas del grabador (algunos modelos viejos piden un complemento), probá con Microsoft Edge: menú ⋯ → "Volver a cargar en modo Internet Explorer".</p>
+
+<h3>2.2 Crear el usuario <code>vigia</code></h3>
+<p>Nunca vamos a usar tu clave de administrador. Se crea un usuario propio, que solo puede <b>ver</b> y <b>reproducir</b>, nada más.</p>
+<table>
+  <tr><th style="width:50%">Hikvision</th><th>Dahua</th></tr>
+  <tr><td>
+    <ol>
+      <li><b>Configuración → Sistema → Gestión de usuarios → Añadir</b>.</li>
+      <li>Usuario: <code>vigia</code>. Nivel: <b>Operador</b>.</li>
+      <li>Clave: larga (12 o más caracteres, letras y números). <b>Sin</b> los símbolos <code>@</code>, <code>:</code>, <code>/</code> ni <code>#</code>, porque van dentro del enlace de video y lo rompen.</li>
+      <li>Permisos: marcar <b>Vista en vivo remota</b> y <b>Reproducción remota</b> en todas las cámaras. Desmarcar el resto.</li>
+      <li><b>Configuración → Red → Ajustes avanzados → Protocolo de integración</b>: si hay un "Listado de usuarios", tocá <b>Añadir</b> y agregá <code>vigia</code> ahí también (tipo Operador, misma clave). "ISAPI" aparece activado en gris: está bien así.</li>
+    </ol>
+  </td><td>
+    <ol>
+      <li><b>Configuración → Sistema → Cuenta → Añadir usuario</b>.</li>
+      <li>Usuario: <code>vigia</code>. Grupo: <b>user</b>.</li>
+      <li>Clave: larga (12 o más caracteres). Sin <code>@</code>, <code>:</code>, <code>/</code> ni <code>#</code>.</li>
+      <li>Permisos: solo <b>Monitor</b> (vista en vivo) y <b>Reproducción</b> en todos los canales.</li>
+      <li><b>Configuración → Red → Puerto</b>: verificar que RTSP sea <code>554</code> y HTTP sea <code>80</code> (son los valores de fábrica).</li>
+    </ol>
+  </td></tr>
+</table>
+
+<h3>2.3 Calidad del video que se analiza</h3>
+<p>El sistema usa el <b>flujo secundario</b> (la copia liviana del video), que gasta poco internet. Dejalo así:</p>
+<table>
+  <tr><th style="width:50%">Hikvision</th><th>Dahua</th></tr>
+  <tr><td><b>Configuración → Video/Audio → Flujo secundario</b>: codificación <b>H.264</b> (no H.265, no H.264+), resolución 704×576 o 640×360, 10 a 15 cuadros por segundo.</td>
+      <td><b>Configuración → Cámara → Codificación → Flujo secundario</b>: <b>H.264</b>, sin "Smart Codec", 704×576 o 640×480, 10 a 15 cuadros por segundo.</td></tr>
+</table>
+
+<h3>2.4 Detección de movimiento (recomendado)</h3>
+<p>Si el grabador avisa cuando hay movimiento, el sistema analiza solo esos momentos y gasta menos internet. Hacelo al menos en las cámaras que miran góndolas, cajas y la salida.</p>
+<table>
+  <tr><th style="width:50%">Hikvision</th><th>Dahua</th></tr>
+  <tr><td><b>Configuración → Evento → Evento básico → Detección de movimiento</b>: elegir la cámara, marcar <b>Habilitar</b>, dibujar el área (o "Pantalla completa"), sensibilidad media, Guardar. Repetir por cámara.</td>
+      <td><b>Configuración → Evento → Detección de video → Detección de movimiento</b>: elegir el canal, <b>Habilitar</b>, configurar el área, sensibilidad media, Guardar. Repetir por canal.</td></tr>
+</table>
+<p class="small muted">Si no se puede dibujar el área desde el navegador, se hace desde el monitor del grabador con el mouse. No es indispensable para empezar.</p>
+
+<h3>2.5 Hora del grabador</h3>
+<p><b>Configuración → Sistema → Hora</b>: zona horaria <b>Montevideo (UTC-3)</b> y sincronización automática (NTP) activada, con servidor <code>pool.ntp.org</code>. Si la hora está mal, los clips salen de otro momento.</p>
+
+<h2>3. El router</h2>
+<p>El router es el aparato de Antel (o del proveedor) que da el wifi. Hay que decirle dos cosas: que el grabador tenga siempre la misma IP interna, y que deje pasar dos "puertas" desde internet hacia el grabador.</p>
+
+<h3>3.1 Entrar al router</h3>
+<ol class="steps">
+  <li>En el navegador de la PC conectada al wifi del local, escribí <code>http://192.168.1.1</code>. Si no abre, probá <code>http://192.168.0.1</code> o <code>http://192.168.100.1</code>.</li>
+  <li>Usuario y clave: están en la etiqueta de abajo del router. En los de Antel suele ser <code>user</code> con la clave de la etiqueta; si una opción no aparece, entrá con <code>admin</code>.</li>
+</ol>
+
+<h3>3.2 Fijar la IP del grabador (reserva por MAC)</h3>
+<p>Sin esto, el router puede cambiarle la IP al grabador y las reglas dejan de funcionar.</p>
+<ul>
+  <li><b>Router de Antel ZTE (F680 / F6600):</b> pestaña <b>Red local → LAN → Vinculación DHCP</b> → <b>Crear nuevo</b>: dirección MAC del grabador y la IP que tiene hoy (ejemplo <code>192.168.1.6</code>) → Aplicar. En algunos modelos está dentro de "Servidor DHCP" como "Reserva" o "Static DHCP".</li>
+  <li><b>Otros routers (TP-Link, Huawei, Sagemcom, Nokia, Mercusys):</b> buscá "Reserva de direcciones", "Static IP", "DHCP Binding" o "Address Reservation".</li>
+</ul>
+
+<h3>3.3 Abrir los dos puertos (reenvío de puertos)</h3>
+<p>Se usan números "raros" a propósito (no los de fábrica), para que no sea fácil encontrar el grabador desde internet.</p>
+<table>
+  <tr><th>Nombre</th><th>Protocolo</th><th>Puerto externo (WAN)</th><th>IP interna (LAN)</th><th>Puerto interno</th></tr>
+  <tr><td>vigia-rtsp</td><td>TCP</td><td><b>38554</b></td><td>IP del grabador (ej. 192.168.1.6)</td><td><b>554</b></td></tr>
+  <tr><td>vigia-http</td><td>TCP</td><td><b>38080</b></td><td>IP del grabador (ej. 192.168.1.6)</td><td><b>80</b></td></tr>
+</table>
+<ul>
+  <li><b>Router de Antel ZTE:</b> pestaña <b>Internet → Seguridad → Reenvío de puertos</b> → <b>Crear nuevo</b>. Para cada regla: Encendido, Nombre, Protocolo TCP, Conexión WAN: la que diga <b>INTERNET</b> (ej. <code>1_TR069_INTERNET_R_10</code>; si no sabés, "Auto"), "Dirección IP WAN Host" todo en <b>0</b>, LAN Host: la IP del grabador, Puerto WAN: el externo dos veces (38554 ~ 38554), Puerto de LAN Host: el interno dos veces (554 ~ 554). Aplicar. Repetir con 38080 → 80.</li>
+  <li><b>Otros routers:</b> buscá "Port Forwarding", "Servidor virtual", "NAT" o "Aplicaciones". Si pide "inicio/fin", poné el mismo número en los dos.</li>
+</ul>
+<div class="box warn">
+  <b>No actives DMZ ni UPnP, y no abras otros puertos</b> (ni el 8000, ni el 37777, ni el 80 o 554 directos). Solo los dos de la tabla.
+</div>
+
+<h3>3.4 Tu IP pública</h3>
+<ol class="steps">
+  <li>En el router, <b>Internet → Estatus</b> (o "Estado → WAN"). Buscá la conexión de tipo <b>PPPoE</b> con <b>NAT: Encendido</b> y anotá su <b>Dirección IP</b> (ejemplo: <code>190.133.197.192</code>). Ignorá la conexión que empieza con <code>10.</code>: es interna de Antel.</li>
+  <li>En el navegador buscá "<b>cuál es mi IP</b>". Tiene que coincidir con la del router.</li>
+  <li>Si la del router empieza con <code>10.</code> o con <code>100.64</code> a <code>100.127</code>, el proveedor te tiene detrás de "CG-NAT" y desde afuera no se puede entrar. Hay que llamar a Antel (0800 1800) y pedir <b>"IP pública"</b> para la línea. Es gratis o muy barato.</li>
+</ol>
+<p class="small muted">Esa IP puede cambiar cuando el router se reinicia. Si pasa seguido, lo resolvemos con un nombre fijo (DDNS). Avisanos y te decimos cómo; para la prueba no hace falta.</p>
+
+<h2>4. Probar desde afuera</h2>
+<p>Con el <b>celular con datos móviles y el wifi apagado</b> (así sale por internet, no por tu red):</p>
+<ol class="steps">
+  <li>En el navegador del celular: <code>http://TU-IP-PÚBLICA:38080</code>. Tiene que aparecer la pantalla de inicio de sesión del grabador. Si aparece, el puerto HTTP está bien.</li>
+  <li>En VLC del celular: <b>Red → Abrir flujo de red</b> y pegar (reemplazando clave e IP):
+    <pre>rtsp://vigia:TUCLAVE@TU-IP-PÚBLICA:38554/Streaming/Channels/102</pre>
+    Para Dahua, el final cambia:
+    <pre>rtsp://vigia:TUCLAVE@TU-IP-PÚBLICA:38554/cam/realmonitor?channel=1&amp;subtype=1</pre>
+    Si ves la cámara 1, <b>está todo listo</b>. (El <code>102</code> o <code>channel=1</code> es el canal; con <code>202</code> / <code>channel=2</code> ves la 2, y así.)</li>
+</ol>
+<div class="box ok">
+  Desde la PC conectada al wifi del local, el mismo enlace puede <b>no</b> funcionar con la IP pública (el router no "rebota" hacia sí mismo). No es un error: por eso se prueba con el celular con datos.
+</div>
+
+<h2>5. Datos que nos tenés que mandar</h2>
+<p>Completá y mandanos esta tabla <b>por mensaje privado</b> (no por grupo), así cargamos tus cámaras. Después, cambiale la clave a <code>vigia</code> cuando quieras: solo hay que actualizarla en el sistema.</p>
+<table>
+  <tr><th style="width:38%">Dato</th><th>Valor</th></tr>
+  <tr><td>Nombre del local y dirección</td><td><span class="fill"></span></td></tr>
+  <tr><td>Marca y modelo del grabador</td><td><span class="fill"></span></td></tr>
+  <tr><td>IP pública (paso 3.4)</td><td><span class="fill"></span></td></tr>
+  <tr><td>Puerto RTSP externo / Puerto HTTP externo</td><td>38554 / 38080 (o los que usaste)</td></tr>
+  <tr><td>Usuario y clave de <code>vigia</code></td><td><span class="fill"></span></td></tr>
+  <tr><td>Por cada cámara que quieras vigilar: número de canal y qué ve (góndola de bebidas, caja 1, puerta…)</td><td><span class="fill"></span></td></tr>
+  <tr><td>Horario de atención del local</td><td><span class="fill"></span></td></tr>
+  <tr><td>Nombre y celular de la persona a la que avisar si hay un posible hurto</td><td><span class="fill"></span></td></tr>
+</table>
+
+<h2 class="pb">6. El programa de escritorio (PC central)</h2>
+<p>El análisis de las cámaras lo hace un programa llamado <b>VigiaAgente</b>, que corre en una PC que queda prendida: normalmente la PC central de Vigía en nuestra oficina. <b>Para la prueba podés instalarlo vos en una PC tuya</b> y ver tus cámaras con la IA en tiempo real en una ventana.</p>
+<h3>6.1 Requisitos de la PC</h3>
+<ul>
+  <li>Windows 10 u 11, 64 bits. 8 GB de memoria o más. Procesador de los últimos 6 años.</li>
+  <li>Internet con buena bajada (el video de cada cámara consume unos 0,5 Mbps).</li>
+  <li>Que quede <b>prendida</b> mientras quieras que vigile. Si se apaga, el sistema deja de analizar.</li>
+  <li>Puede estar en el mismo local (en ese caso usamos la IP interna del grabador) o en cualquier otro lado (usa la IP pública y los puertos del paso 3).</li>
+</ul>
+<h3>6.2 Instalación</h3>
+<ol class="steps">
+  <li>Descargá <b>VigiaAgente-windows.zip</b> desde el enlace que te mandamos (unos 90 MB).</li>
+  <li>Descomprimilo en una carpeta, por ejemplo <code>C:\Vigia</code>. Adentro hay <code>VigiaAgente.exe</code> y un <code>LEEME.txt</code>.</li>
+  <li>Abrí <code>VigiaAgente.exe</code>. Si Windows muestra "Windows protegió su PC": <b>Más información → Ejecutar de todas formas</b> (el programa no tiene firma digital comprada; es nuestro).</li>
+  <li>La primera vez pregunta en una ventana negra:
+    <ul>
+      <li><b>Servidor:</b> apretá <b>Enter</b> (usa el nuestro).</li>
+      <li><b>Token:</b> pegá el código que te mandamos (clic derecho pega en la ventana negra) y Enter.</li>
+    </ul>
+    Queda guardado en el archivo <code>agente.env</code> al lado del programa. Las siguientes veces arranca solo.</li>
+  <li>Se abren dos ventanas: la <b>negra</b> (registro de lo que hace; no la cierres) y <b>"Vigia - PC central"</b>: el mosaico con tus cámaras y las personas recuadradas en tiempo real, con el número de cada una, los segundos que lleva y la zona donde está. Podés cerrar el mosaico; el análisis sigue.</li>
+  <li>Para que arranque solo al encender la PC: <b>Programador de tareas</b> de Windows → Crear tarea básica → "Al iniciar sesión" → Iniciar un programa → <code>VigiaAgente.exe</code>.</li>
+</ol>
+<div class="box">
+  <b>Lo que hace el programa:</b> entra a tu grabador, mira el video, detecta personas, mide dónde están y cuánto tiempo, y cuando algo coincide con una regla (por ejemplo, 45 segundos frente a una góndola y salida sin pasar por caja) guarda el video de esa situación, desde que la persona entró hasta que se fue, y lo sube al sistema. El resto del video <b>no</b> se guarda ni se sube.
+</div>
+
+<h2>7. El panel web</h2>
+<ol class="steps">
+  <li>Entrá a <b>https://vigia-three-ashy.vercel.app</b> con el usuario y la clave que te mandamos.</li>
+  <li><b>Clientes</b> → tu local → ves tus cámaras en miniatura con su estado. Un clic en una la abre en grande: ahí está la <b>vista en vivo</b> con la IA (1 cuadro por segundo) y los botones.</li>
+  <li><b>Zonas y reglas</b>: sobre la imagen de la cámara, dibujá con clics las zonas <b>sobre el piso</b>: Góndola (donde están los productos), Caja y Salida. Cada zona se cierra con doble clic. Guardar. <b>Sin zonas no hay alertas.</b></li>
+  <li><b>Alertas</b>: acá aparecen los clips. Cada uno se mira y se marca con 1 (hurto), 2 (sospechoso), 3 (normal) o 4 (falso positivo). Esas marcas enseñan al sistema qué descartar.</li>
+  <li>Para probar: parate 50 segundos frente a la zona Góndola y salí por la Salida sin pasar por Caja. En un par de minutos tiene que aparecer la alerta con el video completo.</li>
+</ol>
+<div class="box warn">
+  <b>Qué esperar del sistema en esta etapa.</b> Detecta <b>personas</b> y patrones de movimiento (quedarse mucho en una góndola, salir sin pasar por caja, entrar a una zona prohibida). <b>No</b> ve el gesto de guardarse un producto. Cada alerta es un indicio para que una persona revise, no una prueba. Nadie recibe un aviso automático: siempre decide una persona.
+</div>
+
+<h2>8. Seguridad: lo que no hay que hacer</h2>
+<ul>
+  <li>No dejar la clave de <code>admin</code> del grabador en la de fábrica (12345, admin, etc.). Cambiala por una larga.</li>
+  <li>No abrir más puertos que los dos de la tabla. Nunca DMZ. Nunca "abrir todo".</li>
+  <li>No compartir la clave de <code>vigia</code> por grupos de WhatsApp ni dejarla pegada en el local.</li>
+  <li>Actualizar el firmware del grabador si el fabricante ofrece uno nuevo (Configuración → Sistema → Mantenimiento). Los equipos viejos tienen fallas conocidas.</li>
+  <li>Si el grabador lo tiene, activar el <b>bloqueo por intentos fallidos</b> (Hikvision: Sistema → Seguridad → Bloqueo de IP ilegal; Dahua: Seguridad → Protección contra ataques).</li>
+  <li>Cuando termine la prueba, si no seguís con el servicio, borrá las dos reglas del router y el usuario <code>vigia</code>.</li>
+</ul>
+
+<h2>9. Si algo falla</h2>
+<table>
+  <tr><th style="width:42%">Qué pasa</th><th>Causa más probable y qué hacer</th></tr>
+  <tr><td>Desde el celular, <code>http://IP:38080</code> no abre</td><td>La regla del puerto 38080 no quedó guardada o apunta a otra IP, o la IP pública cambió. Revisá el paso 3.3 y volvé a mirar la IP (3.4). Si la IP empieza con 10. o 100.x, es CG-NAT: llamar a Antel.</td></tr>
+  <tr><td>El navegador abre pero VLC no muestra video</td><td>Falta la regla del 38554 (es otra regla, distinta del HTTP), o la clave tiene <code>@</code>, <code>:</code> o <code>#</code>. Probá primero con el usuario admin para descartar permisos.</td></tr>
+  <tr><td>VLC da "no se pudo abrir" desde la PC del local</td><td>Normal: el router no rebota la IP pública desde adentro. Probá desde el celular con datos o con la IP interna (<code>192.168.1.x</code>).</td></tr>
+  <tr><td>Al entrar a <code>http://IP/ISAPI/System/deviceInfo</code> dice 401</td><td>El navegador no manda usuario y clave. No importa: la prueba válida es VLC.</td></tr>
+  <tr><td>En el panel, la cámara dice "Sin conexión"</td><td>El programa VigiaAgente no llega al grabador: la PC está apagada, o el enlace RTSP no anda desde afuera (volver al paso 4).</td></tr>
+  <tr><td>Llegan alertas de gente que solo pasa</td><td>Es lo esperado al principio. Marcalas como "normal" o "falso positivo": el sistema aprende de eso. También se pueden subir los segundos de las reglas.</td></tr>
+  <tr><td>El video se corta o se ve a saltos</td><td>Poca subida de internet en el local o flujo secundario muy pesado. Bajarlo a 640×360, 10 cuadros por segundo, H.264 (paso 2.3).</td></tr>
+  <tr><td>El clip muestra otro momento</td><td>La hora del grabador está mal (paso 2.5).</td></tr>
+  <tr><td>El grabador dejó de responder después de varios intentos</td><td>Se bloqueó por intentos fallidos durante 30 minutos. Esperar, o reiniciarlo.</td></tr>
+</table>
+
+<p class="muted small" style="margin-top:24px">Ante cualquier duda, mandanos una captura de pantalla de lo que ves y te guiamos. Vigía · 2026.</p>
+</body>
+</html>
