@@ -30,13 +30,15 @@ from core.scorer import Scorer
 from .alarms import AlarmRunner
 from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
+from .live import LiveWorker
 from .outbox import Outbox, ServerClient
 from .worker import CameraWorker
 
 log = logging.getLogger("vigia.agent")
 VERSION = "2.0.0"
 CONFIG_EVERY_SECONDS = 60
-STATUS_EVERY_SECONDS = 30
+STATUS_EVERY_SECONDS = 10  # la respuesta trae qué cámaras se están mirando en vivo
+LIVE_EXTEND_SECONDS = 45.0  # cuánto sigue el vivo después del último aviso del servidor
 
 
 class Agent:
@@ -53,6 +55,8 @@ class Agent:
         self.clip_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="clips")
         self.workers: dict[int, CameraWorker] = {}
         self.listeners: dict[int, DeviceAlarmListener] = {}
+        self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
+        self._cams_cfg: dict[int, dict] = {}
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
@@ -74,6 +78,7 @@ class Agent:
             log.info("Modelo de filtro: %s", self._scorer_id or "ninguno (se alertan todos los eventos)")
 
         cams = [c for c in cfg.get("cameras", []) if c.get("enabled", True)]
+        self._cams_cfg = {c["id"]: c for c in cams}
         if self.alarms is None and any(c.get("mode") in ("alarmas", "alarmas_equipo") for c in cams):
             self.alarms = AlarmRunner(self.client, self.model_path, self.data_dir / "alarmas", self.alarm_workers)
             self.alarms.start()
@@ -135,14 +140,48 @@ class Agent:
             if now - last_status >= STATUS_EVERY_SECONDS:
                 last_status = now
                 try:
-                    self.client.status({"cameras": [w.status() for w in self.workers.values()]
-                                        + [l.status() for l in self.listeners.values()],
-                                        "outbox_pending": self.outbox.pending(), "version": VERSION,
-                                        **(self.alarms.status() if self.alarms else {})})
+                    resp = self.client.status({"cameras": [w.status() for w in self.workers.values()]
+                                               + [l.status() for l in self.listeners.values()],
+                                               "live": self.live_ids(),
+                                               "outbox_pending": self.outbox.pending(), "version": VERSION,
+                                               **(self.alarms.status() if self.alarms else {})})
+                    self.apply_live(resp.get("live") or [])
                 except httpx.HTTPError:
                     pass
             self._stop.wait(1.0)
         self.shutdown()
+
+    # ---- vista en vivo ----
+    def live_ids(self) -> list[int]:
+        ids = [w.id for w in self.workers.values() if w.live.active]
+        ids += [lw.id for lw in self.live_workers.values() if lw.active]
+        return ids
+
+    def apply_live(self, ids: list[int]) -> None:
+        """El servidor dice qué cámaras tienen a alguien mirando: se extiende el vivo de cada una."""
+        for cid in ids:
+            if cid in self.workers:  # modo vivo: el worker ya tiene el cuadro analizado
+                self.workers[cid].live.extend(LIVE_EXTEND_SECONDS)
+                continue
+            lw = self.live_workers.get(cid)
+            if lw is not None and lw.thread.is_alive():
+                lw.extend(LIVE_EXTEND_SECONDS)
+                continue
+            c = self._cams_cfg.get(cid)
+            if c is None:
+                continue
+            try:
+                lw = LiveWorker(c, self._detector(c.get("detector", "yolo")), self.client)
+            except Exception as exc:
+                log.error("Vivo de %s: no se pudo crear el detector: %s", c["name"], exc)
+                continue
+            lw.extend(LIVE_EXTEND_SECONDS)
+            self.live_workers[cid] = lw
+            lw.start()
+            log.info("Vivo de %s: alguien lo está mirando, abriendo el stream", lw.name)
+        for cid in list(self.live_workers):
+            if not self.live_workers[cid].thread.is_alive():
+                del self.live_workers[cid]
 
     def stop(self) -> None:
         self._stop.set()
@@ -154,6 +193,8 @@ class Agent:
             self.alarms.stop()
         for lst in self.listeners.values():
             lst.stop()
+        for lw in self.live_workers.values():
+            lw.stop()
         for w in self.workers.values():
             w.stop()
         for w in self.workers.values():

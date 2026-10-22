@@ -99,6 +99,8 @@ class Camera(Base):
     hpp_serial: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # serie del DVR en HPP
     alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # vista en vivo: el panel marca que alguien la está mirando; la PC central sube cuadros mientras dure
+    live_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     preview_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -289,7 +291,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-19.3"
+SCHEMA_VERSION = "2026-10-22.1"
 
 
 class SchemaMeta(Base):

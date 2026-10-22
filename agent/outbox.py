@@ -134,8 +134,27 @@ class ServerClient:
         r.raise_for_status()
         return r.json()
 
-    def status(self, payload: dict) -> None:
-        self.http.post("/api/agent/status", json=payload).raise_for_status()
+    def status(self, payload: dict) -> dict:
+        r = self.http.post("/api/agent/status", json=payload)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except ValueError:
+            return {}
+
+    # ---- vista en vivo ----
+    def live_upload_url(self, camera_id: int) -> str:
+        r = self.http.post(f"/api/agent/cameras/{camera_id}/live-url")
+        r.raise_for_status()
+        return r.json()["upload_url"]
+
+    def upload_bytes(self, url: str, data: bytes, content_type: str) -> None:
+        headers = {"Content-Type": content_type, "x-upsert": "true", "cache-control": "no-cache, max-age=0"}
+        if url.startswith("/"):  # almacenamiento local del servidor (desarrollo)
+            r = self.http.put(url, content=data, headers=headers)
+        else:
+            r = self.files.put(url, content=data, headers=headers, timeout=15.0)
+        r.raise_for_status()
 
     def _rejected(self, r: httpx.Response, what: str) -> bool:
         """True si el servidor rechazó el dato (no reintentar); lanza si es un error temporal."""

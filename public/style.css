@@ -134,3 +134,7 @@ dl.kv dd { margin: 0; }
 .cam-big p { padding: 0 12px 10px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+.live-box { position: relative; }
+.live-tag { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; padding: 3px 8px; border-radius: 999px; }
+.live-tag.ok { background: var(--accent, #e5484d); }
+.live-tag.bad { background: #444; }

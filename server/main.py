@@ -76,6 +76,7 @@ class Settings:
     alarm_merge_seconds: float = 20.0  # disparos seguidos de la misma cámara se juntan en una alarma
     alarm_max_window_seconds: float = 120.0
     alarm_ready_delay_seconds: float = 20.0  # el DVR tarda en tener disponible lo recién grabado
+    live_seconds: float = 45.0  # cuánto sigue "en vivo" una cámara después del último latido del panel
     missing: list[str] = field(default_factory=list)
 
     @classmethod
@@ -95,6 +96,8 @@ class Settings:
             retention_days=int(os.getenv("RETENTION_DAYS", "60")),
             clip_pre_seconds=float(os.getenv("CLIP_PRE_SECONDS", "6")),
             clip_post_seconds=float(os.getenv("CLIP_POST_SECONDS", "6")),
+            alarm_merge_seconds=float(os.getenv("ALARM_MERGE_SECONDS", "20")),
+            alarm_max_window_seconds=float(os.getenv("ALARM_MAX_WINDOW_SECONDS", "120")),
             on_vercel=bool(os.getenv("VERCEL")),
             operator_chat_id=os.getenv("OPERATOR_TELEGRAM_CHAT_ID") or None,
             operator_webhook=os.getenv("OPERATOR_WEBHOOK_URL") or None,
@@ -397,7 +400,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
              "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": c.rules or {},
              "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
-             "mode": c.mode or "vivo"}
+             "live": bool(status and status.get("live")), "mode": c.mode or "vivo"}
         if user.role != "cliente":
             d.update(brand=c.brand, host=c.host, username=c.username, has_password=bool(c.password_enc),
                      channel=c.channel,
@@ -612,8 +615,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out = {}
         for a in s.query(Agent).all():
             online = bool(a.last_seen and utcnow() - a.last_seen < timedelta(minutes=3))
+            live = set((a.last_status or {}).get("live") or [])
             for cs in (a.last_status or {}).get("cameras", []):
-                out[cs["camera_id"]] = {**cs, "agent_online": online}
+                out[cs["camera_id"]] = {**cs, "agent_online": online, "live": cs["camera_id"] in live}
+            for cid in live:  # cámaras en modo alarmas no figuran en cameras[] pero sí pueden estar en vivo
+                out.setdefault(cid, {"camera_id": cid, "state": "escuchando", "agent_online": online, "live": True})
         return out
 
     @app.get("/api/cameras")
@@ -686,7 +692,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         if s.query(Event).filter_by(camera_id=cam_id).first() or s.query(VideoImport).filter_by(camera_id=cam_id).first():
             raise HTTPException(409, "La cámara tiene eventos o videos: deshabilitala en lugar de borrarla")
-        storage.remove([c.preview_path] if c.preview_path else [])
+        storage.remove(([c.preview_path] if c.preview_path else []) + [live_path(c)])
         s.delete(c)
         s.commit()
 
@@ -710,6 +716,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resp = redirect_to(c.preview_path)
         resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    def live_path(c: Camera) -> str:
+        return f"c{c.client_id}/live/{c.id}.jpg"
+
+    @app.post("/api/cameras/{cam_id}/live")
+    def camera_live(cam_id: int, user: User = Depends(current_user), s=Depends(db)) -> dict:
+        """Latido del panel: "alguien está mirando esta cámara". La PC central lo ve en la respuesta
+        de /api/agent/status y sube cuadros con los recuadros mientras los latidos sigan llegando.
+        Devuelve la URL firmada del cuadro (el navegador la pide 1 vez por segundo con ?t=)."""
+        c = get_or_404(s, Camera, cam_id, "Cámara")
+        scope_client(user, c.client_id)
+        c.live_requested_at = utcnow()
+        s.commit()
+        st_cam = agent_status_map(s).get(c.id) or {}
+        ag = s.get(Agent, c.agent_id) if c.agent_id else None
+        agent_online = bool(ag and ag.last_seen and utcnow() - ag.last_seen < timedelta(minutes=3))
+        frame_url, frame_age = None, None
+        try:
+            mtime = storage.modified_at(live_path(c))
+            if mtime is not None:
+                frame_url = storage.signed_download_url(live_path(c), 600)
+                frame_age = max(0.0, round(datetime.now(timezone.utc).timestamp() - mtime, 1))
+        except StorageError:
+            frame_url = None
+        # "activo" si la PC central dice que transmite o si el último cuadro es de hace pocos segundos
+        fresh = frame_age is not None and frame_age < 8
+        return {"active": agent_online and (bool(st_cam.get("live")) or fresh), "agent_online": agent_online,
+                "frame_url": frame_url, "frame_age_s": frame_age,
+                "heartbeat_seconds": 10, "live_seconds": st.live_seconds}
 
     # ------------------------------------------------------------ API del agente
     def agent_owns(ag: Agent, c: Camera) -> bool:
@@ -778,13 +813,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_status(payload: dict, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         a = s.get(Agent, ag.id)
         a.last_status = {"cameras": payload.get("cameras", [])[:200],
+                         "live": [int(x) for x in (payload.get("live") or [])[:200] if isinstance(x, int)],
                          "outbox_pending": payload.get("outbox_pending"), "version": payload.get("version"),
                          "at": iso(utcnow()),
                          **{k: payload[k] for k in ("alarms_with_person", "alarms_discarded", "alarms_failed")
                             if isinstance(payload.get(k), int)}}
         a.last_seen = utcnow()
         s.commit()
-        return {"ok": True}
+        since = utcnow() - timedelta(seconds=st.live_seconds)
+        live = [c.id for c in agent_cameras_q(s, ag).filter(Camera.live_requested_at >= since, Camera.enabled.is_(True))]
+        return {"ok": True, "live": live}
+
+    @app.post("/api/agent/cameras/{cam_id}/live-url")
+    def agent_live_url(cam_id: int, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """URL firmada para que la PC central suba el cuadro en vivo directo al almacenamiento
+        (sin pasar por el servidor: 1 cuadro por segundo mientras alguien mira)."""
+        c = agent_camera(s, ag, cam_id)
+        try:
+            return {"upload_url": storage.signed_upload_url(live_path(c)), "content_type": "image/jpeg"}
+        except StorageError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     @app.post("/api/agent/events", status_code=201)
     def agent_event(meta: str = Form(...), snapshot: UploadFile = File(...),

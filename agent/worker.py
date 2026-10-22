@@ -16,6 +16,7 @@ from core.detectors import Detector
 from core.scorer import Scorer
 
 from .cameras import build_camera, download_nvr_clip
+from .live import LiveStreamer
 from .outbox import Outbox, ServerClient
 
 log = logging.getLogger("vigia.worker")
@@ -52,6 +53,8 @@ class CameraWorker:
         self.fps = 0.0
         self.events = 0
         self.last_frame_at: float | None = None
+        # vista en vivo: sube cuadros con recuadros mientras alguien mira la cámara en el panel
+        self.live = LiveStreamer(self.id, self.name, client, self.analyzer.zones)
 
     @staticmethod
     def fingerprint_of(cam_cfg: dict) -> str:
@@ -65,7 +68,7 @@ class CameraWorker:
 
     def status(self) -> dict:
         return {"camera_id": self.id, "state": self.state, "error": self.error, "fps": round(self.fps, 2),
-                "events": self.events, "last_frame_age_s":
+                "events": self.events, "live": self.live.active, "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
 
     def run(self) -> None:
@@ -118,6 +121,8 @@ class CameraWorker:
             last_proc = now
             wall = datetime.now(self.hik.tz)
             findings = self.analyzer.process(frame, now - t0, wall)
+            if self.live.active:
+                self.live.push(frame, self.analyzer.last_tracks, now - t0, wall)
             for f in findings:
                 self._on_finding(f)
             self._finish_clips(self.analyzer.take_ready_clips())

@@ -73,6 +73,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Zonas y reglas, Editar, Probar conexión, Alertas). `#/camaras` sigue existiendo como tabla general (link
   desde el Resumen). El formulario y "Probar conexión" son funciones compartidas (`cameraForm`,
   `probeCamera`). El editor de zonas espera la primera imagen sin recargar (consulta cada 10 s).
+- **Vista en vivo liviana (22 oct):** en la ficha de la cámara. El panel late `POST /api/cameras/{id}/live`
+  cada 10 s; el servidor guarda `cameras.live_requested_at` y se lo devuelve a la PC central en la respuesta
+  de `/api/agent/status` (`live: [ids]`, el agente lo pide cada 10 s). La PC central (`agent/live.py`:
+  `LiveStreamer` dentro del `CameraWorker` en modo vivo; `LiveWorker` abre el stream solo mientras dure
+  el vivo en modo alarmas) sube **1 cuadro por segundo** (640 px, JPEG 65, ~30 KB) con zonas, recuadros,
+  `#id`, segundos en escena y zona, **directo al Storage** con la URL firmada de
+  `POST /api/agent/cameras/{id}/live-url` (`c{cliente}/live/{id}.jpg`, upsert, `cache-control: no-cache`).
+  El navegador pide la URL firmada del cuadro con `?t=` cada segundo. Corta 45 s después del último
+  latido; con la pestaña oculta no late. **Costo:** no pasa por Vercel; sí consume egress de Supabase
+  (~100 MB por hora de visualización por cámara; el plan gratis tiene 5 GB/mes → Supabase Pro si se mira
+  mucho). Si el CDN de Supabase devolviera cuadros viejos, pasar a `GET /api/cameras/{id}/live-frame`
+  con redirección firmada por cuadro (cuesta invocaciones de Vercel).
 - **Pestaña Prueba** (`public/prueba.js`): comparte la pantalla (`getDisplayMedia`) de la ventana de
   HPP / iVMS / SmartPSS con la cámara en vivo y corre el detector de personas **en el navegador**
   con ONNX Runtime Web (jsdelivr 1.19.2, wasm 1 hilo) sobre `public/models/personas.onnx` (copia
@@ -255,6 +267,10 @@ seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_t
 
 ## Próximos pasos
 
+0. **Verificar el vivo en producción** con la cámara "Habitacion": que el cuadro cambie cada segundo
+   (si el CDN de Supabase cachea, ver nota en "Vista en vivo liviana"). Después: **métricas por cliente**
+   (personas por hora, tiempo en góndola/caja, alertas por día: la PC central ya mide los tiempos por
+   persona; falta guardarlos cada 5 min en una tabla y graficarlos) y renombrar "Agente" → "PC central".
 1. **Probar `alarmas_equipo` con un grabador real** (lunes 20 oct, con el acceso en vivo): cargar
    la cámara en ese modo, generar movimiento y mirar en Alarmas que llegue, que el canal coincida
    y que el clip bajado sea del momento correcto (`playback_time`). Si Dahua trae `index` con otra

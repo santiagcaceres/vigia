@@ -26,11 +26,12 @@ class StorageError(RuntimeError):
 
 
 class Storage:
-    def put(self, path: str, data: bytes, content_type: str) -> None: ...
+    def put(self, path: str, data: bytes, content_type: str, cache_control: str | None = None) -> None: ...
     def get(self, path: str) -> bytes: ...
     def signed_download_url(self, path: str, expires_in: int = 3600) -> str: ...
     def signed_upload_url(self, path: str) -> str: ...
     def exists(self, path: str) -> bool: ...
+    def modified_at(self, path: str) -> float | None: ...  # época UNIX del último cambio, o None si no existe
     def remove(self, paths: list[str]) -> None: ...
 
 
@@ -63,9 +64,11 @@ class SupabaseStorage(Storage):
         if r.status_code >= 400 and "already exists" not in r.text.lower() and r.status_code != 409:
             self._check(r, "crear bucket")
 
-    def put(self, path: str, data: bytes, content_type: str) -> None:
-        r = self.http.post(f"{self.base}/object/{self.bucket}/{self._p(path)}", content=data,
-                           headers={"Content-Type": content_type, "x-upsert": "true"})
+    def put(self, path: str, data: bytes, content_type: str, cache_control: str | None = None) -> None:
+        headers = {"Content-Type": content_type, "x-upsert": "true"}
+        if cache_control:
+            headers["cache-control"] = cache_control
+        r = self.http.post(f"{self.base}/object/{self.bucket}/{self._p(path)}", content=data, headers=headers)
         self._check(r, "subir")
 
     def get(self, path: str) -> bytes:
@@ -83,6 +86,7 @@ class SupabaseStorage(Storage):
         return self.base + signed
 
     def signed_upload_url(self, path: str) -> str:
+        """URL para subir (con x-upsert) sin credenciales; Supabase la da válida por 2 horas."""
         r = self.http.post(f"{self.base}/object/upload/sign/{self.bucket}/{self._p(path)}",
                            headers={"x-upsert": "true"})
         data = self._check(r, "firmar subida")
@@ -93,6 +97,19 @@ class SupabaseStorage(Storage):
     def exists(self, path: str) -> bool:
         r = self.http.head(f"{self.base}/object/{self.bucket}/{self._p(path)}")
         return r.status_code == 200
+
+    def modified_at(self, path: str) -> float | None:
+        r = self.http.head(f"{self.base}/object/{self.bucket}/{self._p(path)}")
+        if r.status_code != 200:
+            return None
+        lm = r.headers.get("last-modified")
+        if not lm:
+            return time.time()
+        from email.utils import parsedate_to_datetime
+        try:
+            return parsedate_to_datetime(lm).timestamp()
+        except (TypeError, ValueError):
+            return time.time()
 
     def remove(self, paths: list[str]) -> None:
         paths = [p for p in paths if p]
@@ -129,7 +146,7 @@ class LocalStorage(Storage):
         prefix = "/api/_files/" if action == "get" else "/api/_files/upload/"
         return f"{self.base_url}{prefix}{quote(path, safe='/')}?{q}"
 
-    def put(self, path: str, data: bytes, content_type: str) -> None:
+    def put(self, path: str, data: bytes, content_type: str, cache_control: str | None = None) -> None:
         f = self.file(path)
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(data)
@@ -145,6 +162,10 @@ class LocalStorage(Storage):
 
     def exists(self, path: str) -> bool:
         return self.file(path).exists()
+
+    def modified_at(self, path: str) -> float | None:
+        f = self.file(path)
+        return f.stat().st_mtime if f.exists() else None
 
     def remove(self, paths: list[str]) -> None:
         for p in paths:

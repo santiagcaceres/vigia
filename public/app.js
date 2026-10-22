@@ -473,7 +473,8 @@ async function cameraView(v, id) {
     <div id="probe-out"></div>
     <div id="cam-form"></div>
     <div class="two" style="margin-top:12px">
-      <div class="panel cam-big">${camThumb(cam)}<p class="muted" style="margin:8px 0 0">${cam.has_preview ? `Última imagen: ${fmtDate(cam.preview_at)}. La PC central manda una nueva cada 5 minutos.` : "Todavía no llegó ninguna imagen: aparece sola cuando la PC central se conecta a la cámara."}</p></div>
+      <div class="panel cam-big"><div class="live-box">${previewUrl(cam) ? `<img id="live-img" src="${previewUrl(cam)}" alt="">` : `<img id="live-img" alt="" class="hidden"><div class="thumb-empty" id="live-empty">Sin imagen todavía</div>`}<span class="live-tag" id="live-state">Conectando con la PC central…</span></div>
+        <p class="muted" style="margin:8px 0 0" id="live-note">${cam.has_preview ? `Última imagen: ${fmtDate(cam.preview_at)}.` : ""} La PC central manda un cuadro por segundo con las personas marcadas mientras esta pantalla esté abierta.</p></div>
       <div class="panel"><h3 style="margin-top:0">${isStaff() ? "Conexión" : "Detalle"}</h3>
         <dl class="kv">
           ${isStaff() ? `<dt>Marca</dt><dd>${esc(BRAND_NAMES[cam.brand] || cam.brand || "—")}</dd>
@@ -486,10 +487,37 @@ async function cameraView(v, id) {
           ${cam.status && cam.status.error ? `<dt>Error</dt><dd class="error">${esc(cam.status.error)}</dd>` : ""}
         </dl></div>
     </div>`;
+  liveView(v, cam);
   if (!isStaff()) return;
   $("#edit").addEventListener("click", () => cameraForm($("#cam-form"), agents, cam, { onSaved: () => cameraView(v, id) }));
   $("#probe").addEventListener("click", () => probeCamera(cam, $("#probe-out")));
-  every(30000, () => { if (!$("#cam-form").innerHTML && !$("#probe-out").innerHTML) cameraView(v, id); });
+}
+
+/** Vista en vivo liviana: latido cada 10 s ("alguien mira") y un cuadro por segundo con los recuadros. */
+function liveView(v, cam) {
+  const img = $("#live-img", v), tag = $("#live-state", v);
+  let frameUrl = null, active = false, agentOnline = false, lastOk = 0;
+  const setTag = (txt, cls) => { tag.textContent = txt; tag.className = "live-tag " + (cls || ""); };
+  const beat = async () => {
+    if (document.visibilityState === "hidden") return; // pestaña oculta: no gastar
+    try {
+      const r = await api("POST", `/api/cameras/${cam.id}/live`);
+      frameUrl = r.frame_url; active = r.active; agentOnline = r.agent_online;
+      if (!agentOnline) setTag("PC central desconectada", "bad");
+      else if (!active) setTag(cam.mode === "vivo" ? "Conectando con la PC central…" : "Abriendo el stream del grabador (hasta 30 s)…", "");
+      else setTag("EN VIVO", "ok");
+    } catch (e) { setTag("Sin vista en vivo: " + (e.message || e), "bad"); }
+  };
+  beat();
+  setTimeout(beat, 4000);
+  every(10000, beat);
+  every(1000, () => {
+    if (!frameUrl || !active || document.visibilityState === "hidden") return;
+    const url = frameUrl + (frameUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+    const probe = new Image();
+    probe.onload = () => { img.src = url; img.classList.remove("hidden"); const e = $("#live-empty", v); if (e) e.remove(); lastOk = Date.now(); };
+    probe.src = url;
+  });
 }
 
 // ------------------------------------------------------------------ alarmas de Hik-Partner Pro
