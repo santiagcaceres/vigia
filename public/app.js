@@ -93,7 +93,7 @@ async function boot() {
   $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
   const links = S.me.role === "cliente"
     ? [["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
-    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/alertas", "Alertas"], ["#/prueba", "Prueba"]];
+    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/alertas", "Alertas"]];
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
   route();
@@ -1046,6 +1046,13 @@ async function adminView(v) {
 
     <h2>Agentes</h2>
     <p class="muted">El <b>agente</b> es el programa que corre en la PC central: llega a los grabadores de todos los clientes por internet (puertos abiertos en el router de cada uno), baja el tramo de cada alarma y lo analiza. Con una PC alcanza; si se suma otra, se reparten las cámaras.</p>
+    <div class="panel" style="margin-bottom:12px"><b>Instalar el programa en una PC central (Windows)</b>
+      <ol style="margin:6px 0 0 18px;padding:0">
+        <li>Descargar <a href="https://github.com/santiagcaceres/vigia/releases/latest" target="_blank" rel="noopener">VigiaAgente-windows.zip</a> (pide iniciar sesión en GitHub: el repositorio es privado).</li>
+        <li>Descomprimirlo en una carpeta, por ejemplo <span class="mono">C:\\Vigia</span>, y abrir <span class="mono">VigiaAgente.exe</span>. Si Windows lo frena: "Más información → Ejecutar de todas formas".</li>
+        <li>Enter para el servidor y pegar el <b>token</b> del agente (botón "Nuevo token" acá abajo; se muestra una sola vez). Queda guardado en <span class="mono">agente.env</span> al lado del programa.</li>
+        <li>Dejar la ventana abierta. Para que arranque con Windows: Programador de tareas → "Al iniciar sesión" → VigiaAgente.exe.</li>
+      </ol></div>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
       <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? "Todos" : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
         <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${a.status.alarms_with_person} con persona · ${a.status.alarms_discarded} descartadas · ${a.status.alarms_failed} con error</div>` : ""}</td><td>${a.status?.outbox_pending ?? "—"}</td><td><button class="small" data-rotate="${a.id}">Nuevo token</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>

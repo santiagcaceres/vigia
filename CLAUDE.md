@@ -61,8 +61,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   importa `core.rules`, `core.scorer` (y sus deps `geometry`, `tracker`): **no** mete OpenCV ni
   onnxruntime en el build de Vercel. No romper eso.
 - **public/**: panel (SPA sin framework) + `aviso.html` (página pública del clip) + `guia.html` +
-  `prueba.js`. Menú (pedido del dueño, 19 oct): **Resumen, Clientes, Cámaras, Alertas, Prueba** y
-  Administración (solo admin). Las demás vistas siguen existiendo por URL y se llega desde botones:
+  `prueba.js`. Menú (pedido del dueño, 22 oct): **Resumen, Clientes, Alertas** y Administración
+  (solo admin). "Cámaras" y "Prueba" salieron del menú (siguen por URL: `#/camaras`, `#/prueba`). Las demás vistas siguen existiendo por URL y se llega desde botones:
   `#/revisar` (desde Alertas y Resumen), `#/alarmas` (alarmas del grabador), `#/avisos`, `#/videos`,
   `#/entrenamiento` (links "Más" al pie del Resumen). `#/eventos` fue renombrado `#/alertas`.
   Clientes y cámaras se cachean 20 s en el navegador (`loadClients`/`loadCameras`) para que
@@ -79,8 +79,9 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   del de `models/`, 10 MB; si se reexporta el modelo, copiar a los dos lados). El usuario marca el
   recuadro de la cámara y una zona; si una persona (punto de los pies) queda en la zona más de N s,
   guarda una alerta: `POST /api/events/manual` (foto) → PUT del clip webm de 12 s a la URL firmada →
-  `POST /api/events/{id}/clip-done`. `Event.source="prueba"`, `clip_source="prueba"`. Es un puente
-  para probar con video real sin tocar el local; no reemplaza al agente.
+  `POST /api/events/{id}/clip-done`. `Event.source="prueba"`, `clip_source="prueba"`. Era un puente
+  para probar sin puertos abiertos; el 22 oct el dueño la sacó del menú (todos los clientes van por
+  router + agente). Sigue en `#/prueba`.
 
 `server/probe.py` + `POST /api/cameras/{id}/probe`: prueba desde Vercel que el DVR responda por HTTP
 (ISAPI deviceInfo / CGI magicBox) con el usuario y la clave cargados, lista los canales y avisa si
@@ -242,7 +243,9 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 192.168.1.6 (reservada por MAC en el ZTE F6600 de Antel), reenvío TCP 38554→554 y 38080→80,
 IP pública de Antel real (sin CG-NAT, PPPoE, puede cambiar: falta DDNS), RTSP verificado en VLC
 desde datos móviles y otra red, cámara "Habitacion" cargada en modo **vivo** (el DVR no tiene
-disco) y "Probar conexión" devuelve modelo y 4 canales. Falta: correr el agente en la PC central.
+disco) y "Probar conexión" devuelve modelo y 4 canales. Agente `vigia` (id 3) corriendo como
+`VigiaAgente.exe` en la PC de Santiago: cámara en línea a 4 fps y vista previa recibida.
+El .exe se publica en GitHub Releases (tag `agente-v*`); link en Administración → Agentes.
 
 **Lunes 20 oct:** Santiago tendrá acceso al video en vivo de un DVR. Plan: desde la PC central
 `python -m agent.hikvision` (o `agent.dahua`) `--host IP --user vigia --password ****` (lista
