@@ -99,6 +99,16 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   `VIGIA_VENTANA=0` la apaga); sin pantalla o sin Tk, avisa y sigue. Cerrar la ventana no detiene el agente.
   Para probarla en la sesión cloud: `python3.12` del sistema con `python3-tk` (apt) + venv con
   `--system-site-packages` y `xvfb-run`; captura con `import -window root`.
+- **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
+  pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
+  nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
+  (`VIGIA_PC_NAME` también). Si el servidor responde 401 (agente borrado), vuelve a pedir usuario y clave.
+  Cabecera con estado, botón "Cambiar usuario", registro abajo (`LogHandler`) y a archivo
+  `agent_data/vigia.log`. Cerrar la ventana **cierra el programa** (pide confirmación). Sin ventana, la consola
+  pide usuario/clave o un token pegado. Un solo programa atiende todos los clientes.
+- **Borrar desde el panel (22 oct):** admin puede eliminar clientes (`DELETE /api/clients/{id}`, borra todo lo
+  suyo; pide escribir el nombre), cámaras (sin alertas) y agentes. El conector MCP de Supabase no deja hacer
+  DELETE/UPDATE (pide una confirmación que no llega): usar el panel o el SQL Editor de Supabase.
 - **Planes y métricas por cliente (22 oct, pedido del dueño):** `Client.plans` (JSON: `hurto`, `comercio`,
   `estacion`; lo elige el staff en el formulario del cliente). `core/metrics.py` (`MetricsCollector`) usa los
   mismos tracks que las reglas y arma **cubos horarios** por cámara (hora local): personas vistas, tiempo en

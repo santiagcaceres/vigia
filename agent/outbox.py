@@ -118,6 +118,23 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def login_pc(server: str, username: str, password: str, pc_name: str, verify: bool | str = True) -> dict:
+    """Vincula esta PC con usuario y clave de administrador. Devuelve {token, name, id}.
+    Lanza ValueError con un mensaje para mostrar si el servidor rechaza los datos."""
+    try:
+        r = httpx.post(server.rstrip("/") + "/api/agent/login", timeout=30.0, verify=verify,
+                       json={"username": username, "password": password, "pc_name": pc_name})
+    except httpx.HTTPError as exc:
+        raise ValueError(f"No se pudo conectar con el servidor ({type(exc).__name__}). Revisá internet.") from exc
+    if r.status_code != 200:
+        try:
+            msg = r.json().get("detail") or r.text
+        except ValueError:
+            msg = r.text
+        raise ValueError(str(msg)[:200])
+    return r.json()
+
+
 class ServerClient:
     """Cliente HTTP del agente contra la API de Vigía."""
 

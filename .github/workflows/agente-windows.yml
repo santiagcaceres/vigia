@@ -33,8 +33,8 @@ jobs:
         run: pyinstaller agente_pc.spec
       - name: Probar que arranca
         run: |
-          dist\VigiaAgente.exe --help
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process -FilePath dist\VigiaAgente.exe -ArgumentList "--help" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { exit 1 }
       - name: Armar carpeta
         run: |
           New-Item -ItemType Directory -Force dist\VigiaAgente | Out-Null

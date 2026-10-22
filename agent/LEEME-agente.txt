@@ -2,10 +2,9 @@ AGENTE VIGÍA PARA WINDOWS
 =========================
 
 1. Descomprimí esta carpeta donde quieras (por ejemplo C:\Vigia).
-2. Abrí VigiaAgente.exe. La primera vez pide:
-   - Servidor: apretá Enter para usar https://vigia-three-ashy.vercel.app
-   - Token: lo generás en el panel, Administración -> Agentes (se muestra una sola vez).
-   Queda guardado en agente.env, al lado del .exe. Borrá ese archivo para cargar otro token.
+2. Abrí VigiaAgente.exe. La primera vez pide usuario y clave de ADMINISTRADOR del panel y un
+   nombre para esta PC. Queda vinculada (en agente.env, al lado del .exe) y las siguientes veces
+   arranca sola. Para entrar con otro usuario: botón "Cambiar usuario".
 3. Se abren dos ventanas: la negra (registro) y "Vigia - PC central": a la izquierda la lista
    de clientes y cámaras con su estado (elegí cuáles ver; un cliente = todas las suyas) y a la
    derecha el mosaico en vivo con las personas recuadradas. Podés cerrarla; el agente sigue.

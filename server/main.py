@@ -169,6 +169,12 @@ class PasswordIn(BaseModel):
     new: str = Field(min_length=8)
 
 
+class AgentLoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+    pc_name: str = Field(min_length=1, max_length=120)
+
+
 class AgentIn(BaseModel):
     client_id: int | None = None  # None = agente central (atiende cámaras asignadas de cualquier cliente)
     name: str = Field(min_length=1, max_length=120)
@@ -645,6 +651,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                   process_imports=body.process_imports)
         s.add(a)
         s.commit()
+        return {**agent_dict(a), "token": token}
+
+    @app.post("/api/agent/login")
+    def agent_login(body: AgentLoginIn, s=Depends(db)) -> dict:
+        """Vincula una PC central con usuario y clave de administrador (sin copiar tokens a mano).
+        Si ya existe una PC central con ese nombre, se le genera un token nuevo (el anterior deja de
+        servir); si no, se crea. Devuelve el token, que el programa guarda en agente.env."""
+        u = s.query(User).filter_by(username=body.username.strip()).first()
+        if not u or not u.active or not verify_password(body.password, u.password_hash):
+            raise HTTPException(401, "Usuario o clave incorrectos")
+        if u.role != "admin":
+            raise HTTPException(403, "Solo un administrador puede vincular una PC central")
+        name = body.pc_name.strip()
+        a = s.query(Agent).filter(Agent.client_id.is_(None), Agent.name == name).order_by(Agent.id).first()
+        token = new_token()
+        if a is None:
+            a = Agent(client_id=None, name=name, token_hash=token_hash(token), process_imports=True)
+            s.add(a)
+        else:
+            a.token_hash = token_hash(token)
+        s.commit()
+        log.info("PC central %r vinculada por %s", name, u.username)
         return {**agent_dict(a), "token": token}
 
     @app.post("/api/agents/{aid}/token")

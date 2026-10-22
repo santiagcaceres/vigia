@@ -24,6 +24,6 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
     name="VigiaAgente",
-    console=True,
+    console=False,  # sin ventana negra: la interfaz es la ventana de Vigía (registro en agent_data/vigia.log)
     upx=False,
 )

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
+from collections.abc import Callable
 import os
 import signal
 import sys
@@ -31,8 +33,8 @@ from .alarms import AlarmRunner
 from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
 from .live import LiveWorker
-from .outbox import Outbox, ServerClient
-from .ventana import ESTADOS, Ventana
+from .outbox import Outbox, ServerClient, login_pc
+from .ventana import ESTADOS, Ventana, default_pc_name
 from .worker import CameraWorker
 
 log = logging.getLogger("vigia.agent")
@@ -44,8 +46,12 @@ LIVE_EXTEND_SECONDS = 45.0  # cuánto sigue el vivo después del último aviso d
 
 class Agent:
     def __init__(self, server: str, token: str, data_dir: Path, model_path: str | None, verify: bool | str = True,
-                 process_imports: bool = True, alarm_workers: int = 2, window: bool = False):
+                 process_imports: bool = True, alarm_workers: int = 2, window: "bool | Ventana" = False,
+                 relogin: "Callable[[str | None], str | None] | None" = None, pc_name: str = ""):
         self.client = ServerClient(server, token, verify=verify)
+        self.relogin = relogin  # pide usuario y clave de nuevo (ventana) y devuelve el token nuevo
+        self.pc_name = pc_name
+        self._logout_requested = False
         self.process_imports = process_imports
         self.imports: ImportJobRunner | None = None
         self.alarms: AlarmRunner | None = None
@@ -58,9 +64,14 @@ class Agent:
         self.listeners: dict[int, DeviceAlarmListener] = {}
         self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
         self._cams_cfg: dict[int, dict] = {}
-        self.window = Ventana(self.data_dir / "ventana.json") if window else None
+        if isinstance(window, Ventana):
+            self.window: Ventana | None = window
+        else:
+            self.window = Ventana(self.data_dir / "ventana.json") if window else None
         if self.window is not None and self.window.failed:
             self.window = None
+        if self.window is not None:
+            self.window.on_logout = self._request_logout
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
@@ -133,15 +144,29 @@ class Agent:
                 try:
                     self.apply_config(self.client.config())
                     last_cfg = now
+                    if self.window is not None:
+                        n = len(self._cams_cfg)
+                        self.window.set_status(f"{self.pc_name} · conectado · {n} cámara{'s' if n != 1 else ''}")
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code == 401:
-                        log.error("Token de agente inválido. Revisalo en el panel (Administración > Agentes).")
+                        log.error("Esta PC ya no está vinculada (la borraron del panel o cambió la clave).")
+                        if self._ask_login("Esta PC ya no está vinculada. Entrá de nuevo con tu usuario."):
+                            last_cfg = -1e9
+                            continue
                     else:
                         log.warning("No se pudo obtener la configuración: %s", exc)
                     last_cfg = now - CONFIG_EVERY_SECONDS + 15
                 except httpx.HTTPError as exc:
                     log.warning("Servidor no disponible (%s); las cámaras siguen funcionando", exc)
+                    if self.window is not None:
+                        self.window.set_status(f"{self.pc_name} · sin conexión con el servidor (reintentando)", ok=False)
                     last_cfg = now - CONFIG_EVERY_SECONDS + 15
+            if self._logout_requested:
+                self._logout_requested = False
+                self.apply_config({"cameras": []})  # deja de mirar las cámaras hasta volver a entrar
+                if self._ask_login(None):
+                    last_cfg = -1e9
+                    continue
             if now - last_status >= STATUS_EVERY_SECONDS:
                 last_status = now
                 try:
@@ -155,15 +180,31 @@ class Agent:
                     pass
             if self.window is not None:
                 self.window.set_cameras(self.window_cameras())
-                self.window.refresh(self.window_tiles(self.window.selected_ids()))
+                note = "" if self._cams_cfg else (f"Esta PC todavía no tiene cámaras asignadas. En el panel, al cargar o "
+                                                  f"editar una cámara, elegí «{self.pc_name}» como PC central.")
+                self.window.refresh(self.window_tiles(self.window.selected_ids()), note or " ")
                 if not self.window.pump(40):
-                    log.info("Ventana cerrada; el agente sigue trabajando (Ctrl+C para detenerlo)")
+                    log.info("Ventana cerrada: Vigía se detiene")
                     self.window = None
-                    for w in list(self.workers.values()) + list(self.live_workers.values()):
-                        w.show_window = False
+                    self.stop()
             else:
                 self._stop.wait(1.0)
         self.shutdown()
+
+    def _request_logout(self) -> None:
+        self._logout_requested = True
+
+    def _ask_login(self, error: str | None) -> bool:
+        """Vuelve a pedir usuario y clave (si hay ventana). True si quedó vinculada con un token nuevo."""
+        if self.relogin is None or self.window is None:
+            return False
+        token = self.relogin(error)
+        if not token:
+            self.stop()
+            return False
+        self.client.http.headers["X-Agent-Token"] = token
+        log.info("PC vinculada de nuevo")
+        return True
 
     # ---- ventana de la PC central ----
     def _cam_state(self, cid: int) -> str:
@@ -298,18 +339,52 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def pedir_datos_interactivo(cfg_path: Path, server: str | None, token: str | None) -> tuple[str, str]:
-    """Si faltan servidor o token y hay una consola, los pide y los guarda en agente.env."""
+def pedir_datos_interactivo(cfg_path: Path, server: str | None, token: str | None,
+                            verify: bool | str = True) -> tuple[str, str]:
+    """Sin ventana: si falta el token y hay una consola, pide usuario y clave de administrador (o un
+    token pegado a mano) y guarda lo obtenido en agente.env."""
     if not sys.stdin or not sys.stdin.isatty():
         return server or "", token or ""
-    print("Agente Vigía: configuración inicial (se guarda en %s)" % cfg_path)
+    import getpass
+
+    print("Vigía · PC central: configuración inicial (se guarda en %s)" % cfg_path)
     if not server:
         server = input(f"Servidor [{SERVIDOR_POR_DEFECTO}]: ").strip() or SERVIDOR_POR_DEFECTO
+    pc_name = default_pc_name()
     while not token:
-        token = input("Token del agente (Administración → Agentes en el panel): ").strip()
-    write_env_file(cfg_path, {"VIGIA_SERVER": server, "VIGIA_AGENT_TOKEN": token})
+        user = input("Usuario administrador (o pegá un token de agente): ").strip()
+        if not user:
+            continue
+        if len(user) > 30 and " " not in user:  # pegaron un token
+            token = user
+            break
+        pwd = getpass.getpass("Clave: ")
+        try:
+            token = login_pc(server, user, pwd, pc_name, verify=verify)["token"]
+        except ValueError as exc:
+            print(f"No se pudo: {exc}")
+    write_env_file(cfg_path, {"VIGIA_SERVER": server, "VIGIA_AGENT_TOKEN": token, "VIGIA_PC_NAME": pc_name})
     print("Guardado. La próxima vez arranca solo.\n")
     return server, token
+
+
+def setup_logging(data_dir: Path, verbose: bool) -> None:
+    """Registro a archivo (agent_data/vigia.log, rota en 3 x 1 MB) y a la consola si la hay."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(data_dir / "vigia.log", maxBytes=1_000_000, backupCount=3,
+                                                  encoding="utf-8")
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    except OSError:
+        pass
+    if sys.stderr is not None:  # el .exe sin consola no tiene stderr
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
 
 
 def main() -> None:
@@ -333,22 +408,51 @@ def main() -> None:
     a = p.parse_args()
     if a.ventana is None:
         a.ventana = env.get("VIGIA_VENTANA", "1" if getattr(sys, "frozen", False) else "0") not in ("0", "no", "false")
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    if not a.server or not a.token:
-        a.server, a.token = pedir_datos_interactivo(cfg_path, a.server, a.token)
-    if not a.server or not a.token:
-        p.error(f"Faltan --server y --token (o VIGIA_SERVER y VIGIA_AGENT_TOKEN, o el archivo {cfg_path})")
-    agent = Agent(a.server, a.token, Path(a.data), a.model, verify=not a.insecure, process_imports=not a.no_imports,
-                  alarm_workers=max(1, a.alarm_workers), window=a.ventana)
+    data_dir = Path(a.data)
+    setup_logging(data_dir, a.verbose)
+    a.server = a.server or SERVIDOR_POR_DEFECTO
+    pc = {"name": env.get("VIGIA_PC_NAME") or default_pc_name()}
+    ventana = Ventana(data_dir / "ventana.json") if a.ventana else None
+    if ventana is not None and ventana.failed:
+        ventana = None
+
+    def gui_login(error: str | None = None) -> str | None:
+        """Pantalla de usuario y clave; guarda el token en agente.env."""
+        def do_login(user: str, pwd: str, name: str) -> str:
+            res = login_pc(a.server, user, pwd, name, verify=not a.insecure)
+            pc["name"] = res.get("name") or name
+            write_env_file(cfg_path, {"VIGIA_SERVER": a.server, "VIGIA_AGENT_TOKEN": res["token"],
+                                      "VIGIA_PC_NAME": pc["name"]})
+            log.info("PC vinculada como %r", pc["name"])
+            return res["token"]
+        return ventana.login(do_login, pc["name"], error) if ventana is not None else None
+
+    if not a.token:
+        if ventana is not None:
+            a.token = gui_login()
+            if not a.token:
+                return  # cerraron la ventana sin entrar
+        else:
+            a.server, a.token = pedir_datos_interactivo(cfg_path, a.server, a.token, verify=not a.insecure)
+    if not a.token:
+        p.error(f"Falta el token (entrá con --ventana, o VIGIA_AGENT_TOKEN, o el archivo {cfg_path})")
+    if ventana is not None:
+        ventana.build_main(pc["name"])
+    agent = Agent(a.server, a.token, data_dir, a.model, verify=not a.insecure, process_imports=not a.no_imports,
+                  alarm_workers=max(1, a.alarm_workers), window=ventana or False,
+                  relogin=gui_login if ventana is not None else None, pc_name=pc["name"])
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
     try:
         agent.run()
-    except Exception:
+    except Exception as exc:
         log.exception("El agente se detuvo por un error")
-        if getattr(sys, "frozen", False) and sys.stdin and sys.stdin.isatty():
-            input("Apretá Enter para cerrar...")
+        if ventana is not None and ventana.open:
+            try:
+                ventana.messagebox.showerror("Vigía", f"Vigía se detuvo por un error:\n{exc}\n\n"
+                                                      f"Detalle en {data_dir / 'vigia.log'}")
+            except Exception:
+                pass
         raise
 
 
