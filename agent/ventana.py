@@ -111,6 +111,8 @@ class Ventana:
         self.open = False
         self.main_built = False
         self.on_logout: Callable[[], None] | None = None
+        self.hooks: list[Callable[[], None]] = []  # se llaman en cada pump (resultados de red de la oficina)
+        self.analyze = False
         self._selected: set[int] | None = self._load_selection()  # None = todavía no hay cámaras
         self._tree_ids: dict[str, int] = {}  # id del árbol -> id de cámara
         self._cam_rows: dict[int, str] = {}
@@ -149,34 +151,42 @@ class Ventana:
         logging.getLogger().addHandler(self.log_handler)
 
     def _ask_close(self) -> None:
-        if not self.main_built or self.messagebox.askyesno(
+        if not self.main_built or not getattr(self, "analyze", False) or self.messagebox.askyesno(
                 TITULO, "¿Cerrar Vigía?\n\nMientras esté cerrado, esta PC deja de analizar las cámaras."):
             self.close()
 
     # ---------------- inicio de sesión ----------------
-    def login(self, do_login: Callable[[str, str, str], str], pc_name: str | None = None,
-              error: str | None = None) -> str | None:
-        """Pantalla de inicio de sesión. `do_login(usuario, clave, nombre_pc)` devuelve el token o lanza
-        ValueError con el mensaje a mostrar. Devuelve el token, o None si cerraron la ventana."""
+    def login(self, do_login: Callable[[str, str, str, bool], object], pc_name: str | None = None,
+              error: str | None = None, analyze: bool = True) -> object | None:
+        """Pantalla de inicio de sesión. `do_login(usuario, clave, nombre_pc, analiza)` devuelve algo
+        verdadero o lanza ValueError con el mensaje a mostrar. Devuelve ese resultado, o None si cerraron."""
         if not self.open:
             return None
         tk, ttk = self.tk, self.ttk
         frame = ttk.Frame(self.root, padding=30)
         frame.place(relx=0.5, rely=0.45, anchor="center")
         ttk.Label(frame, text="Vigía", font=("Segoe UI", 26, "bold")).grid(row=0, column=0, columnspan=2, pady=(0, 2))
-        ttk.Label(frame, text="PC central: análisis de cámaras", foreground="#666").grid(row=1, column=0, columnspan=2, pady=(0, 18))
+        ttk.Label(frame, text="Gestión de clientes, cámaras y alertas", foreground="#666").grid(row=1, column=0, columnspan=2, pady=(0, 18))
         user, pwd, name = tk.StringVar(), tk.StringVar(), tk.StringVar(value=pc_name or default_pc_name())
-        for i, (label, var, show) in enumerate((("Usuario", user, ""), ("Clave", pwd, "•"),
-                                                ("Nombre de esta PC", name, "")), start=2):
+        an = tk.BooleanVar(value=analyze)
+        for i, (label, var, show) in enumerate((("Usuario", user, ""), ("Clave", pwd, "•")), start=2):
             ttk.Label(frame, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=(0, 12))
             e = ttk.Entry(frame, textvariable=var, show=show, width=32)
             e.grid(row=i, column=1, pady=5)
             if i == 2:
                 e.focus_set()
-        msg = ttk.Label(frame, text=error or "Entrá con tu usuario de administrador del panel.",
-                        foreground="#c0392b" if error else "#666", wraplength=360, justify="left")
-        msg.grid(row=5, column=0, columnspan=2, pady=(10, 6), sticky="w")
-        result: dict[str, str | None] = {"token": None}
+        ttk.Checkbutton(frame, text="Esta PC analiza las cámaras (PC central, solo administradores)",
+                        variable=an).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        ttk.Label(frame, text="Nombre de esta PC").grid(row=5, column=0, sticky="w", pady=5, padx=(0, 12))
+        name_e = ttk.Entry(frame, textvariable=name, width=32)
+        name_e.grid(row=5, column=1, pady=5)
+        an.trace_add("write", lambda *_: name_e.configure(state="normal" if an.get() else "disabled"))
+        if not analyze:
+            name_e.configure(state="disabled")
+        msg = ttk.Label(frame, text=error or "Entrá con tu usuario del panel (administrador o empleado).",
+                        foreground="#c0392b" if error else "#666", wraplength=380, justify="left")
+        msg.grid(row=6, column=0, columnspan=2, pady=(10, 6), sticky="w")
+        result: dict[str, object] = {"res": None}
         done = tk.BooleanVar(value=False)
 
         def submit(_e=None) -> None:
@@ -186,15 +196,13 @@ class Ventana:
             msg.configure(text="Conectando…", foreground="#666")
             self.root.update()
             try:
-                result["token"] = do_login(user.get().strip(), pwd.get(), name.get().strip() or default_pc_name())
+                result["res"] = do_login(user.get().strip(), pwd.get(), name.get().strip() or default_pc_name(), an.get())
                 done.set(True)
             except ValueError as exc:
                 msg.configure(text=str(exc), foreground="#c0392b")
 
-        btn = ttk.Button(frame, text="Entrar", command=submit)
-        btn.grid(row=6, column=0, columnspan=2, pady=(8, 0), sticky="ew")
+        ttk.Button(frame, text="Entrar", command=submit).grid(row=7, column=0, columnspan=2, pady=(8, 0), sticky="ew")
         self.root.bind("<Return>", submit)
-        prev_close = self.root.protocol("WM_DELETE_WINDOW")
         self.root.protocol("WM_DELETE_WINDOW", lambda: (self.close(), done.set(True)))
         try:
             self.root.wait_variable(done)
@@ -204,53 +212,57 @@ class Ventana:
             self.root.unbind("<Return>")
             self.root.protocol("WM_DELETE_WINDOW", self._ask_close)
             frame.destroy()
-        del prev_close
-        return result["token"]
+        return result["res"]
 
     # ---------------- pantalla principal ----------------
-    def build_main(self, pc_name: str) -> None:
+    def build_main(self, title: str, analyze: bool = True) -> None:
+        """Cabecera + pestañas. Con `analyze`, la primera pestaña es «En vivo» (mosaico de la IA)."""
         if not self.open or self.main_built:
             return
         tk, ttk = self.tk, self.ttk
+        self.analyze = analyze
         top = ttk.Frame(self.root, padding=(10, 6))
         top.pack(side="top", fill="x")
         ttk.Label(top, text="Vigía", font=("Segoe UI", 14, "bold")).pack(side="left")
-        self.status = ttk.Label(top, text=f"  ·  {pc_name}  ·  conectando…", foreground="#666")
+        self.status = ttk.Label(top, text=f"  ·  {title}", foreground="#666")
         self.status.pack(side="left")
-        ttk.Button(top, text="Cambiar usuario", command=self._logout).pack(side="right")
-
-        body = ttk.Frame(self.root)
-        body.pack(side="top", fill="both", expand=True)
-        left = ttk.Frame(body, padding=6)
-        left.pack(side="left", fill="y")
-        ttk.Label(left, text="Clientes y cámaras", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(left, text="Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.",
-                  foreground="#666").pack(anchor="w", pady=(0, 6))
-        self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=18)
-        self.tree.heading("#0", text="Cámara")
-        self.tree.heading("estado", text="Estado")
-        self.tree.column("#0", width=210)
-        self.tree.column("estado", width=150)
-        self.tree.pack(fill="y", expand=True)
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        btns = ttk.Frame(left)
-        btns.pack(fill="x", pady=6)
-        ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left")
-        ttk.Button(btns, text="Ninguna", command=self._select_none).pack(side="left", padx=4)
-        self.info = ttk.Label(left, text="", foreground="#666", wraplength=340, justify="left")
-        self.info.pack(anchor="w", pady=(4, 0))
-
-        right = tk.Frame(body, bg="#111")
-        right.pack(side="right", fill="both", expand=True)
-        self.canvas = tk.Label(right, bg="#111")
-        self.canvas.pack(fill="both", expand=True)
+        ttk.Button(top, text="Cerrar sesión", command=self._logout).pack(side="right")
 
         bottom = ttk.Frame(self.root, padding=(6, 0, 6, 6))
         bottom.pack(side="bottom", fill="x")
         ttk.Label(bottom, text="Registro", foreground="#666").pack(anchor="w")
-        self.logbox = tk.Text(bottom, height=6, bg="#1b1f24", fg="#d0d6de", font=("Consolas", 9), relief="flat",
+        self.logbox = tk.Text(bottom, height=5, bg="#1b1f24", fg="#d0d6de", font=("Consolas", 9), relief="flat",
                               state="disabled", wrap="none")
         self.logbox.pack(fill="x")
+
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(side="top", fill="both", expand=True, padx=6)
+        if analyze:
+            body = ttk.Frame(self.notebook)
+            self.notebook.add(body, text="  En vivo  ")
+            left = ttk.Frame(body, padding=6)
+            left.pack(side="left", fill="y")
+            ttk.Label(left, text="Clientes y cámaras", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+            ttk.Label(left, text="Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.",
+                      foreground="#666").pack(anchor="w", pady=(0, 6))
+            self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=18)
+            self.tree.heading("#0", text="Cámara")
+            self.tree.heading("estado", text="Estado")
+            self.tree.column("#0", width=210)
+            self.tree.column("estado", width=150)
+            self.tree.pack(fill="y", expand=True)
+            self.tree.bind("<<TreeviewSelect>>", self._on_select)
+            btns = ttk.Frame(left)
+            btns.pack(fill="x", pady=6)
+            ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left")
+            ttk.Button(btns, text="Ninguna", command=self._select_none).pack(side="left", padx=4)
+            self.info = ttk.Label(left, text="", foreground="#666", wraplength=340, justify="left")
+            self.info.pack(anchor="w", pady=(4, 0))
+            right = tk.Frame(body, bg="#111")
+            right.pack(side="right", fill="both", expand=True)
+            self.canvas = tk.Label(right, bg="#111")
+            self.canvas.pack(fill="both", expand=True)
+            self.live_tab = body
         self.main_built = True
 
     def set_status(self, text: str, ok: bool = True) -> None:
@@ -258,8 +270,8 @@ class Ventana:
             self.status.configure(text=f"  ·  {text}", foreground="#2f8f46" if ok else "#c0392b")
 
     def _logout(self) -> None:
-        if self.messagebox.askyesno(TITULO, "¿Desvincular esta PC y entrar con otro usuario?\n"
-                                            "Las cámaras dejan de analizarse hasta que vuelvas a entrar."):
+        extra = "\nLas cámaras dejan de analizarse hasta que vuelvas a entrar." if getattr(self, "analyze", False) else ""
+        if self.messagebox.askyesno(TITULO, "¿Cerrar sesión y entrar con otro usuario?" + extra):
             if self.on_logout:
                 self.on_logout()
 
@@ -324,7 +336,7 @@ class Ventana:
 
     def set_cameras(self, cams: list[tuple[int, str, str, str]]) -> None:
         """cams: (id, cliente, nombre, estado). Rearma el árbol si cambió la lista; actualiza estados."""
-        if not self.open or not self.main_built:
+        if not self.open or not self.main_built or not self.analyze:
             return
         key = [(c[0], c[1], c[2]) for c in cams]
         if key != [(c[0], c[1], c[2]) for c in self._known]:
@@ -351,8 +363,10 @@ class Ventana:
 
     # ---------------- dibujo ----------------
     def refresh(self, tiles: list[tuple[str, np.ndarray | None, str]], note: str = "") -> None:
-        if not self.open or not self.main_built:
+        if not self.open or not self.main_built or not self.analyze:
             return
+        if self.notebook.select() != str(self.live_tab):
+            return  # no se dibuja el mosaico si no se está mirando esa pestaña
         try:
             img = mosaic(tiles)
             w, h = max(self.canvas.winfo_width(), 1), max(self.canvas.winfo_height(), 1)
@@ -374,6 +388,8 @@ class Ventana:
             return False
         try:
             self._drain_log()
+            for hook in self.hooks:
+                hook()
             self.root.update_idletasks()
             self.root.update()
             self.root.after(ms)  # sin callback: espera `ms` (como un sleep que no congela la ventana)

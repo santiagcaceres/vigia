@@ -8,7 +8,7 @@ código, comentarios, interfaz y trato con el usuario.
 
 | Pieza | Dónde |
 |---|---|
-| Panel + API | https://vigia-three-ashy.vercel.app (proyecto Vercel `vigia`, región gru1) |
+| Panel + API | https://vigia-three-ashy.vercel.app (proyecto Vercel `vigia`, región iad1 desde el 22 oct) |
 | Base + archivos | Supabase proyecto **CAMARAS**, ref `cnwhpaqvdjabntteacrj` (sa-east-1 no: us-east-1) |
 | Repo | github.com/santiagcaceres/vigia (privado) |
 | Dueño | Santiago Cáceres, Uruguay (America/Montevideo) |
@@ -62,7 +62,7 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   onnxruntime en el build de Vercel. No romper eso.
 - **public/**: panel (SPA sin framework) + `aviso.html` (página pública del clip) + `guia.html` +
   `prueba.js`. Menú (pedido del dueño, 22 oct): **Resumen, Clientes, Alertas** y Administración
-  (solo admin). "Cámaras" y "Prueba" salieron del menú (siguen por URL: `#/camaras`, `#/prueba`). Las demás vistas siguen existiendo por URL y se llega desde botones:
+  (solo admin) — **desde el 22 oct el staff usa la app de escritorio; ver más abajo**. "Cámaras" y "Prueba" salieron del menú (siguen por URL: `#/camaras`, `#/prueba`). Las demás vistas siguen existiendo por URL y se llega desde botones:
   `#/revisar` (desde Alertas y Resumen), `#/alarmas` (alarmas del grabador), `#/avisos`, `#/videos`,
   `#/entrenamiento` (links "Más" al pie del Resumen). `#/eventos` fue renombrado `#/alertas`.
   Clientes y cámaras se cachean 20 s en el navegador (`loadClients`/`loadCameras`) para que
@@ -99,6 +99,19 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   `VIGIA_VENTANA=0` la apaga); sin pantalla o sin Tk, avisa y sigue. Cerrar la ventana no detiene el agente.
   Para probarla en la sesión cloud: `python3.12` del sistema con `python3-tk` (apt) + venv con
   `--system-site-packages` y `xvfb-run`; captura con `import -window root`.
+- **La gestión se hace en la app de escritorio (22 oct, decisión del dueño):** la web queda para los
+  **clientes** (su resumen, alertas, incidentes y cámaras). Admin y empleados que entran a la web ven "Usá la
+  app de escritorio" (con un link de emergencia "Entrar igual" que guarda `sessionStorage.vigia_web_staff`).
+  La app (`VigiaAgente.exe`) entra con **usuario y clave** (`POST /api/login`, sesión Bearer guardada en
+  `agente.env` como `VIGIA_SESSION`) y tiene pestañas (`agent/oficina.py`): **Clientes y cámaras** (alta,
+  edición, borrado, probar conexión, `ZonesEditor` sobre la imagen de la cámara, métricas del día),
+  **Alertas** (lista con filtros, foto, reproducción del clip dentro de la app con OpenCV, etiquetas con
+  teclas 1-4, «Avisar al cliente» que copia el link), **Administración** (solo admin: usuarios y PCs). Con
+  «Esta PC analiza las cámaras» tildado (solo admin) además vincula la PC (`/api/agent/login`) y suma la
+  pestaña **En vivo** con el análisis; sin tildar es un puesto de empleado (no analiza). Las llamadas a la
+  red corren en hilos (`Bg`) y vuelven por `Ventana.hooks`. "Cerrar sesión" borra la sesión y reabre el
+  programa. **Vercel pasó a `iad1`** (vercel.json `regions`), junto a Supabase us-east-1: antes estaba en
+  gru1 y cada consulta a la base cruzaba el continente (la web era lenta por eso).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

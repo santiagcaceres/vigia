@@ -92,6 +92,21 @@ async function boot() {
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
+  // La gestión de la empresa se hace en la app de escritorio; la web es para los clientes.
+  let emergencia = false;
+  try { emergencia = sessionStorage.getItem("vigia_web_staff") === "1"; } catch (_) {}
+  if (S.me.role !== "cliente" && !emergencia) {
+    $("#nav").innerHTML = "";
+    $("#view").innerHTML = `<div class="panel" style="max-width:640px;margin:40px auto">
+      <h1>Usá la app de escritorio</h1>
+      <p>La gestión de clientes, cámaras, zonas, alertas y usuarios se hace desde la <b>app de escritorio de Vigía</b>. La web quedó para que los clientes vean su local.</p>
+      <p><a class="btn primary" href="https://github.com/santiagcaceres/vigia/releases/latest" target="_blank" rel="noopener">Descargar la app (VigiaAgente-windows.zip)</a></p>
+      <p class="muted">Descomprimila, abrí <span class="mono">VigiaAgente.exe</span> y entrá con este mismo usuario. Si esta PC además tiene que analizar las cámaras, dejá tildado «Esta PC analiza las cámaras».</p>
+      <p class="muted" style="margin-top:24px"><a href="#" id="web-emergencia">Entrar igual a la versión web (solo si la app no anda)</a></p>
+    </div>`;
+    $("#web-emergencia").addEventListener("click", (e) => { e.preventDefault(); try { sessionStorage.setItem("vigia_web_staff", "1"); } catch (_) {} location.reload(); });
+    return;
+  }
   const links = S.me.role === "cliente"
     ? [["#/resumen", "Resumen"], ["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
     : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/alertas", "Alertas"]];

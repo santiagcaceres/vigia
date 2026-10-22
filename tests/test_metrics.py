@@ -140,3 +140,16 @@ def test_borrar_cliente_con_todo(app):
         # borrar cámara sin alertas (con métricas) y agente
         assert c.delete(f"/api/cameras/{cam2['id']}").status_code == 204
         assert c.delete(f"/api/agents/{ag['id']}").status_code == 204
+
+
+def test_zonas_nuevas_se_pueden_guardar(app):
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Estación"}).json()["id"]
+        cam = c.post("/api/cameras", json={"client_id": cid, "name": "Playa", "host": "h", "password": "x"}).json()
+        sq = [[0, 0], [0.5, 0], [0.5, 0.5]]
+        r = c.put(f"/api/cameras/{cam['id']}/analysis", json={"zones": [
+            {"name": "entrada", "type": "entrance", "polygon": sq}, {"name": "surtidor", "type": "pump", "polygon": sq},
+            {"name": "tienda", "type": "shop", "polygon": sq}], "rules": {"loiter_seconds": 15}})
+        assert r.status_code == 200, r.text
+        assert [z["type"] for z in r.json()["zones"]] == ["entrance", "pump", "shop"]

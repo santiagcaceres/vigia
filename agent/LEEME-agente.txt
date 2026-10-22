@@ -2,9 +2,12 @@ AGENTE VIGÍA PARA WINDOWS
 =========================
 
 1. Descomprimí esta carpeta donde quieras (por ejemplo C:\Vigia).
-2. Abrí VigiaAgente.exe. La primera vez pide usuario y clave de ADMINISTRADOR del panel y un
-   nombre para esta PC. Queda vinculada (en agente.env, al lado del .exe) y las siguientes veces
-   arranca sola. Para entrar con otro usuario: botón "Cambiar usuario".
+2. Abrí VigiaAgente.exe y entrá con tu usuario y clave (administrador o empleado).
+   - Si esta PC tiene que ANALIZAR las cámaras (la PC central), dejá tildado «Esta PC analiza las
+     cámaras» (solo administradores) y poné un nombre para la PC.
+   - Si es un puesto de empleado para revisar alertas, destildalo.
+   La sesión queda guardada (agente.env, al lado del .exe). "Cerrar sesión" para cambiar de usuario.
+   Pestañas: En vivo (solo PC central), Clientes y cámaras, Alertas, Administración (solo admin).
 3. Se abren dos ventanas: la negra (registro) y "Vigia - PC central": a la izquierda la lista
    de clientes y cámaras con su estado (elegí cuáles ver; un cliente = todas las suyas) y a la
    derecha el mosaico en vivo con las personas recuadradas. Podés cerrarla; el agente sigue.

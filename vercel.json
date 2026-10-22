@@ -1,9 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "index.py": { "maxDuration": 60 }
+    "index.py": {
+      "maxDuration": 60
+    }
   },
   "crons": [
-    { "path": "/api/cron/cleanup", "schedule": "0 7 * * *" }
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 7 * * *"
+    }
+  ],
+  "regions": [
+    "iad1"
   ]
 }

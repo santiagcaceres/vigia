@@ -214,7 +214,7 @@ class CameraIn(BaseModel):
 
 class ZoneIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    type: Literal["shelf", "checkout", "exit", "restricted"]
+    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop"]
     polygon: list[tuple[float, float]] = Field(min_length=3)
 
 

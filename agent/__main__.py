@@ -70,7 +70,7 @@ class Agent:
             self.window = Ventana(self.data_dir / "ventana.json") if window else None
         if self.window is not None and self.window.failed:
             self.window = None
-        if self.window is not None:
+        if self.window is not None and self.window.on_logout is None:
             self.window.on_logout = self._request_logout
         self.scorer: Scorer | None = None
         self._scorer_id = None
@@ -146,7 +146,7 @@ class Agent:
                     last_cfg = now
                     if self.window is not None:
                         n = len(self._cams_cfg)
-                        self.window.set_status(f"{self.pc_name} · conectado · {n} cámara{'s' if n != 1 else ''}")
+                        self.window.set_status(f"{self.pc_name} · analizando {n} cámara{'s' if n != 1 else ''}")
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code == 401:
                         log.error("Esta PC ya no está vinculada (la borraron del panel o cambió la clave).")
@@ -180,8 +180,8 @@ class Agent:
                     pass
             if self.window is not None:
                 self.window.set_cameras(self.window_cameras())
-                note = "" if self._cams_cfg else (f"Esta PC todavía no tiene cámaras asignadas. En el panel, al cargar o "
-                                                  f"editar una cámara, elegí «{self.pc_name}» como PC central.")
+                note = "" if self._cams_cfg else ("Esta PC todavía no tiene cámaras asignadas. En «Clientes y cámaras», "
+                                                  f"al cargar o editar una cámara, elegí esta PC ({self.pc_name}).")
                 self.window.refresh(self.window_tiles(self.window.selected_ids()), note or " ")
                 if not self.window.pump(40):
                     log.info("Ventana cerrada: Vigía se detiene")
@@ -411,43 +411,133 @@ def main() -> None:
     data_dir = Path(a.data)
     setup_logging(data_dir, a.verbose)
     a.server = a.server or SERVIDOR_POR_DEFECTO
-    pc = {"name": env.get("VIGIA_PC_NAME") or default_pc_name()}
-    ventana = Ventana(data_dir / "ventana.json") if a.ventana else None
-    if ventana is not None and ventana.failed:
-        ventana = None
-
-    def gui_login(error: str | None = None) -> str | None:
-        """Pantalla de usuario y clave; guarda el token en agente.env."""
-        def do_login(user: str, pwd: str, name: str) -> str:
-            res = login_pc(a.server, user, pwd, name, verify=not a.insecure)
-            pc["name"] = res.get("name") or name
-            write_env_file(cfg_path, {"VIGIA_SERVER": a.server, "VIGIA_AGENT_TOKEN": res["token"],
-                                      "VIGIA_PC_NAME": pc["name"]})
-            log.info("PC vinculada como %r", pc["name"])
-            return res["token"]
-        return ventana.login(do_login, pc["name"], error) if ventana is not None else None
-
+    verify = not a.insecure
+    if a.ventana:
+        ventana = Ventana(data_dir / "ventana.json")
+        if not ventana.failed:
+            return run_app(a, env, cfg_path, data_dir, ventana, verify)
+        log.warning("Sin ventana: sigue como servicio (solo análisis)")
+    # sin ventana (servidor): solo analiza, con el token del agente
+    pc_name = env.get("VIGIA_PC_NAME") or default_pc_name()
     if not a.token:
-        if ventana is not None:
-            a.token = gui_login()
-            if not a.token:
-                return  # cerraron la ventana sin entrar
-        else:
-            a.server, a.token = pedir_datos_interactivo(cfg_path, a.server, a.token, verify=not a.insecure)
+        a.server, a.token = pedir_datos_interactivo(cfg_path, a.server, a.token, verify=verify)
     if not a.token:
         p.error(f"Falta el token (entrá con --ventana, o VIGIA_AGENT_TOKEN, o el archivo {cfg_path})")
-    if ventana is not None:
-        ventana.build_main(pc["name"])
-    agent = Agent(a.server, a.token, data_dir, a.model, verify=not a.insecure, process_imports=not a.no_imports,
-                  alarm_workers=max(1, a.alarm_workers), window=ventana or False,
-                  relogin=gui_login if ventana is not None else None, pc_name=pc["name"])
+    agent = Agent(a.server, a.token, data_dir, a.model, verify=verify, process_imports=not a.no_imports,
+                  alarm_workers=max(1, a.alarm_workers), window=False, pc_name=pc_name)
+    signal.signal(signal.SIGTERM, lambda *_: agent.stop())
+    signal.signal(signal.SIGINT, lambda *_: agent.stop())
+    agent.run()
+
+
+def restart_app() -> None:
+    """Vuelve a abrir el programa (para cerrar sesión y entrar con otro usuario)."""
+    import subprocess
+
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable] + sys.argv[1:]
+    else:
+        cmd = [sys.executable, "-m", "agent"] + sys.argv[1:]
+    subprocess.Popen(cmd, close_fds=True)
+
+
+def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, verify: bool | str) -> None:
+    """La app de escritorio: inicio de sesión de usuario, pestañas de gestión y, si esta PC es una
+    PC central, el análisis de las cámaras (pestaña «En vivo»)."""
+    from .oficina import Api, ApiError, Oficina
+
+    saved = dict(read_env_file(cfg_path))
+    api = Api(a.server, verify=verify)
+    state = {"pc": saved.get("VIGIA_PC_NAME") or env.get("VIGIA_PC_NAME") or default_pc_name(),
+             "analyze": (saved.get("VIGIA_ANALIZA") or env.get("VIGIA_ANALIZA", "1")) not in ("0", "no", "false"),
+             "agent_token": a.token}
+
+    def save_env() -> None:
+        vals = {"VIGIA_SERVER": a.server, "VIGIA_SESSION": api.token or "", "VIGIA_PC_NAME": state["pc"],
+                "VIGIA_ANALIZA": "1" if state["analyze"] else "0"}
+        if state["agent_token"]:
+            vals["VIGIA_AGENT_TOKEN"] = state["agent_token"]
+        write_env_file(cfg_path, vals)
+
+    def do_login(user: str, pwd: str, name: str, analyze: bool) -> bool:
+        try:
+            res = api.login(user, pwd)
+        except ApiError as exc:
+            raise ValueError(str(exc)) from exc
+        role = res["user"]["role"]
+        if role == "cliente":
+            api.set_token(None)
+            raise ValueError("Este usuario es de un cliente: los clientes entran por la web.")
+        if analyze:
+            if role != "admin":
+                raise ValueError("Solo un administrador puede usar esta PC para analizar cámaras. "
+                                 "Destildá «Esta PC analiza las cámaras» para entrar como empleado.")
+            info = login_pc(a.server, user, pwd, name, verify=verify)
+            state["agent_token"], state["pc"] = info["token"], info.get("name") or name
+        else:
+            state["agent_token"] = None
+        state["analyze"] = analyze
+        save_env()
+        log.info("Sesión iniciada como %s%s", user, f" · esta PC analiza cámaras ({state['pc']})" if analyze else "")
+        return True
+
+    # sesión guardada
+    logged = False
+    if saved.get("VIGIA_SESSION"):
+        api.set_token(saved["VIGIA_SESSION"])
+        try:
+            logged = api.me().get("role") in ("admin", "entrenador")
+        except ApiError:
+            logged = False
+    if logged and state["analyze"] and not state["agent_token"]:
+        logged = False  # falta vincular la PC: pedir usuario y clave de nuevo
+    if not logged:
+        api.set_token(None)
+        if not ventana.login(do_login, state["pc"], None, state["analyze"]):
+            return  # cerraron la ventana sin entrar
+
+    def logout() -> None:
+        try:
+            api.post("/api/logout")
+        except ApiError:
+            pass
+        write_env_file(cfg_path, {"VIGIA_SERVER": a.server, "VIGIA_PC_NAME": state["pc"],
+                                  "VIGIA_ANALIZA": "1" if state["analyze"] else "0"})
+        restart_app()
+        ventana.close()
+
+    user = api.user or {}
+    title = f"{user.get('username')} ({'administrador' if user.get('role') == 'admin' else 'empleado'})"
+    if state["analyze"]:
+        title += f" · PC central «{state['pc']}»"
+    ventana.on_logout = logout
+    ventana.build_main(title, analyze=state["analyze"])
+    oficina = Oficina(ventana, api, on_logout=logout)
+    oficina.build(ventana.notebook)
+    ventana.hooks.append(oficina.bg.drain)
+
+    if not state["analyze"]:
+        while ventana.open:
+            ventana.pump(40)
+        return
+
+    def relogin(_error: str | None) -> str | None:
+        """El servidor rechazó el token de la PC (la borraron del panel): volver a entrar."""
+        ventana.messagebox.showwarning("Vigía", "Esta PC ya no está vinculada (la borraron o cambió la clave). "
+                                                "Entrá de nuevo con tu usuario.")
+        logout()
+        return None
+
+    agent = Agent(a.server, state["agent_token"], data_dir, a.model, verify=verify, process_imports=not a.no_imports,
+                  alarm_workers=max(1, a.alarm_workers), window=ventana, relogin=relogin,
+                  pc_name=f"PC central «{state['pc']}»")
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
     try:
         agent.run()
     except Exception as exc:
         log.exception("El agente se detuvo por un error")
-        if ventana is not None and ventana.open:
+        if ventana.open:
             try:
                 ventana.messagebox.showerror("Vigía", f"Vigía se detuvo por un error:\n{exc}\n\n"
                                                       f"Detalle en {data_dir / 'vigia.log'}")
