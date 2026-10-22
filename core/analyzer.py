@@ -18,7 +18,8 @@ from .rules import RuleEngine, RuleEvent, Zone, parse_config
 from .scorer import Scorer
 from .tracker import CentroidTracker, Track
 
-ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 150, 0), "restricted": (0, 0, 255)}
+ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 150, 0), "restricted": (0, 0, 255),
+               "entrance": (255, 0, 200), "pump": (0, 120, 255), "shop": (200, 200, 0)}
 ASCII_LABELS = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO",
                 "zona_restringida": "ZONA RESTRINGIDA", "fuera_de_horario": "FUERA DE HORARIO"}
 
@@ -96,7 +97,7 @@ def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: R
         if not t.visible:
             continue
         hot = event is not None and t.id == event.track_id
-        color = (0, 0, 255) if hot else (0, 255, 0)
+        color = (0, 0, 255) if hot else ((255, 200, 0) if t.label == "vehiculo" else (0, 255, 0))
         x1, y1, x2, y2 = (int(v) for v in t.bbox)
         cv2.rectangle(img, (x1, y1), (x2, y2), color, (3 if hot else 2) * thick)
         cv2.putText(img, f"#{t.id}", (x1, max(12, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * thick, color,

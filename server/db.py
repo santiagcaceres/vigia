@@ -34,6 +34,8 @@ class Client(Base):
     contact_whatsapp: Mapped[str | None] = mapped_column(String(32), nullable=True)  # formato +5989...
     contact_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # planes contratados: "hurto" (alertas), "comercio" (gente, tiempos, destinos), "estacion" (vehículos, pistero, tienda)
+    plans: Mapped[list] = mapped_column(JSON, default=lambda: ["hurto"])
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -291,7 +293,20 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-22.1"
+SCHEMA_VERSION = "2026-10-22.2"
+
+
+class CameraMetric(Base):
+    """Métricas de una cámara por hora (hora local del cliente). `data` es el cubo de core/metrics.py.
+    La PC central lo manda cada 5 minutos y se reemplaza entero (upsert por cámara y hora)."""
+    __tablename__ = "camera_metrics"
+    __table_args__ = (UniqueConstraint("camera_id", "bucket_start", name="uq_metric_camera_bucket"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    camera_id: Mapped[int] = mapped_column(ForeignKey("cameras.id", ondelete="CASCADE"), index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)  # hora local del cliente, sin tz
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class SchemaMeta(Base):

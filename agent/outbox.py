@@ -142,6 +142,12 @@ class ServerClient:
         except ValueError:
             return {}
 
+    # ---- métricas ----
+    def post_metrics(self, buckets: list[dict]) -> dict:
+        r = self.http.post("/api/agent/metrics", json={"buckets": buckets})
+        r.raise_for_status()
+        return r.json()
+
     # ---- vista en vivo ----
     def live_upload_url(self, camera_id: int) -> str:
         r = self.http.post(f"/api/agent/cameras/{camera_id}/live-url")

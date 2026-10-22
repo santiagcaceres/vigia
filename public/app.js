@@ -8,8 +8,9 @@ const ALARM_STATUS = { pendiente: ["", "Esperando"], procesando: ["", "Analizand
 const alarmTypeName = (t) => String(t || "").split("+").map((x) => ALARM_TYPES[x] || x).join(" + ");
 const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal", falso_positivo: "Falso positivo" };
 const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo" };
-const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida" };
-const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030" };
+const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda" };
+const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8" };
+const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio" };
 const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
 const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida" };
 const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
@@ -92,7 +93,7 @@ async function boot() {
   $("#app").classList.remove("hidden");
   $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
   const links = S.me.role === "cliente"
-    ? [["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
+    ? [["#/resumen", "Resumen"], ["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
     : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/alertas", "Alertas"]];
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
@@ -103,9 +104,9 @@ window.addEventListener("hashchange", route);
 async function route() {
   if (!S.me) return;
   S.timers.forEach(clearInterval); S.timers = []; S.keyHandler = null;
-  const h = location.hash || (isStaff() ? "#/resumen" : "#/alertas");
+  const h = location.hash || "#/resumen";
   const section = h.startsWith("#/evento") || h.startsWith("#/revisar") || h.startsWith("#/alarmas") ? "#/alertas"
-    : isStaff() && (h.startsWith("#/camara") || h.startsWith("#/cliente")) ? "#/clientes" : h;
+    : isStaff() && (h.startsWith("#/camara") || h.startsWith("#/cliente") || h.startsWith("#/metricas")) ? "#/clientes" : h;
   $$("#nav a").forEach((a) => a.classList.toggle("active", section.startsWith(a.getAttribute("href"))));
   const old = $("#view"), v = old.cloneNode(false); // nodo nuevo: descarta listeners de la vista anterior
   old.replaceWith(v);
@@ -125,7 +126,8 @@ async function route() {
     if (h.startsWith("#/alarmas") && isStaff()) return await alarmsView(v);
     if (h.startsWith("#/admin") && isAdmin()) return await adminView(v);
     if (h.startsWith("#/clientes") && isStaff()) return await clientsView(v);
-    if (h.startsWith("#/resumen") && isStaff()) return await summaryView(v);
+    if (h.startsWith("#/metricas") && isStaff()) return await metricsView(v, +(new URLSearchParams(h.split("?")[1] || "").get("client_id") || 0));
+    if (h.startsWith("#/resumen")) return await (isStaff() ? summaryView(v) : metricsView(v, S.me.client_id));
     if (h.startsWith("#/prueba") && isStaff()) return await pruebaView(v);
     return await eventsView(v);
   } catch (e) { v.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -446,7 +448,7 @@ async function clientCamerasView(v, clientId) {
   const cams = S.cameras.filter((c) => c.client_id === clientId);
   v.innerHTML = `
     ${isStaff() ? `<div class="row"><a href="#/clientes">← Clientes</a></div>` : ""}
-    <div class="row"><h1>Cámaras de ${esc(client.name)}</h1><span class="spacer"></span>${isStaff() ? `<button id="edit-client" class="small">Editar cliente</button><a class="btn" href="guia.html" target="_blank" rel="noopener">Guía de conexión</a><button id="add" class="primary">Agregar cámara</button>` : ""}</div>
+    <div class="row"><h1>Cámaras de ${esc(client.name)}</h1><span class="spacer"></span>${isStaff() ? `<a class="btn" href="#/metricas?client_id=${clientId}">Métricas</a><button id="edit-client" class="small">Editar cliente</button><a class="btn" href="guia.html" target="_blank" rel="noopener">Guía de conexión</a><button id="add" class="primary">Agregar cámara</button>` : ""}</div>
     <div id="cam-form"></div>
     <div class="grid cams" style="margin-top:12px">${cams.map((c) => `<a class="card cam" href="#/camara/${c.id}">${camThumb(c)}
       <div class="body"><div class="row"><span class="title">${esc(c.name)}</span><span class="spacer"></span>${c.enabled ? (c.mode === "alarmas" ? `<span class="chip">${MODE_NAMES[c.mode]}</span>` : statusChip(c.status)) : `<span class="chip">deshabilitada</span>`}</div>
@@ -1020,6 +1022,80 @@ async function summaryView(v) {
   v.addEventListener("click", (e) => { const c = e.target.closest(".card[data-id]"); if (c) location.hash = "#/evento/" + c.dataset.id; });
 }
 
+// ------------------------------------------------------------------ métricas por cliente (planes comercio / estación)
+const fmtDur = (s) => { s = Math.round(s || 0); return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min` : s >= 90 ? `${Math.round(s / 60)} min` : `${s} s`; };
+const avg = (sum, n) => (n ? sum / n : 0);
+
+function barChart(items, key, label) {
+  // gráfico de barras en SVG, sin librerías: items = [{hour|date, ...}]
+  if (!items.length) return `<div class="empty">Sin datos en este período.</div>`;
+  const vals = items.map((x) => +x[key] || 0), max = Math.max(1, ...vals);
+  const W = 720, H = 180, pad = 26, bw = Math.max(4, (W - pad * 2) / items.length - 4);
+  return `<svg viewBox="0 0 ${W} ${H + 30}" style="width:100%;max-width:${W}px;display:block">
+    ${items.map((x, i) => { const v = vals[i], h = Math.round((H - 10) * v / max), xx = pad + i * ((W - pad * 2) / items.length);
+      return `<rect x="${xx}" y="${H - h}" width="${bw}" height="${h}" rx="3" fill="var(--accent)"><title>${esc(x.hour !== undefined ? x.hour + ":00" : x.date)}: ${v} ${label}</title></rect>
+        ${v ? `<text x="${xx + bw / 2}" y="${H - h - 4}" font-size="10" text-anchor="middle" fill="currentColor">${v}</text>` : ""}
+        <text x="${xx + bw / 2}" y="${H + 14}" font-size="10" text-anchor="middle" fill="var(--muted)">${esc(x.hour !== undefined ? x.hour + "h" : x.date.slice(5))}</text>`; }).join("")}
+  </svg>`;
+}
+
+async function metricsView(v, clientId) {
+  await loadClients();
+  const client = S.clients.find((c) => c.id === clientId);
+  if (!client) { v.innerHTML = `<div class="empty">${isStaff() ? `Elegí un cliente: ${S.clients.map((c) => `<a href="#/metricas?client_id=${c.id}">${esc(c.name)}</a>`).join(" · ")}` : "Tu usuario no tiene un local asociado."}</div>`; return; }
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  const days = +(q.get("days") || 1);
+  const [m, stats] = await Promise.all([
+    api("GET", `/api/metrics?client_id=${clientId}&days=${days}`),
+    api("GET", `/api/stats?client_id=${clientId}&days=${days}`).catch(() => null),
+  ]);
+  const t = m.total, plans = m.plans || [];
+  const tile = (n, label, hint) => `<div class="panel stat"><span class="n">${n}</span><span>${label}</span>${hint ? `<span class="muted">${hint}</span>` : ""}</div>`;
+  const period = (d) => `<a class="btn small ${days === d ? "primary" : ""}" href="#/${isStaff() ? "metricas?client_id=" + clientId + "&" : "resumen?"}days=${d}">${d === 1 ? "Hoy" : d + " días"}</a>`;
+  const zones = Object.entries(t.zones || {}).sort((a, b) => b[1].visits - a[1].visits);
+  const sinDatos = !t.frames;
+  v.innerHTML = `
+    ${isStaff() ? `<div class="row"><a href="#/cliente/${clientId}">← Cámaras de ${esc(client.name)}</a></div>` : ""}
+    <div class="row"><h1>${isStaff() ? `Métricas · ${esc(client.name)}` : `Resumen de ${esc(client.name)}`}</h1><span class="spacer"></span>${period(1)}${period(7)}${period(30)}</div>
+    <p class="muted">${days === 1 ? `Hoy, ${m.until}` : `Del ${m.since} al ${m.until}`} · hora local del local · planes: ${plans.map((p) => esc(PLAN_NAMES[p] || p)).join(", ") || "ninguno"}</p>
+    ${sinDatos ? `<div class="empty">Todavía no hay métricas en este período. Se generan mientras la PC central analiza las cámaras en modo "En vivo" (se envían cada 5 minutos).</div>` : ""}
+    ${plans.includes("comercio") || (!plans.includes("estacion") && t.people) ? `
+      <h2>Gente</h2>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
+        ${tile(t.entries || t.people, t.entries ? "Ingresos (zona Entrada)" : "Personas vistas", t.entries ? `${t.people} personas en cámara` : "sin zona Entrada: cuenta apariciones")}
+        ${tile(fmtDur(avg(t.people_dwell_s, t.people)), "Tiempo promedio en cámara", "")}
+        ${tile(t.people_max, "Máximo al mismo tiempo", "")}
+        ${zones.length ? tile(esc(zones[0][0]), "Zona más visitada", `${zones[0][1].visits} visitas`) : ""}
+      </div>
+      <div class="panel" style="margin-top:12px"><b>${days === 1 ? "Personas por hora" : "Personas por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "people", "personas")}</div>
+      ${zones.length ? `<div class="panel" style="margin-top:12px"><b>A dónde van</b><div class="table-wrap"><table><thead><tr><th>Zona</th><th>Tipo</th><th>Visitas</th><th>Tiempo promedio</th><th></th></tr></thead>
+        <tbody>${zones.map(([name, z]) => `<tr><td>${esc(name)}</td><td>${esc(ZONE_NAMES[z.type] || z.type)}</td><td>${z.visits}</td><td>${fmtDur(avg(z.dwell_s, z.visits))}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * z.visits / Math.max(1, zones[0][1].visits))}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}` : ""}
+    ${plans.includes("estacion") ? `
+      <h2>Estación de servicio</h2>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
+        ${tile(t.vehicles, "Vehículos que llegaron", `${t.pump_vehicles} pasaron por un surtidor`)}
+        ${tile(fmtDur(avg(t.vehicles_dwell_s, t.vehicles)), "Tiempo promedio en la estación", "")}
+        ${tile(t.pump_wait_n ? fmtDur(avg(t.pump_wait_s, t.pump_wait_n)) : "—", "Espera hasta el pistero", t.pump_wait_n ? `${t.pump_wait_n} atendidos` : "necesita zona Surtidor")}
+        ${tile(t.pump_unattended, "Se fueron sin atención", "vehículos en el surtidor sin que llegara nadie")}
+        ${tile(t.shop_visits, "Bajaron a la tienda", "personas que entraron a la zona Tienda")}
+        ${tile(t.vehicles_max, "Máximo de vehículos a la vez", "")}
+      </div>
+      <div class="panel" style="margin-top:12px"><b>${days === 1 ? "Vehículos por hora" : "Vehículos por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "vehicles", "vehículos")}</div>
+      ${!plans.includes("comercio") ? `<div class="panel" style="margin-top:12px"><b>Personas</b> ${t.people} vistas · promedio ${fmtDur(avg(t.people_dwell_s, t.people))} · máximo ${t.people_max} al mismo tiempo</div>` : ""}` : ""}
+    ${plans.includes("hurto") && stats ? `
+      <h2>Alertas de hurto</h2>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
+        ${tile(stats.total, "Alertas en el período", "")}
+        ${tile(stats.by_label.hurto || 0, "Confirmadas como hurto", "")}
+        ${tile(stats.by_label.sospechoso || 0, "Sospechosas", "")}
+        ${tile(stats.by_label.sin_etiqueta || 0, "Sin revisar todavía", "")}
+      </div>
+      <p><a class="btn" href="#/alertas?client_id=${clientId}">Ver las alertas</a></p>` : ""}
+    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Personas</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
+      <tbody>${m.by_camera.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.people}</td><td>${fmtDur(avg(c.people_dwell_s, c.people))}</td>${plans.includes("estacion") ? `<td>${c.vehicles}</td>` : ""}<td>${c.people_max}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+    <p class="muted small" style="margin-top:18px">Cómo se mide: cada persona o vehículo que la IA sigue en cámara cuenta una vez desde que aparece hasta que se va. No reconoce caras ni distingue empleados de clientes; si alguien sale del cuadro y vuelve, cuenta de nuevo. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
+}
+
 // ------------------------------------------------------------------ clientes (administradores y empleados)
 async function clientsView(v) {
   await loadClients(true);
@@ -1029,9 +1105,9 @@ async function clientsView(v) {
     <div class="row"><h1>Clientes</h1><span class="spacer"></span><button id="add" class="primary">Nuevo cliente</button></div>
     <p class="muted">Cada cliente es un comercio. Tocá el nombre para ver sus cámaras y agregar nuevas. El contacto se usa solo cuando alguien decide avisarle de un posible hurto.</p>
     <div id="client-form"></div>
-    <div class="table-wrap panel" style="padding:0;margin-top:12px"><table><thead><tr><th>Nombre</th><th>Cámaras</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th><th></th></tr></thead>
-      <tbody>${S.clients.map((c) => `<tr><td><a href="#/cliente/${c.id}"><b>${esc(c.name)}</b></a></td><td><a href="#/cliente/${c.id}">${nCams(c.id)}</a></td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td>
-        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small primary" href="#/cliente/${c.id}">Ver cámaras</a></td></tr>`).join("") || `<tr><td colspan="8" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
+    <div class="table-wrap panel" style="padding:0;margin-top:12px"><table><thead><tr><th>Nombre</th><th>Cámaras</th><th>Planes</th><th>Zona horaria</th><th>WhatsApp</th><th>Email</th><th>Telegram</th><th>Canales de aviso</th><th></th></tr></thead>
+      <tbody>${S.clients.map((c) => `<tr><td><a href="#/cliente/${c.id}"><b>${esc(c.name)}</b></a></td><td><a href="#/cliente/${c.id}">${nCams(c.id)}</a></td><td>${(c.plans || []).map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ")}</td><td>${esc(c.timezone)}</td><td class="mono">${esc(c.contact_whatsapp || "—")}</td><td class="mono">${esc(c.contact_email || "—")}</td><td class="mono">${esc(c.telegram_chat_id || "—")}</td><td>${(c.notify_channels || []).map((x) => esc(CHANNEL_NAMES[x] || x)).join(", ")}</td>
+        <td class="row"><button class="small" data-edit="${c.id}">Editar</button><a class="btn small" href="#/metricas?client_id=${c.id}">Métricas</a><a class="btn small primary" href="#/cliente/${c.id}">Ver cámaras</a></td></tr>`).join("") || `<tr><td colspan="9" class="muted">Todavía no hay clientes.</td></tr>`}</tbody></table></div>`;
   const form = (c = {}) => {
     $("#client-form").innerHTML = `<form class="form panel" id="cf" style="margin-top:12px">
       <label>Nombre<input name="name" required value="${esc(c.name || "")}"></label>
@@ -1040,11 +1116,13 @@ async function clientsView(v) {
       <label>Email del cliente (opcional)<input name="contact_email" type="email" value="${esc(c.contact_email || "")}" placeholder="dueno@local.com"></label>
       <label>Chat de Telegram (opcional)<input name="telegram_chat_id" value="${esc(c.telegram_chat_id || "")}" placeholder="-1001234567890"></label>
       <label>Webhook (opcional)<input name="webhook_url" value="${esc(c.webhook_url || "")}" placeholder="https://…"></label>
+      <fieldset><legend>Planes contratados</legend>${Object.entries(PLAN_NAMES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="plan" value="${k}" ${(c.plans || ["hurto"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}
+        <small class="muted" style="flex-basis:100%">Hurtos: alertas con clip. Comercio: cuánta gente entra, cuánto se queda y a dónde va (zonas Entrada y Góndola). Estación: vehículos, espera hasta el pistero y visitas a la tienda (zonas Surtidor y Tienda; el detector también marca vehículos).</small></fieldset>
       <div class="row"><button class="primary" type="submit">${c.id ? "Guardar" : "Crear cliente"}</button><button type="button" id="cancel">Cancelar</button></div>
     </form>`;
     $("#cancel").addEventListener("click", () => ($("#client-form").innerHTML = ""));
     $("#cf").addEventListener("submit", async (e) => {
-      e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+      e.preventDefault(); const fd = new FormData(e.target); const f = Object.fromEntries(fd); delete f.plan; f.plans = fd.getAll("plan");
       for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
       try { await api(c.id ? "PUT" : "POST", c.id ? "/api/clients/" + c.id : "/api/clients", f); toast(c.id ? "Cliente guardado" : "Cliente creado"); S._clientsAt = 0; route(); } catch (err) { fail(err); }
     });

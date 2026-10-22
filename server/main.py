@@ -20,11 +20,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from core.metrics import empty_bucket, merge_bucket
 from core.rules import EVENT_TYPES, SEVERITY, parse_config
 from core.scorer import FEATURE_NAMES, LABELS
 
 from . import hpp, probe, training
-from .db import (ROLES, Agent, Alarm, Camera, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
+from .db import (ROLES, Agent, Alarm, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
@@ -139,6 +140,20 @@ class ClientIn(BaseModel):
     contact_whatsapp: str | None = Field(None, max_length=32)
     contact_email: str | None = Field(None, max_length=200)
     webhook_url: str | None = None
+    plans: list[Literal["hurto", "comercio", "estacion"]] = ["hurto"]
+
+
+PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
+
+
+class MetricBucketIn(BaseModel):
+    camera_id: int
+    bucket_start: str
+    data: dict
+
+
+class MetricsIn(BaseModel):
+    buckets: list[MetricBucketIn] = Field(default_factory=list, max_length=500)
 
 
 class UserIn(BaseModel):
@@ -387,7 +402,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": c.id, "name": c.name, "timezone": c.timezone, "telegram_chat_id": c.telegram_chat_id,
                 "contact_whatsapp": c.contact_whatsapp, "contact_email": c.contact_email,
                 "webhook_url": c.webhook_url, "notify_channels": notifier.available(c),
-                "created_at": iso(c.created_at)}
+                "plans": list(c.plans or ["hurto"]), "created_at": iso(c.created_at)}
 
     def user_dict(u: User) -> dict:
         return {"id": u.id, "username": u.username, "role": u.role, "client_id": u.client_id, "active": u.active}
@@ -775,8 +790,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Evento no encontrado")
         return ev
 
-    def camera_analysis(c: Camera) -> dict:
-        return {"zones": c.zones or [], "rules": c.rules or {}}
+    def camera_analysis(c: Camera, client: Client | None = None) -> dict:
+        plans = list((client.plans if client is not None else None) or [])
+        vehicles = "estacion" in plans or any((z or {}).get("type") == "pump" for z in (c.zones or []))
+        return {"zones": c.zones or [], "rules": c.rules or {}, "vehicles": vehicles, "plans": plans}
 
     def model_spec(s, client_id: int) -> dict | None:
         m = active_model(s, client_id)
@@ -809,7 +826,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
                            "playback_time": c.playback_time, "timezone": client.timezone,
                            "source_url": box.decrypt(c.source_url_enc) or None},
-            "analysis": camera_analysis(c),
+            "analysis": camera_analysis(c, client),
         }
 
     @app.post("/api/agent/status")
@@ -826,6 +843,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         since = utcnow() - timedelta(seconds=st.live_seconds)
         live = [c.id for c in agent_cameras_q(s, ag).filter(Camera.live_requested_at >= since, Camera.enabled.is_(True))]
         return {"ok": True, "live": live}
+
+    @app.post("/api/agent/metrics")
+    def agent_metrics(body: MetricsIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """La PC central manda los cubos horarios de métricas (core/metrics.py); se reemplazan enteros."""
+        saved = 0
+        for b in body.buckets:
+            c = s.get(Camera, b.camera_id)
+            if not c or not agent_owns(ag, c):
+                continue
+            try:
+                start = datetime.fromisoformat(b.bucket_start).replace(tzinfo=None, minute=0, second=0, microsecond=0)
+            except ValueError:
+                continue
+            data = merge_bucket(empty_bucket(), b.data)  # normaliza claves y tipos
+            row = s.query(CameraMetric).filter_by(camera_id=c.id, bucket_start=start).first()
+            if row is None:
+                row = CameraMetric(client_id=c.client_id, camera_id=c.id, bucket_start=start)
+                s.add(row)
+            row.data, row.updated_at = data, utcnow()
+            saved += 1
+        s.commit()
+        return {"ok": True, "saved": saved}
 
     @app.post("/api/agent/cameras/{cam_id}/live-url")
     def agent_live_url(cam_id: int, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
@@ -1472,6 +1511,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         r = _report_by_token(s, token)
         ev = s.get(Event, r.event_id)
         return redirect_to(ev.snapshot_path if ev else None)
+
+    @app.get("/api/metrics")
+    def metrics(client_id: int | None = None, days: int = Query(1, ge=1, le=90), camera_id: int | None = None,
+                user: User = Depends(current_user), s=Depends(db)) -> dict:
+        """Resumen de métricas de un cliente: totales del período, por día, por hora y por cámara.
+        Las horas son las del local (los cubos ya vienen en hora local)."""
+        client_id = scope_client(user, client_id)
+        if client_id is None:
+            raise HTTPException(422, "Falta client_id")
+        client = get_or_404(s, Client, client_id, "Cliente")
+        tz = ZoneInfo(client.timezone)
+        today = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        since = today - timedelta(days=days - 1)
+        q = s.query(CameraMetric).filter(CameraMetric.client_id == client_id, CameraMetric.bucket_start >= since)
+        if camera_id is not None:
+            q = q.filter(CameraMetric.camera_id == camera_id)
+        rows = q.all()
+        cams = {c.id: c.name for c in s.query(Camera).filter(Camera.client_id == client_id)}
+        total = empty_bucket()
+        by_day: dict[str, dict] = {}
+        by_hour: dict[int, dict] = {}
+        by_cam: dict[int, dict] = {}
+        for r in rows:
+            total = merge_bucket(total, r.data)
+            d = r.bucket_start.date().isoformat()
+            by_day[d] = merge_bucket(by_day.get(d, empty_bucket()), r.data)
+            by_hour[r.bucket_start.hour] = merge_bucket(by_hour.get(r.bucket_start.hour, empty_bucket()), r.data)
+            by_cam[r.camera_id] = merge_bucket(by_cam.get(r.camera_id, empty_bucket()), r.data)
+        return {"client_id": client_id, "client_name": client.name, "plans": list(client.plans or ["hurto"]),
+                "days": days, "since": since.date().isoformat(), "until": today.date().isoformat(),
+                "total": total,
+                "by_day": [{"date": d, **by_day[d]} for d in sorted(by_day)],
+                "by_hour": [{"hour": h, **by_hour[h]} for h in sorted(by_hour)],
+                "by_camera": [{"camera_id": cid, "name": cams.get(cid, f"Cámara {cid}"), **by_cam[cid]} for cid in sorted(by_cam)]}
 
     @app.get("/api/stats")
     def stats(client_id: int | None = None, days: int = Query(30, ge=1, le=365),

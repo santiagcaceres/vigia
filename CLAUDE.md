@@ -99,6 +99,22 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   `VIGIA_VENTANA=0` la apaga); sin pantalla o sin Tk, avisa y sigue. Cerrar la ventana no detiene el agente.
   Para probarla en la sesión cloud: `python3.12` del sistema con `python3-tk` (apt) + venv con
   `--system-site-packages` y `xvfb-run`; captura con `import -window root`.
+- **Planes y métricas por cliente (22 oct, pedido del dueño):** `Client.plans` (JSON: `hurto`, `comercio`,
+  `estacion`; lo elige el staff en el formulario del cliente). `core/metrics.py` (`MetricsCollector`) usa los
+  mismos tracks que las reglas y arma **cubos horarios** por cámara (hora local): personas vistas, tiempo en
+  escena, máximo simultáneo, `entries` (zona `entrance`), visitas y tiempo por zona ("a dónde van"),
+  vehículos, `pump_*` (vehículos en zona `pump`, espera hasta que una persona pisa el surtidor = "pistero",
+  `pump_unattended`), `shop_visits` (zona `shop`). El `CameraWorker` los manda cada 5 min a
+  `POST /api/agent/metrics` → tabla `camera_metrics` (upsert por cámara y hora). `GET /api/metrics?client_id&days`
+  suma total, por día, por hora y por cámara. Panel: `#/metricas?client_id=` (staff, desde Clientes) y
+  **Resumen** del rol cliente (`#/resumen` → `metricsView`), con secciones según plan y gráficos SVG propios.
+  Zonas nuevas: `entrance`, `pump`, `shop` (las reglas de hurto las ignoran). **Vehículos:** el ONNX trae las
+  80 clases COCO; `build_detector(..., vehicles=True)` (plan `estacion` o zona `pump`, vía
+  `analysis.vehicles`) devuelve `label="vehiculo"` (auto/moto/ómnibus/camión); el tracker no mezcla etiquetas
+  y las reglas solo miran personas. **Límites honestos:** solo cámaras en modo vivo generan métricas (en modo
+  alarmas no se mira continuo); no reconoce caras ni distingue empleados; una persona que se pierde y
+  reaparece cuenta dos veces; gestos (mano al bolsillo, botella al cuerpo, lavar vidrios) **no** se detectan:
+  requieren modelo propio entrenado con clips etiquetados (pendiente, punto 6 de Próximos pasos).
 - **Pestaña Prueba** (`public/prueba.js`): comparte la pantalla (`getDisplayMedia`) de la ventana de
   HPP / iVMS / SmartPSS con la cámara en vivo y corre el detector de personas **en el navegador**
   con ONNX Runtime Web (jsdelivr 1.19.2, wasm 1 hilo) sobre `public/models/personas.onnx` (copia
@@ -299,7 +315,9 @@ seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_t
 5. **Preguntas a Hikvision:** ¿requisitos y costo de la clave VSaaS / HPNetSDK? ¿permite bajar la
    grabación por horario (o el clip de alarma)? ¿corre en Windows/Linux? ¿UY/AR? Si la dan,
    los clientes Hikvision se quedan sin VPN (otro `ClipFetcher` en `agent/alarms.py`).
-6. **Detector de ocultamiento** (mano góndola→cuerpo): necesita 30–50 videos etiquetados.
+6. **Detector de gestos** (mano al bolsillo en caja, botella/elemento al cuerpo; lavado de vidrios en
+   estaciones): necesita 30–50 clips etiquetados por gesto y un modelo de pose (YOLO-pose) o de acción;
+   hoy el sistema solo mide posiciones y tiempos.
 7. **Licencia del detector** (AGPL) antes de cobrar.
 8. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
    los archivos a 50 MB).

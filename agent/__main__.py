@@ -65,8 +65,9 @@ class Agent:
         self._scorer_id = None
         self._stop = threading.Event()
 
-    def _detector(self, name: str) -> Detector:
-        return build_detector(name, self.model_path)
+    def _detector(self, name: str, cam_cfg: dict | None = None) -> Detector:
+        vehicles = bool(((cam_cfg or {}).get("analysis") or {}).get("vehicles"))
+        return build_detector(name, self.model_path, vehicles=vehicles)
 
     def apply_config(self, cfg: dict) -> None:
         if self.process_imports and cfg.get("process_imports", True) and self.imports is None:
@@ -112,7 +113,7 @@ class Agent:
             if cid in self.workers:
                 continue
             try:
-                det = self._detector(c.get("detector", "yolo"))
+                det = self._detector(c.get("detector", "yolo"), c)
             except Exception as exc:
                 log.error("Cámara %s: no se pudo crear el detector: %s", c["name"], exc)
                 continue
@@ -224,7 +225,7 @@ class Agent:
             if c is None:
                 continue
             try:
-                lw = LiveWorker(c, self._detector(c.get("detector", "yolo")), self.client)
+                lw = LiveWorker(c, self._detector(c.get("detector", "yolo"), c), self.client)
             except Exception as exc:
                 log.error("Vivo de %s: no se pudo crear el detector: %s", c["name"], exc)
                 continue

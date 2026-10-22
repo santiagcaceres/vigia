@@ -20,7 +20,10 @@ from datetime import datetime, time
 from .geometry import BBox, Point, bbox_foot, point_in_polygon
 from .tracker import Track
 
-ZONE_TYPES = ("shelf", "checkout", "exit", "restricted")
+# shelf/checkout/exit/restricted: reglas de hurto. entrance: conteo de ingresos (comercios).
+# pump/shop: estaciones de servicio (surtidor y tienda); vehicle_lane: llegada de vehículos.
+ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop")
+VEHICLE_LABEL = "vehiculo"
 
 SALIDA_SIN_PAGO = "salida_sin_pago"
 MERODEO = "merodeo"
@@ -166,9 +169,11 @@ class RuleEngine:
         live = {t.id for t in tracks}
         for tid in [k for k in self._states if k not in live]:
             del self._states[tid]
-        visible = sum(1 for t in tracks if t.visible)
+        visible = sum(1 for t in tracks if t.visible and t.label != VEHICLE_LABEL)
 
         for t in tracks:
+            if t.label == VEHICLE_LABEL:
+                continue  # las reglas de hurto son solo para personas
             st = self._states.setdefault(t.id, _TrackState(first_ts=t.first_ts, last_ts=ts))
             if not t.visible:
                 continue
@@ -240,7 +245,7 @@ class RuleEngine:
     def current_features(self, tracks: list[Track], ts: float, frame_size: tuple[int, int],
                          wall_time: datetime | None = None) -> dict[int, dict[str, float]]:
         """Medidas actuales de cada persona visible (llamar después de update con el mismo cuadro)."""
-        visible = sum(1 for t in tracks if t.visible)
+        visible = sum(1 for t in tracks if t.visible and t.label != VEHICLE_LABEL)
         return {t.id: track_features(t, self._states[t.id], ts, visible, frame_size, wall_time)
                 for t in tracks if t.visible and t.id in self._states}
 

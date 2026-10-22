@@ -13,6 +13,7 @@ import cv2
 from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import write_mp4
 from core.detectors import Detector
+from core.metrics import MetricsCollector
 from core.scorer import Scorer
 
 from .cameras import build_camera, download_nvr_clip
@@ -23,6 +24,7 @@ log = logging.getLogger("vigia.worker")
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;10000000|timeout;10000000")
 
 PREVIEW_EVERY_SECONDS = 300
+METRICS_EVERY_SECONDS = 300  # cada cuánto se mandan las métricas (gente, tiempos, vehículos) al servidor
 # el NVR tarda unos segundos en tener disponible lo recién grabado
 NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
@@ -57,6 +59,9 @@ class CameraWorker:
         self.last_frame_at: float | None = None
         # vista en vivo: sube cuadros con recuadros mientras alguien mira la cámara en el panel
         self.live = LiveStreamer(self.id, self.name, client, self.analyzer.zones)
+        # métricas del local (personas, tiempos, destinos, vehículos): mismos tracks, sin costo extra
+        self.metrics = MetricsCollector(self.analyzer.zones)
+        self._metrics_pending: list[dict] = []
         # ventana de la PC central: último cuadro con recuadros (se arma solo si la ventana está abierta)
         self.show_window = False
         self.display = None  # np.ndarray | None
@@ -102,12 +107,14 @@ class CameraWorker:
                 self.state = "reconectando"
                 self._stop.wait(2.0)
         self._finish_clips(self.analyzer.flush())
+        self._send_metrics(self.metrics.close())
         self.state = "detenida"
 
     def _read_loop(self, cap: cv2.VideoCapture) -> None:
         t0 = time.monotonic()
         last_proc = -1e9
         last_preview = -1e9
+        last_metrics = time.monotonic()
         window: list[float] = []
         fails = 0
         while not self._stop.is_set():
@@ -129,10 +136,14 @@ class CameraWorker:
             last_proc = now
             wall = datetime.now(self.hik.tz)
             findings = self.analyzer.process(frame, now - t0, wall)
+            self.metrics.update(self.analyzer.last_tracks, now - t0, frame.shape[1::-1], wall)
             if self.live.active:
                 self.live.push(frame, self.analyzer.last_tracks, now - t0, wall)
             for f in findings:
                 self._on_finding(f)
+            if now - last_metrics > METRICS_EVERY_SECONDS:
+                last_metrics = now
+                self._send_metrics(self.metrics.flush())
             self._finish_clips(self.analyzer.take_ready_clips())
             window = [t for t in window if now - t < 10] + [now]
             self.fps = len(window) / 10.0
@@ -173,6 +184,25 @@ class CameraWorker:
         except Exception:
             log.exception("[%s] no se pudo generar el clip %s", self.name, c.uuid)
             self.outbox.clip_done(c.uuid, None)
+
+    def _send_metrics(self, buckets: list[dict]) -> None:
+        """Manda los cubos al servidor en otro hilo; si falla, se reintentan con el próximo envío."""
+        pending = self._metrics_pending + [{"camera_id": self.id, **b} for b in buckets]
+        self._metrics_pending = []
+        if not pending or self.client is None:
+            return
+        latest: dict[str, dict] = {}
+        for b in pending:  # si un cubo quedó repetido por reintentos, vale el último
+            latest[b["bucket_start"]] = b
+        batch = list(latest.values())[-200:]
+
+        def send() -> None:
+            try:
+                self.client.post_metrics(batch)  # type: ignore[union-attr]
+            except Exception as exc:
+                log.warning("[%s] no se pudieron enviar las métricas (%s); se reintenta", self.name, exc)
+                self._metrics_pending = batch + self._metrics_pending
+        self.clip_pool.submit(send)
 
     def _send_preview(self, jpg: bytes) -> None:
         try:

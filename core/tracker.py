@@ -46,6 +46,8 @@ class CentroidTracker:
             tw, th = bbox_size(t.bbox)
             limit = self.gate * max(tw, th, 1.0)
             for di, d in enumerate(detections):
+                if d.label != t.label:
+                    continue  # una persona no se convierte en auto ni al revés
                 dist = distance(tc, bbox_center(d.bbox))
                 if dist <= limit:
                     pairs.append((dist, tid, di))

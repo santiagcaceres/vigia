@@ -79,11 +79,17 @@ class MotionDetector:
         return out
 
 
+# Clases COCO del modelo: 0 persona; 2 auto, 3 moto, 5 ómnibus, 7 camión → todas "vehiculo".
+PERSON_CLASSES = {0: "persona"}
+VEHICLE_CLASSES = {2: "vehiculo", 3: "vehiculo", 5: "vehiculo", 7: "vehiculo"}
+
+
 class OnnxYoloDetector:
-    """Personas con YOLO (v8/11) exportado a ONNX. Salida esperada: (1, 4+num_clases, N)."""
+    """Personas (y opcionalmente vehículos) con YOLO (v8/11) exportado a ONNX.
+    Salida esperada: (1, 4+num_clases, N). `classes`: índice COCO → etiqueta."""
 
     def __init__(self, model_path: str | Path, conf: float = 0.35, iou: float = 0.5,
-                 person_class: int = 0, threads: int = 2):
+                 person_class: int = 0, threads: int = 2, classes: dict[int, str] | None = None):
         import onnxruntime as ort
 
         opts = ort.SessionOptions()
@@ -97,6 +103,9 @@ class OnnxYoloDetector:
         self.conf = conf
         self.iou = iou
         self.person_class = person_class
+        self.classes = dict(classes) if classes else {person_class: "persona"}
+        self._idx = np.array(sorted(self.classes))
+        self._labels = [self.classes[i] for i in self._idx]
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         h, w = frame.shape[:2]
@@ -112,23 +121,29 @@ class OnnxYoloDetector:
         out = self.session.run(None, {self.input_name: blob})[0][0]  # (4+C, N)
         if out.shape[0] < out.shape[1]:
             out = out.T  # (N, 4+C)
-        scores = out[:, 4 + self.person_class]
+        cls_scores = out[:, 4 + self._idx]  # (N, clases elegidas)
+        best = cls_scores.argmax(axis=1)
+        scores = cls_scores[np.arange(len(best)), best]
         keep = scores >= self.conf
         if not np.any(keep):
             return []
-        boxes, scores = out[keep, :4], scores[keep]
+        boxes, scores, best = out[keep, :4], scores[keep], best[keep]
         cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
         x1 = (cx - bw / 2 - px) / r
         y1 = (cy - bh / 2 - py) / r
         x2 = (cx + bw / 2 - px) / r
         y2 = (cy + bh / 2 - py) / r
-        rects = [[float(a), float(b), float(c - a), float(d - b)] for a, b, c, d in zip(x1, y1, x2, y2)]
-        idx = cv2.dnn.NMSBoxes(rects, scores.astype(float).tolist(), self.conf, self.iou)
         dets: list[Detection] = []
-        for i in np.array(idx).flatten():
-            a, b, c, d = x1[i], y1[i], x2[i], y2[i]
-            dets.append(Detection((max(0.0, float(a)), max(0.0, float(b)),
-                                   min(float(w), float(c)), min(float(h), float(d))), "persona", float(scores[i])))
+        for k, label in enumerate(self._labels):  # NMS por etiqueta
+            sel = np.flatnonzero(best == k)
+            if not len(sel):
+                continue
+            rects = [[float(x1[i]), float(y1[i]), float(x2[i] - x1[i]), float(y2[i] - y1[i])] for i in sel]
+            idx = cv2.dnn.NMSBoxes(rects, scores[sel].astype(float).tolist(), self.conf, self.iou)
+            for j in np.array(idx).flatten():
+                i = sel[j]
+                dets.append(Detection((max(0.0, float(x1[i])), max(0.0, float(y1[i])),
+                                       min(float(w), float(x2[i])), min(float(h), float(y2[i]))), label, float(scores[i])))
         return dets
 
 
@@ -138,11 +153,12 @@ def _providers(ort) -> list[str]:
     return [p for p in preferred if p in available] or available
 
 
-def build_detector(name: str, model_path: str | Path | None = None) -> Detector:
+def build_detector(name: str, model_path: str | Path | None = None, vehicles: bool = False) -> Detector:
+    """`vehicles=True`: además de personas detecta autos, motos, ómnibus y camiones (estaciones de servicio)."""
     if name == "motion":
         return MotionDetector()
     if name == "yolo":
         if not model_path or not Path(model_path).exists():
             raise RuntimeError(f"No se encontró el modelo ONNX de personas: {model_path}")
-        return OnnxYoloDetector(model_path)
+        return OnnxYoloDetector(model_path, classes={**PERSON_CLASSES, **(VEHICLE_CLASSES if vehicles else {})})
     raise ValueError(f"Detector desconocido: {name!r} (usar 'yolo' o 'motion')")
