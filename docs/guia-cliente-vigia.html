@@ -45,7 +45,7 @@
 <div class="box ok">
   <b>Qué vamos a lograr.</b> Que la PC central de Vigía pueda ver el video de tus cámaras por internet, de forma segura, sin instalar nada en tu local.
   Para eso hay que hacer tres cosas: (1) crear un usuario en el grabador, (2) abrir dos puertos en el router, y (3) probar desde afuera que se vea.
-  Después, cargamos las cámaras en el sistema y, si querés, instalás el programa de escritorio para verlas con la IA en tu PC.
+  Después, nosotros cargamos tus cámaras en el sistema y vos entrás a tu panel web, con tu usuario, para ver tus cámaras y las alertas de tu local.
 </div>
 
 <h3>Contenido</h3>
@@ -55,8 +55,8 @@
   <li>El router: IP fija para el grabador y dos puertos abiertos</li>
   <li>Probar desde afuera (celular con datos)</li>
   <li>Datos que nos tenés que mandar</li>
-  <li>El programa de escritorio (PC central) y la ventana con las cámaras</li>
-  <li>El panel web: cámaras, zonas y alertas</li>
+  <li>Qué pasa del otro lado: la PC central de Vigía</li>
+  <li>Tu acceso web: cámaras, alertas e incidentes de tu local</li>
   <li>Seguridad: lo que no hay que hacer</li>
   <li>Si algo falla</li>
 </ol>
@@ -194,43 +194,34 @@
   <tr><td>Nombre y celular de la persona a la que avisar si hay un posible hurto</td><td><span class="fill"></span></td></tr>
 </table>
 
-<h2 class="pb">6. El programa de escritorio (PC central)</h2>
-<p>El análisis de las cámaras lo hace un programa llamado <b>VigiaAgente</b>, que corre en una PC que queda prendida: normalmente la PC central de Vigía en nuestra oficina. <b>Para la prueba podés instalarlo vos en una PC tuya</b> y ver tus cámaras con la IA en tiempo real en una ventana.</p>
-<h3>6.1 Requisitos de la PC</h3>
-<ul>
-  <li>Windows 10 u 11, 64 bits. 8 GB de memoria o más. Procesador de los últimos 6 años.</li>
-  <li>Internet con buena bajada (el video de cada cámara consume unos 0,5 Mbps).</li>
-  <li>Que quede <b>prendida</b> mientras quieras que vigile. Si se apaga, el sistema deja de analizar.</li>
-  <li>Puede estar en el mismo local (en ese caso usamos la IP interna del grabador) o en cualquier otro lado (usa la IP pública y los puertos del paso 3).</li>
-</ul>
-<h3>6.2 Instalación</h3>
-<ol class="steps">
-  <li>Descargá <b>VigiaAgente-windows.zip</b> desde el enlace que te mandamos (unos 90 MB).</li>
-  <li>Descomprimilo en una carpeta, por ejemplo <code>C:\Vigia</code>. Adentro hay <code>VigiaAgente.exe</code> y un <code>LEEME.txt</code>.</li>
-  <li>Abrí <code>VigiaAgente.exe</code>. Si Windows muestra "Windows protegió su PC": <b>Más información → Ejecutar de todas formas</b> (el programa no tiene firma digital comprada; es nuestro).</li>
-  <li>La primera vez pregunta en una ventana negra:
-    <ul>
-      <li><b>Servidor:</b> apretá <b>Enter</b> (usa el nuestro).</li>
-      <li><b>Token:</b> pegá el código que te mandamos (clic derecho pega en la ventana negra) y Enter.</li>
-    </ul>
-    Queda guardado en el archivo <code>agente.env</code> al lado del programa. Las siguientes veces arranca solo.</li>
-  <li>Se abren dos ventanas: la <b>negra</b> (registro de lo que hace; no la cierres) y <b>"Vigia - PC central"</b>: el mosaico con tus cámaras y las personas recuadradas en tiempo real, con el número de cada una, los segundos que lleva y la zona donde está. Podés cerrar el mosaico; el análisis sigue.</li>
-  <li>Para que arranque solo al encender la PC: <b>Programador de tareas</b> de Windows → Crear tarea básica → "Al iniciar sesión" → Iniciar un programa → <code>VigiaAgente.exe</code>.</li>
-</ol>
+<h2 class="pb">6. Qué pasa del otro lado: la PC central de Vigía</h2>
+<p>Con el grabador accesible, el trabajo lo hace la <b>PC central de Vigía</b>, que está en nuestra oficina y queda prendida las 24 horas. No tenés que instalar nada ni hacer nada más: vos no accedés a esa PC.</p>
 <div class="box">
-  <b>Lo que hace el programa:</b> entra a tu grabador, mira el video, detecta personas, mide dónde están y cuánto tiempo, y cuando algo coincide con una regla (por ejemplo, 45 segundos frente a una góndola y salida sin pasar por caja) guarda el video de esa situación, desde que la persona entró hasta que se fue, y lo sube al sistema. El resto del video <b>no</b> se guarda ni se sube.
+  <b>Lo que hace la PC central:</b> entra a tu grabador con el usuario <code>vigia</code>, mira el video, detecta personas, mide dónde están y cuánto tiempo, y cuando algo coincide con una regla (por ejemplo, 45 segundos frente a una góndola y salida sin pasar por caja) guarda el video de esa situación, desde que la persona entró hasta que se fue, y lo sube al sistema. El resto del video <b>no</b> se guarda ni se sube. Lo que entra a tu grabador es solo lectura: no cambia ninguna configuración.
 </div>
+<p>Para que eso funcione, las <b>zonas</b> de cada cámara (góndolas, cajas, salida) las dibujamos nosotros sobre la imagen, con la información que nos mandás en la tabla del punto 5. Por eso es importante que nos digas qué ve cada cámara.</p>
+<p>El equipo de Vigía <b>revisa cada alerta</b> antes de avisarte: una persona mira el video y decide si vale la pena que lo veas. Nunca te va a llegar un aviso automático.</p>
 
-<h2>7. El panel web</h2>
+<h2>7. Tu acceso web</h2>
+<p>Te vamos a mandar por privado la <b>dirección web</b>, un <b>usuario</b> y una <b>clave</b>. Con eso entrás desde cualquier PC o celular. Tu usuario solo ve <b>tu local</b>: nadie más ve tus cámaras y vos no ves las de otros.</p>
+<h3>7.1 Qué vas a encontrar</h3>
+<table>
+  <tr><th style="width:22%">Pestaña</th><th>Qué muestra</th></tr>
+  <tr><td><b>Alertas</b></td><td>Las situaciones que el sistema detectó en tu local, con la fecha, la cámara, una foto con la persona marcada y el <b>video completo</b> de esa situación (desde que la persona entró hasta que se fue). Se pueden filtrar por cámara y por fecha.</td></tr>
+  <tr><td><b>Incidentes</b></td><td>Los avisos que te mandamos: cuando nuestro equipo revisó una alerta y consideró que tenías que verla. Cada uno tiene su video y un enlace privado que podés reenviar (vence a los 14 días).</td></tr>
+  <tr><td><b>Cámaras</b></td><td>Tus cámaras en miniatura, con su estado (en línea / sin conexión). Un clic abre la cámara en grande con la <b>vista en vivo</b>: 1 imagen por segundo con las personas recuadradas, su número, los segundos que llevan y la zona donde están.</td></tr>
+</table>
+<h3>7.2 Primeros pasos</h3>
 <ol class="steps">
-  <li>Entrá a <b>https://vigia-three-ashy.vercel.app</b> con el usuario y la clave que te mandamos.</li>
-  <li><b>Clientes</b> → tu local → ves tus cámaras en miniatura con su estado. Un clic en una la abre en grande: ahí está la <b>vista en vivo</b> con la IA (1 cuadro por segundo) y los botones.</li>
-  <li><b>Zonas y reglas</b>: sobre la imagen de la cámara, dibujá con clics las zonas <b>sobre el piso</b>: Góndola (donde están los productos), Caja y Salida. Cada zona se cierra con doble clic. Guardar. <b>Sin zonas no hay alertas.</b></li>
-  <li><b>Alertas</b>: acá aparecen los clips. Cada uno se mira y se marca con 1 (hurto), 2 (sospechoso), 3 (normal) o 4 (falso positivo). Esas marcas enseñan al sistema qué descartar.</li>
-  <li>Para probar: parate 50 segundos frente a la zona Góndola y salí por la Salida sin pasar por Caja. En un par de minutos tiene que aparecer la alerta con el video completo.</li>
+  <li>Entrá con el usuario y la clave que te mandamos. Arriba a la derecha, <b>Mi clave</b>: cambiala por una tuya.</li>
+  <li>Entrá a <b>Cámaras</b>: tienen que verse todas "En línea". Si alguna dice "Sin conexión", avisanos (suele ser el puerto del router).</li>
+  <li>Abrí una cámara: en unos segundos arriba a la izquierda dice <b>EN VIVO</b> y ves a las personas recuadradas. Es la señal de que el sistema está mirando.</li>
+  <li>Para probar: que alguien se quede 50 segundos frente a una góndola y salga sin pasar por la caja. En un par de minutos aparece en <b>Alertas</b>, con el video completo.</li>
 </ol>
+<h3>7.3 Cómo te avisamos</h3>
+<p>Cuando nuestro equipo confirma una situación, te avisamos por el canal que elijas: el panel (siempre), WhatsApp, Telegram o correo. En la tabla del punto 5 decinos a quién y cómo. El mensaje dice "posible hurto" y trae el enlace al video; la decisión de qué hacer con esa persona es tuya.</p>
 <div class="box warn">
-  <b>Qué esperar del sistema en esta etapa.</b> Detecta <b>personas</b> y patrones de movimiento (quedarse mucho en una góndola, salir sin pasar por caja, entrar a una zona prohibida). <b>No</b> ve el gesto de guardarse un producto. Cada alerta es un indicio para que una persona revise, no una prueba. Nadie recibe un aviso automático: siempre decide una persona.
+  <b>Qué esperar del sistema en esta etapa.</b> Detecta <b>personas</b> y patrones de movimiento (quedarse mucho en una góndola, salir sin pasar por caja, entrar a una zona prohibida). <b>No</b> ve el gesto de guardarse un producto. Cada alerta es un indicio para revisar, no una prueba. Al principio van a aparecer alertas de gente que solo miraba: es normal; nuestro equipo las marca y el sistema aprende a descartarlas en tu local.
 </div>
 
 <h2>8. Seguridad: lo que no hay que hacer</h2>
@@ -250,8 +241,8 @@
   <tr><td>El navegador abre pero VLC no muestra video</td><td>Falta la regla del 38554 (es otra regla, distinta del HTTP), o la clave tiene <code>@</code>, <code>:</code> o <code>#</code>. Probá primero con el usuario admin para descartar permisos.</td></tr>
   <tr><td>VLC da "no se pudo abrir" desde la PC del local</td><td>Normal: el router no rebota la IP pública desde adentro. Probá desde el celular con datos o con la IP interna (<code>192.168.1.x</code>).</td></tr>
   <tr><td>Al entrar a <code>http://IP/ISAPI/System/deviceInfo</code> dice 401</td><td>El navegador no manda usuario y clave. No importa: la prueba válida es VLC.</td></tr>
-  <tr><td>En el panel, la cámara dice "Sin conexión"</td><td>El programa VigiaAgente no llega al grabador: la PC está apagada, o el enlace RTSP no anda desde afuera (volver al paso 4).</td></tr>
-  <tr><td>Llegan alertas de gente que solo pasa</td><td>Es lo esperado al principio. Marcalas como "normal" o "falso positivo": el sistema aprende de eso. También se pueden subir los segundos de las reglas.</td></tr>
+  <tr><td>En el panel, la cámara dice "Sin conexión"</td><td>La PC central de Vigía no llega a tu grabador: cambió la IP pública, se borró una regla del router, o el grabador está apagado. Volvé a probar el paso 4 y avisanos.</td></tr>
+  <tr><td>Hay alertas de gente que solo pasa o mira</td><td>Es lo esperado al principio. Nuestro equipo las marca como normales y el sistema aprende a descartarlas. Si son muchas, ajustamos los tiempos de las reglas de tu local.</td></tr>
   <tr><td>El video se corta o se ve a saltos</td><td>Poca subida de internet en el local o flujo secundario muy pesado. Bajarlo a 640×360, 10 cuadros por segundo, H.264 (paso 2.3).</td></tr>
   <tr><td>El clip muestra otro momento</td><td>La hora del grabador está mal (paso 2.5).</td></tr>
   <tr><td>El grabador dejó de responder después de varios intentos</td><td>Se bloqueó por intentos fallidos durante 30 minutos. Esperar, o reiniciarlo.</td></tr>
