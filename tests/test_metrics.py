@@ -153,3 +153,46 @@ def test_zonas_nuevas_se_pueden_guardar(app):
             {"name": "tienda", "type": "shop", "polygon": sq}], "rules": {"loiter_seconds": 15}})
         assert r.status_code == 200, r.text
         assert [z["type"] for z in r.json()["zones"]] == ["entrance", "pump", "shop"]
+
+
+def test_cliente_con_usuario_y_clave_para_la_web(app):
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        # falta la clave: no se crea ni el cliente ni el usuario
+        r = c.post("/api/clients", json={"name": "Súper Minas", "web_username": "superminas"})
+        assert r.status_code == 422 and c.get("/api/clients").json() == []
+        r = c.post("/api/clients", json={"name": "Súper Minas", "web_username": "superminas", "web_password": "corta"})
+        assert r.status_code == 422
+        r = c.post("/api/clients", json={"name": "Súper Minas", "web_username": "superminas",
+                                          "web_password": "clave-minas-1", "plans": ["hurto", "comercio"]})
+        assert r.status_code == 201 and r.json()["web_username"] == "superminas"
+        cid = r.json()["id"]
+        assert c.get("/api/clients").json()[0]["web_username"] == "superminas"
+        u = TestClient(app)
+        me = u.post("/api/login", json={"username": "superminas", "password": "clave-minas-1"}).json()["user"]
+        assert me["role"] == "cliente" and me["client_id"] == cid
+        assert [x["name"] for x in u.get("/api/clients").json()] == ["Súper Minas"]
+        # un empleado también puede crear clientes con acceso
+        c.post("/api/users", json={"username": "empleado", "password": "clave-empl-1", "role": "entrenador"})
+        e = TestClient(app)
+        e.post("/api/login", json={"username": "empleado", "password": "clave-empl-1"})
+        assert e.post("/api/clients", json={"name": "Otro", "web_username": "superminas",
+                                            "web_password": "clave-otro-1"}).status_code == 409  # usuario repetido
+        assert e.post("/api/clients", json={"name": "Otro", "web_username": "otro",
+                                            "web_password": "clave-otro-1"}).status_code == 201
+        # editar sin clave: cambia solo los datos; con clave: la cambia y cierra la sesión vieja
+        base = {"name": "Súper Minas", "plans": ["hurto"]}
+        r = c.put(f"/api/clients/{cid}", json={**base, "web_username": "superminas"})
+        assert r.status_code == 200 and r.json()["plans"] == ["hurto"]
+        assert u.get("/api/clients").status_code == 200
+        c.put(f"/api/clients/{cid}", json={**base, "web_username": "minas", "web_password": "clave-nueva-2"})
+        assert u.get("/api/clients").status_code == 401
+        assert TestClient(app).post("/api/login", json={"username": "minas", "password": "clave-nueva-2"}).status_code == 200
+        # un cliente sin acceso puede recibirlo después al editarlo
+        sin = c.post("/api/clients", json={"name": "Sin acceso"}).json()
+        assert sin["web_username"] is None
+        assert c.put(f"/api/clients/{sin['id']}", json={"name": "Sin acceso", "web_username": "sinacceso"}).status_code == 422
+        assert c.put(f"/api/clients/{sin['id']}", json={"name": "Sin acceso", "web_username": "sinacceso",
+                                                        "web_password": "clave-sin-1"}).json()["web_username"] == "sinacceso"
+        # nombre de cliente repetido al editar
+        assert c.put(f"/api/clients/{sin['id']}", json={"name": "Otro"}).status_code == 409

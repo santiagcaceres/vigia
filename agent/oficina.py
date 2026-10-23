@@ -30,6 +30,9 @@ import cv2
 import httpx
 import numpy as np
 
+from . import actualizar
+from .version import VERSION
+
 log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -68,6 +71,20 @@ def fmt_dur(s: float) -> str:
 
 
 # ------------------------------------------------------------------ API
+def make_password(n: int = 10) -> str:
+    """Clave fácil de dictar: sin letras que se confunden (l/1, O/0)."""
+    import secrets
+    abc = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(abc) for _ in range(n))
+
+
+def slug_user(name: str) -> str:
+    """Usuario sugerido a partir del nombre del cliente: «Súper Minas» → «superminas»"""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    return "".join(ch for ch in s if ch.isalnum())[:20]
+
+
 class ApiError(Exception):
     def __init__(self, msg: str, status: int = 0):
         super().__init__(msg)
@@ -195,8 +212,11 @@ def open_file(path: str) -> None:
 class Oficina:
     def __init__(self, ventana, api: Api, on_logout: Callable[[], None] | None = None,
                  local_probe: Callable[[int], dict | None] | None = None,
-                 on_config_saved: Callable[[], None] | None = None):
+                 on_config_saved: Callable[[], None] | None = None,
+                 on_restart: Callable[[], None] | None = None):
         self.local_probe = local_probe
+        self.on_restart = on_restart
+        self.latest: dict | None = None  # última versión publicada (para el botón de actualizar)
         self.on_config_saved = on_config_saved
         self.v = ventana
         self.tk, self.ttk, self.mb = ventana.tk, ventana.ttk, ventana.messagebox
@@ -229,6 +249,71 @@ class Oficina:
             self._build_admin()
         self.refresh_all()
         self.v.root.after(15000, self._auto_refresh)
+        header = getattr(self.v, "header", None)
+        if header is not None:
+            self.upd_btn = ttk.Button(header, text="Buscar actualización", command=self.update_dialog)
+            self.upd_btn.pack(side="right", padx=6)
+            ttk.Label(header, text=f"versión {VERSION}", foreground="#888").pack(side="right", padx=6)
+            self.v.root.after(4000, self._check_update)
+
+    # ---------- actualización de la app ----------
+    def _check_update(self) -> None:
+        """Al abrir: si hay versión nueva, el botón lo dice (no interrumpe nada)."""
+        def done(info):
+            self.latest = info
+            if actualizar.is_newer(info.get("version")):
+                self.upd_btn.configure(text=f"★ Actualizar a {info['version']}")
+                log.info("Hay una versión nueva de la app: %s (esta es %s). Botón «Actualizar» arriba a la derecha.",
+                         info["version"], VERSION)
+        self.bg.run(lambda: self.api.get("/api/app/update"), done, lambda e: log.debug("Sin datos de versión: %s", e))
+
+    def update_dialog(self) -> None:
+        def done(info):
+            self.latest = info
+            new = info.get("version")
+            if not actualizar.is_newer(new):
+                return self.mb.showinfo("Vigía", f"Ya tenés la última versión ({VERSION}).")
+            if not actualizar.can_self_update():
+                return self.mb.showinfo("Vigía", f"Hay una versión nueva ({new}). Esta copia corre con Python: "
+                                                 "actualizá con «git pull» y volvé a abrir.")
+            size = f" ({info['size'] / 1e6:.0f} MB)" if info.get("size") else ""
+            extra = ("\n\nLas cámaras dejan de analizarse unos segundos mientras se reabre."
+                     if getattr(self.v, "analyze", False) else "")
+            if self.mb.askyesno("Actualizar Vigía", f"Versión instalada: {VERSION}\nVersión nueva: {new}{size}\n\n"
+                                "Se descarga, se reemplaza el programa y se vuelve a abrir solo, con la misma sesión."
+                                + extra + "\n\n¿Actualizar ahora?"):
+                self._install_update(new)
+        self.bg.run(lambda: self.api.get("/api/app/update"), done, self.err)
+
+    def _install_update(self, new: str) -> None:
+        tk, ttk = self.tk, self.ttk
+        top, frm = self._dialog("Actualizando Vigía", width=420)
+        top.protocol("WM_DELETE_WINDOW", lambda: None)  # no se cierra a mitad de camino
+        msg = ttk.Label(frm, text=f"Descargando la versión {new}…")
+        msg.grid(row=0, column=0, columnspan=2, sticky="w")
+        bar = ttk.Progressbar(frm, length=380, mode="determinate", maximum=100)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=10)
+
+        def progress(arg):
+            got, total = arg
+            if total:
+                bar["value"] = 100 * got / total
+                msg.configure(text=f"Descargando la versión {new}… {got / 1e6:.0f} de {total / 1e6:.0f} MB")
+
+        def work():
+            url = self.api.get("/api/app/update", download=1)["url"]
+            return actualizar.install(url, progress=lambda g, tot: self.bg.q.put((progress, (g, tot))))
+
+        def done(_):
+            msg.configure(text="Listo. Abriendo la versión nueva…")
+            bar["value"] = 100
+            self.v.root.after(1200, self.on_restart or top.destroy)
+
+        def fail(exc):
+            top.destroy()
+            self.mb.showerror("Vigía", f"No se pudo actualizar: {exc}\n\nEl programa sigue igual. También podés bajar "
+                                       "VigiaAgente-windows.zip de GitHub (Releases) y reemplazar el .exe a mano.")
+        self.bg.run(work, done, fail)
 
     def _auto_refresh(self) -> None:
         """Estado de cámaras y PCs cada 15 s (sin tocar lo que se está editando)."""
@@ -364,7 +449,8 @@ class Oficina:
         if not c:
             self.cam_title.configure(text="Elegí un cliente")
             return
-        self.cam_title.configure(text=f"Cámaras de {c['name']}")
+        web = f"   ·   acceso web: {c['web_username']}" if c.get("web_username") else "   ·   sin acceso web (Editar para crearlo)"
+        self.cam_title.configure(text=f"Cámaras de {c['name']}{web}")
         agents = {a["id"]: a["name"] for a in self.agents}
         for cam in [x for x in self.cameras if x["client_id"] == c["id"]]:
             conn = f"{BRAND_NAMES.get(cam.get('brand'), '')} · {cam.get('host', '')}:{cam.get('rtsp_port')}/{cam.get('http_port')} · canal {cam.get('channel')}"
@@ -441,6 +527,29 @@ class Oficina:
         for p, t in PLAN_NAMES.items():
             ttk.Checkbutton(pf, text=t, variable=plans[p]).pack(anchor="w")
 
+        # acceso a la web: con esto el dueño del comercio entra y ve sus hurtos, alertas y métricas
+        had_user = bool(c.get("web_username"))
+        wf = ttk.LabelFrame(frm, text="Acceso a la web del cliente", padding=6)
+        wf.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        wf.columnconfigure(1, weight=1)
+        web_user = tk.StringVar(value=c.get("web_username") or "")
+        web_pass = tk.StringVar()
+        ttk.Label(wf, text="Usuario").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=2)
+        ttk.Entry(wf, textvariable=web_user).grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
+        ttk.Label(wf, text="Clave").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=2)
+        ttk.Entry(wf, textvariable=web_pass).grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Button(wf, text="Generar", command=lambda: web_pass.set(make_password())).grid(row=1, column=2, padx=(6, 0))
+        ttk.Label(wf, text=("Dejá la clave vacía para no cambiarla." if had_user else
+                            "Mínimo 8 caracteres. Se la pasás al cliente por privado."),
+                  foreground="#666").grid(row=2, column=0, columnspan=3, sticky="w")
+        if not c.get("id") and not web_user.get():
+            # sugerir el usuario a partir del nombre (se puede cambiar)
+            def suggest(*_):
+                if not getattr(suggest, "touched", False):
+                    web_user.set(slug_user(v["name"].get()))
+            v["name"].trace_add("write", suggest)
+            web_user.trace_add("write", lambda *_: setattr(suggest, "touched", web_user.get() != slug_user(v["name"].get())))
+
         def save() -> None:
             body = {k: (var.get().strip() or None) for k, var in v.items()}
             body["timezone"] = body["timezone"] or "America/Montevideo"
@@ -448,16 +557,49 @@ class Oficina:
             body["plans"] = [p for p, var in plans.items() if var.get()]
             if not body["name"]:
                 return self.mb.showwarning("Vigía", "Falta el nombre", parent=top)
+            user, pwd = web_user.get().strip(), web_pass.get().strip()
+            if user and not had_user and not pwd:
+                return self.mb.showwarning("Vigía", "Falta la clave para la web (o tocá «Generar»).", parent=top)
+            if pwd and len(pwd) < 8:
+                return self.mb.showwarning("Vigía", "La clave necesita al menos 8 caracteres.", parent=top)
+            if had_user and not user:
+                return self.mb.showwarning("Vigía", "El usuario para la web no puede quedar vacío.", parent=top)
+            body["web_username"], body["web_password"] = user or None, pwd or None
 
-            def done(_):
+            def done(res):
                 top.destroy()
                 self.refresh_all()
+                if pwd:  # se creó el acceso o se cambió la clave: mostrar los datos para pasárselos
+                    self.web_access_dialog(res.get("name") or body["name"], user, pwd)
             self.bg.run(lambda: (self.api.put(f"/api/clients/{c['id']}", body) if c.get("id")
                                  else self.api.post("/api/clients", body)), done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=11, column=0, columnspan=2, sticky="e")
+        bb.grid(row=13, column=0, columnspan=2, sticky="e")
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
+
+    def web_access_dialog(self, name: str, user: str, pwd: str) -> None:
+        """Datos de acceso a la web para pasarle al cliente, con botón para copiarlos."""
+        ttk = self.ttk
+        url = self.api.server
+        text = (f"Hola, estos son tus datos para ver tu comercio en Vigía:\n\nPágina: {url}\n"
+                f"Usuario: {user}\nClave: {pwd}\n\nAhí vas a ver tus alertas, los hurtos revisados y el resumen del día.")
+        top, frm = self._dialog(f"Acceso web de {name}", width=480)
+        ttk.Label(frm, text="Pasale estos datos al cliente por privado (WhatsApp o en persona):").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        box = self.tk.Text(frm, height=8, width=58, wrap="word", font=("Segoe UI", 10))
+        box.insert("1.0", text)
+        box.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+        def copy():
+            self.v.root.clipboard_clear()
+            self.v.root.clipboard_append(text)
+            btn.configure(text="Copiado ✓")
+        bb = ttk.Frame(frm)
+        bb.grid(row=2, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="right")
+        btn = ttk.Button(bb, text="Copiar", command=copy)
+        btn.pack(side="right", padx=6)
 
     def delete_client(self) -> None:
         c = self._sel_client()

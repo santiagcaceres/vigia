@@ -79,6 +79,9 @@ class Settings:
     alarm_max_window_seconds: float = 120.0
     alarm_ready_delay_seconds: float = 20.0  # el DVR tarda en tener disponible lo recién grabado
     live_seconds: float = 45.0  # cuánto sigue "en vivo" una cámara después del último latido del panel
+    # Actualización de la app de escritorio: última versión publicada en GitHub Releases
+    github_repo: str = "santiagcaceres/vigia"
+    github_token: str | None = None  # solo si el repositorio pasa a privado: token de solo lectura (Contents: read)
     missing: list[str] = field(default_factory=list)
 
     @classmethod
@@ -114,6 +117,8 @@ class Settings:
             hpp_secret_key=os.getenv("HPP_SECRET_KEY") or None,
             hpp_sign_secret=os.getenv("HPP_WEBHOOK_SECRET") or None,
             alarm_timezone=os.getenv("ALARM_TIMEZONE", "America/Montevideo"),
+            github_repo=os.getenv("GITHUB_REPO", "santiagcaceres/vigia"),
+            github_token=os.getenv("GITHUB_TOKEN") or None,
         )
         if st.on_vercel:
             st.serve_public = False  # Vercel sirve public/ desde su CDN
@@ -141,6 +146,13 @@ class ClientIn(BaseModel):
     contact_email: str | None = Field(None, max_length=200)
     webhook_url: str | None = None
     plans: list[Literal["hurto", "comercio", "estacion"]] = ["hurto"]
+    # Acceso a la web del cliente (opcional). Al crear: usuario y clave. Al editar: cambia el usuario
+    # existente (la clave solo si viene) o lo crea si el cliente no tenía.
+    web_username: str | None = Field(None, max_length=80)
+    web_password: str | None = Field(None, max_length=200)
+
+    def client_fields(self) -> dict:
+        return self.model_dump(exclude={"web_username", "web_password"})
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -533,6 +545,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "storage": "supabase" if isinstance(storage, SupabaseStorage) else "local",
                 "database": s.get_bind().dialect.name}
 
+    @app.get("/api/app/update")
+    def app_update(download: bool = False, _: User = Depends(staff)) -> dict:
+        """Última versión de la app de escritorio publicada en GitHub Releases. Con `download=1`
+        devuelve además un link de descarga directo que vence en unos minutos. Si el repositorio
+        es privado hace falta GITHUB_TOKEN en el servidor (el programa nunca ve ese token)."""
+        gh = "https://api.github.com/repos/" + st.github_repo
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if st.github_token:
+            headers["Authorization"] = "Bearer " + st.github_token
+        try:
+            with httpx.Client(timeout=15, headers=headers) as h:
+                r = h.get(gh + "/releases/latest")
+                if r.status_code in (401, 403, 404):
+                    raise HTTPException(503, "El servidor no puede leer las versiones publicadas en GitHub (si el "
+                                             "repositorio es privado, falta GITHUB_TOKEN en Vercel o venció).")
+                r.raise_for_status()
+                rel = r.json()
+                asset = next((x for x in rel.get("assets") or [] if x.get("name", "").endswith("windows.zip")), None)
+                tag = rel.get("tag_name") or ""
+                out = {"version": tag.removeprefix("agente-v").removeprefix("v"), "tag": tag,
+                       "published_at": rel.get("published_at"), "notes": rel.get("body") or "",
+                       "size": (asset or {}).get("size"), "url": None}
+                if download:
+                    if not asset:
+                        raise HTTPException(404, "La última versión no tiene el .zip para Windows")
+                    d = h.get(f"{gh}/releases/assets/{asset['id']}", headers={"Accept": "application/octet-stream"},
+                              follow_redirects=False)
+                    if d.status_code in (301, 302, 303, 307, 308):
+                        out["url"] = d.headers["location"]
+                    else:
+                        raise HTTPException(502, f"GitHub no dio el link de descarga ({d.status_code})")
+                return out
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"No se pudo consultar GitHub: {exc}") from exc
+
     @app.get("/api/meta")
     def meta(_: User = Depends(current_user)) -> dict:
         return {"rule_types": list(EVENT_TYPES), "alarm_types": list(hpp.VIDEO_EVENT_TYPES), "severity": SEVERITY,
@@ -545,24 +592,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q = s.query(Client).order_by(Client.name)
         if user.role == "cliente":
             q = q.filter(Client.id == user.client_id)
-        return [client_dict(c) for c in q.all()]
+            return [client_dict(c) for c in q.all()]
+        web = {}
+        for u in s.query(User).filter_by(role="cliente").order_by(User.id.desc()):
+            web[u.client_id] = u.username  # el primero creado queda último y gana
+        return [{**client_dict(c), "web_username": web.get(c.id)} for c in q.all()]
+
+    def client_web_user(s, cid: int) -> User | None:
+        return s.query(User).filter_by(client_id=cid, role="cliente").order_by(User.id).first()
+
+    def client_out(s, c: Client) -> dict:
+        u = client_web_user(s, c.id)
+        return {**client_dict(c), "web_username": u.username if u else None}
+
+    def set_client_web_user(s, c: Client, body: ClientIn) -> None:
+        """Crea o actualiza el usuario con el que el cliente entra a la web (rol cliente)."""
+        username = (body.web_username or "").strip()
+        password = body.web_password or ""
+        if not username:
+            if password:
+                raise HTTPException(422, "Falta el usuario para la web")
+            return
+        if len(username) < 3:
+            raise HTTPException(422, "El usuario para la web necesita al menos 3 letras")
+        if password and len(password) < 8:
+            raise HTTPException(422, "La clave para la web necesita al menos 8 caracteres")
+        u = client_web_user(s, c.id) if c.id else None
+        other = s.query(User).filter(User.username == username)
+        if u:
+            other = other.filter(User.id != u.id)
+        if other.first():
+            raise HTTPException(409, f"El usuario «{username}» ya existe: elegí otro")
+        if u is None:
+            if not password:
+                raise HTTPException(422, "Falta la clave para la web (mínimo 8 caracteres)")
+            s.add(User(username=username, password_hash=hash_password(password), role="cliente", client_id=c.id,
+                       active=True))
+            return
+        u.username = username
+        if password:
+            u.password_hash = hash_password(password)
+            s.query(SessionToken).filter_by(user_id=u.id).delete()
 
     @app.post("/api/clients", status_code=201)
     def create_client(body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
         if s.query(Client).filter_by(name=body.name).first():
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
-        c = Client(**body.model_dump())
+        c = Client(**body.client_fields())
         s.add(c)
+        s.flush()
+        set_client_web_user(s, c, body)  # si falla, no queda el cliente a medias
         s.commit()
-        return client_dict(c)
+        return client_out(s, c)
 
     @app.put("/api/clients/{cid}")
     def update_client(cid: int, body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Client, cid, "Cliente")
-        for k, v in body.model_dump().items():
+        other = s.query(Client).filter(Client.name == body.name, Client.id != cid).first()
+        if other:
+            raise HTTPException(409, "Ya existe un cliente con ese nombre")
+        for k, v in body.client_fields().items():
             setattr(c, k, v)
+        set_client_web_user(s, c, body)
         s.commit()
-        return client_dict(c)
+        return client_out(s, c)
 
     @app.delete("/api/clients/{cid}", status_code=204)
     def delete_client(cid: int, _: User = Depends(admin_only), s=Depends(db)) -> None:

@@ -30,6 +30,7 @@ from core.detectors import Detector, build_detector
 from core.rules import parse_zones
 from core.scorer import Scorer
 
+from . import actualizar
 from .alarms import AlarmRunner
 from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
@@ -442,6 +443,7 @@ def main() -> None:
         a.ventana = env.get("VIGIA_VENTANA", "1" if getattr(sys, "frozen", False) else "0") not in ("0", "no", "false")
     data_dir = Path(a.data)
     setup_logging(data_dir, a.verbose)
+    threading.Thread(target=actualizar.cleanup_old, daemon=True).start()
     a.server = a.server or SERVIDOR_POR_DEFECTO
     verify = not a.insecure
     if a.ventana:
@@ -470,7 +472,13 @@ def restart_app() -> None:
         cmd = [sys.executable] + sys.argv[1:]
     else:
         cmd = [sys.executable, "-m", "agent"] + sys.argv[1:]
-    subprocess.Popen(cmd, close_fds=True)
+    # el .exe (PyInstaller de un solo archivo) nuevo tiene que desempaquetarse de cero y no usar la
+    # carpeta temporal de este proceso, que se borra al cerrarlo
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("_MEI", "_PYI")) and k not in ("TCL_LIBRARY", "TK_LIBRARY")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    subprocess.Popen(cmd, close_fds=True, env=env, cwd=str(Path(sys.executable).parent)
+                     if getattr(sys, "frozen", False) else None)
 
 
 def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, verify: bool | str) -> None:
@@ -545,7 +553,12 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     ventana.on_logout = logout
     ventana.build_main(title, analyze=state["analyze"])
     holder: dict = {}
-    oficina = Oficina(ventana, api, on_logout=logout,
+    def reopen() -> None:
+        """Después de instalar una versión nueva: abrir el .exe nuevo (con la misma sesión) y cerrar este."""
+        restart_app()
+        ventana.close()
+
+    oficina = Oficina(ventana, api, on_logout=logout, on_restart=reopen,
                       local_probe=lambda cid: holder["agent"].local_probe(cid) if "agent" in holder else None,
                       on_config_saved=lambda: holder["agent"].refresh_config() if "agent" in holder else None)
     oficina.build(ventana.notebook)

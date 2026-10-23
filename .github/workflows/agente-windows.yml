@@ -29,6 +29,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-agent.txt pyinstaller
+      - name: Grabar la versión en el programa
+        run: |
+          $v = "${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || inputs.version }}" -replace '^agente-v', ''
+          if (-not $v) { $v = "dev-${{ github.run_number }}" }
+          Set-Content -Path agent\version.py -Value "VERSION = `"$v`"" -Encoding utf8
+          Get-Content agent\version.py
       - name: Compilar
         run: pyinstaller agente_pc.spec
       - name: Probar que arranca
@@ -54,4 +60,4 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
           name: Agente ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
           make_latest: true
-          body: "Agente Vigía para Windows. Descomprimir, abrir VigiaAgente.exe y pegar el token del panel."
+          body: "App de escritorio de Vigía para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe. Para actualizar: botón «Actualizar» dentro de la app (o reemplazar VigiaAgente.exe a mano; agente.env se conserva)."

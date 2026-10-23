@@ -188,7 +188,7 @@ agente-v1.0.0 && git push --tags`, que además lo publica en Releases).
 4. Probar la conexión con el grabador, si hace falta:
 
    ```bat
-   .venv\Scripts\python -m agent.hikvision --host 190.133.197.192 --port 38080 --user vigia --password ****
+   .venv\Scripts\python -m agent.hikvision --host 203.0.113.25 --port 38080 --user vigia --password ****
    ```
 
 5. Para que arranque solo con Windows: Programador de tareas → Crear tarea → "Al iniciar

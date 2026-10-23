@@ -1181,7 +1181,7 @@ async function adminView(v) {
     <p class="muted">El <b>agente</b> es el programa que corre en la PC central: llega a los grabadores de todos los clientes por internet (puertos abiertos en el router de cada uno), baja el tramo de cada alarma y lo analiza. Con una PC alcanza; si se suma otra, se reparten las cámaras.</p>
     <div class="panel" style="margin-bottom:12px"><b>Instalar el programa en una PC central (Windows)</b>
       <ol style="margin:6px 0 0 18px;padding:0">
-        <li>Descargar <a href="https://github.com/santiagcaceres/vigia/releases/latest" target="_blank" rel="noopener">VigiaAgente-windows.zip</a> (pide iniciar sesión en GitHub: el repositorio es privado).</li>
+        <li>Descargar <a href="https://github.com/santiagcaceres/vigia/releases/latest" target="_blank" rel="noopener">VigiaAgente-windows.zip</a>. Después se actualiza sola con el botón «Actualizar» de la app.</li>
         <li>Descomprimirlo en una carpeta, por ejemplo <span class="mono">C:\\Vigia</span>, y abrir <span class="mono">VigiaAgente.exe</span>. Si Windows lo frena: "Más información → Ejecutar de todas formas".</li>
         <li>Enter para el servidor y pegar el <b>token</b> del agente (botón "Nuevo token" acá abajo; se muestra una sola vez). Queda guardado en <span class="mono">agente.env</span> al lado del programa.</li>
         <li>Dejar la ventana abierta. Para que arranque con Windows: Programador de tareas → "Al iniciar sesión" → VigiaAgente.exe.</li>

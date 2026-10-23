@@ -10,7 +10,7 @@ código, comentarios, interfaz y trato con el usuario.
 |---|---|
 | Panel + API | https://vigia-three-ashy.vercel.app (proyecto Vercel `vigia`, región iad1 desde el 22 oct) |
 | Base + archivos | Supabase proyecto **CAMARAS**, ref `cnwhpaqvdjabntteacrj` (sa-east-1 no: us-east-1) |
-| Repo | github.com/santiagcaceres/vigia (privado) |
+| Repo | github.com/santiagcaceres/vigia (**público**, verificado el 23 oct: nada de claves ni IPs reales) |
 | Dueño | Santiago Cáceres, Uruguay (America/Montevideo) |
 
 **Publicado:** ver `git log origin/main` (el último deploy de producción apunta a `main`). El proyecto Vercel
@@ -119,6 +119,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   reconectar el video**. "Probar conexión" en la app, si la cámara la analiza esta PC, prueba **desde la PC**
   (`Agent.local_probe`: página del grabador + RTSP); si no, desde el servidor (que no llega a IPs internas
   192.168.x: el mensaje lo explica). La lista de cámaras se refresca sola cada 15 s.
+- **Actualizar la app con un botón (23 oct):** arriba a la derecha, «Buscar actualización» (se vuelve
+  «★ Actualizar a X» si al abrir detecta una nueva). `GET /api/app/update` lee la última Release de GitHub
+  (`GITHUB_REPO`; `GITHUB_TOKEN` solo si el repo pasa a privado) y con `?download=1` da el link firmado del
+  .zip (redirect de la API de assets). `agent/actualizar.py` lo baja, saca `VigiaAgente.exe` como
+  `.nuevo.exe`, renombra el que corre a `VigiaAgente.viejo.exe` (Windows deja renombrar un .exe abierto),
+  pone el nuevo y lo reabre (`restart_app`, con `PYINSTALLER_RESET_ENVIRONMENT=1`); el viejo se borra al
+  arrancar. `agente.env` no se toca: vuelve con la misma sesión. La versión la graba el workflow en
+  `agent/version.py` (en el código dice `dev`). **Publicar una versión = correr el workflow con `version`.**
+- **Usuario web al crear el cliente (23 oct):** `ClientIn.web_username/web_password` → crea (o edita) el
+  usuario de rol `cliente` en la misma transacción; staff (admin y empleado) puede. `GET /api/clients` trae
+  `web_username`. En la app: recuadro «Acceso a la web del cliente» (usuario sugerido del nombre, «Generar»
+  clave) y al guardar muestra el texto para pasarle al cliente con «Copiar».
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -274,7 +286,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 104 tests (unos 30 se saltean sin Postgres)
+python -m pytest -q                 # 130 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

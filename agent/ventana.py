@@ -223,6 +223,7 @@ class Ventana:
         self.analyze = analyze
         top = ttk.Frame(self.root, padding=(10, 6))
         top.pack(side="top", fill="x")
+        self.header = top  # la Oficina suma acá el botón de actualizar
         ttk.Label(top, text="Vigía", font=("Segoe UI", 14, "bold")).pack(side="left")
         self.status = ttk.Label(top, text=f"  ·  {title}", foreground="#666")
         self.status.pack(side="left")
