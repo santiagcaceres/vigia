@@ -261,6 +261,17 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   OpenAPI REST da **las alarmas** (webhook) pero **no video** (confirmado en la guía V2.15.500:
   live/playback/descarga = HPNetSDK con clave VSaaS por mail; sacaron `video/by/time`).
   Dahua no tiene equivalente implementado: sus cámaras se analizan en vivo por RTSP.
+- **Hik-Connect for Teams (ex HikCentral Connect) SÍ tiene OpenAPI con video (hallado 23 oct, SIN PROBAR):**
+  distinta de la de HPP (`/api/hccgw/...` en vez de `/api/hpcgw/...`). Desde 2026 cualquier cuenta en modo
+  equipo genera AppKey/Secret en Team Management → API Integration (gratis según usuarios). Token:
+  `POST https://<región>.hikcentralconnect.com/api/hccgw/platform/v1/token/get` → `accessToken` + `areaDomain`.
+  Video: `POST /api/hccgw/video/v1/live/address/get` (`resourceId`, `deviceSerial`, `type` 1 vivo / 2 nube /
+  3 grabación local con `startTime`/`stopTime`, `protocol` 1 EZOPEN / 2 HLS, `quality` 1/2, `expireTime`).
+  HLS solo H.264 y sin cifrado de stream; con cifrado solo EZOPEN (SDK EZUIKit). También
+  `/api/hccgw/video/v1/isapi/proxypass` (ISAPI por la nube) y `/api/hccgw/resource/v1/areas/cameras/get`.
+  Fuente: integración de Home Assistant `Frens98/hikconnect-nvr` (vivo por HLS, funciona) y una referencia de
+  terceros de la API V2.11.800 (tipos de playback, sin verificar). Si anda, **evita abrir puertos** en los locales
+  Hikvision. El sandbox de Claude no llega a `*.hikcentralconnect.com`: hay que probar desde la PC central.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
   y otros en UTC. Se elige por cámara con `playback_time`; si el clip llega corrido, probar la otra.
