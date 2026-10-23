@@ -36,6 +36,10 @@ class Client(Base):
     webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # planes contratados: "hurto" (alertas), "comercio" (gente, tiempos, destinos), "estacion" (vehículos, pistero, tienda)
     plans: Mapped[list] = mapped_column(JSON, default=lambda: ["hurto"])
+    # Hik-Connect for Teams (video de Hikvision sin abrir puertos): clave de la API del equipo del cliente
+    hc_app_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    hc_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hc_api_url: Mapped[str | None] = mapped_column(String(255), nullable=True)  # vacío = se busca la región
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -99,6 +103,7 @@ class Camera(Base):
     # alarma que el DVR manda a Hik-Partner Pro (mucho más barato: una PC atiende muchos locales).
     mode: Mapped[str] = mapped_column(String(20), default="vivo")  # vivo | alarmas | alarmas_equipo
     hpp_serial: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # serie del DVR en HPP
+    hc_resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # cámara en Hik-Connect
     alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # vista en vivo: el panel marca que alguien la está mirando; la PC central sube cuadros mientras dure
@@ -293,7 +298,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-22.2"
+SCHEMA_VERSION = "2026-10-23.1"
 
 
 class CameraMetric(Base):

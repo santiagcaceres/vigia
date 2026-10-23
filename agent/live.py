@@ -161,11 +161,17 @@ class LiveWorker:
         return self.streamer.active and self.thread.is_alive()
 
     def run(self) -> None:
-        url = self.cam.live_url()
         tracker = CentroidTracker()
         t0 = time.monotonic()
         last_proc = -1e9
         while not self._stop.is_set() and self.streamer.active:
+            try:
+                url = self.cam.live_url()  # en cada conexión: los links de Hik-Connect vencen
+            except Exception as exc:  # noqa: BLE001
+                self.state, self.error = "sin_conexion", str(exc)
+                log.warning("[%s] vivo: %s", self.name, self.error)
+                self._stop.wait(5.0)
+                continue
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
                 self.state, self.error = "sin_conexion", f"No se pudo abrir {self.cam.redacted(url)}"

@@ -24,7 +24,7 @@ from core.metrics import empty_bucket, merge_bucket
 from core.rules import EVENT_TYPES, SEVERITY, parse_config
 from core.scorer import FEATURE_NAMES, LABELS
 
-from . import hpp, probe, training
+from . import hikconnect, hpp, probe, training
 from .db import (ROLES, Agent, Alarm, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
@@ -150,9 +150,14 @@ class ClientIn(BaseModel):
     # existente (la clave solo si viene) o lo crea si el cliente no tenía.
     web_username: str | None = Field(None, max_length=80)
     web_password: str | None = Field(None, max_length=200)
+    # Hik-Connect for Teams (video de Hikvision sin abrir puertos). Solo se tocan si vienen en el pedido;
+    # el SecretKey vacío deja el que estaba.
+    hc_app_key: str | None = Field(None, max_length=128)
+    hc_secret: str | None = Field(None, max_length=256)
+    hc_api_url: str | None = Field(None, max_length=255)
 
     def client_fields(self) -> dict:
-        return self.model_dump(exclude={"web_username", "web_password"})
+        return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url"})
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -203,7 +208,7 @@ class CameraIn(BaseModel):
     client_id: int
     agent_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
-    brand: Literal["hikvision", "dahua"] = "hikvision"
+    brand: Literal["hikvision", "dahua", "hikconnect"] = "hikvision"  # hikconnect = Hikvision por la nube
     host: str = Field("", max_length=255)
     username: str = "admin"
     password: str | None = None
@@ -221,7 +226,15 @@ class CameraIn(BaseModel):
     # el propio grabador avisa (conexión larga desde el agente); vale para cualquier marca.
     mode: Literal["vivo", "alarmas", "alarmas_equipo"] = "vivo"
     hpp_serial: str | None = Field(None, max_length=32)
+    hc_resource_id: str | None = Field(None, max_length=64)
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
+
+
+class StreamUrlIn(BaseModel):
+    kind: Literal["live", "playback", "cloud"] = "live"
+    quality: Literal["sub", "main"] = "sub"
+    start: str | None = None  # hora local del grabador, ISO
+    end: str | None = None
 
 
 class ZoneIn(BaseModel):
@@ -441,7 +454,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      channel=c.channel,
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
-                     hpp_serial=c.hpp_serial, alarm_cfg=alarm_cfg_of(c))
+                     hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c))
         return d
 
     def alarm_cfg_of(c: Camera) -> dict:
@@ -603,14 +616,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         web = {}
         for u in s.query(User).filter_by(role="cliente").order_by(User.id.desc()):
             web[u.client_id] = u.username  # el primero creado queda último y gana
-        return [{**client_dict(c), "web_username": web.get(c.id)} for c in q.all()]
+        return [{**client_dict(c), "web_username": web.get(c.id), **client_hc(c)} for c in q.all()]
 
     def client_web_user(s, cid: int) -> User | None:
         return s.query(User).filter_by(client_id=cid, role="cliente").order_by(User.id).first()
 
     def client_out(s, c: Client) -> dict:
         u = client_web_user(s, c.id)
-        return {**client_dict(c), "web_username": u.username if u else None}
+        return {**client_dict(c), "web_username": u.username if u else None, **client_hc(c)}
+
+    def client_hc(c: Client) -> dict:
+        """Datos de Hik-Connect para el personal (el SecretKey nunca sale del servidor)."""
+        return {"hc_app_key": c.hc_app_key, "hc_api_url": c.hc_api_url, "hc_has_secret": bool(c.hc_secret_enc)}
+
+    def set_client_hc(c: Client, body: ClientIn) -> None:
+        sent = body.model_fields_set
+        if "hc_app_key" in sent:
+            c.hc_app_key = (body.hc_app_key or "").strip() or None
+            if not c.hc_app_key:
+                c.hc_secret_enc = None
+        if "hc_secret" in sent and (body.hc_secret or "").strip():
+            c.hc_secret_enc = box.encrypt(body.hc_secret.strip())
+        if "hc_api_url" in sent:
+            c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+
+    def hc_client(c: Client) -> hikconnect.HikConnect:
+        if not c.hc_app_key or not c.hc_secret_enc:
+            raise HTTPException(422, f"El cliente «{c.name}» no tiene cargada la clave de la API de Hik-Connect")
+        return hikconnect.HikConnect(c.hc_app_key, box.decrypt(c.hc_secret_enc), c.hc_api_url)
 
     def set_client_web_user(s, c: Client, body: ClientIn) -> None:
         """Crea o actualiza el usuario con el que el cliente entra a la web (rol cliente)."""
@@ -646,6 +679,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if s.query(Client).filter_by(name=body.name).first():
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         c = Client(**body.client_fields())
+        set_client_hc(c, body)
         s.add(c)
         s.flush()
         set_client_web_user(s, c, body)  # si falla, no queda el cliente a medias
@@ -660,6 +694,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         for k, v in body.client_fields().items():
             setattr(c, k, v)
+        set_client_hc(c, body)
         set_client_web_user(s, c, body)
         s.commit()
         return client_out(s, c)
@@ -824,9 +859,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ag = get_or_404(s, Agent, body.agent_id, "Agente")
             if ag.client_id is not None and ag.client_id != body.client_id:
                 raise HTTPException(422, "El agente pertenece a otro cliente")
+        body.hpp_serial = (body.hpp_serial or "").strip().upper() or None
+        body.hc_resource_id = (body.hc_resource_id or "").strip() or None
+        if body.brand == "hikconnect":
+            if not body.hpp_serial:
+                raise HTTPException(422, "Por Hik-Connect hace falta el número de serie del grabador")
+            if body.mode != "vivo":
+                raise HTTPException(422, "Por Hik-Connect, por ahora, solo el modo En vivo 24 h")
+            return
         if not body.host and not body.source_url:
             raise HTTPException(422, "Indicá la IP del NVR/cámara o una URL RTSP")
-        body.hpp_serial = (body.hpp_serial or "").strip().upper() or None
         if body.mode == "alarmas" and not body.hpp_serial:
             raise HTTPException(422, "En modo alarmas indicá el número de serie del DVR en Hik-Partner Pro")
         if body.mode in ("alarmas", "alarmas_equipo") and not body.alarm_cfg.event_types:
@@ -888,6 +930,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Prueba desde el servidor que el grabador responda por HTTP con el usuario y la clave cargados.
         Sirve para los grabadores expuestos por el router del cliente (IP pública o DDNS)."""
         c = get_or_404(s, Camera, cam_id, "Cámara")
+        if c.brand == "hikconnect":
+            try:
+                url = hc_stream_url(s, c, "live")
+            except hikconnect.HikConnectError as exc:
+                return {"ok": False, "hikconnect": True, "public": True, "error": str(exc)}
+            return {"ok": True, "hikconnect": True, "public": True, "resource_id": c.hc_resource_id,
+                    "detail": "Hik-Connect entregó el link de video (" + url.split("?")[0][:80] + "…)"}
         if not c.host:
             raise HTTPException(422, "La cámara no tiene IP o DDNS cargado")
         res = probe.probe(c.brand, c.host, c.http_port, c.username, box.decrypt(c.password_enc))
@@ -995,9 +1044,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
                            "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
                            "playback_time": c.playback_time, "timezone": client.timezone,
-                           "source_url": box.decrypt(c.source_url_enc) or None},
+                           "source_url": box.decrypt(c.source_url_enc) or None,
+                           "camera_id": c.id, "serial": c.hpp_serial},
             "analysis": camera_analysis(c, client),
         }
+
+    def hc_stream_url(s, c: Camera, kind: str, quality: str = "sub", start: datetime | None = None,
+                      end: datetime | None = None) -> str:
+        """Link de video de una cámara por Hik-Connect. Si no se eligió la cámara de Hik-Connect, la busca
+        por serie del grabador y canal (y la guarda)."""
+        client = s.get(Client, c.client_id)
+        api = hc_client(client)
+        try:
+            if not c.hc_resource_id:
+                cams = [x for x in api.cameras() if x["serial"].upper() == (c.hpp_serial or "").upper()]
+                pick = next((x for x in cams if x["channel"] == c.channel), None)
+                if pick is None and len(cams) >= c.channel and all(x["channel"] is None for x in cams):
+                    pick = cams[c.channel - 1]  # sin número de canal en la respuesta: por orden
+                if pick is None:
+                    raise hikconnect.HikConnectError(
+                        f"No encontré el canal {c.channel} del grabador {c.hpp_serial} en Hik-Connect "
+                        f"({len(cams)} cámaras de esa serie). ¿Está agregado al equipo?")
+                c.hc_resource_id = pick["id"]
+                s.commit()
+            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end)
+            if client.hc_api_url is None and api.server:
+                client.hc_api_url = api.server  # recordar la región que anduvo
+                s.commit()
+            return url
+        finally:
+            api.close()
+
+    @app.get("/api/clients/{cid}/hikconnect/cameras")
+    def hikconnect_cameras(cid: int, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """Cámaras que ve la API de Hik-Connect del cliente (para elegir al cargar una cámara)."""
+        client = get_or_404(s, Client, cid, "Cliente")
+        api = hc_client(client)
+        try:
+            cams = api.cameras()
+        except hikconnect.HikConnectError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        finally:
+            api.close()
+        if client.hc_api_url is None and api.server:
+            client.hc_api_url = api.server
+            s.commit()
+        return {"server": api.server, "cameras": cams}
+
+    @app.post("/api/agent/cameras/{cam_id}/stream-url")
+    def agent_stream_url(cam_id: int, body: StreamUrlIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """La PC central pide un link de video nuevo (las cámaras por Hik-Connect no tienen IP ni puertos)."""
+        c = get_or_404(s, Camera, cam_id, "Cámara")
+        if not agent_owns(ag, c):
+            raise HTTPException(403, "La cámara no es de esta PC")
+        if c.brand != "hikconnect":
+            raise HTTPException(422, "La cámara no está configurada por Hik-Connect")
+        try:
+            start = datetime.fromisoformat(body.start).replace(tzinfo=None) if body.start else None
+            end = datetime.fromisoformat(body.end).replace(tzinfo=None) if body.end else None
+            url = hc_stream_url(s, c, body.kind, body.quality, start, end)
+        except ValueError as exc:
+            raise HTTPException(422, f"Hora mal formada: {exc}") from exc
+        except hikconnect.HikConnectError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return {"url": url}
 
     @app.post("/api/agent/status")
     def agent_status(payload: dict, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:

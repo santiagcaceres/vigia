@@ -272,6 +272,14 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   Fuente: integración de Home Assistant `Frens98/hikconnect-nvr` (vivo por HLS, funciona) y una referencia de
   terceros de la API V2.11.800 (tipos de playback, sin verificar). Si anda, **evita abrir puertos** en los locales
   Hikvision. El sandbox de Claude no llega a `*.hikcentralconnect.com`: hay que probar desde la PC central.
+  **Implementado el 23 oct (app 1.9.0, sin probar con equipo real):** marca `hikconnect` («Hikvision por
+  Hik-Connect (sin puertos)»). Cliente: `hc_app_key`, `hc_secret_enc` (cifrado), `hc_api_url` (se completa solo con
+  la región que anduvo; `REGION_URLS` en `server/hikconnect.py`). Cámara: `hpp_serial` = serie del grabador,
+  `channel`, `hc_resource_id` (se busca solo por serie+canal o se elige con «Elegir de Hik-Connect…»). La PC
+  central pide el link a `POST /api/agent/cameras/{id}/stream-url` (el SecretKey nunca sale del servidor) y lo abre
+  con OpenCV; cada reconexión pide link nuevo (`agent/hikconnect.py`, `CameraWorker.run`). Solo modo `vivo`.
+  `GET /api/clients/{id}/hikconnect/cameras` lista lo que ve la API. Los errores de Hik-Connect quedan en los
+  logs de Vercel (`vigia.hikconnect`): mirarlos en la primera prueba.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
   y otros en UTC. Se elige por cámara con `playback_time`; si el clip llega corrido, probar la otra.
@@ -301,7 +309,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 130 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 134 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

@@ -6,9 +6,8 @@ direcciones RTSP y la API HTTP de consulta. Marcas soportadas:
 
 - Hikvision (`agent/hikvision.py`)  — iVMS-4200 / Hik-Connect son solo visores.
 - Dahua     (`agent/dahua.py`)      — SmartPSS Lite / DMSS son solo visores.
-
-Las apps de nube de ambas marcas NO entregan el video a software de terceros: hay que
-conectarse al equipo, en la red del local o por VPN.
+- Hikvision por la nube (`agent/hikconnect.py`): sin IP ni puertos; el link de video lo da la API de
+  Hik-Connect for Teams a través del servidor de Vigía.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from core.clips import redact, transcode_h264, video_duration
 
 log = logging.getLogger("vigia.camaras")
 
-BRANDS = ("hikvision", "dahua")
+BRANDS = ("hikvision", "dahua", "hikconnect")
 
 
 @dataclass
@@ -74,6 +73,9 @@ class BaseCamera:
     def redacted(self, url: str) -> str:
         return redact(url)
 
+    def ffmpeg_input_args(self) -> list[str]:
+        return ["-rtsp_transport", "tcp", "-timeout", "10000000"]
+
 
 def build_camera(cfg: dict) -> BaseCamera:
     """Crea la cámara que corresponda según `brand` (por defecto, Hikvision)."""
@@ -81,6 +83,9 @@ def build_camera(cfg: dict) -> BaseCamera:
     if brand == "dahua":
         from .dahua import DahuaCamera
         return DahuaCamera.from_config(cfg)
+    if brand == "hikconnect":
+        from .hikconnect import HikConnectCamera
+        return HikConnectCamera.from_config(cfg)
     from .hikvision import HikCamera
     return HikCamera.from_config(cfg)
 
@@ -93,8 +98,7 @@ def download_nvr_clip(cam: BaseCamera, start: datetime, end: datetime, out: str 
     """
     duration = (end - start).total_seconds()
     url = cam.playback_url(start, end)
-    ok = transcode_h264(url, out, timeout=timeout, duration=duration,
-                        extra_input=["-rtsp_transport", "tcp", "-timeout", "10000000"])
+    ok = transcode_h264(url, out, timeout=timeout, duration=duration, extra_input=cam.ffmpeg_input_args())
     if not ok:
         log.info("No se pudo bajar la grabación del equipo (%s)", cam.redacted(url))
         return False
@@ -128,6 +132,8 @@ def probe(cam: BaseCamera) -> dict:
     """Consulta datos del equipo y sus canales, según la marca."""
     if cam.brand == "dahua":
         from .dahua import probe as _probe
+    elif cam.brand == "hikconnect":
+        from .hikconnect import probe as _probe
     else:
         from .hikvision import probe as _probe
     return _probe(cam)

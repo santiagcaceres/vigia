@@ -46,7 +46,7 @@ def test_la_fabrica_elige_la_marca():
     assert isinstance(build_camera({**base, "brand": "dahua"}), DahuaCamera)
     assert isinstance(build_camera({**base, "brand": "hikvision"}), HikCamera)
     assert isinstance(build_camera(base), HikCamera)  # por defecto, Hikvision
-    assert set(BRANDS) == {"hikvision", "dahua"}
+    assert set(BRANDS) == {"hikvision", "dahua", "hikconnect"}
 
 
 @pytest.mark.parametrize("brand,marca", [("dahua", DahuaCamera), ("hikvision", HikCamera)])

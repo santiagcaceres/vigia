@@ -97,9 +97,16 @@ class CameraWorker:
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
 
     def run(self) -> None:
-        url = self.hik.live_url()
         backoff = 2.0
         while not self._stop.is_set():
+            try:
+                url = self.hik.live_url()  # en cada conexión: los links de Hik-Connect vencen
+            except Exception as exc:  # noqa: BLE001 - sin link no hay video; se reintenta
+                self.state, self.error = "sin_conexion", str(exc)
+                log.warning("[%s] %s; reintento en %.0fs", self.name, self.error, backoff)
+                self._stop.wait(backoff)
+                backoff = min(backoff * 2, 60.0)
+                continue
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
                 self.state, self.error = "sin_conexion", f"No se pudo abrir {self.hik.redacted(url)}"
@@ -108,8 +115,9 @@ class CameraWorker:
                 self._stop.wait(backoff)
                 backoff = min(backoff * 2, 60.0)
                 continue
-            self.state, self.error, backoff = "en_linea", None, 2.0
+            self.state, self.error = "en_linea", None
             log.info("[%s] conectada", self.name)
+            connected_at = time.monotonic()
             try:
                 self._read_loop(cap)
             except Exception as exc:
@@ -120,7 +128,10 @@ class CameraWorker:
                 cap.release()
             if not self._stop.is_set():
                 self.state = "reconectando"
-                self._stop.wait(2.0)
+                # si el video se corta enseguida una y otra vez, esperar cada vez más (no martillar al equipo
+                # ni a Hik-Connect pidiendo links); si anduvo un rato, reconectar rápido
+                backoff = 2.0 if time.monotonic() - connected_at > 30 else min(backoff * 2, 60.0)
+                self._stop.wait(backoff)
         self._finish_clips(self.analyzer.flush())
         self._send_metrics(self.metrics.close())
         self.state = "detenida"

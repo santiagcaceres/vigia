@@ -30,7 +30,7 @@ from core.detectors import Detector, build_detector
 from core.rules import parse_zones
 from core.scorer import Scorer
 
-from . import actualizar
+from . import actualizar, hikconnect
 from .alarms import AlarmRunner
 from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
@@ -51,6 +51,9 @@ class Agent:
                  process_imports: bool = True, alarm_workers: int = 2, window: "bool | Ventana" = False,
                  relogin: "Callable[[str | None], str | None] | None" = None, pc_name: str = ""):
         self.client = ServerClient(server, token, verify=verify)
+        # cámaras por Hik-Connect: el link de video lo da el servidor (siempre con el cliente vigente)
+        hikconnect.set_url_provider(lambda cid, kind, quality, start, end:
+                                    self.client.stream_url(cid, kind, quality, start, end))
         self.relogin = relogin  # pide usuario y clave de nuevo (ventana) y devuelve el token nuevo
         self.pc_name = pc_name
         self._logout_requested = False

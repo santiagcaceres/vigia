@@ -11,6 +11,7 @@ import logging
 import shutil
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -166,6 +167,20 @@ class ServerClient:
         return r.json()
 
     # ---- vista en vivo ----
+    def stream_url(self, camera_id: int, kind: str = "live", quality: str = "sub",
+                   start: datetime | None = None, end: datetime | None = None) -> str:
+        """Link de video de una cámara por Hik-Connect (lo pide el servidor a la API de Hikvision)."""
+        body = {"kind": kind, "quality": quality, "start": start.isoformat() if start else None,
+                "end": end.isoformat() if end else None}
+        r = self.http.post(f"/api/agent/cameras/{camera_id}/stream-url", json=body, timeout=40.0)
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("detail")
+            except ValueError:
+                detail = r.text[:200]
+            raise RuntimeError(f"Hik-Connect: {detail or r.status_code}")
+        return r.json()["url"]
+
     def live_upload_url(self, camera_id: int) -> str:
         r = self.http.post(f"/api/agent/cameras/{camera_id}/live-url")
         r.raise_for_status()
