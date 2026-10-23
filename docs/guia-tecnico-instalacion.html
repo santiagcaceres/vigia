@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Vigía · Guía del técnico: instalación de un local</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#e5484d; --ok:#2f8f46; --warn:#b7791f; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 11.5pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 26pt; margin: 0 0 4px; }
+  h2 { font-size: 16pt; margin: 26px 0 8px; padding-top: 10px; border-top: 2px solid var(--accent); page-break-after: avoid; }
+  h3 { font-size: 12.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  ol, ul { margin: 6px 0 6px 22px; padding: 0; }
+  li { margin: 4px 0; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 10.5pt; }
+  pre { font-family: Consolas, "Courier New", monospace; background: var(--bg); border: 1px solid var(--line); padding: 8px 10px; border-radius: 6px; font-size: 10.5pt; white-space: pre-wrap; word-break: break-all; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 10.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); background: #fff; padding: 8px 12px; margin: 10px 0; border-radius: 6px; page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .muted { color: var(--muted); }
+  .cover { margin-bottom: 18px; }
+  .cover .sub { font-size: 13pt; color: var(--muted); }
+  .steps li { margin: 7px 0; }
+  .check { list-style: none; margin-left: 0; }
+  .check li::before { content: "☐ "; }
+  .small { font-size: 10pt; }
+  .fill { display: inline-block; min-width: 170px; border-bottom: 1px dotted #888; }
+  .pb { page-break-before: always; }
+  .toc li { margin: 2px 0; }
+  ol.toc { margin-left: 30px; }
+
+  .tag { display:inline-block; font-size:9pt; padding:1px 7px; border-radius:10px; background:var(--bg); border:1px solid var(--line); color:var(--muted); }
+  .who { font-size:9.5pt; color:var(--muted); font-weight:normal; }
+  td.k { width: 34%; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Vigía · Guía del técnico</h1>
+  <div class="sub">Instalación de un local: del grabador (DVR) a ver las cámaras en la app de Vigía</div>
+  <p class="muted small">Versión del 23 de octubre de 2026 · Para routers de Antel (ZTE F6600 y similares) y grabadores Hikvision o Dahua ·
+  Tiempo: 1 a 2 horas en el local</p>
+</div>
+
+<div class="box ok">
+  <b>Qué tiene que quedar funcionando.</b> La PC central de Vigía (en nuestra oficina) entra por internet al grabador del local y lee el video.
+  Para eso: (1) el grabador con un usuario propio y <b>IP fija dentro del local</b>; (2) el router con <b>dos puertos</b> redirigidos al grabador;
+  (3) un <b>nombre DDNS</b> (ej. <code>vigia-minas.ddns.net</code>) que siempre apunta a la IP pública del local, aunque Antel la cambie.
+  En el local <b>no se instala nada</b>: ni PC ni aparatos.
+</div>
+
+<table class="small" style="text-align:center">
+  <tr><th>En el local</th><th></th><th>Router del local</th><th></th><th>Oficina de Vigía</th></tr>
+  <tr><td>Cámaras → <b>DVR</b><br><code>192.168.1.X</code> (IP fija)<br>puertos 554 y 80</td><td>→</td>
+      <td><b>Router Antel</b><br>38554 → DVR:554<br>38080 → DVR:80</td><td>→ internet →</td>
+      <td><b>PC central</b><br>entra a<br><code>vigia-minas.ddns.net:38554</code></td></tr>
+</table>
+
+<div class="box warn">
+  <b>La regla de oro de las direcciones.</b> Dentro del local se usa la IP de adentro con los puertos del grabador (<code>192.168.1.X</code> con <code>554</code> y <code>80</code>).
+  Desde afuera se usa el nombre DDNS (o la IP pública) con los puertos del router (<code>38554</code> y <code>38080</code>).
+  <b>Nunca se mezclan:</b> <code>192.168.1.X:38554</code> no anda nunca.
+</div>
+
+<h3>Contenido</h3>
+<ol class="toc">
+  <li>Antes de salir (oficina): lo que tiene que estar listo</li>
+  <li>El grabador: hora, IP fija, usuario <code>vigia</code>, video y DDNS</li>
+  <li>El router de Antel: reserva de IP y dos puertos</li>
+  <li>IP pública que cambia: DDNS o IP fija de Antel</li>
+  <li>Prueba desde afuera y prueba de reinicio (no irse sin esto)</li>
+  <li>Cargar las cámaras en la app de Vigía</li>
+  <li>Acceso web del dueño del local</li>
+  <li>Checklist final «funciona siempre»</li>
+  <li>Si algo falla</li>
+  <li>Planilla de datos (se manda por privado)</li>
+</ol>
+
+<h2>1. Antes de salir <span class="who">(lo hace la oficina con el técnico)</span></h2>
+<h3>1.1 Cuenta y nombre DDNS</h3>
+<ol class="steps">
+  <li>Entrar a <b>noip.com</b> con la cuenta de la empresa (o crearla: es gratis).</li>
+  <li><b>Dynamic DNS → No-IP Hostnames → Create Hostname</b>. Nombre: <code>vigia-</code> + local, por ejemplo <code>vigia-minas</code>; dominio <code>ddns.net</code>; tipo <b>DNS Host (A)</b>. Guardar.</li>
+  <li>Anotar en la planilla: el nombre completo (<code>vigia-minas.ddns.net</code>), el <b>usuario</b> (mail) y la <b>clave</b> de No-IP. El técnico los carga en el grabador.</li>
+</ol>
+<div class="box warn">
+  <b>Ojo con la cuenta gratis de No-IP:</b> cada 30 días manda un mail para <b>confirmar</b> el nombre. Si nadie lo confirma, el nombre se desactiva y la cámara queda «Sin conexión».
+  Para que funcione siempre: o alguien de la oficina confirma ese mail todos los meses, o se pasa la cuenta al plan pago <b>Enhanced</b> (unos 30 dólares por año, sin confirmaciones; verificar el precio en noip.com).
+  Ver la sección 4 para la otra opción (IP fija de Antel).
+</div>
+
+<h3>1.2 En la app de Vigía</h3>
+<ul>
+  <li>El <b>cliente creado</b> (Clientes y cámaras → Nuevo cliente) con sus planes y su <b>acceso web</b> (usuario y clave del dueño).</li>
+  <li>Un <b>usuario de empleado</b> para el técnico (Administración → Nuevo usuario → rol Empleado), si va a cargar las cámaras él mismo.</li>
+  <li>La <b>PC central encendida</b>, con la app abierta y «Esta PC analiza las cámaras» tildado. Sin ella, nadie mira las cámaras.</li>
+</ul>
+
+<h3>1.3 Qué lleva el técnico</h3>
+<ul class="check">
+  <li>Celular con <b>datos móviles</b> y <b>VLC</b> instalado (gratis en la tienda de apps).</li>
+  <li>Notebook con <b>VLC</b> y, si va a cargar las cámaras, la <b>app de Vigía</b> (se baja entrando a la web de Vigía con su usuario de empleado → «Descargar la app»).</li>
+  <li><b>Monitor HDMI y mouse</b> por si el grabador no tiene pantalla, y un <b>cable de red</b>.</li>
+  <li>Usuario y clave de <b>administrador del grabador</b> (los da el cliente o quien lo instaló).</li>
+  <li>Usuario y clave del <b>router</b>: en Antel están en la etiqueta de abajo del equipo (usuario <code>admin</code>).</li>
+  <li>Una <b>clave larga para el usuario <code>vigia</code></b> del grabador: 12 o más caracteres, letras y números, <b>sin</b> <code>@ : / # ? &amp;</code> ni espacios (rompen el enlace de video). Distinta para cada local.</li>
+  <li>Esta guía y la planilla de la sección 10.</li>
+</ul>
+
+<h2>2. El grabador (DVR)</h2>
+<p>Se puede hacer con el mouse en el monitor del grabador o desde la notebook, en el navegador, entrando a <code>http://IP-del-grabador</code> con el usuario <code>admin</code>.
+Los menús de abajo son los de la página web (en el monitor los nombres son parecidos). Guardar al final de cada pantalla.</p>
+
+<h3>2.1 Conexión y disco</h3>
+<ol class="steps">
+  <li>El grabador conectado <b>por cable</b> al router (nunca por wifi).</li>
+  <li>Revisar el disco: <b>Hikvision</b> Configuración → Almacenamiento; <b>Dahua</b> Almacenamiento → Disco. Tiene que figurar «Normal». Sin disco igual funciona el modo <b>En vivo 24 h</b>, pero no se pueden bajar clips de la grabación.</li>
+</ol>
+
+<h3>2.2 Fecha y hora</h3>
+<p><b>Hikvision:</b> Configuración → Sistema → Configuración del sistema → Hora. <b>Dahua:</b> Sistema → General → Fecha y hora.</p>
+<ul>
+  <li>Zona horaria <b>GMT-03:00 (Montevideo)</b>, sin horario de verano.</li>
+  <li><b>NTP activado</b>, servidor <code>pool.ntp.org</code> (o <code>time.windows.com</code>), intervalo 60 minutos.</li>
+</ul>
+<p class="small muted">Si la hora del grabador está mal, los clips de las alertas salen de otro momento.</p>
+
+<h3>2.3 IP fija del grabador dentro del local</h3>
+<p><b>Hikvision:</b> Configuración → Red → Configuración básica → TCP/IP. <b>Dahua:</b> Red → TCP/IP.</p>
+<ol class="steps">
+  <li>Anotar la <b>dirección IPv4</b> que tiene ahora (ej. <code>192.168.1.6</code>) y la <b>dirección MAC</b> (ej. <code>54:8c:81:3a:f7:29</code>).</li>
+  <li><b>Desactivar DHCP</b> (Dahua: modo <b>Estático</b>) y dejar escrita <b>esa misma IP</b>.</li>
+  <li>Máscara <code>255.255.255.0</code>. Puerta de enlace = la IP del router, en Antel <code>192.168.1.1</code>.</li>
+  <li>DNS preferido <code>8.8.8.8</code>, DNS alternativo <code>1.1.1.1</code>. <b>Sin DNS el DDNS no funciona.</b></li>
+  <li>Guardar. Si cambia la IP, volver a entrar con la nueva.</li>
+</ol>
+<p class="small muted">En la sección 3.2 se reserva la misma IP en el router. Con las dos cosas, la IP no cambia nunca y las reglas de puertos siempre le apuntan.</p>
+
+<h3>2.4 Puertos del grabador y UPnP</h3>
+<p><b>Hikvision:</b> Configuración → Red → Configuración básica → Puerto, y la pestaña NAT. <b>Dahua:</b> Red → Puerto, y Red → UPnP.</p>
+<ul>
+  <li>Anotar el <b>puerto HTTP</b> (normalmente <code>80</code>) y el <b>puerto RTSP</b> (normalmente <code>554</code>). Si son otros, usar esos en la sección 3.3.</li>
+  <li><b>UPnP desactivado.</b> Así el grabador no abre puertos por su cuenta.</li>
+</ul>
+
+<h3>2.5 Usuario <code>vigia</code></h3>
+<table>
+  <tr><th style="width:50%">Hikvision</th><th>Dahua</th></tr>
+  <tr><td>Configuración → Sistema → Gestión de usuarios → <b>Agregar</b>.<br>Usuario <code>vigia</code>, nivel <b>Operador</b>, la clave larga.<br>
+      Permisos: solo <b>Vista en vivo remota</b> y <b>Reproducción remota</b>, en todas las cámaras.</td>
+      <td>Sistema → Cuenta → <b>Agregar usuario</b>.<br>Usuario <code>vigia</code>, grupo <b>user</b>, la clave larga.<br>
+      Permisos: solo <b>Monitor</b> (vista en vivo) y <b>Reproducción</b>, en todos los canales.</td></tr>
+</table>
+<p class="small muted">La clave de <code>admin</code> del cliente no se carga nunca en Vigía. Si al guardar el grabador pide «Pregunta de seguridad» o «Mail de recuperación», completarlo con datos del cliente.</p>
+
+<h3>2.6 Que el grabador acepte la conexión</h3>
+<ul>
+  <li><b>Hikvision:</b> Configuración → Red → Configuración avanzada → <b>Protocolo de integración</b>: habilitar <b>Hikvision-CGI</b> (o ISAPI), autenticación <b>digest</b>.
+    Si aparece una lista de usuarios, agregar <code>vigia</code>. En Configuración → Sistema → Seguridad → <b>Autenticación</b>: RTSP en <b>digest</b> (o digest/basic).</li>
+  <li><b>Dahua:</b> no hace falta tocar nada; la API y RTSP vienen habilitados. Verificar en Red → Puerto que RTSP esté en 554.</li>
+</ul>
+
+<h3>2.7 Video: flujo secundario liviano</h3>
+<p><b>Hikvision:</b> Configuración → Video/Audio → Video → Tipo de secuencia: <b>Sub-secuencia</b>. <b>Dahua:</b> Cámara → Codificación → <b>Sub stream</b>.</p>
+<table>
+  <tr><th>Campo</th><th>Valor</th></tr>
+  <tr><td>Codificación</td><td><b>H.264</b>. No H.265, no H.264+ ni Smart Codec.</td></tr>
+  <tr><td>Resolución</td><td>640×360, 704×480 o 704×576</td></tr>
+  <tr><td>Cuadros por segundo</td><td>10 a 15</td></tr>
+  <tr><td>Bitrate</td><td>512 a 768 kbps, variable</td></tr>
+</table>
+<p class="small muted">Hacerlo en <b>todos los canales</b> que se van a cargar. La grabación del cliente (flujo principal) no se toca.</p>
+
+<h3>2.8 DDNS (el nombre que sigue a la IP pública)</h3>
+<p><b>Hikvision:</b> Configuración → Red → Configuración básica → <b>DDNS</b>. <b>Dahua:</b> Red → <b>DDNS</b>.</p>
+<table>
+  <tr><th>Campo</th><th>Valor</th></tr>
+  <tr><td>Habilitar DDNS</td><td>sí</td></tr>
+  <tr><td>Tipo / Proveedor</td><td><b>NO-IP</b></td></tr>
+  <tr><td>Dirección del servidor</td><td><code>dynupdate.no-ip.com</code> (si lo pide)</td></tr>
+  <tr><td>Dominio / nombre de host</td><td><code>vigia-minas.ddns.net</code> (el de la planilla)</td></tr>
+  <tr><td>Usuario y clave</td><td>los de la cuenta de No-IP</td></tr>
+</table>
+<p>Guardar. A los 2 o 3 minutos, en noip.com el nombre tiene que mostrar la IP pública del local (se verifica en la sección 3.4).</p>
+
+<h3>2.9 Detección de movimiento <span class="tag">solo si alguna cámara va en modo alarmas</span></h3>
+<p><b>Hikvision:</b> Configuración → Evento → Evento básico → <b>Detección de movimiento</b> (o Evento inteligente → Detección de intrusión).
+<b>Dahua:</b> Evento → Detección de video → <b>Detección de movimiento</b>.</p>
+<ul>
+  <li>Activarla en las cámaras que miran góndolas, cajas y puerta, con sensibilidad media.</li>
+  <li>Dibujar el área sobre el piso, sin incluir ventanas a la calle ni luces que titilan.</li>
+</ul>
+
+<h3>2.10 Seguridad del grabador</h3>
+<ul>
+  <li>Si la clave de <code>admin</code> es de fábrica o fácil (<code>12345</code>, <code>admin123</code>…), <b>cambiarla</b> con el cliente presente y que la guarde él.</li>
+  <li><b>Bloqueo por intentos fallidos</b>: Hikvision Configuración → Sistema → Seguridad → Servicio de seguridad → «Bloqueo de inicio de sesión ilegal»; Dahua Seguridad → Protección contra ataques.</li>
+  <li>Si el firmware tiene más de dos o tres años, avisar a la oficina para actualizarlo.</li>
+</ul>
+
+<h3>2.11 Primera prueba, dentro del local</h3>
+<p>Con la notebook o el celular conectados al <b>wifi del local</b>, en VLC (Medio → Abrir ubicación de red):</p>
+<pre>Hikvision:  rtsp://vigia:CLAVE@192.168.1.X:554/Streaming/Channels/102
+Dahua:      rtsp://vigia:CLAVE@192.168.1.X:554/cam/realmonitor?channel=1&amp;subtype=1</pre>
+<p class="small">En Hikvision, <code>102</code> es la cámara 1 en flujo secundario, <code>202</code> la cámara 2, y así. En Dahua se cambia <code>channel=</code>.
+Si no se ve aquí, no va a andar desde afuera: revisar usuario, clave y la sección 2.6.</p>
+
+<h2 class="pb">3. El router de Antel</h2>
+<p>En la notebook, entrar a <code>http://192.168.1.1</code> con el usuario <code>admin</code> y la clave de la etiqueta. El menú de arriba del ZTE F6600 es:
+<b>Estado · Red local · Internet · Seguridad · Aplicación · Administración</b> (en inglés: Status, Local Network, Internet, Security, Application, Management).</p>
+<div class="box warn small">Si se entra con el usuario <code>user</code>, o las opciones de abajo no aparecen o están en gris, el router está en modo limitado.
+Hay que entrar con <code>admin</code> o llamar a Antel y pedir el acceso de administrador del router.</div>
+
+<h3>3.1 Ver la IP pública y descartar CG-NAT</h3>
+<ol class="steps">
+  <li><b>Internet → Estado</b> (o Estado → Internet): buscar la conexión <b>PPPoE</b> (la de INTERNET) y anotar su <b>dirección IP</b>. Ignorar las que empiezan con <code>10.</code>: son internas de Antel (TV, teléfono).</li>
+  <li>En el celular conectado al <b>wifi del local</b>, buscar en Google «cuál es mi IP».</li>
+  <li>Las dos IP tienen que <b>ser iguales</b>. Si la del router empieza con <code>100.64</code> a <code>100.127</code>, o no coincide con la de Google, el local está detrás de <b>CG-NAT</b>
+      y no se puede entrar desde afuera. En ese caso hay que llamar a Antel y pedir una IP pública (es un trámite; en fibra suele venir).</li>
+</ol>
+
+<h3>3.2 Reservar la IP del grabador</h3>
+<p><b>Red local → LAN → Vinculación DHCP</b> (DHCP Binding). <b>+ Crear nuevo</b>:</p>
+<table>
+  <tr><td class="k">Dirección MAC</td><td>la del grabador (sección 2.3), ej. <code>54:8c:81:3a:f7:29</code></td></tr>
+  <tr><td class="k">Dirección IP</td><td>la IP fija del grabador, ej. <code>192.168.1.6</code></td></tr>
+</table>
+<p>Aplicar. Si no aparece «Vinculación DHCP», buscar dentro de <b>Servidor DHCP</b> una tabla de «asignación estática» o «reserva».</p>
+
+<h3>3.3 Redirigir los dos puertos</h3>
+<p><b>Internet → Seguridad → Reenvío de puertos</b> (Port Forwarding). En algunos F6600 está en <b>Aplicación → Reenvío de puertos</b>; es la misma pantalla.
+<b>+ Crear nuevo</b>, una regla por fila, y <b>Aplicar</b> después de cada una:</p>
+<table>
+  <tr><th>Campo</th><th>Regla 1 (video)</th><th>Regla 2 (datos y alarmas)</th></tr>
+  <tr><td>Encendido</td><td>sí</td><td>sí</td></tr>
+  <tr><td>Nombre</td><td><code>vigia-rtsp</code></td><td><code>vigia-http</code></td></tr>
+  <tr><td>Protocolo</td><td>TCP</td><td>TCP</td></tr>
+  <tr><td>Conexión WAN</td><td>la de INTERNET (PPPoE) o Auto</td><td>la misma</td></tr>
+  <tr><td>Dirección IP WAN Host</td><td><code>0.0.0.0 ~ 0.0.0.0</code> (todo en 0)</td><td><code>0.0.0.0 ~ 0.0.0.0</code></td></tr>
+  <tr><td>LAN Host</td><td>IP del grabador, ej. <code>192.168.1.6</code></td><td>la misma</td></tr>
+  <tr><td>Puerto WAN</td><td><code>38554 ~ 38554</code></td><td><code>38080 ~ 38080</code></td></tr>
+  <tr><td>Puerto de LAN Host</td><td><code>554 ~ 554</code> (o el RTSP del 2.4)</td><td><code>80 ~ 80</code> (o el HTTP del 2.4)</td></tr>
+</table>
+<div class="box small"><b>No hacer:</b> DMZ, UPnP en el router, ni abrir otros puertos (8000, 37777, 443, el de administración del router).
+Solo esas dos reglas.</div>
+<p class="small muted"><b>Otros routers</b> (TP-Link, Huawei, Mercusys, Tenda): mismo concepto, en «Reenvío de puertos», «Servidor virtual» o «NAT». Dos reglas TCP: externo 38554 → grabador:554 y externo 38080 → grabador:80, más la reserva de IP por MAC en DHCP.</p>
+
+<h3>3.4 Verificar el DDNS</h3>
+<p>En noip.com (desde el celular), el nombre <code>vigia-minas.ddns.net</code> tiene que mostrar <b>la misma IP</b> que la conexión PPPoE del paso 3.1.
+Si muestra otra o <code>0.0.0.0</code>, revisar el DNS del grabador (2.3) y los datos de No-IP (2.8).</p>
+
+<h2>4. La IP pública que cambia: cómo que funcione siempre</h2>
+<p>En los planes de hogar, Antel da una <b>IP pública dinámica</b>: cambia cuando el router se reinicia o hay un corte. Por eso la cámara se carga con un <b>nombre</b> y no con la IP. Hay tres caminos:</p>
+<table>
+  <tr><th style="width:24%">Opción</th><th>Cómo funciona</th><th style="width:28%">A tener en cuenta</th></tr>
+  <tr><td><b>DDNS gratis</b> (No-IP Free)</td><td>El grabador le avisa a No-IP su IP cada pocos minutos y el nombre la sigue sola. Es lo que se configura en esta guía.</td>
+      <td>Hay que <b>confirmar el nombre cada 30 días</b> por mail; si no, se desactiva.</td></tr>
+  <tr><td><b>DDNS pago</b> (No-IP Enhanced) <span class="tag">recomendado</span></td><td>Igual que el gratis, sin confirmaciones mensuales.</td>
+      <td>Unos 30 dólares por año por cuenta (verificar en noip.com). Una cuenta sirve para varios locales.</td></tr>
+  <tr><td><b>IP fija de Antel</b></td><td>La IP pública no cambia nunca. Se carga directo en la cámara y no hace falta DDNS.</td>
+      <td>Antel la da en los <b>planes de empresa</b>, con costo mensual. Consultar en un local comercial de Antel o en atención a empresas.</td></tr>
+</table>
+<p>Con DDNS, cuando Antel cambia la IP el grabador actualiza el nombre en pocos minutos y Vigía se reconecta sola. Durante esos minutos la cámara figura «Reconectando».</p>
+
+<h2>5. Prueba desde afuera <span class="who">(no irse del local sin esto)</span></h2>
+<p>Con el celular en <b>datos móviles y el wifi apagado</b>:</p>
+<ol class="steps">
+  <li>En el navegador: <code>http://vigia-minas.ddns.net:38080</code>. Tiene que aparecer la pantalla de inicio de sesión del grabador. (Que después no muestre video en el navegador es normal: pide un complemento; no importa.)</li>
+  <li>En VLC: <pre>rtsp://vigia:CLAVE@vigia-minas.ddns.net:38554/Streaming/Channels/102</pre>
+      (Dahua: <code>.../cam/realmonitor?channel=1&amp;subtype=1</code>). Tiene que verse la cámara 1 en unos segundos. Probar también otro canal.</li>
+  <li><b>Prueba de reinicio.</b> Apagar el router 30 segundos y prenderlo. Esperar 5 minutos y repetir los dos pasos anteriores <b>con el nombre DDNS</b>.
+      Si vuelve a andar, ya está comprobado que sobrevive a un corte de luz o a un cambio de IP.</li>
+  <li>Medir la <b>subida</b> del local en <code>fast.com</code> → «Más información». Cada cámara analizada en vivo usa de 0,25 a 0,5 Mbps de subida, las 24 horas.</li>
+</ol>
+
+<h2>6. Cargar las cámaras en la app de Vigía</h2>
+<p>Lo hace el técnico con su usuario de empleado, o la oficina por teléfono mientras el técnico sigue en el local.</p>
+<ol class="steps">
+  <li>Abrir la app de Vigía y entrar con el usuario. En una notebook de técnico, <b>destildar</b> «Esta PC analiza las cámaras» (solo la PC central analiza).</li>
+  <li><b>Clientes y cámaras</b> → elegir el cliente a la izquierda → <b>Agregar cámara</b>, una por canal:</li>
+</ol>
+<table>
+  <tr><th>Campo</th><th>Qué poner</th></tr>
+  <tr><td class="k">Nombre</td><td>Lo que mira: «Caja», «Góndola bebidas», «Puerta».</td></tr>
+  <tr><td class="k">Marca</td><td>Hikvision o Dahua</td></tr>
+  <tr><td class="k">Modo</td><td><b>En vivo 24 h</b> para las 2 a 4 cámaras más importantes (es lo que aguanta una PC central). Las demás, <b>Alarmas del propio grabador</b> (necesitan disco y la detección del 2.9).</td></tr>
+  <tr><td class="k">IP o DDNS del grabador</td><td><code>vigia-minas.ddns.net</code> (nunca la 192.168…)</td></tr>
+  <tr><td class="k">Puerto RTSP / Puerto HTTP</td><td><code>38554</code> / <code>38080</code></td></tr>
+  <tr><td class="k">Canal</td><td>El número de la cámara en el grabador (1, 2, 3…)</td></tr>
+  <tr><td class="k">Usuario / Clave del grabador</td><td><code>vigia</code> y su clave</td></tr>
+  <tr><td class="k">PC central que la analiza</td><td>La PC central de la oficina</td></tr>
+  <tr><td class="k">Cuadros por segundo</td><td>5 (dejar el valor que viene)</td></tr>
+</table>
+<ol class="steps" start="3">
+  <li><b>Guardar</b> y tocar <b>Probar conexión</b>: tiene que mostrar el modelo del grabador y sus canales. Si falla, ver la sección 9.</li>
+  <li>En menos de un minuto la cámara pasa a <b>«En línea»</b> en la lista y aparece la imagen en el detalle. En la PC central se ve en la pestaña <b>En vivo</b>, con los recuadros de la IA.</li>
+  <li><b>Zonas y reglas</b>: sobre la imagen, dibujar en el <b>piso</b> la góndola, la caja, la salida (y la entrada si el plan incluye conteo de gente). Guardar: se aplica al instante.</li>
+  <li>Pasar caminando frente a una cámara y mirar que el recuadro siga a la persona.</li>
+</ol>
+
+<h2>7. Acceso web del dueño del local</h2>
+<ol class="steps">
+  <li>En la app: elegir el cliente → <b>Editar</b> → recuadro <b>«Acceso a la web del cliente»</b>. Si está vacío, poner usuario y tocar <b>Generar</b> para la clave. Guardar.</li>
+  <li>Se abre un texto con la página, el usuario y la clave: <b>Copiar</b> y mandárselo al dueño <b>por privado</b>.</li>
+  <li>El dueño entra desde el celular o la PC y ve solo lo suyo: alertas revisadas, posibles hurtos y el resumen del día.</li>
+</ol>
+
+<h2>8. Checklist final «funciona siempre»</h2>
+<ul class="check">
+  <li>Grabador por cable, hora con NTP y GMT-3.</li>
+  <li>IP del grabador fija en el grabador <b>y</b> reservada por MAC en el router (la misma).</li>
+  <li>DNS 8.8.8.8 en el grabador y DDNS mostrando la IP correcta en noip.com.</li>
+  <li>Dos reglas de puertos encendidas (38554→554, 38080→80), sin DMZ ni UPnP.</li>
+  <li>Prueba desde datos móviles OK, <b>también después de reiniciar el router</b>.</li>
+  <li>Usuario <code>vigia</code> con permisos mínimos; clave de admin cambiada si era débil; bloqueo por intentos activado.</li>
+  <li>Cámaras «En línea» en la app y zonas dibujadas.</li>
+  <li>Dueño con su usuario web.</li>
+  <li>Quién confirma el mail mensual de No-IP (o cuenta paga).</li>
+  <li>Planilla de la sección 10 enviada <b>por privado</b> a la oficina.</li>
+</ul>
+<div class="box small"><b>Cosas que pueden romperlo después</b> (y qué hacer):
+<ul>
+  <li><b>Antel cambia o resetea el router</b> (por un cambio de equipo o reparación): se pierden la reserva y las reglas. Hay que repetir la sección 3.</li>
+  <li><b>Cambian el grabador o lo resetean de fábrica</b>: repetir la sección 2.</li>
+  <li><b>No se confirmó No-IP</b>: confirmarlo en noip.com y en minutos vuelve.</li>
+</ul></div>
+
+<h2>9. Si algo falla</h2>
+<table>
+  <tr><th style="width:40%">Síntoma</th><th>Causa probable y qué hacer</th></tr>
+  <tr><td>En VLC dentro del local no se ve</td><td>Clave mal, el usuario <code>vigia</code> sin permiso de vista remota, o RTSP sin autenticación digest (2.6). Probar el mismo enlace con <code>admin</code> para descartar.</td></tr>
+  <tr><td>VLC: «401» o pide clave de nuevo</td><td>Usuario o clave del <b>grabador</b> mal (no la de Vigía ni la del router). Revisar símbolos raros en la clave.</td></tr>
+  <tr><td>Adentro anda, desde datos no</td><td>Regla de puertos mal (IP de LAN Host, puerto 554, protocolo TCP, «Encendido»), IP WAN Host distinta de 0, o CG-NAT (3.1).</td></tr>
+  <tr><td>Con la IP pública anda, con el nombre no</td><td>DDNS sin actualizar: DNS del grabador, datos de No-IP, o nombre sin confirmar.</td></tr>
+  <tr><td>El navegador abre <code>:38080</code> pero VLC no anda en <code>:38554</code></td><td>Falta o está mal la regla del 38554 (es otra regla, distinta de la de 38080).</td></tr>
+  <tr><td>«Probar conexión» en la app falla, pero VLC desde datos anda</td><td>Revisar en la cámara que el puerto HTTP sea <code>38080</code> y la marca correcta.</td></tr>
+  <tr><td>La cámara queda «Sin conexión» o «Reconectando»</td><td>La PC central apagada o sin internet, la IP del local cambió y el DDNS no se actualizó, o poca subida en el local.</td></tr>
+  <tr><td>Se ve pero se corta o va lento</td><td>Flujo secundario pesado o en H.265: bajarlo como en 2.7.</td></tr>
+  <tr><td>En el panel web del grabador no se ve video</td><td>Normal: el navegador pide un complemento. No afecta a Vigía.</td></tr>
+</table>
+<p>Si no sale, mandar a la oficina capturas de la pantalla de reenvío de puertos, de Internet → Estado del router y del error.</p>
+
+<h2 class="pb">10. Planilla de datos del local</h2>
+<p class="small">Completar y mandarla a la oficina <b>por privado</b> (nunca en un grupo). Lleva claves.</p>
+<table>
+  <tr><td class="k">Local / cliente</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Dirección y contacto en el local</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Marca y modelo del grabador</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Cantidad de canales / tiene disco</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">IP fija del grabador / MAC</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Puertos del grabador (HTTP / RTSP)</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Clave del usuario <code>vigia</code></td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Clave de admin del grabador (si se cambió, quién la tiene)</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Router (modelo) / clave de admin</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">IP pública vista / ¿CG-NAT?</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Nombre DDNS</td><td><span class="fill"></span></td></tr>
+  <tr><td class="k">Puertos externos (RTSP / HTTP)</td><td>38554 / 38080</td></tr>
+  <tr><td class="k">Subida medida (Mbps)</td><td><span class="fill"></span></td></tr>
+</table>
+<table>
+  <tr><th style="width:12%">Canal</th><th>Qué mira</th><th style="width:26%">Modo (vivo / alarmas)</th><th style="width:18%">Detección activada</th></tr>
+  <tr><td>1</td><td></td><td></td><td></td></tr>
+  <tr><td>2</td><td></td><td></td><td></td></tr>
+  <tr><td>3</td><td></td><td></td><td></td></tr>
+  <tr><td>4</td><td></td><td></td><td></td></tr>
+  <tr><td>5</td><td></td><td></td><td></td></tr>
+  <tr><td>6</td><td></td><td></td><td></td></tr>
+  <tr><td>7</td><td></td><td></td><td></td></tr>
+  <tr><td>8</td><td></td><td></td><td></td></tr>
+</table>
+
+<p class="muted small" style="margin-top:20px">Vigía · guía interna para técnicos. Las claves se comparten solo por privado.</p>
+</body>
+</html>

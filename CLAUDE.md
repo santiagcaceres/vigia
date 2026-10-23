@@ -127,6 +127,10 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   pone el nuevo y lo reabre (`restart_app`, con `PYINSTALLER_RESET_ENVIRONMENT=1`); el viejo se borra al
   arrancar. `agente.env` no se toca: vuelve con la misma sesión. La versión la graba el workflow en
   `agent/version.py` (en el código dice `dev`). **Publicar una versión = correr el workflow con `version`.**
+- **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
+  última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
+  Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
+  ZTE F6600 → DDNS No-IP → prueba con reinicio → app).
 - **Usuario web al crear el cliente (23 oct):** `ClientIn.web_username/web_password` → crea (o edita) el
   usuario de rol `cliente` en la misma transacción; staff (admin y empleado) puede. `GET /api/clients` trae
   `web_username`. En la app: recuadro «Acceso a la web del cliente» (usuario sugerido del nombre, «Generar»

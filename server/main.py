@@ -545,6 +545,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "storage": "supabase" if isinstance(storage, SupabaseStorage) else "local",
                 "database": s.get_bind().dialect.name}
 
+    @app.get("/api/app/download")
+    def app_download(user: User = Depends(staff)) -> RedirectResponse:
+        """Descarga del .zip de la app para el personal logueado en la web (sirve aunque el
+        repositorio sea privado: no hace falta cuenta de GitHub)."""
+        return RedirectResponse(app_update(download=True, _=user)["url"], status_code=302,
+                                headers={"Cache-Control": "no-store"})
+
     @app.get("/api/app/update")
     def app_update(download: bool = False, _: User = Depends(staff)) -> dict:
         """Última versión de la app de escritorio publicada en GitHub Releases. Con `download=1`

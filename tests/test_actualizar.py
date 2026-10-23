@@ -80,6 +80,8 @@ def test_ultima_version_y_link_de_descarga(app, monkeypatch):
         info = c.get("/api/app/update", params={"download": 1}).json()
         assert info["url"] == "https://objects.example/firmado.zip"
         assert seen[0].headers["authorization"] == "Bearer tok-de-prueba"
+        r = c.get("/api/app/download", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "https://objects.example/firmado.zip"
         # un cliente no puede pedirla
         cid = c.post("/api/clients", json={"name": "X", "web_username": "dueno-x", "web_password": "clave-larga-1"}).json()["id"]
         u = TestClient(app)
