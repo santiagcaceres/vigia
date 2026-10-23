@@ -550,17 +550,21 @@ class Oficina:
         hc_key = tk.StringVar(value=c.get("hc_app_key") or "")
         hc_secret = tk.StringVar()
         hc_url = tk.StringVar(value=c.get("hc_api_url") or "")
+        hc_code = tk.StringVar()
         for i, (lab, var, show) in enumerate((("AppKey", hc_key, ""), ("SecretKey", hc_secret, "•"),
-                                              ("Servidor (opcional)", hc_url, ""))):
+                                              ("Servidor (opcional)", hc_url, ""),
+                                              ("Código de cifrado (opcional)", hc_code, ""))):
             ttk.Label(hf, text=lab).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
             ttk.Entry(hf, textvariable=var, show=show).grid(row=i, column=1, sticky="ew", pady=2)
         ttk.Label(hf, text=("Portal de Hik-Connect → Team Management → API Integration."
                             + (" SecretKey vacío = no cambia." if c.get("hc_has_secret") else "")
-                            + "\nServidor vacío = se busca solo (o pegá la dirección del portal, ej. isa.hikcentralconnect.com)."),
-                  foreground="#666", justify="left").grid(row=3, column=0, columnspan=2, sticky="w")
+                            + "\nServidor vacío = se busca solo (o pegá la dirección del portal, ej. isa.hikcentralconnect.com)."
+                            + "\nCódigo de cifrado: el del video de los grabadores (vale para todas las cámaras)."
+                            + (" Ya hay uno cargado: vacío = no cambia, «-» = borrarlo." if c.get("hc_has_code") else "")),
+                  foreground="#666", justify="left").grid(row=4, column=0, columnspan=2, sticky="w")
         if c.get("id") and c.get("hc_app_key"):
             ttk.Button(hf, text="Probar: ver cámaras de Hik-Connect",
-                       command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                       command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         if not c.get("id") and not web_user.get():
             # sugerir el usuario a partir del nombre (se puede cambiar)
@@ -586,6 +590,8 @@ class Oficina:
                 return self.mb.showwarning("Vigía", "El usuario para la web no puede quedar vacío.", parent=top)
             body["web_username"], body["web_password"] = user or None, pwd or None
             body["hc_app_key"], body["hc_api_url"] = hc_key.get().strip() or None, hc_url.get().strip() or None
+            if hc_code.get().strip():
+                body["hc_code"] = hc_code.get().strip()
             if hc_secret.get().strip():
                 body["hc_secret"] = hc_secret.get().strip()
             elif body["hc_app_key"] and not c.get("hc_has_secret"):
@@ -719,7 +725,7 @@ class Oficina:
                             ("http_port", "Puerto HTTP", ttk.Entry(frm, textvariable=v["http_port"])),
                             ("channel", "Canal", ttk.Entry(frm, textvariable=v["channel"])),
                             ("username", "Usuario del grabador", ttk.Entry(frm, textvariable=v["username"])),
-                            ("password", "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else ""),
+                            ("password", "Clave del grabador / código de cifrado" + (" (vacía = sin cambios)" if cam.get("has_password") else ""),
                              ttk.Entry(frm, textvariable=v["password"], show="•")),
                             ("agent", "PC central que la analiza", ttk.Combobox(frm, textvariable=v["agent"], values=agent_names, state="readonly")),
                             ("fps", "Cuadros por segundo", ttk.Entry(frm, textvariable=v["fps"])),

@@ -155,9 +155,11 @@ class ClientIn(BaseModel):
     hc_app_key: str | None = Field(None, max_length=128)
     hc_secret: str | None = Field(None, max_length=256)
     hc_api_url: str | None = Field(None, max_length=255)
+    hc_code: str | None = Field(None, max_length=64)  # código de cifrado de video; vacío = no cambia, "-" = borrar
 
     def client_fields(self) -> dict:
-        return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url"})
+        return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url",
+                                        "hc_code"})
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -627,7 +629,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def client_hc(c: Client) -> dict:
         """Datos de Hik-Connect para el personal (el SecretKey nunca sale del servidor)."""
-        return {"hc_app_key": c.hc_app_key, "hc_api_url": c.hc_api_url, "hc_has_secret": bool(c.hc_secret_enc)}
+        return {"hc_app_key": c.hc_app_key, "hc_api_url": c.hc_api_url, "hc_has_secret": bool(c.hc_secret_enc),
+                "hc_has_code": bool(c.hc_code_enc)}
 
     def set_client_hc(c: Client, body: ClientIn) -> None:
         sent = body.model_fields_set
@@ -639,6 +642,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             c.hc_secret_enc = box.encrypt(body.hc_secret.strip())
         if "hc_api_url" in sent:
             c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+        code = (body.hc_code or "").strip() if "hc_code" in sent else ""
+        if code == "-":
+            c.hc_code_enc = None
+        elif code:
+            c.hc_code_enc = box.encrypt(code)
 
     def hc_client(c: Client) -> hikconnect.HikConnect:
         if not c.hc_app_key or not c.hc_secret_enc:
@@ -1070,7 +1078,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 c.hc_resource_id = pick["id"]
                 s.commit()
             url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end,
-                                 code=box.decrypt(c.password_enc) or None)
+                                 code=box.decrypt(c.password_enc) or box.decrypt(client.hc_code_enc) or None)
             if client.hc_api_url is None and api.server:
                 client.hc_api_url = api.server  # recordar la región que anduvo
                 s.commit()

@@ -40,6 +40,7 @@ class Client(Base):
     hc_app_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     hc_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     hc_api_url: Mapped[str | None] = mapped_column(String(255), nullable=True)  # vacío = se busca la región
+    hc_code_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # código de cifrado de video de sus grabadores
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -298,7 +299,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-23.1"
+SCHEMA_VERSION = "2026-10-23.2"
 
 
 class CameraMetric(Base):

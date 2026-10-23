@@ -278,7 +278,8 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   `channel`, `hc_resource_id` (se busca solo por serie+canal o se elige con «Elegir de Hik-Connect…»). La PC
   central pide el link a `POST /api/agent/cameras/{id}/stream-url` (el SecretKey nunca sale del servidor) y lo abre
   con OpenCV; cada reconexión pide link nuevo (`agent/hikconnect.py`, `CameraWorker.run`). Solo modo `vivo`.
-  `GET /api/clients/{id}/hikconnect/cameras` lista lo que ve la API. Los errores de Hik-Connect quedan en los
+  `GET /api/clients/{id}/hikconnect/cameras` lista lo que ve la API. Con el cifrado de video prendido
+  Hikvision responde EVZ60019: se manda `code` = «Clave del grabador» de la cámara o `Client.hc_code_enc` (app 1.10.0). Los errores de Hik-Connect quedan en los
   logs de Vercel (`vigia.hikconnect`): mirarlos en la primera prueba.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
