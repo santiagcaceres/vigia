@@ -112,6 +112,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   red corren en hilos (`Bg`) y vuelven por `Ventana.hooks`. "Cerrar sesión" borra la sesión y reabre el
   programa. **Vercel pasó a `iad1`** (vercel.json `regions`), junto a Supabase us-east-1: antes estaba en
   gru1 y cada consulta a la base cruzaba el continente (la web era lenta por eso).
+- **Zonas en caliente y prueba desde la PC (23 oct):** al guardar una cámara o zonas en la app, `Oficina.config_saved`
+  pide la configuración ya (`Agent.refresh_config`); además se pide cada 20 s. `CameraWorker.fingerprint_of` ya no
+  incluye `analysis` (solo si hay que detectar vehículos): zonas y reglas nuevas se aplican en caliente
+  (`update_analysis` → `_apply_analysis` en el hilo de la cámara: Analyzer.zones/engine, métricas y vivo) **sin
+  reconectar el video**. "Probar conexión" en la app, si la cámara la analiza esta PC, prueba **desde la PC**
+  (`Agent.local_probe`: página del grabador + RTSP); si no, desde el servidor (que no llega a IPs internas
+  192.168.x: el mensaje lo explica). La lista de cámaras se refresca sola cada 15 s.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

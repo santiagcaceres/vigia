@@ -193,7 +193,11 @@ def open_file(path: str) -> None:
 
 # ------------------------------------------------------------------ app
 class Oficina:
-    def __init__(self, ventana, api: Api, on_logout: Callable[[], None] | None = None):
+    def __init__(self, ventana, api: Api, on_logout: Callable[[], None] | None = None,
+                 local_probe: Callable[[int], dict | None] | None = None,
+                 on_config_saved: Callable[[], None] | None = None):
+        self.local_probe = local_probe
+        self.on_config_saved = on_config_saved
         self.v = ventana
         self.tk, self.ttk, self.mb = ventana.tk, ventana.ttk, ventana.messagebox
         self.api = api
@@ -224,6 +228,26 @@ class Oficina:
             notebook.add(self.tab_admin, text="  Administración  ")
             self._build_admin()
         self.refresh_all()
+        self.v.root.after(15000, self._auto_refresh)
+
+    def _auto_refresh(self) -> None:
+        """Estado de cámaras y PCs cada 15 s (sin tocar lo que se está editando)."""
+        if not self.v.open:
+            return
+
+        def done(res):
+            self.cameras, self.agents = res
+            self._fill_clients(keep_info=True)
+            if self.is_admin:
+                self._fill_admin_pcs()
+        self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents")), done, lambda e: None)
+        self.v.root.after(15000, self._auto_refresh)
+
+    def config_saved(self) -> None:
+        """Se guardó una cámara, zonas o reglas: refrescar la lista y avisarle a la PC central."""
+        self.refresh_all()
+        if self.on_config_saved:
+            self.on_config_saved()
 
     def refresh_all(self) -> None:
         def load():
@@ -309,7 +333,7 @@ class Oficina:
         sel = self.cam_tree.selection()
         return next((c for c in self.cameras if str(c["id"]) == (sel[0] if sel else "")), None)
 
-    def _fill_clients(self) -> None:
+    def _fill_clients(self, keep_info: bool = False) -> None:
         prev = self.cl_tree.selection()
         self.cl_tree.delete(*self.cl_tree.get_children())
         for c in self.clients:
@@ -320,7 +344,7 @@ class Oficina:
             self.cl_tree.selection_set(prev)
         elif self.clients:
             self.cl_tree.selection_set(str(self.clients[0]["id"]))
-        self._fill_cameras()
+        self._fill_cameras(keep_info)
 
     def _cam_state(self, c: dict) -> str:
         st = c.get("status")
@@ -333,8 +357,9 @@ class Oficina:
         txt = STATE_NAMES.get(st.get("state"), st.get("state") or "—")
         return txt + (f" · {st['fps']:.0f} fps" if st.get("fps") and st.get("state") == "en_linea" else "")
 
-    def _fill_cameras(self) -> None:
+    def _fill_cameras(self, keep_info: bool = False) -> None:
         c = self._sel_client()
+        prev_cam = self.cam_tree.selection()
         self.cam_tree.delete(*self.cam_tree.get_children())
         if not c:
             self.cam_title.configure(text="Elegí un cliente")
@@ -347,12 +372,18 @@ class Oficina:
                 cam["name"], self._cam_state(cam), MODE_NAMES.get(cam.get("mode"), cam.get("mode")), conn,
                 agents.get(cam.get("agent_id"), "sin PC"), len(cam.get("zones") or [])))
         self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
-        self._set_info("Elegí una cámara para ver el detalle. Doble clic para editarla.")
+        if prev_cam and self.cam_tree.exists(prev_cam[0]):
+            self.cam_tree.selection_set(prev_cam)  # sigue elegida (el detalle se actualiza solo si no hay otra cosa)
+        elif not keep_info:
+            self._set_info("Elegí una cámara para ver el detalle. Doble clic para editarla.")
 
     def _show_camera(self) -> None:
         cam = self._sel_camera()
         if not cam:
             return
+        if getattr(self, "_info_locked", None) == cam["id"]:
+            return  # se está mostrando el resultado de una prueba o las métricas: no pisarlo
+        self._info_locked = None
         st = cam.get("status") or {}
         zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])})" for z in cam.get("zones") or []) or \
             "ninguna: sin zonas no se disparan reglas ni hay métricas por zona"
@@ -526,7 +557,7 @@ class Oficina:
 
             def done(_):
                 top.destroy()
-                self.refresh_all()
+                self.config_saved()
             self.bg.run(lambda: (self.api.put(f"/api/cameras/{cam['id']}", body) if cam.get("id")
                                  else self.api.post("/api/cameras", body)), done,
                         lambda e: self.mb.showerror("Vigía", str(e), parent=top))
@@ -544,19 +575,51 @@ class Oficina:
     def probe(self, cam: dict | None) -> None:
         if not cam:
             return self.mb.showinfo("Vigía", "Elegí una cámara.")
-        self._set_info(f"Probando {cam['name']} desde el servidor (hasta 10 segundos)…\n\nOjo: el servidor está en "
-                       "internet, así que solo llega a grabadores con IP pública o DDNS. Con una IP de adentro "
-                       "(192.168.x.x) siempre va a fallar, aunque la cámara ande.")
+        self._info_locked = cam["id"]
+        local = self.local_probe is not None and cam.get("agent_id") is not None
+        self._set_info(f"Probando {cam['name']}" + (" desde esta PC (página del grabador y video, hasta 20 s)…"
+                                                    if local else " desde el servidor (hasta 10 s)…"))
 
-        def done(r):
+        def run():
+            if self.local_probe is not None:
+                res = self.local_probe(cam["id"])
+                if res is not None:
+                    return ("local", res)
+            return ("server", self.api.post(f"/api/cameras/{cam['id']}/probe"))
+
+        def done(out):
+            where, r = out
+            if where == "local":
+                http, video = r["http"], r["video"]
+                chans = ", ".join(f"{c['channel']}: {c.get('name') or ''}" for c in http.get("channels") or [])
+                lines = [f"{cam['name']} · prueba desde esta PC", ""]
+                if http.get("error"):
+                    lines.append(f"Página del grabador (HTTP): NO responde · {http['error']}")
+                else:
+                    lines.append(f"Página del grabador (HTTP): OK · {http.get('model') or ''} · serie {http.get('serialNumber') or '—'}")
+                    if chans:
+                        lines.append(f"Canales: {chans}")
+                if video.get("ok"):
+                    lines.append(f"Video (RTSP): OK · {video.get('width')}x{video.get('height')}")
+                else:
+                    lines.append(f"Video (RTSP): NO anda · {video.get('error')}")
+                lines += ["", f"Enlace: {r.get('rtsp_url')}"]
+                if not video.get("ok") or http.get("error"):
+                    lines += ["", "Revisá: misma red → IP de adentro y puertos 554/80; otra red → DDNS/IP pública y "
+                                  "puertos externos (38554/38080); usuario y clave del GRABADOR."]
+                self._set_info("\n".join(lines))
+                return
             if r.get("ok"):
                 chans = ", ".join(f"{c['channel']}: {c.get('name') or ''}" for c in r.get("channels") or [])
-                self._set_info(f"{cam['name']}: el grabador responde.\nModelo: {r.get('model') or '—'} · Serie: "
-                               f"{r.get('serialNumber') or '—'}\nCanales: {chans or '—'}\n\nEsto prueba el puerto HTTP. "
-                               f"El video lo prueba la PC central (mirá el estado en la lista).")
+                self._set_info(f"{cam['name']}: el grabador responde (prueba desde el servidor).\nModelo: {r.get('model') or '—'} · "
+                               f"Serie: {r.get('serialNumber') or '—'}\nCanales: {chans or '—'}")
             else:
-                self._set_info(f"{cam['name']}: no responde.\n{r.get('error')}\n\nEnlace para VLC: {r.get('rtsp_url')}")
-        self.bg.run(lambda: self.api.post(f"/api/cameras/{cam['id']}/probe"), done, self.err)
+                msg = f"{cam['name']}: el servidor no llega al grabador.\n{r.get('error')}"
+                if not r.get("public"):
+                    msg += ("\n\nEs normal: la IP es de una red interna (192.168…) y el servidor está en internet. "
+                            "Lo que importa es que la PC central llegue: mirá el estado en la lista o probá desde la PC central.")
+                self._set_info(msg + f"\n\nEnlace para VLC: {r.get('rtsp_url')}")
+        self.bg.run(run, done, self.err)
 
     # ---------- zonas ----------
     def zones_dialog(self, cam: dict | None) -> None:
@@ -569,6 +632,8 @@ class Oficina:
         c = self._sel_client()
         if not c:
             return
+
+        self._info_locked = (self._sel_camera() or {}).get("id")
 
         def done(res):
             today, week = res
@@ -1041,6 +1106,8 @@ class ZonesEditor:
 
         def done(_):
             self.top.destroy()
-            self.app.refresh_all()
+            self.app.config_saved()
+            self.app.v.log_handler.q.put_nowait(f"{datetime.now():%H:%M:%S}  Zonas de «{self.cam['name']}» guardadas: "
+                                                 "la PC central las aplica en segundos")
         self.app.bg.run(lambda: self.app.api.put(f"/api/cameras/{self.cam['id']}/analysis", body), done,
                         lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))

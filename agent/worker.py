@@ -14,6 +14,7 @@ from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import write_mp4
 from core.detectors import Detector
 from core.metrics import MetricsCollector
+from core.rules import RuleEngine, parse_config
 from core.scorer import Scorer
 
 from .cameras import build_camera, download_nvr_clip
@@ -62,13 +63,27 @@ class CameraWorker:
         # métricas del local (personas, tiempos, destinos, vehículos): mismos tracks, sin costo extra
         self.metrics = MetricsCollector(self.analyzer.zones)
         self._metrics_pending: list[dict] = []
+        self.analysis_fp = self.analysis_of(cam_cfg)
+        self._pending_analysis: dict | None = None
         # ventana de la PC central: último cuadro con recuadros (se arma solo si la ventana está abierta)
         self.show_window = False
         self.display = None  # np.ndarray | None
 
     @staticmethod
     def fingerprint_of(cam_cfg: dict) -> str:
-        return json.dumps(cam_cfg, sort_keys=True, default=str)
+        """Lo que obliga a reconectar: conexión, modo, detector… Las zonas y reglas NO (se aplican en
+        caliente con `update_analysis`); solo cuenta si hay que detectar vehículos (cambia el detector)."""
+        base = {k: v for k, v in cam_cfg.items() if k != "analysis"}
+        base["vehicles"] = bool((cam_cfg.get("analysis") or {}).get("vehicles"))
+        return json.dumps(base, sort_keys=True, default=str)
+
+    @staticmethod
+    def analysis_of(cam_cfg: dict) -> str:
+        return json.dumps(cam_cfg.get("analysis") or {}, sort_keys=True, default=str)
+
+    def update_analysis(self, analysis: dict) -> None:
+        """Zonas o reglas nuevas: se aplican en el próximo cuadro, sin cortar el video."""
+        self._pending_analysis = analysis
 
     def start(self) -> None:
         self.thread.start()
@@ -118,6 +133,9 @@ class CameraWorker:
         window: list[float] = []
         fails = 0
         while not self._stop.is_set():
+            if self._pending_analysis is not None:
+                self._apply_analysis(self._pending_analysis)
+                self._pending_analysis = None
             ok, frame = cap.read()  # leer todos los frames evita acumular retraso en el stream
             if not ok:
                 fails += 1
@@ -184,6 +202,19 @@ class CameraWorker:
         except Exception:
             log.exception("[%s] no se pudo generar el clip %s", self.name, c.uuid)
             self.outbox.clip_done(c.uuid, None)
+
+    def _apply_analysis(self, analysis: dict) -> None:
+        try:
+            zones, rule_cfg = parse_config(analysis)
+        except ValueError as exc:
+            log.warning("[%s] zonas inválidas, sigo con las anteriores: %s", self.name, exc)
+            return
+        self.analyzer.zones = zones
+        self.analyzer.engine = RuleEngine(zones, rule_cfg)
+        self._send_metrics(self.metrics.close())  # lo medido hasta ahora queda con las zonas viejas
+        self.metrics = MetricsCollector(zones)
+        self.live.zones = zones
+        log.info("[%s] zonas y reglas actualizadas (%d zonas)", self.name, len(zones))
 
     def _send_metrics(self, buckets: list[dict]) -> None:
         """Manda los cubos al servidor en otro hilo; si falla, se reintentan con el próximo envío."""

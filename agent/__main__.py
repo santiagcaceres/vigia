@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 
 from core.detectors import Detector, build_detector
+from core.rules import parse_zones
 from core.scorer import Scorer
 
 from .alarms import AlarmRunner
@@ -39,7 +40,7 @@ from .worker import CameraWorker
 
 log = logging.getLogger("vigia.agent")
 VERSION = "2.0.0"
-CONFIG_EVERY_SECONDS = 60
+CONFIG_EVERY_SECONDS = 20  # cada cuánto se piden cámaras, zonas y reglas (además se pide al guardar en la app)
 STATUS_EVERY_SECONDS = 10  # la respuesta trae qué cámaras se están mirando en vivo
 LIVE_EXTEND_SECONDS = 45.0  # cuánto sigue el vivo después del último aviso del servidor
 
@@ -52,6 +53,7 @@ class Agent:
         self.relogin = relogin  # pide usuario y clave de nuevo (ventana) y devuelve el token nuevo
         self.pc_name = pc_name
         self._logout_requested = False
+        self._force_config = False
         self.process_imports = process_imports
         self.imports: ImportJobRunner | None = None
         self.alarms: AlarmRunner | None = None
@@ -120,6 +122,15 @@ class Agent:
                 w.stop()
                 w.thread.join(15)
                 del self.workers[cid]
+            elif w.analysis_fp != CameraWorker.analysis_of(wanted[cid]):  # solo cambiaron zonas o reglas
+                w.analysis_fp = CameraWorker.analysis_of(wanted[cid])
+                w.update_analysis(wanted[cid].get("analysis") or {})
+        for cid, lw in self.live_workers.items():  # vivo de cámaras en modo alarmas: zonas nuevas en el dibujo
+            if cid in self._cams_cfg:
+                try:
+                    lw.streamer.zones = parse_zones((self._cams_cfg[cid].get("analysis") or {}).get("zones"))
+                except ValueError:
+                    pass
         for cid, c in wanted.items():
             if cid in self.workers:
                 continue
@@ -140,6 +151,9 @@ class Agent:
         last_cfg = last_status = -1e9
         while not self._stop.is_set():
             now = time.monotonic()
+            if self._force_config:
+                self._force_config = False
+                last_cfg = -1e9
             if now - last_cfg >= CONFIG_EVERY_SECONDS:
                 try:
                     self.apply_config(self.client.config())
@@ -190,6 +204,24 @@ class Agent:
             else:
                 self._stop.wait(1.0)
         self.shutdown()
+
+    def refresh_config(self) -> None:
+        """Pedir ya la configuración (se guardaron cámaras, zonas o reglas en la app)."""
+        self._force_config = True
+
+    def local_probe(self, cam_id: int) -> dict | None:
+        """Prueba la cámara DESDE ESTA PC (página del grabador + video). None si no la analiza esta PC."""
+        c = self._cams_cfg.get(cam_id)
+        if c is None:
+            return None
+        from .cameras import build_camera, probe, test_stream
+        cam = build_camera(c["connection"])
+        info = probe(cam)
+        try:
+            video = test_stream(cam)
+        except Exception as exc:  # noqa: BLE001
+            video = {"ok": False, "error": str(exc)}
+        return {"http": info, "video": video, "rtsp_url": cam.redacted(cam.live_url())}
 
     def _request_logout(self) -> None:
         self._logout_requested = True
@@ -512,7 +544,10 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
         title += f" · PC central «{state['pc']}»"
     ventana.on_logout = logout
     ventana.build_main(title, analyze=state["analyze"])
-    oficina = Oficina(ventana, api, on_logout=logout)
+    holder: dict = {}
+    oficina = Oficina(ventana, api, on_logout=logout,
+                      local_probe=lambda cid: holder["agent"].local_probe(cid) if "agent" in holder else None,
+                      on_config_saved=lambda: holder["agent"].refresh_config() if "agent" in holder else None)
     oficina.build(ventana.notebook)
     ventana.hooks.append(oficina.bg.drain)
 
@@ -531,6 +566,7 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     agent = Agent(a.server, state["agent_token"], data_dir, a.model, verify=verify, process_imports=not a.no_imports,
                   alarm_workers=max(1, a.alarm_workers), window=ventana, relogin=relogin,
                   pc_name=f"PC central «{state['pc']}»")
+    holder["agent"] = agent
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
     try:

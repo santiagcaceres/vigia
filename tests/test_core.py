@@ -167,3 +167,16 @@ def test_el_clip_cubre_toda_la_estadia_de_la_persona():
     assert 42 <= c.end_ts <= 44  # siguió hasta 3 s después de que se fue (40 s)
     assert isinstance(c.frames[0][1], bytes) and c.frames[0][1][:2] == b"\xff\xd8"  # buffer en JPEG
     assert sum(1 for _ in c.decoded()) == len(c.frames)
+
+
+def test_worker_aplica_zonas_nuevas_sin_reconectar():
+    """Cambiar solo zonas/reglas no cambia la huella de conexión: se aplican en caliente."""
+    from agent.worker import CameraWorker
+    base = {"id": 1, "name": "A", "connection": {"host": "h", "channel": 1}, "process_fps": 5,
+            "analysis": {"zones": [], "rules": {}, "vehicles": False}}
+    otra = {**base, "analysis": {"zones": [{"name": "g", "type": "shelf", "polygon": [[0, 0], [1, 0], [1, 1]]}],
+                                 "rules": {"loiter_seconds": 15}, "vehicles": False}}
+    assert CameraWorker.fingerprint_of(base) == CameraWorker.fingerprint_of(otra)
+    assert CameraWorker.analysis_of(base) != CameraWorker.analysis_of(otra)
+    veh = {**base, "analysis": {**base["analysis"], "vehicles": True}}  # vehículos cambia el detector: reconecta
+    assert CameraWorker.fingerprint_of(base) != CameraWorker.fingerprint_of(veh)
