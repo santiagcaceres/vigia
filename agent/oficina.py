@@ -38,7 +38,8 @@ log = logging.getLogger("vigia.oficina")
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
 MODE_NAMES = {"vivo": "En vivo 24 h", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
-BRAND_NAMES = {"hikvision": "Hikvision", "dahua": "Dahua", "hikconnect": "Hikvision por Hik-Connect (sin puertos)"}
+BRAND_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
+               "hikvision": "Hikvision por IP y puertos", "dahua": "Dahua por IP y puertos"}
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador"}
 LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falso positivo"}
@@ -550,17 +551,14 @@ class Oficina:
         hc_key = tk.StringVar(value=c.get("hc_app_key") or "")
         hc_secret = tk.StringVar()
         hc_url = tk.StringVar(value=c.get("hc_api_url") or "")
-        hc_code = tk.StringVar()
         for i, (lab, var, show) in enumerate((("AppKey", hc_key, ""), ("SecretKey", hc_secret, "•"),
-                                              ("Servidor (opcional)", hc_url, ""),
-                                              ("Código de cifrado (opcional)", hc_code, ""))):
+                                              ("Servidor (opcional)", hc_url, ""))):
             ttk.Label(hf, text=lab).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
             ttk.Entry(hf, textvariable=var, show=show).grid(row=i, column=1, sticky="ew", pady=2)
         ttk.Label(hf, text=("Portal de Hik-Connect → Team Management → API Integration."
                             + (" SecretKey vacío = no cambia." if c.get("hc_has_secret") else "")
                             + "\nServidor vacío = se busca solo (o pegá la dirección del portal, ej. isa.hikcentralconnect.com)."
-                            + "\nCódigo de cifrado: el del video de los grabadores (vale para todas las cámaras)."
-                            + (" Ya hay uno cargado: vacío = no cambia, «-» = borrarlo." if c.get("hc_has_code") else "")),
+                            + "\nImportante: apagá el cifrado de video de los grabadores (con cifrado, Hik-Connect no entrega el video)."),
                   foreground="#666", justify="left").grid(row=4, column=0, columnspan=2, sticky="w")
         if c.get("id") and c.get("hc_app_key"):
             ttk.Button(hf, text="Probar: ver cámaras de Hik-Connect",
@@ -590,8 +588,6 @@ class Oficina:
                 return self.mb.showwarning("Vigía", "El usuario para la web no puede quedar vacío.", parent=top)
             body["web_username"], body["web_password"] = user or None, pwd or None
             body["hc_app_key"], body["hc_api_url"] = hc_key.get().strip() or None, hc_url.get().strip() or None
-            if hc_code.get().strip():
-                body["hc_code"] = hc_code.get().strip()
             if hc_secret.get().strip():
                 body["hc_secret"] = hc_secret.get().strip()
             elif body["hc_app_key"] and not c.get("hc_has_secret"):
@@ -609,16 +605,22 @@ class Oficina:
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
-    def hikconnect_cameras(self, client: dict, pick: Callable[[dict], None] | None, parent=None) -> None:
-        """Lista las cámaras que ve la API de Hik-Connect del cliente. Con `pick`, se elige una."""
+    def hikconnect_cameras(self, client: dict, pick: Callable[[list[dict]], None] | None, parent=None,
+                           multi: bool = False) -> None:
+        """Lista las cámaras que ve la API de Hik-Connect del cliente. Con `pick`, se eligen (una o varias)."""
         tk, ttk = self.tk, self.ttk
+        if not client or not client.get("hc_app_key"):
+            return self.mb.showwarning("Vigía", "Primero cargá la clave de Hik-Connect en el cliente "
+                                                "(Editar cliente → recuadro Hik-Connect).", parent=parent)
 
         def done(res):
-            cams = res.get("cameras") or []
+            cams = sorted(res.get("cameras") or [], key=lambda x: (x["serial"], x["channel"] or 0, x["name"]))
             top, frm = self._dialog(f"Hik-Connect · {client['name']}", width=620)
             ttk.Label(frm, text=f"{len(cams)} cámaras · servidor {res.get('server') or '—'}"
-                               + ("\nElegí una y tocá «Usar esta»." if pick else "")).grid(row=0, column=0, sticky="w")
-            lb = tk.Listbox(frm, height=min(16, max(4, len(cams))), width=80)
+                               + ("\nElegí una o varias (Ctrl o Shift) y tocá «Usar»." if pick and multi else
+                                  "\nElegí una y tocá «Usar»." if pick else "")).grid(row=0, column=0, sticky="w")
+            lb = tk.Listbox(frm, height=min(18, max(4, len(cams))), width=80,
+                            selectmode="extended" if multi else "browse")
             for x in cams:
                 lb.insert("end", f"{x['name']}  ·  serie {x['serial'] or '—'}  ·  canal {x['channel'] or '?'}"
                                  f"{'  ·  ' + x['device_name'] if x.get('device_name') else ''}")
@@ -628,11 +630,13 @@ class Oficina:
             ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="right")
             if pick:
                 def use():
-                    sel = lb.curselection()
+                    sel = [cams[i] for i in lb.curselection()]
                     if sel:
-                        pick(cams[sel[0]])
+                        pick(sel)
                         top.destroy()
-                ttk.Button(bb, text="Usar esta", command=use).pack(side="right", padx=6)
+                ttk.Button(bb, text="Usar", command=use).pack(side="right", padx=6)
+                if multi:
+                    ttk.Button(bb, text="Todas", command=lambda: lb.select_set(0, "end")).pack(side="right")
         self.bg.run(lambda: self.api.get(f"/api/clients/{client['id']}/hikconnect/cameras"), done,
                     lambda e: self.mb.showerror("Vigía", f"Hik-Connect: {e}", parent=parent))
 
@@ -675,19 +679,23 @@ class Oficina:
 
     # ---------- diálogos de cámara ----------
     def camera_dialog(self, cam: dict | None = None) -> None:
+        """Alta o edición de cámaras. Hikvision entra por Hik-Connect (sin IP ni puertos; se eligen una o
+        varias cámaras de la lista de la API). Dahua, y Hikvision sin Hik-Connect, por IP y puertos."""
         tk, ttk = self.tk, self.ttk
         client = self._sel_client()
         if cam is None and client is None:
             return self.mb.showinfo("Vigía", "Elegí primero un cliente a la izquierda.")
         cam = cam or {}
-        top, frm = self._dialog("Editar cámara" if cam.get("id") else f"Nueva cámara · {client['name']}", 560)
+        top, frm = self._dialog("Editar cámara" if cam.get("id") else f"Nueva cámara · {client['name']}", 600)
+        owner = next((x for x in self.clients if x["id"] == (cam.get("client_id") or (client or {}).get("id"))), client)
         centrals = [a for a in self.agents if a.get("central")]
         agent_names = [a["name"] for a in centrals]
         cur_agent = next((a["name"] for a in centrals if a["id"] == cam.get("agent_id")),
                          agent_names[0] if agent_names else "")
+        default_brand = cam.get("brand") or ("hikconnect" if (owner or {}).get("hc_app_key") else "hikvision")
         v = {
             "name": tk.StringVar(value=cam.get("name", "")),
-            "brand": tk.StringVar(value=BRAND_NAMES.get(cam.get("brand", "hikvision"))),
+            "brand": tk.StringVar(value=BRAND_NAMES.get(default_brand)),
             "mode": tk.StringVar(value=MODE_NAMES.get(cam.get("mode", "vivo"))),
             "host": tk.StringVar(value=cam.get("host", "")),
             "rtsp_port": tk.StringVar(value=str(cam.get("rtsp_port", 554))),
@@ -697,99 +705,136 @@ class Oficina:
             "password": tk.StringVar(value=""),
             "agent": tk.StringVar(value=cur_agent),
             "fps": tk.StringVar(value=str(cam.get("process_fps", 5))),
-            "serial": tk.StringVar(value=cam.get("hpp_serial") or ""),
         }
-        hc_res = {"id": cam.get("hc_resource_id"), "serial": cam.get("hpp_serial"), "channel": cam.get("channel")}
-        serial_row = ttk.Frame(frm)
-        ttk.Entry(serial_row, textvariable=v["serial"]).pack(side="left", fill="x", expand=True)
-
-        def picked(x: dict) -> None:
-            v["serial"].set(x["serial"])
-            if x.get("channel"):
-                v["channel"].set(str(x["channel"]))
-            if not v["name"].get().strip():
-                v["name"].set(x["name"])
-            v["brand"].set(BRAND_NAMES["hikconnect"])
-            hc_res.update(id=x["id"], serial=x["serial"], channel=int(v["channel"].get() or 1))
-        owner = next((x for x in self.clients if x["id"] == (cam.get("client_id") or (client or {}).get("id"))), client)
-        ttk.Button(serial_row, text="Elegir de Hik-Connect…",
-                   command=lambda: self.hikconnect_cameras(owner, picked, parent=top)).pack(side="left", padx=(6, 0))
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
-        r = 0
-        for key, lab, w in (("name", "Nombre", ttk.Entry(frm, textvariable=v["name"])),
-                            ("brand", "Marca", ttk.Combobox(frm, textvariable=v["brand"], values=list(BRAND_NAMES.values()), state="readonly")),
-                            ("mode", "Modo", ttk.Combobox(frm, textvariable=v["mode"], values=list(MODE_NAMES.values()), state="readonly")),
-                            ("host", "IP o DDNS del grabador", ttk.Entry(frm, textvariable=v["host"])),
-                            ("rtsp_port", "Puerto RTSP", ttk.Entry(frm, textvariable=v["rtsp_port"])),
-                            ("http_port", "Puerto HTTP", ttk.Entry(frm, textvariable=v["http_port"])),
-                            ("channel", "Canal", ttk.Entry(frm, textvariable=v["channel"])),
-                            ("username", "Usuario del grabador", ttk.Entry(frm, textvariable=v["username"])),
-                            ("password", "Clave del grabador / código de cifrado" + (" (vacía = sin cambios)" if cam.get("has_password") else ""),
-                             ttk.Entry(frm, textvariable=v["password"], show="•")),
-                            ("agent", "PC central que la analiza", ttk.Combobox(frm, textvariable=v["agent"], values=agent_names, state="readonly")),
-                            ("fps", "Cuadros por segundo", ttk.Entry(frm, textvariable=v["fps"])),
-                            ("serial", "Serie del grabador (solo Hik-Connect)", serial_row)):
-            self._row(frm, r, lab, w)
-            r += 1
-        ttk.Label(frm, text="Misma red que la PC central: IP de adentro (192.168.x.x) y puertos 554/80.\n"
-                            "Otra red: IP pública o DDNS y los puertos externos del router (ej. 38554/38080).\n"
-                            "Por Hik-Connect: sin IP ni puertos; serie del grabador y canal (o «Elegir de Hik-Connect»).",
-                  foreground="#666", justify="left").grid(row=r, column=0, columnspan=2, sticky="w", pady=(4, 6))
-        r += 1
+        # cámaras elegidas de Hik-Connect: [{id, name, serial, channel}]
+        hc_sel: list[dict] = ([{"id": cam.get("hc_resource_id"), "name": cam.get("name"), "serial": cam.get("hpp_serial"),
+                                "channel": cam.get("channel")}] if cam.get("brand") == "hikconnect" else [])
+        hc_text = tk.StringVar()
+
+        def show_sel() -> None:
+            if not hc_sel:
+                hc_text.set("Ninguna elegida")
+            elif len(hc_sel) == 1:
+                x = hc_sel[0]
+                hc_text.set(f"{x.get('name') or '—'} · serie {x.get('serial') or '—'} · canal {x.get('channel') or '?'}")
+            else:
+                hc_text.set(f"{len(hc_sel)} cámaras (se crea una por cada una)")
+        show_sel()
+
+        def picked(items: list[dict]) -> None:
+            hc_sel[:] = items[:1] if cam.get("id") else items
+            if len(hc_sel) == 1 and (not v["name"].get().strip() or v["name"].get() == cam.get("name")):
+                v["name"].set(hc_sel[0]["name"])
+            show_sel()
+
+        rows: dict[str, list] = {"hc": [], "ip": []}
+
+        def row(kind: str | None, r: int, label: str, widget) -> None:
+            lab = ttk.Label(frm, text=label)
+            lab.grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
+            widget.grid(row=r, column=1, sticky="ew", pady=3)
+            if kind:
+                rows[kind] += [lab, widget]
+
+        row(None, 0, "Conexión", ttk.Combobox(frm, textvariable=v["brand"], values=list(BRAND_NAMES.values()), state="readonly"))
+        row(None, 1, "Nombre", ttk.Entry(frm, textvariable=v["name"]))
+        hc_box = ttk.Frame(frm)
+        ttk.Label(hc_box, textvariable=hc_text).pack(side="left", fill="x", expand=True)
+        ttk.Button(hc_box, text="Elegir de Hik-Connect…",
+                   command=lambda: self.hikconnect_cameras(owner, picked, parent=top, multi=not cam.get("id"))
+                   ).pack(side="left", padx=(6, 0))
+        row("hc", 2, "Cámara(s)", hc_box)
+        hc_hint = ttk.Label(frm, foreground="#666", justify="left",
+                            text="Sin IP ni puertos: el video llega por la nube de Hik-Connect (modo En vivo 24 h).\n"
+                                 "El grabador tiene que tener APAGADO el cifrado de video.\n"
+                                 "Al agregar se pueden elegir varias cámaras a la vez (Ctrl o Shift).")
+        hc_hint.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 6))
+        rows["hc"].append(hc_hint)
+        row("ip", 4, "Modo", ttk.Combobox(frm, textvariable=v["mode"], values=list(MODE_NAMES.values()), state="readonly"))
+        row("ip", 5, "IP o DDNS del grabador", ttk.Entry(frm, textvariable=v["host"]))
+        row("ip", 6, "Puerto RTSP", ttk.Entry(frm, textvariable=v["rtsp_port"]))
+        row("ip", 7, "Puerto HTTP", ttk.Entry(frm, textvariable=v["http_port"]))
+        row("ip", 8, "Canal", ttk.Entry(frm, textvariable=v["channel"]))
+        row("ip", 9, "Usuario del grabador", ttk.Entry(frm, textvariable=v["username"]))
+        row("ip", 10, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else ""),
+            ttk.Entry(frm, textvariable=v["password"], show="•"))
+        ip_hint = ttk.Label(frm, foreground="#666", justify="left",
+                            text="Misma red que la PC central: IP de adentro (192.168.x.x) y puertos 554/80.\n"
+                                 "Otra red: IP pública o DDNS y los puertos externos del router (ej. 38554/38080).")
+        ip_hint.grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 6))
         cfg = cam.get("alarm_cfg") or {}
         al = {k: tk.BooleanVar(value=k in (cfg.get("event_types") or ["VMD", "fielddetection", "linedetection"])) for k in ALARM_TYPES}
         af = ttk.LabelFrame(frm, text="Alarmas del grabador que se analizan (modos de alarma)", padding=6)
-        af.grid(row=r, column=0, columnspan=2, sticky="ew", pady=4)
+        af.grid(row=12, column=0, columnspan=2, sticky="ew", pady=4)
         for i, (k, t) in enumerate(ALARM_TYPES.items()):
             ttk.Checkbutton(af, text=t, variable=al[k]).grid(row=i // 3, column=i % 3, sticky="w", padx=4)
-        r += 1
-        ttk.Checkbutton(frm, text="Bajar el clip de la grabación del grabador (si tiene disco)", variable=nvr).grid(row=r, column=0, columnspan=2, sticky="w")
-        r += 1
-        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=r, column=0, columnspan=2, sticky="w")
-        r += 1
+        nvr_cb = ttk.Checkbutton(frm, text="Bajar el clip de la grabación del grabador (si tiene disco)", variable=nvr)
+        nvr_cb.grid(row=13, column=0, columnspan=2, sticky="w")
+        rows["ip"] += [ip_hint, af, nvr_cb]
+        row(None, 14, "PC central que la analiza", ttk.Combobox(frm, textvariable=v["agent"], values=agent_names, state="readonly"))
+        row(None, 15, "Cuadros por segundo", ttk.Entry(frm, textvariable=v["fps"]))
+        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=16, column=0, columnspan=2, sticky="w")
+
+        inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
+
+        def layout(*_) -> None:
+            hc = inv(BRAND_NAMES, v["brand"].get()) == "hikconnect"
+            for w in rows["hc"]:
+                w.grid() if hc else w.grid_remove()
+            for w in rows["ip"]:
+                w.grid_remove() if hc else w.grid()
+        v["brand"].trace_add("write", layout)
+        layout()
 
         def save() -> None:
-            inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
+            brand = inv(BRAND_NAMES, v["brand"].get()) or "hikvision"
             try:
-                body = {
-                    "client_id": cam.get("client_id") or client["id"], "name": v["name"].get().strip(),
-                    "brand": inv(BRAND_NAMES, v["brand"].get()) or "hikvision",
-                    "mode": inv(MODE_NAMES, v["mode"].get()) or "vivo", "host": v["host"].get().strip(),
-                    "rtsp_port": int(v["rtsp_port"].get()), "http_port": int(v["http_port"].get()),
-                    "channel": int(v["channel"].get()), "username": v["username"].get().strip(),
-                    "password": v["password"].get() or None,
+                common = {
+                    "client_id": cam.get("client_id") or client["id"], "brand": brand,
                     "agent_id": next((a["id"] for a in centrals if a["name"] == v["agent"].get()), None),
-                    "process_fps": float(v["fps"].get()), "enabled": enabled.get(), "nvr_clips": nvr.get(),
+                    "process_fps": float(v["fps"].get()), "enabled": enabled.get(),
                     "detect_stream": cam.get("detect_stream", "sub"), "detector": cam.get("detector", "yolo"),
                     "playback_time": cam.get("playback_time", "local"),
-                    "hpp_serial": v["serial"].get().strip().upper() or cam.get("hpp_serial"),
                     "alarm_cfg": {**cfg, "event_types": [k for k, var in al.items() if var.get()]},
                 }
+                if brand != "hikconnect":
+                    common.update(mode=inv(MODE_NAMES, v["mode"].get()) or "vivo", host=v["host"].get().strip(),
+                                  rtsp_port=int(v["rtsp_port"].get()), http_port=int(v["http_port"].get()),
+                                  channel=int(v["channel"].get()), username=v["username"].get().strip(),
+                                  password=v["password"].get() or None, nvr_clips=nvr.get(),
+                                  hpp_serial=cam.get("hpp_serial"))
             except ValueError:
                 return self.mb.showwarning("Vigía", "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
-            if body["brand"] == "hikconnect":
-                if not body["name"] or not body["hpp_serial"]:
-                    return self.mb.showwarning("Vigía", "Faltan el nombre o la serie del grabador.", parent=top)
-                if body["mode"] != "vivo":
-                    body["mode"] = "vivo"
-                    self.mb.showinfo("Vigía", "Por Hik-Connect, por ahora, la cámara va En vivo 24 h.", parent=top)
-                same = hc_res["serial"] == body["hpp_serial"] and hc_res["channel"] == body["channel"]
-                body["hc_resource_id"] = hc_res["id"] if same else None  # si cambió, el servidor la vuelve a buscar
-            elif not body["name"] or not body["host"]:
-                return self.mb.showwarning("Vigía", "Faltan el nombre o la IP del grabador.", parent=top)
-            if body["agent_id"] is None:
+            if brand == "hikconnect":
+                if not hc_sel or not hc_sel[0].get("serial"):
+                    return self.mb.showwarning("Vigía", "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
+                bodies = [{**common, "mode": "vivo", "host": "", "username": "", "password": None, "nvr_clips": False,
+                           "name": (v["name"].get().strip() if len(hc_sel) == 1 else "") or x.get("name") or "Cámara",
+                           "hpp_serial": x["serial"], "channel": int(x.get("channel") or 1),
+                           "hc_resource_id": x.get("id")} for x in hc_sel]
+            else:
+                if not v["name"].get().strip() or not common["host"]:
+                    return self.mb.showwarning("Vigía", "Faltan el nombre o la IP del grabador.", parent=top)
+                bodies = [{**common, "name": v["name"].get().strip()}]
+            if common["agent_id"] is None:
                 self.mb.showwarning("Vigía", "No hay ninguna PC central elegida: la cámara no se va a analizar "
                                              "hasta que le asignes una.", parent=top)
 
-            def done(_):
+            def send():
+                if cam.get("id"):
+                    return [self.api.put(f"/api/cameras/{cam['id']}", bodies[0])]
+                return [self.api.post("/api/cameras", b) for b in bodies]
+
+            def done(res):
                 top.destroy()
                 self.config_saved()
-            self.bg.run(lambda: (self.api.put(f"/api/cameras/{cam['id']}", body) if cam.get("id")
-                                 else self.api.post("/api/cameras", body)), done,
-                        lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+                if len(res) > 1:
+                    self.mb.showinfo("Vigía", f"Se agregaron {len(res)} cámaras.")
+            self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=r, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=17, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 

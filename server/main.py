@@ -1077,8 +1077,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         f"({len(cams)} cámaras de esa serie). ¿Está agregado al equipo?")
                 c.hc_resource_id = pick["id"]
                 s.commit()
-            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end,
-                                 code=box.decrypt(c.password_enc) or box.decrypt(client.hc_code_enc) or None)
+            # sin `code`: con el cifrado de video prendido Hikvision no entrega HLS aunque se mande el código
+            # (EVZ60019; solo sirve para su reproductor EZOPEN). Hay que apagar el cifrado en el grabador.
+            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end)
             if client.hc_api_url is None and api.server:
                 client.hc_api_url = api.server  # recordar la región que anduvo
                 s.commit()

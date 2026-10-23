@@ -181,9 +181,9 @@ class HikConnect:
         except HikConnectError as exc:
             if "EVZ60019" in str(exc) or "ncryption" in str(exc):
                 raise HikConnectError(
-                    "El grabador tiene el cifrado de video prendido. Apagalo (Hik-Connect / Hik-Partner Pro → "
-                    "configuración del grabador → cifrado de video) o poné el código de verificación del grabador "
-                    "en «Clave del grabador» de la cámara. (" + str(exc) + ")") from exc
+                    "El grabador tiene el cifrado de video prendido y así Hik-Connect no entrega el video. "
+                    "Apagalo: app Hik-Connect → grabador → Configuración → Cifrado de video, o en el menú del "
+                    "grabador: Red → Avanzado → Acceso a plataforma → Hik-Connect → cifrado. (" + str(exc) + ")") from exc
             raise
         url = data.get("url")
         if not url:

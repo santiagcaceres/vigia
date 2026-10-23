@@ -278,8 +278,15 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   `channel`, `hc_resource_id` (se busca solo por serie+canal o se elige con «Elegir de Hik-Connect…»). La PC
   central pide el link a `POST /api/agent/cameras/{id}/stream-url` (el SecretKey nunca sale del servidor) y lo abre
   con OpenCV; cada reconexión pide link nuevo (`agent/hikconnect.py`, `CameraWorker.run`). Solo modo `vivo`.
-  `GET /api/clients/{id}/hikconnect/cameras` lista lo que ve la API. Con el cifrado de video prendido
-  Hikvision responde EVZ60019: se manda `code` = «Clave del grabador» de la cámara o `Client.hc_code_enc` (app 1.10.0). Los errores de Hik-Connect quedan en los
+  `GET /api/clients/{id}/hikconnect/cameras` lista lo que ve la API.
+  **Probado el 23 oct con el DVR de Minas (E02380030, DS-7116HGHI-F1):** token OK en `isa`, lista de 42 cámaras OK,
+  el link de video da **EVZ60019 (cifrado de video prendido)**. Mandar `code` (el código de verificación) NO lo
+  arregla para HLS: solo sirve para el reproductor EZOPEN de Hikvision. **Hay que apagar el cifrado en el
+  grabador.** (`Client.hc_code_enc` quedó en la base pero no se usa.) Formulario de cámara (app 1.10.1): «Conexión»
+  = Hikvision por Hik-Connect (por defecto si el cliente tiene clave; sin IP ni puertos; se eligen varias cámaras
+  a la vez) / Hikvision por IP y puertos / Dahua por IP y puertos. **Dahua no tiene API pública equivalente**
+  (DoLynk Care no publica una; IMOU Open Platform da HLS pero solo para equipos en cuentas Imou, sin verificar con
+  NVR de DMSS). Los errores de Hik-Connect quedan en los
   logs de Vercel (`vigia.hikconnect`): mirarlos en la primera prueba.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local

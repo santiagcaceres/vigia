@@ -150,27 +150,3 @@ def test_cifrado_pide_el_codigo(fake):
     assert "cifrado de video" in str(e.value) and "EVZ60019" in str(e.value)
     assert api.stream_url("res-enc", "F1", code="ABCDEF").startswith("https://hls.example/res-enc/")
     assert [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["code"] == "ABCDEF"
-
-
-def test_codigo_de_cifrado_del_cliente(app, fake):
-    with TestClient(app) as c:
-        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
-        cid = c.post("/api/clients", json={"name": "Minas", "hc_app_key": "clave", "hc_secret": "secreto",
-                                            "hc_code": "qwerty123"}).json()["id"]
-        assert c.get("/api/clients").json()[0]["hc_has_code"]
-        ag = c.post("/api/agents", json={"name": "central", "client_id": None}).json()
-        h = {"X-Agent-Token": ag["token"]}
-        cam = c.post("/api/cameras", json={"client_id": cid, "agent_id": ag["id"], "name": "Caja", "brand": "hikconnect",
-                                           "hpp_serial": "F12345678", "hc_resource_id": "res-enc"}).json()
-        r = c.post(f"/api/agent/cameras/{cam['id']}/stream-url", json={}, headers=h)
-        assert r.status_code == 200 and [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["code"] == "qwerty123"
-        # la clave de la cámara manda sobre la del cliente
-        c.put(f"/api/cameras/{cam['id']}", json={"client_id": cid, "agent_id": ag["id"], "name": "Caja", "brand": "hikconnect",
-                                                  "hpp_serial": "F12345678", "hc_resource_id": "res-enc", "password": "OTRO99"})
-        c.post(f"/api/agent/cameras/{cam['id']}/stream-url", json={}, headers=h)
-        assert [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["code"] == "OTRO99"
-        # editar sin mandar el código no lo borra; con "-" sí
-        c.put(f"/api/clients/{cid}", json={"name": "Minas"})
-        assert c.get("/api/clients").json()[0]["hc_has_code"]
-        c.put(f"/api/clients/{cid}", json={"name": "Minas", "hc_code": "-"})
-        assert not c.get("/api/clients").json()[0]["hc_has_code"]
