@@ -56,6 +56,18 @@ def _ok(r: httpx.Response, what: str) -> dict:
     return data.get("data") or {}
 
 
+def short_serial(serial: str | None) -> str:
+    """Serie corta del equipo (la que usa la API, ej. «E02380030»). Hikvision también muestra la larga:
+    modelo + fecha + «CCWR» + serie + «WCVU» (ej. «DVR/DVS-34-A1620191217CCWRE02380030WCVU»)."""
+    s = (serial or "").strip().upper()
+    if "CCWR" in s:
+        s = s.rsplit("CCWR", 1)[1]
+        s = s[:-4] if len(s) > 4 and s[-4:].isalpha() else s
+    elif len(s) > 16 and s[-4:].isalpha():
+        s = s[-13:-4]
+    return s
+
+
 def normalize_url(url: str | None) -> str | None:
     url = (url or "").strip().rstrip("/")
     if not url:
@@ -137,7 +149,8 @@ class HikConnect:
                 dev = (c.get("device") or {}).get("devInfo") or {}
                 channel = c.get("channelNo") or c.get("channel") or c.get("cameraNo") or c.get("chanNo")
                 out.append({"id": str(c["id"]), "name": c.get("name") or str(c["id"]),
-                            "serial": dev.get("serialNo") or "", "device_name": dev.get("name") or "",
+                            "serial": short_serial(dev.get("serialNo") or dev.get("deviceSerial")),
+                            "device_name": dev.get("name") or "",
                             "channel": int(channel) if str(channel or "").isdigit() else None,
                             "online": c.get("onlineStatus", c.get("online"))})
             if len(items) < 200:

@@ -225,7 +225,7 @@ class CameraIn(BaseModel):
     # vivo: el agente mira el stream 24 h. alarmas: Hik-Partner Pro avisa (webhook). alarmas_equipo:
     # el propio grabador avisa (conexión larga desde el agente); vale para cualquier marca.
     mode: Literal["vivo", "alarmas", "alarmas_equipo"] = "vivo"
-    hpp_serial: str | None = Field(None, max_length=32)
+    hpp_serial: str | None = Field(None, max_length=64)  # la larga de Hik-Connect se acorta al validar
     hc_resource_id: str | None = Field(None, max_length=64)
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
 
@@ -860,6 +860,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if ag.client_id is not None and ag.client_id != body.client_id:
                 raise HTTPException(422, "El agente pertenece a otro cliente")
         body.hpp_serial = (body.hpp_serial or "").strip().upper() or None
+        if body.brand == "hikconnect" and body.hpp_serial:
+            body.hpp_serial = hikconnect.short_serial(body.hpp_serial) or None
         body.hc_resource_id = (body.hc_resource_id or "").strip() or None
         if body.brand == "hikconnect":
             if not body.hpp_serial:

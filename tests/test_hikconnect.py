@@ -77,6 +77,9 @@ def test_camara_por_hik_connect_de_punta_a_punta(app, fake):
         assert c.post("/api/cameras", json={**base, "hpp_serial": "f12345678", "mode": "alarmas_equipo"}).status_code == 422
         cam = c.post("/api/cameras", json={**base, "hpp_serial": "f12345678"}).json()
         assert cam["brand"] == "hikconnect" and cam["hpp_serial"] == "F12345678" and cam["hc_resource_id"] is None
+        largo = c.post("/api/cameras", json={**base, "name": "L", "hpp_serial": "DVR/DVS-34-A1620191217CCWRF12345678WCVU"}).json()
+        assert largo["hpp_serial"] == "F12345678"
+        c.delete(f"/api/cameras/{largo['id']}")
         conn = c.get("/api/agent/config", headers=h).json()["cameras"][0]["connection"]
         assert conn["brand"] == "hikconnect" and conn["camera_id"] == cam["id"] and conn["serial"] == "F12345678"
         # la PC central pide el link: el servidor busca la cámara por serie y canal y la guarda
@@ -129,3 +132,9 @@ def test_agente_pide_el_link_al_servidor():
         agent_hc.set_url_provider(None)
     with pytest.raises(RuntimeError):
         cam.live_url()
+
+
+def test_serie_larga_y_corta():
+    assert hikconnect.short_serial("DVR/DVS-34-A1620191217CCWRE02380030WCVU") == "E02380030"
+    assert hikconnect.short_serial("DVR-108G-M1/T0820250823CCWRGE7132986WCVU") == "GE7132986"
+    assert hikconnect.short_serial("e02380030") == "E02380030"
