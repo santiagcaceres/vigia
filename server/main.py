@@ -1069,7 +1069,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         f"({len(cams)} cámaras de esa serie). ¿Está agregado al equipo?")
                 c.hc_resource_id = pick["id"]
                 s.commit()
-            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end)
+            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end,
+                                 code=box.decrypt(c.password_enc) or None)
             if client.hc_api_url is None and api.server:
                 client.hc_api_url = api.server  # recordar la región que anduvo
                 s.commit()

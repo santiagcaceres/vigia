@@ -22,6 +22,7 @@ registran completos en el log del servidor (Vercel) para corregir.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -52,7 +53,8 @@ def _ok(r: httpx.Response, what: str) -> dict:
         raise HikConnectError(f"{what}: respuesta no válida (HTTP {r.status_code})") from exc
     if str(data.get("errorCode")) != "0":
         log.warning("Hik-Connect %s falló: %s", what, str(data)[:500])
-        raise HikConnectError(f"{what}: {data.get('message') or data.get('errorCode')}")
+        msg, code = str(data.get("message") or ""), str(data.get("errorCode") or "")
+        raise HikConnectError(f"{what}: {msg}" + (f" {{{code}}}" if code and code not in msg else ""))
     return data.get("data") or {}
 
 
@@ -148,6 +150,9 @@ class HikConnect:
                     continue
                 dev = (c.get("device") or {}).get("devInfo") or {}
                 channel = c.get("channelNo") or c.get("channel") or c.get("cameraNo") or c.get("chanNo")
+                if not channel:  # el nombre por defecto es «camera 3@E02380030»
+                    m = re.match(r"\s*camera\s*0*(\d+)\s*@", str(c.get("name") or ""), re.I)
+                    channel = m.group(1) if m else None
                 out.append({"id": str(c["id"]), "name": c.get("name") or str(c["id"]),
                             "serial": short_serial(dev.get("serialNo") or dev.get("deviceSerial")),
                             "device_name": dev.get("name") or "",
@@ -158,17 +163,28 @@ class HikConnect:
         return out
 
     def stream_url(self, resource_id: str, serial: str, kind: str = "live", quality: str = "sub",
-                   start: datetime | None = None, end: datetime | None = None, expire: int = 3600) -> str:
+                   start: datetime | None = None, end: datetime | None = None, expire: int = 3600,
+                   code: str | None = None) -> str:
         """Link HLS temporal. `kind`: live (vivo), playback (disco del grabador) o cloud (nube).
         `start`/`end` en hora del grabador (local)."""
         body = {"resourceId": resource_id, "deviceSerial": serial, "type": TYPES[kind], "protocol": 2,
                 "quality": "2" if quality == "sub" else "1", "expireTime": int(expire)}
+        if code:
+            body["code"] = code  # código de verificación del grabador (si tiene el cifrado de video prendido)
         if kind != "live":
             if not (start and end):
                 raise HikConnectError("Para la grabación hace falta inicio y fin")
             body["startTime"] = start.strftime("%Y-%m-%d %H:%M:%S")
             body["stopTime"] = end.strftime("%Y-%m-%d %H:%M:%S")
-        data = self._post("/api/hccgw/video/v1/live/address/get", body, "link de video")
+        try:
+            data = self._post("/api/hccgw/video/v1/live/address/get", body, "link de video")
+        except HikConnectError as exc:
+            if "EVZ60019" in str(exc) or "ncryption" in str(exc):
+                raise HikConnectError(
+                    "El grabador tiene el cifrado de video prendido. Apagalo (Hik-Connect / Hik-Partner Pro → "
+                    "configuración del grabador → cifrado de video) o poné el código de verificación del grabador "
+                    "en «Clave del grabador» de la cámara. (" + str(exc) + ")") from exc
+            raise
         url = data.get("url")
         if not url:
             log.warning("Hik-Connect: sin url en la respuesta: %s", str(data)[:500])

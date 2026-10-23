@@ -35,6 +35,9 @@ class FakeHikConnect:
                 {"id": "res-1", "name": "Caja", "channelNo": 1, "device": {"devInfo": {"serialNo": "F12345678"}}},
                 {"id": "res-2", "name": "Puerta", "channelNo": 2, "device": {"devInfo": {"serialNo": "F12345678"}}}]}})
         if path.endswith("/live/address/get"):
+            if body["resourceId"] == "res-enc" and not body.get("code"):
+                return httpx.Response(200, json={"errorCode": "EVZ60019",
+                                                 "message": "Encryption is enabled and parameter code is empty"})
             return httpx.Response(200, json={"errorCode": "0", "data": {
                 "url": f"https://hls.example/{body['resourceId']}/t{body['type']}.m3u8?token=abc"}})
         return httpx.Response(404)
@@ -138,3 +141,12 @@ def test_serie_larga_y_corta():
     assert hikconnect.short_serial("DVR/DVS-34-A1620191217CCWRE02380030WCVU") == "E02380030"
     assert hikconnect.short_serial("DVR-108G-M1/T0820250823CCWRGE7132986WCVU") == "GE7132986"
     assert hikconnect.short_serial("e02380030") == "E02380030"
+
+
+def test_cifrado_pide_el_codigo(fake):
+    api = hikconnect.HikConnect("clave", "secreto")
+    with pytest.raises(hikconnect.HikConnectError) as e:
+        api.stream_url("res-enc", "F1")
+    assert "cifrado de video" in str(e.value) and "EVZ60019" in str(e.value)
+    assert api.stream_url("res-enc", "F1", code="ABCDEF").startswith("https://hls.example/res-enc/")
+    assert [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["code"] == "ABCDEF"
