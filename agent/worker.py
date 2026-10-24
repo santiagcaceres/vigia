@@ -30,6 +30,9 @@ METRICS_EVERY_SECONDS = 300  # cada cuánto se mandan las métricas (gente, tiem
 NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
 
+DISPLAY_INTERVAL = 0.1  # la ventana de la PC central no necesita más de 10 cuadros por segundo
+
+
 class MediaClock:
     """Segundos de video transcurridos según las marcas de tiempo del stream. Si el stream no las trae
     (o vuelven atrás), cuenta cuadros a los fps que declara. Nunca retrocede."""
@@ -167,6 +170,7 @@ class CameraWorker:
         # cuadro por ráfaga. Ahí se usa el reloj del video (marca de tiempo de cada cuadro).
         clock = MediaClock(cap) if self.hik.brand == "hikconnect" else None
         last_proc = -1e9
+        last_show = -1e9
         last_preview = -1e9
         last_metrics = time.monotonic()
         window: list[float] = []
@@ -175,7 +179,9 @@ class CameraWorker:
             if self._pending_analysis is not None:
                 self._apply_analysis(self._pending_analysis)
                 self._pending_analysis = None
-            ok, frame = cap.read()  # leer todos los frames evita acumular retraso en el stream
+            # tomar todos los cuadros evita acumular retraso; solo se convierten a imagen los que se usan
+            # (analizar o mostrar en la ventana), que es lo que más procesador gasta
+            ok = cap.grab()
             if not ok:
                 fails += 1
                 if fails >= 3:
@@ -186,10 +192,18 @@ class CameraWorker:
             now = time.monotonic()
             ts = clock.tick() if clock else now - t0  # segundos del video (o de la PC)
             self.last_frame_at = time.time()
-            if self.show_window:  # todos los cuadros, con los recuadros del último análisis
+            analyze = ts - last_proc >= 1.0 / self.process_fps - 1e-3
+            show = self.show_window and now - last_show >= DISPLAY_INTERVAL
+            if not (analyze or show):
+                continue
+            ok, frame = cap.retrieve()
+            if not ok or frame is None:
+                continue
+            if show:  # la ventana se dibuja a 10 cuadros por segundo como máximo
+                last_show = now
                 self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, ts, self.name,
                                    datetime.now(self.hik.tz))
-            if ts - last_proc < 1.0 / self.process_fps - 1e-3:
+            if not analyze:
                 continue
             last_proc = ts
             wall = datetime.now(self.hik.tz)

@@ -29,6 +29,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-agent.txt pyinstaller
+          # en Windows, la versión con DirectML usa la placa de video (NVIDIA, AMD o Intel) y si no hay, el procesador
+          pip uninstall -y onnxruntime
+          pip install onnxruntime-directml
+          python -c "import onnxruntime as o; print(o.get_available_providers())"
       - name: Grabar la versión en el programa
         run: |
           $v = "${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || inputs.version }}" -replace '^agente-v', ''

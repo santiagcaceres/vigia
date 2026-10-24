@@ -314,6 +314,12 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 - Probado con un video real de noticiero: detecta a la persona en el 86 % de los cuadros y
   dispara "merodeo", pero no "ve" el gesto del hurto.
 - Capacidad: ~120 ms/cuadro en CPU → 2–4 cámaras por PC a 5 fps. Medir antes de prometer cupo.
+  **24 oct:** en un i5-11400 + RTX 3050 daba 15 fps con 1 cámara y 5 fps con 5 porque **la GPU no se usaba**
+  (el .exe traía `onnxruntime` solo CPU y cada cámara tenía su sesión). Desde la app 1.11.0: el workflow instala
+  `onnxruntime-directml` (GPU en Windows por DirectX 12, cae a CPU si no hay), `build_detector` comparte **una**
+  sesión en GPU entre todas las cámaras (con lock) y el registro dice «Detector de personas en GPU (Dml)» o «en
+  procesador». El `CameraWorker` hace `grab()` de todos los cuadros y `retrieve()` solo de los que analiza o
+  muestra (ventana a 10 fps máx.). Falta medir cuántas cámaras aguanta así (estimado 20-30 a 5 fps).
 - Ancho de banda del local: 0,25–0,5 Mbps de subida por cámara, 24 h.
 
 ## Desarrollo

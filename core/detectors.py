@@ -1,6 +1,7 @@
 """Detectores de personas.
 
-- OnnxYoloDetector: YOLO exportado a ONNX, corre en CPU con onnxruntime (sin GPU ni PyTorch).
+- OnnxYoloDetector: YOLO exportado a ONNX con onnxruntime (sin PyTorch). Usa la placa de video si hay
+  (CUDA o DirectML en Windows, con un solo modelo compartido por todas las cámaras) y si no, el procesador.
   Es el detector para producción.
 - MotionDetector: sustracción de fondo. Solo para pruebas y demos: no distingue personas.
 """
@@ -8,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -94,7 +96,19 @@ class OnnxYoloDetector:
 
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = threads
-        self.session = ort.InferenceSession(str(model_path), opts, providers=_providers(ort))
+        providers = _providers(ort)
+        if "DmlExecutionProvider" in providers:  # DirectML (GPU en Windows) pide esto
+            opts.enable_mem_pattern = False
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        try:
+            self.session = ort.InferenceSession(str(model_path), opts, providers=providers)
+        except Exception:  # noqa: BLE001 - placa sin soporte: seguir con el procesador
+            self.session = ort.InferenceSession(str(model_path), opts, providers=["CPUExecutionProvider"])
+        used = self.session.get_providers()
+        self.device = ("GPU (" + used[0].replace("ExecutionProvider", "") + ")"
+                       if used and used[0] != "CPUExecutionProvider" else "procesador")
+        self.on_gpu = self.device != "procesador"
+        self._lock = threading.Lock()  # una sesión en la GPU se comparte entre cámaras
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         shape = inp.shape  # [1, 3, H, W]
@@ -118,7 +132,8 @@ class OnnxYoloDetector:
         canvas[py:py + nh, px:px + nw] = resized
         blob = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None].astype(np.float32) / 255.0
 
-        out = self.session.run(None, {self.input_name: blob})[0][0]  # (4+C, N)
+        with self._lock:
+            out = self.session.run(None, {self.input_name: blob})[0][0]  # (4+C, N)
         if out.shape[0] < out.shape[1]:
             out = out.T  # (N, 4+C)
         cls_scores = out[:, 4 + self._idx]  # (N, clases elegidas)
@@ -149,8 +164,13 @@ class OnnxYoloDetector:
 
 def _providers(ort) -> list[str]:
     available = ort.get_available_providers()
-    preferred = ["CUDAExecutionProvider", "OpenVINOExecutionProvider", "CPUExecutionProvider"]
+    preferred = ["CUDAExecutionProvider", "DmlExecutionProvider", "OpenVINOExecutionProvider", "CPUExecutionProvider"]
     return [p for p in preferred if p in available] or available
+
+
+_shared: dict[tuple, "OnnxYoloDetector"] = {}
+_shared_lock = threading.Lock()
+_logged: set[tuple] = set()
 
 
 def build_detector(name: str, model_path: str | Path | None = None, vehicles: bool = False) -> Detector:
@@ -160,5 +180,15 @@ def build_detector(name: str, model_path: str | Path | None = None, vehicles: bo
     if name == "yolo":
         if not model_path or not Path(model_path).exists():
             raise RuntimeError(f"No se encontró el modelo ONNX de personas: {model_path}")
-        return OnnxYoloDetector(model_path, classes={**PERSON_CLASSES, **(VEHICLE_CLASSES if vehicles else {})})
+        key = (str(model_path), vehicles)
+        with _shared_lock:
+            if key in _shared:  # en la GPU, un solo modelo atiende todas las cámaras
+                return _shared[key]
+            det = OnnxYoloDetector(model_path, classes={**PERSON_CLASSES, **(VEHICLE_CLASSES if vehicles else {})})
+            if det.on_gpu:
+                _shared[key] = det
+            if key not in _logged:
+                _logged.add(key)
+                log.info("Detector de personas%s en %s", " y vehículos" if vehicles else "", det.device)
+            return det
     raise ValueError(f"Detector desconocido: {name!r} (usar 'yolo' o 'motion')")
