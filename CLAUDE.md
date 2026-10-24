@@ -135,6 +135,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   usuario de rol `cliente` en la misma transacción; staff (admin y empleado) puede. `GET /api/clients` trae
   `web_username`. En la app: recuadro «Acceso a la web del cliente» (usuario sugerido del nombre, «Generar»
   clave) y al guardar muestra el texto para pasarle al cliente con «Copiar».
+- **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
+  (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
+  cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no
+  hay casilla «Esta PC analiza» ni nombre de PC ni lista de PCs. Por dentro: `agents.user_id` (la «PC de <usuario>»,
+  la crea `user_agent()` sola), `POST /api/agent/session` (staff; rota el token: si el mismo usuario entra en otra
+  PC, la anterior deja de analizar), `PUT /api/users/{id}/cameras`, `CameraIn.operator_id` (None = no cambia,
+  0 = sin asignar; solo admin), `camera_dict.operator_id/operator_name`, `GET /api/users` trae `camera_ids`.
+  **Un empleado ve en Alertas solo las de sus cámaras** (`list_events`). «Clientes y cámaras» sigue mostrando todo.
+  `/api/agent/login` (admin + nombre de PC) queda para el agente sin ventana.
+- **Tipo de cámara (24 oct):** `cameras.profile` = general | gondola | caja | entrada | deposito | exterior | surtidor
+  (`CAMERA_PROFILES` en `server/main.py`). Decide qué reglas se aplican si en «Zonas y reglas» no se eligieron a
+  mano (`enabled_rules`), si detecta vehículos (exterior, surtidor) y, en depósito sin zonas, toda la imagen es
+  zona restringida. Lo arma `camera_analysis()`; el agente no cambia.
+- **Seguimiento con memoria (24 oct, `core/tracker.py`):** una persona perdida se recuerda 30 s; si reaparece cerca
+  de donde se la perdió (más lejos cuanto más tiempo pasó, hasta 4 veces su tamaño), **no entrando por el borde**, y
+  con ropa parecida (histograma de color HSV, correlación ≥ 0,35), conserva el número y el tiempo en escena. Quien
+  aparece tocando el borde es nuevo; quien se perdió tocando el borde se da por ido. `update(dets, ts, frame)`.
+  Siguiente paso si no alcanza: ByteTrack/BoT-SORT con un modelo de re-identificación (OSNet).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -332,7 +350,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 140 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 147 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

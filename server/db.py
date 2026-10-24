@@ -71,6 +71,8 @@ class Agent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
+    # la PC de un usuario (admin o empleado): analiza y muestra las cámaras que el admin le asigna
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     process_imports: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -105,6 +107,8 @@ class Camera(Base):
     mode: Mapped[str] = mapped_column(String(20), default="vivo")  # vivo | alarmas | alarmas_equipo
     hpp_serial: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # serie del DVR en HPP
     hc_resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # cámara en Hik-Connect
+    # qué mira la cámara: decide qué reglas se aplican (góndola, caja, entrada, depósito, calle, surtidor)
+    profile: Mapped[str] = mapped_column(String(20), default="general")
     alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # vista en vivo: el panel marca que alguien la está mirando; la PC central sube cuadros mientras dure
@@ -299,7 +303,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-23.2"
+SCHEMA_VERSION = "2026-10-24.1"
 
 
 class CameraMetric(Base):

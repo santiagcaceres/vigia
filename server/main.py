@@ -188,6 +188,10 @@ class PasswordIn(BaseModel):
     new: str = Field(min_length=8)
 
 
+class UserCamerasIn(BaseModel):
+    camera_ids: list[int] = Field(default_factory=list, max_length=2000)
+
+
 class AgentLoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=200)
@@ -207,6 +211,18 @@ class AlarmCfgIn(BaseModel):
 
 
 MIN_FPS = 5.0  # cuadros por segundo analizados, como mínimo, en todas las cámaras
+
+# Tipo de cámara (qué mira): qué reglas de hurto se aplican si no se eligieron a mano en «Zonas y reglas».
+CAMERA_PROFILES = {
+    "general": {"name": "General (todas las reglas)", "rules": None},
+    "gondola": {"name": "Góndola / pasillo", "rules": ["merodeo", "salida_sin_pago", "zona_restringida", "fuera_de_horario"]},
+    "caja": {"name": "Caja", "rules": ["zona_restringida", "fuera_de_horario"]},
+    "entrada": {"name": "Entrada / puerta", "rules": ["salida_sin_pago", "fuera_de_horario"]},
+    "deposito": {"name": "Depósito / trastienda", "rules": ["zona_restringida", "fuera_de_horario"],
+                 "whole_zone": "restricted"},
+    "exterior": {"name": "Calle / exterior", "rules": ["fuera_de_horario"], "vehicles": True},
+    "surtidor": {"name": "Surtidor (estación)", "rules": [], "vehicles": True},
+}
 
 
 class CameraIn(BaseModel):
@@ -233,6 +249,9 @@ class CameraIn(BaseModel):
     mode: Literal["vivo", "alarmas", "alarmas_equipo"] = "vivo"
     hpp_serial: str | None = Field(None, max_length=64)  # la larga de Hik-Connect se acorta al validar
     hc_resource_id: str | None = Field(None, max_length=64)
+    profile: Literal["general", "gondola", "caja", "entrada", "deposito", "exterior", "surtidor"] = "general"
+    # usuario que la ve y la analiza en su PC (lo elige el admin). None = no cambia; 0 = sin asignar
+    operator_id: int | None = None
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
 
 
@@ -450,7 +469,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "last_seen": iso(a.last_seen), "online": online, "status": a.last_status or {},
                 "process_imports": a.process_imports}
 
-    def camera_dict(c: Camera, user: User, status: dict | None = None) -> dict:
+    def operator_map(s) -> dict[int, tuple[int, str]]:
+        """PC (agente) de cada usuario → (id del usuario, nombre): a quién está asignada cada cámara."""
+        rows = s.query(Agent.id, User.id, User.username).join(User, User.id == Agent.user_id).all()
+        return {aid: (uid, name) for aid, uid, name in rows}
+
+    def user_agent(s, u: User) -> Agent:
+        """La PC de un usuario: se crea sola la primera vez (no hay que vincular ni nombrar PCs)."""
+        a = s.query(Agent).filter_by(user_id=u.id).order_by(Agent.id).first()
+        if a is None:
+            a = Agent(client_id=None, name=f"PC de {u.username}", user_id=u.id, token_hash=token_hash(new_token()),
+                      process_imports=True)
+            s.add(a)
+            s.flush()
+        return a
+
+    def assigned_camera_ids(s, u: User) -> list[int]:
+        return [cid for (cid,) in s.query(Camera.id).join(Agent, Agent.id == Camera.agent_id)
+                .filter(Agent.user_id == u.id)]
+
+    def camera_dict(c: Camera, user: User, status: dict | None = None, ops: dict | None = None) -> dict:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
              "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": c.rules or {},
              "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
@@ -460,7 +498,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      channel=c.channel,
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
-                     hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c))
+                     hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c),
+                     profile=c.profile or "general")
+            op = (ops or {}).get(c.agent_id) if c.agent_id else None
+            d.update(operator_id=op[0] if op else None, operator_name=op[1] if op else None)
         return d
 
     def alarm_cfg_of(c: Camera) -> dict:
@@ -749,7 +790,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/users")
     def list_users(_: User = Depends(admin_only), s=Depends(db)) -> list[dict]:
-        return [user_dict(u) for u in s.query(User).order_by(User.username).all()]
+        cams: dict[int, list[int]] = {}
+        for cid, uid in s.query(Camera.id, Agent.user_id).join(Agent, Agent.id == Camera.agent_id).filter(
+                Agent.user_id.is_not(None)):
+            cams.setdefault(uid, []).append(cid)
+        return [{**user_dict(u), "camera_ids": cams.get(u.id, [])} for u in s.query(User).order_by(User.username).all()]
+
+    @app.put("/api/users/{uid}/cameras")
+    def set_user_cameras(uid: int, body: UserCamerasIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+        """Las cámaras que ve y analiza (en su PC) un administrador o empleado. Una cámara es de un solo usuario."""
+        u = get_or_404(s, User, uid, "Usuario")
+        if u.role not in ("admin", "entrenador"):
+            raise HTTPException(422, "Las cámaras se asignan a administradores o empleados")
+        a = user_agent(s, u)
+        want = set(body.camera_ids)
+        for c in s.query(Camera).filter(or_(Camera.id.in_(want), Camera.agent_id == a.id)):
+            c.agent_id = a.id if c.id in want else None
+        s.commit()
+        return {"user_id": u.id, "camera_ids": assigned_camera_ids(s, u)}
 
     @app.post("/api/users", status_code=201)
     def create_user(body: UserIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
@@ -799,6 +857,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.add(a)
         s.commit()
         return {**agent_dict(a), "token": token}
+
+    @app.post("/api/agent/session")
+    def agent_session(user: User = Depends(staff), s=Depends(db)) -> dict:
+        """La app de escritorio, al entrar un administrador o empleado, pide el token de la PC de ese usuario:
+        con él analiza y muestra las cámaras que el admin le asignó. Se genera uno nuevo cada vez (si el
+        mismo usuario entra en otra PC, la anterior deja de analizar)."""
+        u = s.get(User, user.id)
+        a = user_agent(s, u)
+        token = new_token()
+        a.token_hash = token_hash(token)
+        s.commit()
+        return {**agent_dict(a), "token": token, "camera_ids": assigned_camera_ids(s, u)}
 
     @app.post("/api/agent/login")
     def agent_login(body: AgentLoginIn, s=Depends(db)) -> dict:
@@ -856,14 +926,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q = s.query(Camera).order_by(Camera.client_id, Camera.name)
         if client_id is not None:
             q = q.filter(Camera.client_id == client_id)
-        statuses = agent_status_map(s)
-        return [camera_dict(c, user, statuses.get(c.id)) for c in q.all()]
+        statuses, ops = agent_status_map(s), operator_map(s)
+        return [camera_dict(c, user, statuses.get(c.id), ops) for c in q.all()]
 
     @app.get("/api/cameras/{cam_id}")
     def get_camera(cam_id: int, user: User = Depends(current_user), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         scope_client(user, c.client_id)
-        return camera_dict(c, user, agent_status_map(s).get(c.id))
+        return camera_dict(c, user, agent_status_map(s).get(c.id), operator_map(s))
+
+    def camera_fields(body: CameraIn) -> dict:
+        f = body.model_dump(exclude={"password", "source_url", "operator_id"})
+        if "agent_id" not in body.model_fields_set:
+            f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
+        return f
+
+    def apply_operator(s, c: Camera, body: CameraIn, user: User) -> None:
+        if body.operator_id is None or user.role != "admin":
+            return  # sin dato (o un empleado): la asignación queda como estaba
+        if body.operator_id == 0:
+            c.agent_id = None
+            return
+        op = get_or_404(s, User, body.operator_id, "Usuario")
+        if op.role not in ("admin", "entrenador"):
+            raise HTTPException(422, "Las cámaras se asignan a administradores o empleados")
+        c.agent_id = user_agent(s, op).id
 
     def check_camera_body(s, body: CameraIn) -> None:
         get_or_404(s, Client, body.client_id, "Cliente")
@@ -894,23 +981,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/cameras", status_code=201)
     def create_camera(body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         check_camera_body(s, body)
-        c = Camera(**body.model_dump(exclude={"password", "source_url"}), password_enc=box.encrypt(body.password),
+        c = Camera(**camera_fields(body), password_enc=box.encrypt(body.password),
                    source_url_enc=box.encrypt(body.source_url))
+        apply_operator(s, c, body, user)
         s.add(c)
         s.commit()
-        return camera_dict(c, user)
+        return camera_dict(c, user, ops=operator_map(s))
 
     @app.put("/api/cameras/{cam_id}")
     def update_camera(cam_id: int, body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         check_camera_body(s, body)
-        for k, v in body.model_dump(exclude={"password", "source_url"}).items():
+        for k, v in camera_fields(body).items():
             setattr(c, k, v)
+        apply_operator(s, c, body, user)
         if body.password:
             c.password_enc = box.encrypt(body.password)
         c.source_url_enc = box.encrypt(body.source_url) if body.source_url else None
         s.commit()
-        return camera_dict(c, user)
+        return camera_dict(c, user, ops=operator_map(s))
 
     @app.put("/api/cameras/{cam_id}/analysis")
     def update_analysis(cam_id: int, body: AnalysisIn, user: User = Depends(staff), s=Depends(db)) -> dict:
@@ -1035,8 +1124,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def camera_analysis(c: Camera, client: Client | None = None) -> dict:
         plans = list((client.plans if client is not None else None) or [])
-        vehicles = "estacion" in plans or any((z or {}).get("type") == "pump" for z in (c.zones or []))
-        return {"zones": c.zones or [], "rules": c.rules or {}, "vehicles": vehicles, "plans": plans}
+        prof = CAMERA_PROFILES.get(c.profile or "general", CAMERA_PROFILES["general"])
+        zones, rules = list(c.zones or []), dict(c.rules or {})
+        if prof["rules"] is not None and "enabled_rules" not in rules:  # lo elegido a mano manda
+            rules["enabled_rules"] = list(prof["rules"])
+        whole = prof.get("whole_zone")
+        if whole and not any((z or {}).get("type") == whole for z in zones):  # ej. depósito: toda la imagen
+            zones.append({"name": prof["name"], "type": whole, "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]})
+        vehicles = ("estacion" in plans or bool(prof.get("vehicles"))
+                    or any((z or {}).get("type") == "pump" for z in zones))
+        return {"zones": zones, "rules": rules, "vehicles": vehicles, "plans": plans, "profile": c.profile or "general"}
 
     def model_spec(s, client_id: int) -> dict | None:
         m = active_model(s, client_id)
@@ -1618,6 +1715,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conds = []
         if client_id is not None:
             conds.append(Event.client_id == client_id)
+        if user.role == "entrenador":  # un empleado ve las alertas de las cámaras que le asignaron
+            conds.append(Event.camera_id.in_(assigned_camera_ids(s, user) or [-1]))
         if camera_id is not None:
             conds.append(Event.camera_id == camera_id)
         if type:

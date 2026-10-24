@@ -149,8 +149,11 @@ def test_cliente_solo_ve_lo_suyo_y_no_etiqueta(app, admin):
 def test_entrenador_etiqueta(app, admin):
     _, ag, cam = setup_client(admin)
     post_event(app, ag["token"], cam["id"])
-    admin.post("/api/users", json={"username": "lucia", "password": "entrena-123", "role": "entrenador"})
+    lucia = admin.post("/api/users", json={"username": "lucia", "password": "entrena-123", "role": "entrenador"}).json()
     t = login(app, "lucia", "entrena-123")
+    # un empleado ve solo las alertas de las cámaras que le asignan
+    assert t.get("/api/events", params={"label": "sin_etiqueta"}).json()["total"] == 0
+    admin.put(f"/api/users/{lucia['id']}/cameras", json={"camera_ids": [cam["id"]]})
     ev = t.get("/api/events", params={"label": "sin_etiqueta"}).json()["items"][0]
     r = t.patch(f"/api/events/{ev['id']}", json={"label": "hurto", "note": "se ve el bolsillo"})
     assert r.status_code == 200 and r.json()["label"] == "hurto"

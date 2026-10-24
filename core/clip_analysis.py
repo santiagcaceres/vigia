@@ -118,7 +118,7 @@ def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | 
             if dets:
                 res.person_frames += 1
                 res.max_people = max(res.max_people, len(dets))
-            tracks = tracker.update(dets, ts)
+            tracks = tracker.update(dets, ts, frame)
             events = engine.update(tracks, ts, (w, h), wall)
             feats = engine.current_features(tracks, ts, (w, h), wall)
             snap = [dataclasses.replace(t) for t in tracks]

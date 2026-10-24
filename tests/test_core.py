@@ -180,3 +180,65 @@ def test_worker_aplica_zonas_nuevas_sin_reconectar():
     assert CameraWorker.analysis_of(base) != CameraWorker.analysis_of(otra)
     veh = {**base, "analysis": {**base["analysis"], "vehicles": True}}  # vehículos cambia el detector: reconecta
     assert CameraWorker.fingerprint_of(base) != CameraWorker.fingerprint_of(veh)
+
+
+def test_misma_persona_perdida_unos_segundos_conserva_el_numero():
+    import numpy as np
+
+    from core.detectors import Detection
+    from core.tracker import CentroidTracker
+
+    frame = np.zeros((360, 640, 3), np.uint8)
+    frame[100:260, 300:340] = (0, 0, 200)  # persona de ropa roja en el medio
+    frame[100:260, 30:70] = (200, 0, 0)  # otra de azul, lejos
+    tr = CentroidTracker()
+    roja = Detection((300, 100, 340, 260))
+    ts = 0.0
+    for _ in range(10):  # 2 s viéndola
+        tracks = tr.update([roja], ts, frame)
+        ts += 0.2
+    pid = tracks[0].id
+    for _ in range(25):  # 5 s sin verla (detrás de la góndola)
+        tracks = tr.update([], ts, frame)
+        ts += 0.2
+    assert tracks and not tracks[0].visible  # se la recuerda
+    # reaparece un poco corrida: es la misma, con el mismo tiempo en escena
+    frame2 = np.zeros_like(frame)
+    frame2[100:260, 340:380] = (0, 0, 200)
+    tracks = tr.update([Detection((340, 100, 380, 260))], ts, frame2)
+    assert tracks[0].id == pid and tracks[0].visible and tracks[0].first_ts == 0.0
+
+
+def test_quien_entra_por_el_borde_es_nuevo_y_la_ropa_distinta_no_se_confunde():
+    import numpy as np
+
+    from core.detectors import Detection
+    from core.tracker import CentroidTracker
+
+    frame = np.zeros((360, 640, 3), np.uint8)
+    frame[100:260, 300:340] = (0, 0, 200)
+    tr = CentroidTracker()
+    ts = 0.0
+    for _ in range(10):
+        tracks = tr.update([Detection((300, 100, 340, 260))], ts, frame)
+        ts += 0.2
+    pid = tracks[0].id
+    for _ in range(15):
+        tr.update([], ts, frame)
+        ts += 0.2
+    # alguien de ropa azul aparece en el mismo lugar: otra persona
+    azul = np.zeros_like(frame)
+    azul[100:260, 300:340] = (200, 0, 0)
+    tracks = tr.update([Detection((300, 100, 340, 260))], ts, azul)
+    ts += 0.2
+    for _ in range(3):
+        tracks = tr.update([Detection((300, 100, 340, 260))], ts, azul)
+        ts += 0.2
+    assert pid not in [t.id for t in tracks if t.visible]
+    # entra alguien por el borde izquierdo: nuevo, aunque la persona perdida siga en memoria
+    borde = np.zeros_like(frame)
+    borde[100:260, 0:40] = (0, 0, 200)
+    for _ in range(4):
+        tracks = tr.update([Detection((0, 100, 40, 260))], ts, borde)
+        ts += 0.2
+    assert all(t.id != pid for t in tracks if t.visible)

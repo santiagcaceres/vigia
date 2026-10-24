@@ -39,6 +39,10 @@ PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comerci
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
 MODE_NAMES = {"vivo": "En vivo 24 h", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
 BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
+# tipo de cámara: decide qué reglas se aplican (el servidor tiene la lista, CAMERA_PROFILES)
+PROFILE_NAMES = {"general": "General (todas las reglas)", "gondola": "Góndola / pasillo", "caja": "Caja",
+                 "entrada": "Entrada / puerta", "deposito": "Depósito / trastienda", "exterior": "Calle / exterior",
+                 "surtidor": "Surtidor (estación)"}
 # formulario de cámara: Hikvision por la nube, o cualquier marca por IP y puertos (la marca se detecta sola)
 CONN_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
               "ip": "Por IP y puertos (Hikvision o Dahua: la marca se detecta sola)"}
@@ -326,8 +330,6 @@ class Oficina:
         def done(res):
             self.cameras, self.agents = res
             self._fill_clients(keep_info=True)
-            if self.is_admin:
-                self._fill_admin_pcs()
         self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents")), done, lambda e: None)
         self.v.root.after(15000, self._auto_refresh)
 
@@ -346,8 +348,6 @@ class Oficina:
             self.clients, self.cameras, self.agents = res
             self._fill_clients()
             self._fill_alert_filters()
-            if self.is_admin:
-                self._fill_admin_pcs()
         self.bg.run(load, done, self._net_fail)
         self.load_alerts()
         if self.is_admin:
@@ -389,7 +389,7 @@ class Oficina:
         self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "pc", "zonas"),
                                      show="headings", height=12, selectmode="browse")
         for col, txt, w in (("nombre", "Cámara", 160), ("estado", "Estado", 130), ("modo", "Modo", 160),
-                            ("conexion", "Grabador", 230), ("pc", "PC central", 140), ("zonas", "Zonas", 55)):
+                            ("conexion", "Grabador", 230), ("pc", "Asignada a", 140), ("zonas", "Zonas", 55)):
             self.cam_tree.heading(col, text=txt)
             self.cam_tree.column(col, width=w)
         self.cam_tree.pack(fill="x")
@@ -454,14 +454,14 @@ class Oficina:
             return
         web = f"   ·   acceso web: {c['web_username']}" if c.get("web_username") else "   ·   sin acceso web (Editar para crearlo)"
         self.cam_title.configure(text=f"Cámaras de {c['name']}{web}")
-        agents = {a["id"]: a["name"] for a in self.agents}
         for cam in [x for x in self.cameras if x["client_id"] == c["id"]]:
             conn = (f"Hik-Connect · serie {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
                     if cam.get("brand") == "hikconnect" else
                     f"{BRAND_NAMES.get(cam.get('brand'), '')} · {cam.get('host', '')}:{cam.get('rtsp_port')}/{cam.get('http_port')} · canal {cam.get('channel')}")
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
-                cam["name"], self._cam_state(cam), MODE_NAMES.get(cam.get("mode"), cam.get("mode")), conn,
-                agents.get(cam.get("agent_id"), "sin PC"), len(cam.get("zones") or [])))
+                cam["name"], self._cam_state(cam),
+                f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))} · {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]}", conn,
+                cam.get("operator_name") or "sin asignar", len(cam.get("zones") or [])))
         self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
         if prev_cam and self.cam_tree.exists(prev_cam[0]):
             self.cam_tree.selection_set(prev_cam)  # sigue elegida (el detalle se actualiza solo si no hay otra cosa)
@@ -690,10 +690,9 @@ class Oficina:
         cam = cam or {}
         top, frm = self._dialog("Editar cámara" if cam.get("id") else f"Nueva cámara · {client['name']}", 600)
         owner = next((x for x in self.clients if x["id"] == (cam.get("client_id") or (client or {}).get("id"))), client)
-        centrals = [a for a in self.agents if a.get("central")]
-        agent_names = [a["name"] for a in centrals]
-        cur_agent = next((a["name"] for a in centrals if a["id"] == cam.get("agent_id")),
-                         agent_names[0] if agent_names else "")
+        staff = [u for u in getattr(self, "users", []) if u.get("role") in ("admin", "entrenador") and u.get("active", True)]
+        op_names = ["(sin asignar)"] + [u["username"] for u in staff]
+        cur_op = cam.get("operator_name") or ("(sin asignar)" if cam.get("id") else (self.api.user or {}).get("username", ""))
         default_brand = cam.get("brand") or ("hikconnect" if (owner or {}).get("hc_app_key") else "hikvision")
         v = {
             "name": tk.StringVar(value=cam.get("name", "")),
@@ -705,7 +704,8 @@ class Oficina:
             "channel": tk.StringVar(value=str(cam.get("channel", 1))),
             "username": tk.StringVar(value=cam.get("username", "admin")),
             "password": tk.StringVar(value=""),
-            "agent": tk.StringVar(value=cur_agent),
+            "operator": tk.StringVar(value=cur_op if cur_op in op_names else "(sin asignar)"),
+            "profile": tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general")),
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
@@ -763,7 +763,7 @@ class Oficina:
         row("ip", 10, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else ""),
             ttk.Entry(frm, textvariable=v["password"], show="•"))
         ip_hint = ttk.Label(frm, foreground="#666", justify="left",
-                            text="Misma red que la PC central: IP de adentro (192.168.x.x) y puertos 554/80.\n"
+                            text="Misma red que la PC que la analiza: IP de adentro (192.168.x.x) y puertos 554/80.\n"
                                  "Otra red: IP pública o DDNS y los puertos externos del router (ej. 38554/38080).")
         ip_hint.grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 6))
         cfg = cam.get("alarm_cfg") or {}
@@ -775,9 +775,13 @@ class Oficina:
         nvr_cb = ttk.Checkbutton(frm, text="Bajar el clip de la grabación del grabador (si tiene disco)", variable=nvr)
         nvr_cb.grid(row=13, column=0, columnspan=2, sticky="w")
         rows["ip"] += [ip_hint, af, nvr_cb]
-        row(None, 14, "PC central que la analiza", ttk.Combobox(frm, textvariable=v["agent"], values=agent_names, state="readonly"))
+        row(None, 14, "Tipo de cámara (qué mira)", ttk.Combobox(frm, textvariable=v["profile"],
+                                                                  values=list(PROFILE_NAMES.values()), state="readonly"))
+        if self.is_admin:
+            row(None, 16, "Asignada a (quién la ve)", ttk.Combobox(frm, textvariable=v["operator"], values=op_names,
+                                                                   state="readonly"))
         row(None, 15, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
-        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=16, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=17, column=0, columnspan=2, sticky="w")
 
         inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
 
@@ -797,7 +801,7 @@ class Oficina:
             try:
                 common = {
                     "client_id": cam.get("client_id") or client["id"], "brand": brand,
-                    "agent_id": next((a["id"] for a in centrals if a["name"] == v["agent"].get()), None),
+                    "profile": inv(PROFILE_NAMES, v["profile"].get()) or "general",
                     "process_fps": min(15.0, max(5.0, float(v["fps"].get()))), "enabled": enabled.get(),
                     "detect_stream": cam.get("detect_stream", "sub"), "detector": cam.get("detector", "yolo"),
                     "playback_time": cam.get("playback_time", "local"),
@@ -822,9 +826,11 @@ class Oficina:
                 if not v["name"].get().strip() or not common["host"]:
                     return self.mb.showwarning("Vigía", "Faltan el nombre o la IP del grabador.", parent=top)
                 bodies = [{**common, "name": v["name"].get().strip()}]
-            if common["agent_id"] is None:
-                self.mb.showwarning("Vigía", "No hay ninguna PC central elegida: la cámara no se va a analizar "
-                                             "hasta que le asignes una.", parent=top)
+            if self.is_admin:
+                common["operator_id"] = next((u["id"] for u in staff if u["username"] == v["operator"].get()), 0)
+                if not common["operator_id"]:
+                    self.mb.showwarning("Vigía", "La cámara queda sin asignar: nadie la va a ver ni analizar "
+                                                 "hasta que se la asignes a un usuario.", parent=top)
 
             def send():
                 if cam.get("id"):
@@ -838,7 +844,7 @@ class Oficina:
                     self.mb.showinfo("Vigía", f"Se agregaron {len(res)} cámaras.")
             self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=17, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=18, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
@@ -1155,35 +1161,23 @@ class Oficina:
     # ================================================================ administración
     def _build_admin(self) -> None:
         ttk, f = self.ttk, self.tab_admin
-        left = ttk.Frame(f)
-        left.pack(side="left", fill="both", expand=True)
-        ttk.Label(left, text="Usuarios", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(left, text="Administradores y empleados entran a esta app. Los clientes entran a la web y ven solo su local.",
-                  foreground="#666").pack(anchor="w")
-        self.us_tree = ttk.Treeview(left, columns=("rol", "cliente", "activo"), show="tree headings", height=14,
+        ttk.Label(f, text="Usuarios", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave, y ven y analizan las "
+                          "cámaras que les asignes. Los clientes entran a la web y ven solo su local.",
+                  foreground="#666", wraplength=900, justify="left").pack(anchor="w")
+        self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "camaras", "activo"), show="tree headings", height=16,
                                     selectmode="browse")
         self.us_tree.heading("#0", text="Usuario")
-        for col, txt, w in (("rol", "Rol", 120), ("cliente", "Cliente", 160), ("activo", "Activo", 60)):
+        for col, txt, w in (("rol", "Rol", 120), ("cliente", "Cliente", 160), ("camaras", "Cámaras asignadas", 130),
+                            ("activo", "Activo", 60)):
             self.us_tree.heading(col, text=txt)
             self.us_tree.column(col, width=w)
         self.us_tree.pack(fill="both", expand=True)
-        b = ttk.Frame(left)
+        self.us_tree.bind("<Double-1>", lambda e: self.user_dialog(self._sel_user()))
+        b = ttk.Frame(f)
         b.pack(fill="x", pady=6)
         ttk.Button(b, text="Nuevo usuario", command=lambda: self.user_dialog()).pack(side="left")
-        ttk.Button(b, text="Editar", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=4)
-
-        right = ttk.Frame(f, padding=(14, 0, 0, 0))
-        right.pack(side="left", fill="both", expand=True)
-        ttk.Label(right, text="PCs centrales", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(right, text="Se vinculan solas al entrar con «Esta PC analiza las cámaras».", foreground="#666").pack(anchor="w")
-        self.pc_tree = ttk.Treeview(right, columns=("estado", "visto"), show="tree headings", height=14, selectmode="browse")
-        self.pc_tree.heading("#0", text="PC")
-        self.pc_tree.heading("estado", text="Estado")
-        self.pc_tree.heading("visto", text="Última conexión")
-        self.pc_tree.pack(fill="both", expand=True)
-        b2 = ttk.Frame(right)
-        b2.pack(fill="x", pady=6)
-        ttk.Button(b2, text="Eliminar PC", command=self.delete_pc).pack(side="left")
+        ttk.Button(b, text="Editar y asignar cámaras", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=4)
         self.users: list[dict] = []
 
     def load_users(self) -> None:
@@ -1193,6 +1187,7 @@ class Oficina:
             for u in users:
                 self.us_tree.insert("", "end", iid=str(u["id"]), text=u["username"], values=(
                     ROLE_NAMES.get(u["role"], u["role"]), self.client_name(u.get("client_id")) if u.get("client_id") else "—",
+                    len(u.get("camera_ids") or []) if u["role"] != "cliente" else "—",
                     "Sí" if u.get("active") else "No"))
         self.bg.run(lambda: self.api.get("/api/users"), done, self._net_fail)
 
@@ -1214,6 +1209,24 @@ class Oficina:
         self._row(frm, 2, "Rol", ttk.Combobox(frm, textvariable=role, values=list(ROLE_NAMES.values()), state="readonly"))
         self._row(frm, 3, "Cliente (solo rol Cliente)", ttk.Combobox(frm, textvariable=client, values=[c["name"] for c in self.clients], state="readonly"))
         ttk.Checkbutton(frm, text="Activo", variable=active).grid(row=4, column=1, sticky="w")
+        # cámaras que ve y analiza (administradores y empleados)
+        cf = ttk.LabelFrame(frm, text="Cámaras asignadas (Ctrl o Shift para varias)", padding=6)
+        cf.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        cams = sorted(self.cameras, key=lambda c: (self.client_name(c["client_id"]), c["name"]))
+        lb = tk.Listbox(cf, selectmode="extended", height=min(14, max(5, len(cams))), width=60, exportselection=False)
+        mine = set(u.get("camera_ids") or [])
+        for i, c in enumerate(cams):
+            other = c.get("operator_name") and c.get("operator_id") != u.get("id")
+            lb.insert("end", f"{self.client_name(c['client_id'])} · {c['name']}"
+                             + (f"   (hoy: {c['operator_name']})" if other else ""))
+            if c["id"] in mine:
+                lb.selection_set(i)
+        lb.pack(fill="both", expand=True)
+        bx = ttk.Frame(cf)
+        bx.pack(fill="x", pady=(4, 0))
+        ttk.Button(bx, text="Todas", command=lambda: lb.select_set(0, "end")).pack(side="left")
+        ttk.Button(bx, text="Ninguna", command=lambda: lb.select_clear(0, "end")).pack(side="left", padx=4)
+        ttk.Label(cf, text="Una cámara es de un solo usuario: si ya era de otro, pasa a este.", foreground="#666").pack(anchor="w")
 
         def save():
             body = {"username": name.get().strip(), "password": pwd.get() or None,
@@ -1223,29 +1236,22 @@ class Oficina:
             if body["role"] != "cliente":
                 body["client_id"] = None
 
+            cam_ids = [cams[i]["id"] for i in lb.curselection()]
+
+            def send():
+                res = (self.api.put(f"/api/users/{u['id']}", body) if u.get("id") else self.api.post("/api/users", body))
+                if body["role"] != "cliente":
+                    self.api.put(f"/api/users/{res['id']}/cameras", {"camera_ids": cam_ids})
+                return res
+
             def done(_):
                 top.destroy()
-                self.load_users()
-            self.bg.run(lambda: (self.api.put(f"/api/users/{u['id']}", body) if u.get("id")
-                                 else self.api.post("/api/users", body)), done,
-                        lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+                self.config_saved()
+            self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=6, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
-
-    def _fill_admin_pcs(self) -> None:
-        self.pc_tree.delete(*self.pc_tree.get_children())
-        for a in self.agents:
-            if a.get("central"):
-                self.pc_tree.insert("", "end", iid=str(a["id"]), text=a["name"],
-                                    values=("En línea" if a.get("online") else "Desconectada", fmt_date(a.get("last_seen"))))
-
-    def delete_pc(self) -> None:
-        sel = self.pc_tree.selection()
-        a = next((x for x in self.agents if str(x["id"]) == (sel[0] if sel else "")), None)
-        if a and self.mb.askyesno("Vigía", f"¿Eliminar la PC «{a['name']}»? Sus cámaras quedan sin PC asignada."):
-            self.bg.run(lambda: self.api.delete(f"/api/agents/{a['id']}"), lambda _: self.refresh_all(), self.err)
 
 
 class ZonesEditor:

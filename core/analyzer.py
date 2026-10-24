@@ -140,7 +140,7 @@ class Analyzer:
 
     def process(self, frame: np.ndarray, ts: float, wall: datetime | None = None) -> list[Finding]:
         h, w = frame.shape[:2]
-        tracks = self.tracker.update(self.detector.detect(frame), ts)
+        tracks = self.tracker.update(self.detector.detect(frame), ts, frame)
         self.last_tracks = tracks
         jpg_small = self._small_jpg(frame)
         self._buffer.append((ts, jpg_small))

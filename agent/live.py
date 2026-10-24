@@ -197,7 +197,7 @@ class LiveWorker:
                         continue
                     last_proc = now
                     ts = now - t0
-                    tracks = tracker.update(self.detector.detect(frame), ts)
+                    tracks = tracker.update(self.detector.detect(frame), ts, frame)
                     wall = datetime.now(self.cam.tz)
                     self.streamer.push(frame, tracks, ts, wall)
                     if self.show_window:

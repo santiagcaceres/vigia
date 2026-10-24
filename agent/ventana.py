@@ -167,23 +167,14 @@ class Ventana:
         frame.place(relx=0.5, rely=0.45, anchor="center")
         ttk.Label(frame, text="Vigía", font=("Segoe UI", 26, "bold")).grid(row=0, column=0, columnspan=2, pady=(0, 2))
         ttk.Label(frame, text="Gestión de clientes, cámaras y alertas", foreground="#666").grid(row=1, column=0, columnspan=2, pady=(0, 18))
-        user, pwd, name = tk.StringVar(), tk.StringVar(), tk.StringVar(value=pc_name or default_pc_name())
-        an = tk.BooleanVar(value=analyze)
+        user, pwd = tk.StringVar(), tk.StringVar()
         for i, (label, var, show) in enumerate((("Usuario", user, ""), ("Clave", pwd, "•")), start=2):
             ttk.Label(frame, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=(0, 12))
             e = ttk.Entry(frame, textvariable=var, show=show, width=32)
             e.grid(row=i, column=1, pady=5)
             if i == 2:
                 e.focus_set()
-        ttk.Checkbutton(frame, text="Esta PC analiza las cámaras (PC central, solo administradores)",
-                        variable=an).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 2))
-        ttk.Label(frame, text="Nombre de esta PC").grid(row=5, column=0, sticky="w", pady=5, padx=(0, 12))
-        name_e = ttk.Entry(frame, textvariable=name, width=32)
-        name_e.grid(row=5, column=1, pady=5)
-        an.trace_add("write", lambda *_: name_e.configure(state="normal" if an.get() else "disabled"))
-        if not analyze:
-            name_e.configure(state="disabled")
-        msg = ttk.Label(frame, text=error or "Entrá con tu usuario del panel (administrador o empleado).",
+        msg = ttk.Label(frame, text=error or "Entrá con el usuario y la clave que te dio el administrador.",
                         foreground="#c0392b" if error else "#666", wraplength=380, justify="left")
         msg.grid(row=6, column=0, columnspan=2, pady=(10, 6), sticky="w")
         result: dict[str, object] = {"res": None}
@@ -196,7 +187,7 @@ class Ventana:
             msg.configure(text="Conectando…", foreground="#666")
             self.root.update()
             try:
-                result["res"] = do_login(user.get().strip(), pwd.get(), name.get().strip() or default_pc_name(), an.get())
+                result["res"] = do_login(user.get().strip(), pwd.get())
                 done.set(True)
             except ValueError as exc:
                 msg.configure(text=str(exc), foreground="#c0392b")
