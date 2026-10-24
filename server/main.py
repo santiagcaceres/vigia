@@ -206,11 +206,15 @@ class AlarmCfgIn(BaseModel):
     post_seconds: float = Field(20.0, ge=3, le=90)
 
 
+MIN_FPS = 5.0  # cuadros por segundo analizados, como mínimo, en todas las cámaras
+
+
 class CameraIn(BaseModel):
     client_id: int
     agent_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
-    brand: Literal["hikvision", "dahua", "hikconnect"] = "hikvision"  # hikconnect = Hikvision por la nube
+    # hikconnect = Hikvision por la nube; ip = por IP y puertos, la PC central detecta si es Hikvision o Dahua
+    brand: Literal["hikvision", "dahua", "hikconnect", "ip"] = "hikvision"
     host: str = Field("", max_length=255)
     username: str = "admin"
     password: str | None = None
@@ -222,7 +226,7 @@ class CameraIn(BaseModel):
     playback_time: Literal["local", "utc"] = "local"
     source_url: str | None = None
     detector: Literal["yolo", "motion"] = "yolo"
-    process_fps: float = Field(5.0, gt=0, le=15)
+    process_fps: float = Field(5.0, ge=MIN_FPS, le=15)  # mínimo 5 para todas (decisión del 24 oct)
     enabled: bool = True
     # vivo: el agente mira el stream 24 h. alarmas: Hik-Partner Pro avisa (webhook). alarmas_equipo:
     # el propio grabador avisa (conexión larga desde el agente); vale para cualquier marca.
@@ -883,7 +887,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "En modo alarmas indicá el número de serie del DVR en Hik-Partner Pro")
         if body.mode in ("alarmas", "alarmas_equipo") and not body.alarm_cfg.event_types:
             raise HTTPException(422, "Elegí al menos un tipo de alarma")
-        if body.mode == "alarmas" and body.brand != "hikvision":
+        if body.mode == "alarmas" and body.brand not in ("hikvision", "ip"):
             raise HTTPException(422, "Las alarmas por Hik-Partner Pro son solo para Hikvision; "
                                      "usá «alarmas del propio grabador»")
 
@@ -949,9 +953,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "detail": "Hik-Connect entregó el link de video (" + url.split("?")[0][:80] + "…)"}
         if not c.host:
             raise HTTPException(422, "La cámara no tiene IP o DDNS cargado")
-        res = probe.probe(c.brand, c.host, c.http_port, c.username, box.decrypt(c.password_enc))
+        brand = c.brand
+        if brand == "ip":  # marca a detectar: primero como Hikvision, si no responde, como Dahua
+            res = probe.probe("hikvision", c.host, c.http_port, c.username, box.decrypt(c.password_enc))
+            brand = "hikvision"
+            if not res.get("ok"):
+                alt = probe.probe("dahua", c.host, c.http_port, c.username, box.decrypt(c.password_enc))
+                if alt.get("ok"):
+                    res, brand = alt, "dahua"
+            res["brand_detected"] = brand if res.get("ok") else None
+        else:
+            res = probe.probe(c.brand, c.host, c.http_port, c.username, box.decrypt(c.password_enc))
         res["public"] = probe.is_public_host(c.host)
-        res["rtsp_url"] = probe.rtsp_url(c.brand, c.host, c.rtsp_port, c.channel, c.username, "CLAVE")
+        res["rtsp_url"] = probe.rtsp_url(brand, c.host, c.rtsp_port, c.channel, c.username, "CLAVE")
         res["standard_ports"] = res["public"] and (c.rtsp_port == 554 or c.http_port == 80)
         return res
 
@@ -1047,7 +1061,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_camera_cfg(c: Camera, client: Client) -> dict:
         return {
             "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": client.name,
-            "enabled": c.enabled, "detector": c.detector, "process_fps": c.process_fps,
+            "enabled": c.enabled, "detector": c.detector, "process_fps": max(MIN_FPS, c.process_fps or MIN_FPS),
             "mode": c.mode or "vivo", "alarm_cfg": alarm_cfg_of(c),
             "connection": {"brand": c.brand, "host": c.host, "username": c.username,
                            "password": box.decrypt(c.password_enc),

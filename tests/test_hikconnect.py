@@ -172,3 +172,13 @@ def test_reloj_del_video_en_rafagas():
     # sin marcas: cuenta cuadros a los fps declarados
     c = MediaClock(Cap(10, []))
     assert [round(c.tick(), 2) for _ in range(3)] == [0.1, 0.2, 0.3]
+
+
+def test_minimo_5_fps_y_camara_por_ip(app):
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Local"}).json()["id"]
+        base = {"client_id": cid, "name": "Caja", "brand": "ip", "host": "dvr.example", "password": "x"}
+        assert c.post("/api/cameras", json={**base, "process_fps": 3}).status_code == 422
+        cam = c.post("/api/cameras", json={**base, "process_fps": 5}).json()
+        assert cam["brand"] == "ip"

@@ -13,7 +13,8 @@ direcciones RTSP y la API HTTP de consulta. Marcas soportadas:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -23,7 +24,7 @@ from core.clips import redact, transcode_h264, video_duration
 
 log = logging.getLogger("vigia.camaras")
 
-BRANDS = ("hikvision", "dahua", "hikconnect")
+BRANDS = ("hikvision", "dahua", "hikconnect", "ip")  # "ip" = por IP y puertos, la marca se detecta sola
 
 
 @dataclass
@@ -77,9 +78,75 @@ class BaseCamera:
         return ["-rtsp_transport", "tcp", "-timeout", "10000000"]
 
 
+@dataclass
+class AutoCamera(BaseCamera):
+    """Grabador por IP y puertos de marca desconocida: la primera vez que se usa, prueba si responde como
+    Hikvision (ISAPI) o como Dahua (CGI) y desde ahí se comporta como esa marca."""
+    brand: str = "ip"
+    cfg: dict = field(default_factory=dict, repr=False)
+    _impl: BaseCamera | None = field(default=None, repr=False)
+
+    def resolve(self) -> BaseCamera:
+        if self._impl is None:
+            self._impl = build_camera({**self.cfg, "brand": detect_brand(self.cfg)})
+        return self._impl
+
+    def live_url(self, stream: str | None = None) -> str:
+        return self.resolve().live_url(stream)
+
+    def playback_url(self, start: datetime, end: datetime) -> str:
+        return self.resolve().playback_url(start, end)
+
+    def ffmpeg_input_args(self) -> list[str]:
+        return self.resolve().ffmpeg_input_args()
+
+
+_detected: dict[tuple, str] = {}
+_detect_lock = threading.Lock()
+
+
+def detect_brand(cfg: dict) -> str:
+    """Hikvision o Dahua, según cómo responde el equipo (primero su página/API, después el video)."""
+    key = (cfg.get("host"), cfg.get("http_port"), cfg.get("rtsp_port"), cfg.get("username"))
+    with _detect_lock:
+        if key in _detected:
+            return _detected[key]
+    brand = None
+    for b in ("hikvision", "dahua"):
+        if not build_and_probe({**cfg, "brand": b}).get("error"):
+            brand = b
+            break
+    if brand is None:  # la página del equipo no contesta: probar el video de cada marca
+        for b in ("hikvision", "dahua"):
+            try:
+                if test_stream(build_camera({**cfg, "brand": b})).get("ok"):
+                    brand = b
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+    if brand is None:
+        log.info("No se pudo detectar la marca de %s: se prueba como Hikvision", cfg.get("host"))
+        return "hikvision"  # no se guarda: se vuelve a intentar en la próxima conexión
+    log.info("Marca detectada para %s: %s", cfg.get("host"), brand.capitalize())
+    with _detect_lock:
+        _detected[key] = brand
+    return brand
+
+
+def build_and_probe(cfg: dict) -> dict:
+    try:
+        return probe(build_camera(cfg))
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
 def build_camera(cfg: dict) -> BaseCamera:
     """Crea la cámara que corresponda según `brand` (por defecto, Hikvision)."""
     brand = (cfg.get("brand") or "hikvision").lower()
+    if brand == "ip":
+        cam = AutoCamera.from_config({k: v for k, v in cfg.items() if k not in ("brand", "cfg", "_impl")})
+        cam.cfg = dict(cfg)
+        return cam
     if brand == "dahua":
         from .dahua import DahuaCamera
         return DahuaCamera.from_config(cfg)
@@ -130,6 +197,9 @@ def test_stream(cam: BaseCamera, stream: str = "sub") -> dict:
 
 def probe(cam: BaseCamera) -> dict:
     """Consulta datos del equipo y sus canales, según la marca."""
+    if isinstance(cam, AutoCamera):
+        impl = cam.resolve()
+        return {**probe(impl), "brand_detected": impl.brand}
     if cam.brand == "dahua":
         from .dahua import probe as _probe
     elif cam.brand == "hikconnect":

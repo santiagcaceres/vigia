@@ -174,6 +174,8 @@ def hik_events(cam: BaseCamera, http: httpx.Client | None = None) -> Iterator[De
 
 # ---------------------------------------------------------------- común
 def device_events(cam: BaseCamera, http: httpx.Client | None = None) -> Iterator[DeviceEvent]:
+    if hasattr(cam, "resolve"):  # marca detectada sola (conexión por IP y puertos)
+        cam = cam.resolve()
     if cam.brand == "dahua":
         return dahua_events(cam, http)
     return hik_events(cam, http)

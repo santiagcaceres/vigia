@@ -320,12 +320,19 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   sesión en GPU entre todas las cámaras (con lock) y el registro dice «Detector de personas en GPU (Dml)» o «en
   procesador». El `CameraWorker` hace `grab()` de todos los cuadros y `retrieve()` solo de los que analiza o
   muestra (ventana a 10 fps máx.). Falta medir cuántas cámaras aguanta así (estimado 20-30 a 5 fps).
+  **Decisión del dueño (24 oct): mínimo 5 fps para todas las cámaras** (`MIN_FPS` en el servidor, `CameraIn`
+  `ge=5`; el agente también hace `max(5, …)`; en la app un Spinbox 5–15).
+- **Conexión «Por IP y puertos» (24 oct, app 1.12.0):** en el formulario quedan dos opciones: Hik-Connect o «Por IP y
+  puertos (Hikvision o Dahua: la marca se detecta sola)» → `brand="ip"`. La PC central (`AutoCamera` en
+  `agent/cameras.py`) prueba ISAPI (Hikvision) y CGI (Dahua), y si la página no contesta, el RTSP de cada marca;
+  recuerda la marca detectada. «Probar conexión» desde el servidor también prueba las dos. Las cámaras viejas con
+  `hikvision`/`dahua` conservan su marca.
 - Ancho de banda del local: 0,25–0,5 Mbps de subida por cámara, 24 h.
 
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 134 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 140 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

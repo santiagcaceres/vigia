@@ -46,7 +46,7 @@ def test_la_fabrica_elige_la_marca():
     assert isinstance(build_camera({**base, "brand": "dahua"}), DahuaCamera)
     assert isinstance(build_camera({**base, "brand": "hikvision"}), HikCamera)
     assert isinstance(build_camera(base), HikCamera)  # por defecto, Hikvision
-    assert set(BRANDS) == {"hikvision", "dahua", "hikconnect"}
+    assert set(BRANDS) == {"hikvision", "dahua", "hikconnect", "ip"}
 
 
 @pytest.mark.parametrize("brand,marca", [("dahua", DahuaCamera), ("hikvision", HikCamera)])
@@ -55,3 +55,22 @@ def test_cada_marca_arma_su_propia_url(brand, marca):
     assert isinstance(c, marca) and c.brand == brand
     assert c.live_url().startswith("rtsp://u:p@h:554/")
     assert ("/cam/realmonitor" in c.live_url()) == (brand == "dahua")
+
+
+def test_por_ip_detecta_la_marca(monkeypatch):
+    from agent import cameras as cams
+
+    cams._detected.clear()
+    probados = []
+
+    def fake_probe(cfg):
+        probados.append(cfg["brand"])
+        return {"ok": True} if cfg["brand"] == "dahua" else {"error": "ISAPI no responde"}
+    monkeypatch.setattr(cams, "build_and_probe", fake_probe)
+    c = build_camera({"brand": "ip", "host": "h", "username": "u", "password": "p", "channel": 3})
+    assert c.brand == "ip"
+    assert "/cam/realmonitor?channel=3" in c.live_url()  # se comporta como Dahua
+    assert probados == ["hikvision", "dahua"]
+    c2 = build_camera({"brand": "ip", "host": "h", "username": "u", "password": "p", "channel": 1})
+    c2.live_url()
+    assert probados == ["hikvision", "dahua"]  # la marca detectada se recuerda

@@ -69,7 +69,7 @@ class CameraWorker:
                           else cam_cfg["name"])
         self.fingerprint = self.fingerprint_of(cam_cfg)
         self.hik = build_camera(cam_cfg["connection"])
-        self.process_fps = float(cam_cfg.get("process_fps", 5))
+        self.process_fps = max(5.0, float(cam_cfg.get("process_fps") or 5))  # mínimo 5 para todas
         self.clip_pre = float(settings.get("clip_pre_seconds", 6))
         self.clip_post = float(settings.get("clip_post_seconds", 6))
         self.clip_max = float(settings.get("clip_max_seconds", 180))

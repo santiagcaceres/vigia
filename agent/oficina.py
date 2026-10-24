@@ -38,8 +38,10 @@ log = logging.getLogger("vigia.oficina")
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
 MODE_NAMES = {"vivo": "En vivo 24 h", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
-BRAND_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
-               "hikvision": "Hikvision por IP y puertos", "dahua": "Dahua por IP y puertos"}
+BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
+# formulario de cámara: Hikvision por la nube, o cualquier marca por IP y puertos (la marca se detecta sola)
+CONN_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
+              "ip": "Por IP y puertos (Hikvision o Dahua: la marca se detecta sola)"}
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador"}
 LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falso positivo"}
@@ -695,7 +697,7 @@ class Oficina:
         default_brand = cam.get("brand") or ("hikconnect" if (owner or {}).get("hc_app_key") else "hikvision")
         v = {
             "name": tk.StringVar(value=cam.get("name", "")),
-            "brand": tk.StringVar(value=BRAND_NAMES.get(default_brand)),
+            "brand": tk.StringVar(value=CONN_NAMES["hikconnect" if default_brand == "hikconnect" else "ip"]),
             "mode": tk.StringVar(value=MODE_NAMES.get(cam.get("mode", "vivo"))),
             "host": tk.StringVar(value=cam.get("host", "")),
             "rtsp_port": tk.StringVar(value=str(cam.get("rtsp_port", 554))),
@@ -704,7 +706,7 @@ class Oficina:
             "username": tk.StringVar(value=cam.get("username", "admin")),
             "password": tk.StringVar(value=""),
             "agent": tk.StringVar(value=cur_agent),
-            "fps": tk.StringVar(value=str(cam.get("process_fps", 5))),
+            "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
@@ -738,7 +740,7 @@ class Oficina:
             if kind:
                 rows[kind] += [lab, widget]
 
-        row(None, 0, "Conexión", ttk.Combobox(frm, textvariable=v["brand"], values=list(BRAND_NAMES.values()), state="readonly"))
+        row(None, 0, "Conexión", ttk.Combobox(frm, textvariable=v["brand"], values=list(CONN_NAMES.values()), state="readonly"))
         row(None, 1, "Nombre", ttk.Entry(frm, textvariable=v["name"]))
         hc_box = ttk.Frame(frm)
         ttk.Label(hc_box, textvariable=hc_text).pack(side="left", fill="x", expand=True)
@@ -774,13 +776,13 @@ class Oficina:
         nvr_cb.grid(row=13, column=0, columnspan=2, sticky="w")
         rows["ip"] += [ip_hint, af, nvr_cb]
         row(None, 14, "PC central que la analiza", ttk.Combobox(frm, textvariable=v["agent"], values=agent_names, state="readonly"))
-        row(None, 15, "Cuadros por segundo", ttk.Entry(frm, textvariable=v["fps"]))
+        row(None, 15, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
         ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=16, column=0, columnspan=2, sticky="w")
 
         inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
 
         def layout(*_) -> None:
-            hc = inv(BRAND_NAMES, v["brand"].get()) == "hikconnect"
+            hc = inv(CONN_NAMES, v["brand"].get()) == "hikconnect"
             for w in rows["hc"]:
                 w.grid() if hc else w.grid_remove()
             for w in rows["ip"]:
@@ -789,12 +791,14 @@ class Oficina:
         layout()
 
         def save() -> None:
-            brand = inv(BRAND_NAMES, v["brand"].get()) or "hikvision"
+            brand = inv(CONN_NAMES, v["brand"].get()) or "ip"
+            if brand == "ip" and cam.get("brand") in ("hikvision", "dahua"):
+                brand = cam["brand"]  # cámara vieja con la marca ya conocida: se respeta
             try:
                 common = {
                     "client_id": cam.get("client_id") or client["id"], "brand": brand,
                     "agent_id": next((a["id"] for a in centrals if a["name"] == v["agent"].get()), None),
-                    "process_fps": float(v["fps"].get()), "enabled": enabled.get(),
+                    "process_fps": min(15.0, max(5.0, float(v["fps"].get()))), "enabled": enabled.get(),
                     "detect_stream": cam.get("detect_stream", "sub"), "detector": cam.get("detector", "yolo"),
                     "playback_time": cam.get("playback_time", "local"),
                     "alarm_cfg": {**cfg, "event_types": [k for k, var in al.items() if var.get()]},
