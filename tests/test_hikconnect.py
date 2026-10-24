@@ -150,3 +150,25 @@ def test_cifrado_pide_el_codigo(fake):
     assert "cifrado de video" in str(e.value) and "EVZ60019" in str(e.value)
     assert api.stream_url("res-enc", "F1", code="ABCDEF").startswith("https://hls.example/res-enc/")
     assert [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["code"] == "ABCDEF"
+
+
+def test_reloj_del_video_en_rafagas():
+    import cv2
+
+    from agent.worker import MediaClock
+
+    class Cap:
+        def __init__(self, fps, pos):
+            self.fps, self.pos = fps, list(pos)
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FPS:
+                return self.fps
+            return self.pos.pop(0) if self.pos else 0.0
+
+    # marcas del video (ms): avanzan aunque los cuadros lleguen todos juntos
+    c = MediaClock(Cap(10, [5000, 5100, 5200, 5300]))
+    assert [round(c.tick(), 2) for _ in range(4)] == [0.0, 0.1, 0.2, 0.3]
+    # sin marcas: cuenta cuadros a los fps declarados
+    c = MediaClock(Cap(10, []))
+    assert [round(c.tick(), 2) for _ in range(3)] == [0.1, 0.2, 0.3]

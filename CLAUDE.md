@@ -286,7 +286,9 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   = Hikvision por Hik-Connect (por defecto si el cliente tiene clave; sin IP ni puertos; se eligen varias cámaras
   a la vez) / Hikvision por IP y puertos / Dahua por IP y puertos. **Dahua no tiene API pública equivalente**
   (DoLynk Care no publica una; IMOU Open Platform da HLS pero solo para equipos en cuentas Imou, sin verificar con
-  NVR de DMSS). Los errores de Hik-Connect quedan en los
+  NVR de DMSS). **24 oct: anda el vivo por Hik-Connect** (Minas, cámaras 1, 5 y 13 en línea con recuadros) una vez
+  apagado el cifrado. El HLS llega en ráfagas de 1-4 s: el `CameraWorker` usa `MediaClock` (marcas de tiempo del
+  video, o cuadros/fps) en vez del reloj de la PC para elegir qué cuadros analizar (antes salía 0-1 fps). Los errores de Hik-Connect quedan en los
   logs de Vercel (`vigia.hikconnect`): mirarlos en la primera prueba.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local

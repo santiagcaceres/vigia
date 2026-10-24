@@ -30,6 +30,31 @@ METRICS_EVERY_SECONDS = 300  # cada cuánto se mandan las métricas (gente, tiem
 NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
 
+class MediaClock:
+    """Segundos de video transcurridos según las marcas de tiempo del stream. Si el stream no las trae
+    (o vuelven atrás), cuenta cuadros a los fps que declara. Nunca retrocede."""
+
+    def __init__(self, cap: cv2.VideoCapture):
+        self.cap = cap
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        self.step = 1.0 / fps if 1.0 <= fps <= 60.0 else 1.0 / 12
+        self.first: float | None = None
+        self.t = 0.0
+
+    def tick(self) -> float:
+        pos = (self.cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+        if pos > 0:
+            if self.first is None:
+                self.first = pos - self.t
+            cand = pos - self.first
+            if self.t <= cand < self.t + 10:  # avanza de forma razonable: usar la marca del video
+                self.t = cand
+                return self.t
+            self.first = pos - self.t - self.step  # salto o vuelta atrás (otro segmento): reanclar
+        self.t += self.step
+        return self.t
+
+
 class CameraWorker:
     """Un hilo por cámara: lee el stream, analiza, guarda eventos y clips en la cola."""
 
@@ -138,6 +163,9 @@ class CameraWorker:
 
     def _read_loop(self, cap: cv2.VideoCapture) -> None:
         t0 = time.monotonic()
+        # Hik-Connect (HLS) manda el video en ráfagas de 1-4 s: con el reloj de la PC se analizaría un solo
+        # cuadro por ráfaga. Ahí se usa el reloj del video (marca de tiempo de cada cuadro).
+        clock = MediaClock(cap) if self.hik.brand == "hikconnect" else None
         last_proc = -1e9
         last_preview = -1e9
         last_metrics = time.monotonic()
@@ -156,18 +184,19 @@ class CameraWorker:
                 continue
             fails = 0
             now = time.monotonic()
+            ts = clock.tick() if clock else now - t0  # segundos del video (o de la PC)
             self.last_frame_at = time.time()
             if self.show_window:  # todos los cuadros, con los recuadros del último análisis
-                self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, now - t0, self.name,
+                self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, ts, self.name,
                                    datetime.now(self.hik.tz))
-            if now - last_proc < 1.0 / self.process_fps - 1e-3:
+            if ts - last_proc < 1.0 / self.process_fps - 1e-3:
                 continue
-            last_proc = now
+            last_proc = ts
             wall = datetime.now(self.hik.tz)
-            findings = self.analyzer.process(frame, now - t0, wall)
-            self.metrics.update(self.analyzer.last_tracks, now - t0, frame.shape[1::-1], wall)
+            findings = self.analyzer.process(frame, ts, wall)
+            self.metrics.update(self.analyzer.last_tracks, ts, frame.shape[1::-1], wall)
             if self.live.active:
-                self.live.push(frame, self.analyzer.last_tracks, now - t0, wall)
+                self.live.push(frame, self.analyzer.last_tracks, ts, wall)
             for f in findings:
                 self._on_finding(f)
             if now - last_metrics > METRICS_EVERY_SECONDS:
