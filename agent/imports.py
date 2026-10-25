@@ -27,7 +27,7 @@ from core.scorer import Scorer
 from .outbox import ServerClient
 
 log = logging.getLogger("vigia.imports")
-IDLE_POLL_SECONDS = 30
+IDLE_POLL_SECONDS = 120  # videos subidos para entrenar: no son urgentes y cada pregunta es un pedido al servidor
 
 
 class ImportJobRunner:

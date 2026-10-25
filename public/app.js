@@ -12,7 +12,7 @@ const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restri
 const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8" };
 const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio" };
 const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
-const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida" };
+const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida", fuera_de_horario: "Local cerrado" };
 const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
 const REPORT_STATUS = { enviado: ["ok", "Enviado"], parcial: ["warn", "Enviado en parte"], error: ["bad", "No se pudo enviar"] };
 
@@ -335,6 +335,7 @@ function statusChip(st) {
   if (!st) return `<span class="chip">Sin datos del agente</span>`;
   if (!st.agent_online) return `<span class="chip bad">Agente desconectado</span>`;
   const ok = st.state === "en_linea" || st.state === "escuchando";
+  if (st.state === "fuera_de_horario") return `<span class="chip" title="Fuera del horario del local no se mira (ahorra video y análisis)">Local cerrado</span>`;
   return `<span class="chip ${ok ? "ok" : "bad"}" title="${esc(st.error || "")}">${esc(STATE_NAMES[st.state] || st.state)}${ok && st.fps ? ` · ${st.fps} fps` : ""}</span>`;
 }
 
@@ -1022,7 +1023,7 @@ async function summaryView(v) {
   await Promise.all([loadCameras(), loadClients()]);
   const c7 = alarms.counts_7d || {};
   const alarmsTotal = Object.values(c7).reduce((a, b) => a + b, 0);
-  const online = S.cameras.filter((c) => c.enabled !== false && c.status && c.status.agent_online && ["en_linea", "escuchando"].includes(c.status.state));
+  const online = S.cameras.filter((c) => c.enabled !== false && c.status && c.status.agent_online && ["en_linea", "escuchando", "fuera_de_horario"].includes(c.status.state));
   const trouble = S.cameras.filter((c) => c.enabled !== false && !online.includes(c));
   const tile = (n, t, hint, href) => `<a class="panel stat" href="${href}" style="text-decoration:none;color:inherit"><span class="n">${n}</span><span>${t}</span>${hint ? `<span class="muted">${hint}</span>` : ""}</a>`;
   v.innerHTML = `

@@ -83,6 +83,17 @@ class CentroidTracker:
         self._tracks: dict[int, Track] = {}
         self._next_id = 1
 
+    @property
+    def active(self) -> bool:
+        """Hay alguien en seguimiento (visto o recordado)."""
+        return bool(self._tracks)
+
+    @property
+    def seeing(self) -> bool:
+        """Se vio a alguien en el último cuadro (aunque todavía no esté confirmado). A los que se recuerdan
+        sin verlos no hace falta buscarlos en cada cuadro: si reaparecen, se mueven."""
+        return any(t.missed == 0 for t in self._tracks.values())
+
     def _touches_border(self, bbox: BBox, size: tuple[int, int] | None) -> bool:
         if size is None:
             return False

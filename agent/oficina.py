@@ -30,6 +30,8 @@ import cv2
 import httpx
 import numpy as np
 
+from core.schedule import DAY_NAMES, DAYS, open_hours_per_week
+
 from . import actualizar
 from .version import VERSION
 
@@ -37,12 +39,17 @@ log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
-MODE_NAMES = {"vivo": "En vivo 24 h", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
+AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes y cámaras» (solo con la pestaña a la vista)
+MODE_NAMES = {"vivo": "En vivo", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
 BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
 # tipo de cámara: decide qué reglas se aplican (el servidor tiene la lista, CAMERA_PROFILES)
 PROFILE_NAMES = {"general": "General (todas las reglas)", "gondola": "Góndola / pasillo", "caja": "Caja",
                  "entrada": "Entrada / puerta", "deposito": "Depósito / trastienda", "exterior": "Calle / exterior",
-                 "surtidor": "Surtidor (estación)"}
+                 "surtidor": "Surtidor (estación)", "metricas": "Solo métricas (conteo y tiempos, sin hurto)"}
+# qué hace la cámara con el local cerrado (según el horario del cliente)
+OFF_HOURS_NAMES = {"apagada": "No mirar (ahorra todo: video, internet y análisis)",
+                   "alarmas": "Escuchar solo las alarmas del grabador (por IP y puertos)",
+                   "vivo": "Seguir analizando igual (24 h, gasta todo)"}
 # formulario de cámara: Hikvision por la nube, o cualquier marca por IP y puertos (la marca se detecta sola)
 CONN_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
               "ip": "Por IP y puertos (Hikvision o Dahua: la marca se detecta sola)"}
@@ -57,7 +64,8 @@ ZONE_COLORS = {"shelf": "#ffc800", "checkout": "#00c800", "exit": "#0096ff", "re
 ALARM_TYPES = {"VMD": "Movimiento", "fielddetection": "Intrusión", "linedetection": "Cruce de línea",
                "regionEntrance": "Entrada a zona", "regionExiting": "Salida de zona"}
 STATE_NAMES = {"escuchando": "Escuchando alarmas", "en_linea": "En línea", "sin_conexion": "Sin conexión",
-               "reconectando": "Reconectando", "error": "Error", "iniciando": "Iniciando", "detenida": "Detenida"}
+               "reconectando": "Reconectando", "error": "Error", "iniciando": "Iniciando", "detenida": "Detenida",
+               "fuera_de_horario": "Local cerrado (no se mira)"}
 
 
 def fmt_date(iso: str | None) -> str:
@@ -244,6 +252,7 @@ class Oficina:
 
     def build(self, notebook) -> None:
         ttk = self.ttk
+        self.notebook = notebook
         self.tab_clients = ttk.Frame(notebook, padding=8)
         self.tab_alerts = ttk.Frame(notebook, padding=8)
         notebook.add(self.tab_clients, text="  Clientes y cámaras  ")
@@ -255,7 +264,7 @@ class Oficina:
             notebook.add(self.tab_admin, text="  Administración  ")
             self._build_admin()
         self.refresh_all()
-        self.v.root.after(15000, self._auto_refresh)
+        self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
         header = getattr(self.v, "header", None)
         if header is not None:
             self.upd_btn = ttk.Button(header, text="Buscar actualización", command=self.update_dialog)
@@ -323,15 +332,24 @@ class Oficina:
         self.bg.run(work, done, fail)
 
     def _auto_refresh(self) -> None:
-        """Estado de cámaras y PCs cada 15 s (sin tocar lo que se está editando)."""
+        """Estado de cámaras cada 30 s (sin tocar lo que se está editando). Solo con la pestaña «Clientes y
+        cámaras» a la vista y la ventana abierta: si nadie la mira, no se gastan pedidos al servidor."""
         if not self.v.open:
+            return
+        try:
+            visible = (self.v.root.state() != "iconic"
+                       and self.notebook.select() == str(self.tab_clients))
+        except Exception:  # noqa: BLE001
+            visible = True
+        if not visible:
+            self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
             return
 
         def done(res):
             self.cameras, self.agents = res
             self._fill_clients(keep_info=True)
         self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents")), done, lambda e: None)
-        self.v.root.after(15000, self._auto_refresh)
+        self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
 
     def config_saved(self) -> None:
         """Se guardó una cámara, zonas o reglas: refrescar la lista y avisarle a la PC central."""
@@ -443,7 +461,11 @@ class Oficina:
         if not st.get("agent_online"):
             return "PC desconectada"
         txt = STATE_NAMES.get(st.get("state"), st.get("state") or "—")
-        return txt + (f" · {st['fps']:.0f} fps" if st.get("fps") and st.get("state") == "en_linea" else "")
+        if st.get("fps") and st.get("state") == "en_linea":
+            txt += f" · {st['fps']:.0f} fps"
+            if st.get("idle_pct"):
+                txt += f" · {st['idle_pct']}% quieta"
+        return txt + (" · solo métricas" if st.get("metrics_only") else "")
 
     def _fill_cameras(self, keep_info: bool = False) -> None:
         c = self._sel_client()
@@ -531,11 +553,53 @@ class Oficina:
         pf.grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
         for p, t in PLAN_NAMES.items():
             ttk.Checkbutton(pf, text=t, variable=plans[p]).pack(anchor="w")
+        ttk.Label(pf, text="Sin «Detección de hurtos» las cámaras quedan en «solo métricas»: 2-3 cuadros por "
+                           "segundo y sin clips (mucho más barato).", foreground="#666", wraplength=440,
+                  justify="left").pack(anchor="w", pady=(2, 0))
+
+        # horario del local: con el local cerrado la PC central no abre el video (ahorra internet y análisis)
+        of = ttk.LabelFrame(frm, text="Horario del local (fuera de horario no se gasta video ni análisis)", padding=6)
+        of.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        cur_hours = c.get("hours") or {}
+        hours = {d: tk.StringVar(value=cur_hours.get(d) or "") for d in DAYS}
+        for i, d in enumerate(DAYS):
+            r, col = i % 4, (i // 4) * 2
+            ttk.Label(of, text=DAY_NAMES[d]).grid(row=r, column=col, sticky="w", padx=(0 if col == 0 else 14, 6), pady=1)
+            ttk.Entry(of, textvariable=hours[d], width=22).grid(row=r, column=col + 1, sticky="w", pady=1)
+
+        def copy_monday() -> None:
+            for d in DAYS[1:5]:
+                hours[d].set(hours["lun"].get())
+        ttk.Button(of, text="Martes a viernes = lunes", command=copy_monday).grid(row=3, column=2, columnspan=2,
+                                                                                   sticky="w", padx=(14, 0))
+        hours_note = tk.StringVar()
+        ttk.Label(of, textvariable=hours_note, foreground="#666", justify="left", wraplength=460).grid(
+            row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        def hours_changed(*_):
+            try:
+                week = open_hours_per_week({d: var.get() for d, var in hours.items()})
+            except ValueError as exc:
+                return hours_note.set(f"⚠ {exc}")
+            base = ("Ej. 09:00-17:00 · cortado: 09:00-13:00, 16:00-20:00 · vacío = cerrado. Se empieza "
+                    "15 min antes de abrir y se sigue 15 min después de cerrar.")
+            if week >= 24 * 7:
+                hours_note.set(base + "\nSin horario: las cámaras se miran las 24 h.")
+            else:
+                hours_note.set(base + f"\nAbierto {week:.0f} h por semana: se mira el {week / (24 * 7):.0%} "
+                                      "del tiempo (ahorro de internet y análisis en el resto).")
+        for var in hours.values():
+            var.trace_add("write", hours_changed)
+        hours_changed()
 
         # acceso a la web: con esto el dueño del comercio entra y ve sus hurtos, alertas y métricas
         had_user = bool(c.get("web_username"))
-        wf = ttk.LabelFrame(frm, text="Acceso a la web del cliente", padding=6)
-        wf.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        # segunda columna (web y Hik-Connect): así la ventana entra en la pantalla de una notebook
+        right = ttk.Frame(frm)
+        right.grid(row=0, column=2, rowspan=15, sticky="n", padx=(16, 0))
+        right.columnconfigure(0, weight=1, minsize=420)
+        wf = ttk.LabelFrame(right, text="Acceso a la web del cliente", padding=6)
+        wf.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         wf.columnconfigure(1, weight=1)
         web_user = tk.StringVar(value=c.get("web_username") or "")
         web_pass = tk.StringVar()
@@ -547,8 +611,8 @@ class Oficina:
         ttk.Label(wf, text=("Dejá la clave vacía para no cambiarla." if had_user else
                             "Mínimo 8 caracteres. Se la pasás al cliente por privado."),
                   foreground="#666").grid(row=2, column=0, columnspan=3, sticky="w")
-        hf = ttk.LabelFrame(frm, text="Hik-Connect: video de Hikvision sin abrir puertos (opcional)", padding=6)
-        hf.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        hf = ttk.LabelFrame(right, text="Hik-Connect: video de Hikvision sin abrir puertos (opcional)", padding=6)
+        hf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         hf.columnconfigure(1, weight=1)
         hc_key = tk.StringVar(value=c.get("hc_app_key") or "")
         hc_secret = tk.StringVar()
@@ -561,7 +625,7 @@ class Oficina:
                             + (" SecretKey vacío = no cambia." if c.get("hc_has_secret") else "")
                             + "\nServidor vacío = se busca solo (o pegá la dirección del portal, ej. isa.hikcentralconnect.com)."
                             + "\nImportante: apagá el cifrado de video de los grabadores (con cifrado, Hik-Connect no entrega el video)."),
-                  foreground="#666", justify="left").grid(row=4, column=0, columnspan=2, sticky="w")
+                  foreground="#666", justify="left", wraplength=400).grid(row=4, column=0, columnspan=2, sticky="w")
         if c.get("id") and c.get("hc_app_key"):
             ttk.Button(hf, text="Probar: ver cámaras de Hik-Connect",
                        command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
@@ -579,6 +643,11 @@ class Oficina:
             body["timezone"] = body["timezone"] or "America/Montevideo"
             body["webhook_url"] = c.get("webhook_url")
             body["plans"] = [p for p, var in plans.items() if var.get()]
+            body["hours"] = {d: var.get().strip() for d, var in hours.items()}
+            try:
+                open_hours_per_week(body["hours"])
+            except ValueError as exc:
+                return self.mb.showwarning("Vigía", f"Horario: {exc}", parent=top)
             if not body["name"]:
                 return self.mb.showwarning("Vigía", "Falta el nombre", parent=top)
             user, pwd = web_user.get().strip(), web_pass.get().strip()
@@ -603,7 +672,7 @@ class Oficina:
             self.bg.run(lambda: (self.api.put(f"/api/clients/{c['id']}", body) if c.get("id")
                                  else self.api.post("/api/clients", body)), done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=15, column=0, columnspan=2, sticky="e")
+        bb.grid(row=15, column=0, columnspan=3, sticky="e")
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
@@ -707,6 +776,7 @@ class Oficina:
             "operator": tk.StringVar(value=cur_op if cur_op in op_names else "(sin asignar)"),
             "profile": tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general")),
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
+            "off_hours": tk.StringVar(value=OFF_HOURS_NAMES.get(cam.get("off_hours") or "apagada")),
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
@@ -749,7 +819,7 @@ class Oficina:
                    ).pack(side="left", padx=(6, 0))
         row("hc", 2, "Cámara(s)", hc_box)
         hc_hint = ttk.Label(frm, foreground="#666", justify="left",
-                            text="Sin IP ni puertos: el video llega por la nube de Hik-Connect (modo En vivo 24 h).\n"
+                            text="Sin IP ni puertos: el video llega por la nube de Hik-Connect (en vivo, en el horario del local).\n"
                                  "El grabador tiene que tener APAGADO el cifrado de video.\n"
                                  "Al agregar se pueden elegir varias cámaras a la vez (Ctrl o Shift).")
         hc_hint.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 6))
@@ -777,11 +847,22 @@ class Oficina:
         rows["ip"] += [ip_hint, af, nvr_cb]
         row(None, 14, "Tipo de cámara (qué mira)", ttk.Combobox(frm, textvariable=v["profile"],
                                                                   values=list(PROFILE_NAMES.values()), state="readonly"))
+        off_cb = ttk.Combobox(frm, textvariable=v["off_hours"], values=list(OFF_HOURS_NAMES.values()), state="readonly")
+        row(None, 15, "Con el local cerrado", off_cb)
+        hours_txt = ("Horario del local: se carga en el cliente (Editar cliente)." if not (owner or {}).get("hours") else
+                     "Horario del local: " + " · ".join(f"{d[:2].capitalize()} {(owner['hours'].get(d) or 'cerrado')}"
+                                                       for d in DAYS))
+        ttk.Label(frm, text=hours_txt, foreground="#666", wraplength=560, justify="left").grid(
+            row=16, column=0, columnspan=2, sticky="w")
         if self.is_admin:
-            row(None, 16, "Asignada a (quién la ve)", ttk.Combobox(frm, textvariable=v["operator"], values=op_names,
+            row(None, 18, "Asignada a (quién la ve)", ttk.Combobox(frm, textvariable=v["operator"], values=op_names,
                                                                    state="readonly"))
-        row(None, 15, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
-        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=17, column=0, columnspan=2, sticky="w")
+        row(None, 17, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
+        if "hurto" not in ((owner or {}).get("plans") or ["hurto"]):
+            ttk.Label(frm, text="Este cliente es solo de métricas: la cámara usa 2-3 cuadros por segundo y no guarda "
+                                "clips (lo de arriba no se aplica).", foreground="#666", wraplength=560,
+                      justify="left").grid(row=19, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=20, column=0, columnspan=2, sticky="w")
 
         inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
 
@@ -791,6 +872,11 @@ class Oficina:
                 w.grid() if hc else w.grid_remove()
             for w in rows["ip"]:
                 w.grid_remove() if hc else w.grid()
+            # por Hik-Connect todavía no llegan las alarmas del grabador: con el local cerrado, mirar o no mirar
+            opts = [t for k, t in OFF_HOURS_NAMES.items() if not (hc and k == "alarmas")]
+            off_cb.configure(values=opts)
+            if v["off_hours"].get() not in opts:
+                v["off_hours"].set(OFF_HOURS_NAMES["apagada"])
         v["brand"].trace_add("write", layout)
         layout()
 
@@ -803,6 +889,7 @@ class Oficina:
                     "client_id": cam.get("client_id") or client["id"], "brand": brand,
                     "profile": inv(PROFILE_NAMES, v["profile"].get()) or "general",
                     "process_fps": min(15.0, max(5.0, float(v["fps"].get()))), "enabled": enabled.get(),
+                    "off_hours": inv(OFF_HOURS_NAMES, v["off_hours"].get()) or "apagada",
                     "detect_stream": cam.get("detect_stream", "sub"), "detector": cam.get("detector", "yolo"),
                     "playback_time": cam.get("playback_time", "local"),
                     "alarm_cfg": {**cfg, "event_types": [k for k, var in al.items() if var.get()]},
@@ -815,6 +902,8 @@ class Oficina:
                                   hpp_serial=cam.get("hpp_serial"))
             except ValueError:
                 return self.mb.showwarning("Vigía", "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
+            if self.is_admin:
+                common["operator_id"] = next((u["id"] for u in staff if u["username"] == v["operator"].get()), 0)
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
                     return self.mb.showwarning("Vigía", "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
@@ -827,7 +916,6 @@ class Oficina:
                     return self.mb.showwarning("Vigía", "Faltan el nombre o la IP del grabador.", parent=top)
                 bodies = [{**common, "name": v["name"].get().strip()}]
             if self.is_admin:
-                common["operator_id"] = next((u["id"] for u in staff if u["username"] == v["operator"].get()), 0)
                 if not common["operator_id"]:
                     self.mb.showwarning("Vigía", "La cámara queda sin asignar: nadie la va a ver ni analizar "
                                                  "hasta que se la asignes a un usuario.", parent=top)
@@ -844,7 +932,7 @@ class Oficina:
                     self.mb.showinfo("Vigía", f"Se agregaron {len(res)} cámaras.")
             self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=18, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=21, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 

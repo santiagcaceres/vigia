@@ -14,6 +14,7 @@ from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import write_mp4
 from core.detectors import Detector
 from core.metrics import MetricsCollector
+from core.motion import MotionGate
 from core.rules import RuleEngine, parse_config
 from core.scorer import Scorer
 
@@ -31,6 +32,42 @@ NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
 
 DISPLAY_INTERVAL = 0.1  # la ventana de la PC central no necesita más de 10 cuadros por segundo
+
+
+class MetricsQueue:
+    """Junta las métricas de todas las cámaras de la PC y las manda en un solo pedido (lo llama el agente
+    cada 5 min). Antes cada cámara hacía su pedido: con 600 cámaras eran 5 millones de llamadas por mes."""
+
+    MAX_PER_REQUEST = 500  # lo que acepta el servidor por pedido
+
+    def __init__(self, client: ServerClient | None):
+        self.client = client
+        self._lock = threading.Lock()
+        self._items: dict[tuple[int, str], dict] = {}
+
+    def add(self, buckets: list[dict], older: bool = False) -> None:
+        with self._lock:
+            for b in buckets:
+                key = (b["camera_id"], b["bucket_start"])
+                if older and key in self._items:
+                    continue  # un reintento no pisa un cubo más nuevo de la misma hora
+                self._items[key] = b
+
+    def pending(self) -> int:
+        return len(self._items)
+
+    def flush(self) -> None:
+        with self._lock:
+            items, self._items = list(self._items.values()), {}
+        if not items or self.client is None:
+            return
+        for i in range(0, len(items), self.MAX_PER_REQUEST):
+            batch = items[i:i + self.MAX_PER_REQUEST]
+            try:
+                self.client.post_metrics(batch)
+            except Exception as exc:  # noqa: BLE001 - se reintenta en el próximo envío
+                log.warning("No se pudieron enviar las métricas (%s); se reintenta", exc)
+                self.add(batch, older=True)
 
 
 class MediaClock:
@@ -62,19 +99,26 @@ class CameraWorker:
     """Un hilo por cámara: lee el stream, analiza, guarda eventos y clips en la cola."""
 
     def __init__(self, cam_cfg: dict, detector: Detector, scorer: Scorer | None, outbox: Outbox,
-                 client: ServerClient | None, clip_pool: ThreadPoolExecutor, settings: dict):
+                 client: ServerClient | None, clip_pool: ThreadPoolExecutor, settings: dict,
+                 metrics_queue: MetricsQueue | None = None):
         self.id: int = cam_cfg["id"]
         # en modo central conviven cámaras de varios clientes: el log las distingue por cliente
         self.name: str = (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
                           else cam_cfg["name"])
         self.fingerprint = self.fingerprint_of(cam_cfg)
         self.hik = build_camera(cam_cfg["connection"])
-        self.process_fps = max(5.0, float(cam_cfg.get("process_fps") or 5))  # mínimo 5 para todas
+        # solo métricas (contar gente, tiempos): menos cuadros y sin clips; para hurto, mínimo 5 fps
+        self.metrics_only = bool(cam_cfg.get("metrics_only"))
+        self.process_fps = max(1.0 if self.metrics_only else 5.0, float(cam_cfg.get("process_fps") or 5))
         self.clip_pre = float(settings.get("clip_pre_seconds", 6))
         self.clip_post = float(settings.get("clip_post_seconds", 6))
         self.clip_max = float(settings.get("clip_max_seconds", 180))
         self.analyzer = Analyzer(cam_cfg.get("analysis", {}), detector, scorer, self.clip_pre, self.clip_post,
-                                 clip_max=self.clip_max)
+                                 clip_max=self.clip_max, clips=not self.metrics_only)
+        # sin movimiento y sin nadie en escena no se usa el detector (ahorra placa de video)
+        self.gate = MotionGate()
+        self.idle_pct: float | None = None  # parte de los cuadros salteados por quietud (último minuto)
+        self.metrics_queue = metrics_queue
         self.outbox = outbox
         self.client = client
         self.clip_pool = clip_pool
@@ -121,7 +165,9 @@ class CameraWorker:
 
     def status(self) -> dict:
         return {"camera_id": self.id, "state": self.state, "error": self.error, "fps": round(self.fps, 2),
-                "events": self.events, "live": self.live.active, "last_frame_age_s":
+                "events": self.events, "live": self.live.active,
+                "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
+                "metrics_only": self.metrics_only, "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
 
     def run(self) -> None:
@@ -172,7 +218,7 @@ class CameraWorker:
         last_proc = -1e9
         last_show = -1e9
         last_preview = -1e9
-        last_metrics = time.monotonic()
+        last_metrics = last_idle = time.monotonic()
         window: list[float] = []
         fails = 0
         while not self._stop.is_set():
@@ -207,8 +253,15 @@ class CameraWorker:
                 continue
             last_proc = ts
             wall = datetime.now(self.hik.tz)
-            findings = self.analyzer.process(frame, ts, wall)
-            self.metrics.update(self.analyzer.last_tracks, ts, frame.shape[1::-1], wall)
+            if self.gate.should_analyze(frame, ts, self.analyzer.busy):
+                findings = self.analyzer.process(frame, ts, wall)
+                self.metrics.update(self.analyzer.last_tracks, ts, frame.shape[1::-1], wall)
+            else:  # escena quieta y vacía: no hace falta buscar personas
+                self.analyzer.idle(frame, ts)
+                findings = []
+            if now - last_idle > 60:
+                last_idle = now
+                self.idle_pct = self.gate.take_saved_fraction()
             if self.live.active:
                 self.live.push(frame, self.analyzer.last_tracks, ts, wall)
             for f in findings:
@@ -271,7 +324,11 @@ class CameraWorker:
         log.info("[%s] zonas y reglas actualizadas (%d zonas)", self.name, len(zones))
 
     def _send_metrics(self, buckets: list[dict]) -> None:
-        """Manda los cubos al servidor en otro hilo; si falla, se reintentan con el próximo envío."""
+        """Deja los cubos en la cola de la PC (un solo envío para todas las cámaras). Sin cola (pruebas,
+        uso suelto) los manda directo en otro hilo; si falla, se reintentan con el próximo envío."""
+        if self.metrics_queue is not None:
+            self.metrics_queue.add([{"camera_id": self.id, **b} for b in buckets])
+            return
         pending = self._metrics_pending + [{"camera_id": self.id, **b} for b in buckets]
         self._metrics_pending = []
         if not pending or self.client is None:

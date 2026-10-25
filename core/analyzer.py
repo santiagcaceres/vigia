@@ -121,8 +121,9 @@ class Analyzer:
 
     def __init__(self, config: dict, detector: Detector, scorer: Scorer | None = None,
                  clip_pre: float = 6.0, clip_post: float = 6.0, clip_width: int = 640, clip_max: float = 180.0,
-                 lead_seconds: float = 3.0):
+                 lead_seconds: float = 3.0, clips: bool = True):
         self.zones, rule_cfg = parse_config(config)
+        self.clips = clips  # False = solo métricas: sin buffer de cuadros (no comprime JPEG ni gasta memoria)
         self.detector = detector
         self.tracker = CentroidTracker()
         self.engine = RuleEngine(self.zones, rule_cfg)
@@ -142,10 +143,11 @@ class Analyzer:
         h, w = frame.shape[:2]
         tracks = self.tracker.update(self.detector.detect(frame), ts, frame)
         self.last_tracks = tracks
+        if not self.clips:  # solo métricas: no hay alertas ni clips
+            self.frames += 1
+            return []
         jpg_small = self._small_jpg(frame)
-        self._buffer.append((ts, jpg_small))
-        while self._buffer and ts - self._buffer[0][0] > self.clip_max:
-            self._buffer.popleft()
+        self._remember(ts, jpg_small)
         visible_ids = {t.id for t in tracks if t.visible}
         still = []
         for p in self._pending:
@@ -174,6 +176,23 @@ class Analyzer:
             findings.append(f)
         self.frames += 1
         return findings
+
+    @property
+    def busy(self) -> bool:
+        """Se ve a alguien (aunque esté quieto) o hay un clip abierto: no saltear cuadros."""
+        return bool(self.tracker.seeing or self._pending)
+
+    def idle(self, frame: np.ndarray, ts: float) -> None:
+        """Cuadro sin movimiento y sin nadie: no se detecta. Solo se guarda 1 por segundo en el buffer
+        para que el clip tenga los segundos de antes de que apareciera la persona."""
+        if not self.clips or (self._buffer and ts - self._buffer[-1][0] < 1.0):
+            return
+        self._remember(ts, self._small_jpg(frame))
+
+    def _remember(self, ts: float, jpg: bytes) -> None:
+        self._buffer.append((ts, jpg))
+        while self._buffer and ts - self._buffer[0][0] > self.clip_max:
+            self._buffer.popleft()
 
     def take_ready_clips(self) -> list[ClipReady]:
         ready, self._ready = self._ready, []

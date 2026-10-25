@@ -153,6 +153,34 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   con ropa parecida (histograma de color HSV, correlación ≥ 0,35), conserva el número y el tiempo en escena. Quien
   aparece tocando el borde es nuevo; quien se perdió tocando el borde se da por ido. `update(dets, ts, frame)`.
   Siguiente paso si no alcanza: ByteTrack/BoT-SORT con un modelo de re-identificación (OSNet).
+- **Ahorro de insumos (25 oct, pedido del dueño: «ahorrar lo máximo posible»; app 1.14.0):**
+  - **Horario del local** (`clients.hours`, `core/schedule.py`): un texto por día (`{"lun": "09:00-17:00", "mie":
+    "09:00-13:00, 16:00-20:00", "vie": "18:00-02:00", "dom": ""}`; acepta «9-17» y «9 a 17»; vacío = cerrado; sin
+    horario = 24 h). Se mira desde 15 min antes de abrir hasta 15 min después de cerrar (`DEFAULT_MARGIN_MIN`).
+    Con el local cerrado la PC central **no abre el video** (`agent.__main__.effective_mode`, revisado cada 30 s
+    sin pedir nada al servidor); la cámara decide qué hacer en `cameras.off_hours`: `apagada` (por defecto),
+    `alarmas` (escucha al grabador con `DeviceAlarmListener` aunque su modo sea vivo; solo por IP y puertos: por
+    Hik-Connect todavía no llegan alarmas) o `vivo` (24 h). El servidor acepta esas alarmas (`agent_device_alarm`,
+    `agent_next_alarm` miran `off_hours`). Estado `fuera_de_horario` («Local cerrado · vuelve 08:45»). La regla
+    «fuera de horario» usa el horario del cliente (`analysis.schedule`, aparte de `rules` para que un agente viejo
+    no falle). En la app: recuadro «Horario del local» en el cliente (dice cuántas horas por semana se mira) y
+    «Con el local cerrado» en la cámara. El formulario del cliente pasó a dos columnas (entra en 1366×768).
+  - **Filtro de movimiento** (`core/motion.py`, `MotionGate`): si la escena está quieta (96×54 en gris contra lo
+    de hace 1 s) y no se ve a nadie (`tracker.seeing`, `Analyzer.busy`), no se usa el detector; igual se analiza
+    1 cuadro cada 2 s. El buffer de clips guarda 1 cuadro/s en esos ratos (`Analyzer.idle`). Ahorra placa de video
+    (no internet ni decodificación). En un video sintético con 70 de 81 s vacíos salteó el 71 % y la alerta salió
+    igual. La app muestra «· 80 % quieta» (`idle_pct` en el estado).
+  - **Solo métricas** (cliente sin plan «hurto», o tipo de cámara «Solo métricas» / sin reglas): `METRICS_FPS` 2
+    (3 con zona de entrada o surtidor), `enabled_rules=[]`, `Analyzer(clips=False)` (no comprime ni guarda cuadros).
+    Viaja como `metrics_only` y `process_fps` en `/api/agent/config`. El mínimo de 5 fps sigue para hurto.
+  - **Menos pedidos al servidor:** métricas de todas las cámaras en un solo envío cada 5 min (`MetricsQueue`); la
+    configuración se pide cada 60 s (antes 20; al guardar en la app se pide ya); alarmas pendientes cada 20 s y solo
+    si hay cámaras en modo alarmas (más 10 min después de abrir); videos para entrenar cada 120 s; la lista de
+    cámaras de la app cada 30 s y solo con la pestaña a la vista.
+  - Arreglado: el «Asignada a» del formulario de cámara no se mandaba (se agregaba después de armar el pedido).
+  - **Lo que tiene que hacer el dueño:** cargar el horario de cada cliente; sacar «Detección de hurtos» a los clientes
+    que son solo métricas; en los grabadores, substream a 640×360, 6-8 fps, 256-384 kbps (desde Hik-Partner Pro):
+    eso baja internet y decodificación, que el filtro de movimiento no ahorra.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -350,7 +378,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 147 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 155 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

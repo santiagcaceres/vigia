@@ -31,7 +31,7 @@ from .cameras import BaseCamera, build_camera, download_nvr_clip
 from .outbox import ServerClient
 
 log = logging.getLogger("vigia.alarms")
-IDLE_POLL_SECONDS = 10
+IDLE_POLL_SECONDS = 20  # sin alarmas pendientes: cada cuánto se vuelve a preguntar (cada pregunta es un pedido al servidor)
 
 # (cámara, inicio, fin, archivo destino) -> True si dejó el clip
 ClipFetcher = Callable[[BaseCamera, datetime, datetime, Path], bool]
@@ -53,6 +53,9 @@ class AlarmRunner:
         self._lock = threading.Lock()
         self._detectors: dict[str, Detector] = {}
         self.done = self.discarded = self.failed = 0
+        # False mientras ninguna cámara está en modo alarmas (ej. de día, si solo escuchan con el local cerrado):
+        # no se pregunta al servidor
+        self.active = True
         self.threads = [threading.Thread(target=self._loop, name=f"alarmas-{i}", daemon=True) for i in range(workers)]
 
     def start(self) -> None:
@@ -75,6 +78,9 @@ class AlarmRunner:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            if not self.active:
+                self._stop.wait(IDLE_POLL_SECONDS)
+                continue
             try:
                 worked = self.run_once()
             except httpx.HTTPError as exc:

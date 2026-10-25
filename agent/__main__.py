@@ -22,12 +22,15 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from core.detectors import Detector, build_detector
 from core.rules import parse_zones
+from core.schedule import is_open, next_open
 from core.scorer import Scorer
 
 from . import actualizar, hikconnect
@@ -37,11 +40,44 @@ from .imports import ImportJobRunner
 from .live import LiveWorker
 from .outbox import Outbox, ServerClient, login_pc
 from .ventana import ESTADOS, Ventana, default_pc_name
-from .worker import CameraWorker
+from .worker import METRICS_EVERY_SECONDS, CameraWorker, MetricsQueue
 
 log = logging.getLogger("vigia.agent")
 VERSION = "2.0.0"
-CONFIG_EVERY_SECONDS = 20  # cada cuánto se piden cámaras, zonas y reglas (además se pide al guardar en la app)
+CONFIG_EVERY_SECONDS = 60  # cada cuánto se piden cámaras, zonas y reglas (además se pide al guardar en la app)
+SCHEDULE_EVERY_SECONDS = 30  # cada cuánto se revisa (sin internet) si algún local abrió o cerró
+IP_BRANDS = ("hikvision", "dahua", "ip")  # las que pueden escuchar las alarmas del grabador
+
+
+def effective_mode(cam: dict, now: datetime | None = None) -> str | None:
+    """Qué hace la cámara AHORA según el horario del local: su modo de siempre si el local está abierto
+    (o no tiene horario); si está cerrado, lo que diga `off_hours`. None = no se mira (no se abre el video)."""
+    mode = cam.get("mode") or "vivo"
+    sch = cam.get("schedule") or {}
+    hours = sch.get("hours")
+    if not hours:
+        return mode
+    tz = ZoneInfo((cam.get("connection") or {}).get("timezone") or "America/Montevideo")
+    now = (now or datetime.now(tz)).astimezone(tz)
+    if is_open(hours, now, float(sch.get("margin_min") or 0)):
+        return mode
+    off = sch.get("off_hours") or "apagada"
+    if off == "vivo":
+        return mode  # sigue igual las 24 h
+    if off == "alarmas":
+        if mode == "alarmas":
+            return mode  # Hik-Partner Pro: las alarmas llegan solas al servidor
+        if (cam.get("connection") or {}).get("brand") in IP_BRANDS:
+            return "alarmas_equipo"
+    return None
+
+
+def reopens_at(cam: dict) -> datetime | None:
+    sch = cam.get("schedule") or {}
+    if not sch.get("hours"):
+        return None
+    tz = ZoneInfo((cam.get("connection") or {}).get("timezone") or "America/Montevideo")
+    return next_open(sch["hours"], datetime.now(tz), float(sch.get("margin_min") or 0))
 STATUS_EVERY_SECONDS = 10  # la respuesta trae qué cámaras se están mirando en vivo
 LIVE_EXTEND_SECONDS = 45.0  # cuánto sigue el vivo después del último aviso del servidor
 
@@ -66,6 +102,10 @@ class Agent:
         self.outbox = Outbox(self.data_dir / "outbox", self.client)
         self.model_path = model_path
         self.clip_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="clips")
+        self.metrics_queue = MetricsQueue(self.client)  # un solo envío de métricas para todas las cámaras
+        self._last_cfg: dict | None = None
+        self._closed: set[int] = set()  # cámaras que no se miran ahora porque el local está cerrado
+        self._alarms_until = 0.0
         self.workers: dict[int, CameraWorker] = {}
         self.listeners: dict[int, DeviceAlarmListener] = {}
         self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
@@ -99,14 +139,30 @@ class Agent:
                 w.fingerprint = ""
             log.info("Modelo de filtro: %s", self._scorer_id or "ninguno (se alertan todos los eventos)")
 
+        self._last_cfg = cfg
         cams = [c for c in cfg.get("cameras", []) if c.get("enabled", True)]
         self._cams_cfg = {c["id"]: c for c in cams}
-        if self.alarms is None and any(c.get("mode") in ("alarmas", "alarmas_equipo") for c in cams):
+        # horario del local: con el local cerrado la cámara hace lo que diga «fuera de horario»
+        modes = {c["id"]: effective_mode(c) for c in cams}
+        closed = {cid for cid, m in modes.items() if m is None or m != (self._cams_cfg[cid].get("mode") or "vivo")}
+        for cid in closed - self._closed:
+            log.info("%s: local cerrado, %s", self._cams_cfg[cid]["name"],
+                     "escuchando solo las alarmas del grabador" if modes[cid] else "no se mira hasta que abra")
+        for cid in self._closed - closed:
+            if cid in self._cams_cfg:
+                log.info("%s: abrió el local, vuelve a analizarse", self._cams_cfg[cid]["name"])
+        self._closed = closed
+        alarm_cams = any(m in ("alarmas", "alarmas_equipo") for m in modes.values())
+        if alarm_cams:
+            self._alarms_until = time.monotonic() + 600  # al abrir el local, 10 min más para las que quedaron
+        if self.alarms is not None:
+            self.alarms.active = alarm_cams or time.monotonic() < self._alarms_until
+        if self.alarms is None and alarm_cams:
             self.alarms = AlarmRunner(self.client, self.model_path, self.data_dir / "alarmas", self.alarm_workers)
             self.alarms.start()
             log.info("Análisis de alarmas: activado (%d en paralelo)", self.alarm_workers)
         # cámaras cuyo grabador avisa las alarmas: un hilo escuchando por cámara
-        listen = {c["id"]: c for c in cams if c.get("mode") == "alarmas_equipo"}
+        listen = {c["id"]: c for c in cams if modes[c["id"]] == "alarmas_equipo"}
         for cid in list(self.listeners):
             lst = self.listeners[cid]
             if cid not in listen or lst.fingerprint != DeviceAlarmListener.fingerprint_of(listen[cid]):
@@ -118,7 +174,7 @@ class Agent:
                 lst = DeviceAlarmListener(c, self.client)
                 self.listeners[cid] = lst
                 lst.start()
-        wanted = {c["id"]: c for c in cams if c.get("mode", "vivo") == "vivo"}
+        wanted = {c["id"]: c for c in cams if modes[c["id"]] == "vivo"}
         for cid in list(self.workers):
             w = self.workers[cid]
             if cid not in wanted or w.fingerprint != CameraWorker.fingerprint_of(wanted[cid]):
@@ -145,7 +201,8 @@ class Agent:
                 continue
             # modo central: cada cámara trae el modelo de su cliente; si no, se usa el del agente
             scorer = Scorer.maybe(c["filter_model"]) if c.get("filter_model") is not None else self.scorer
-            w = CameraWorker(c, det, scorer, self.outbox, self.client, self.clip_pool, cfg.get("settings", {}))
+            w = CameraWorker(c, det, scorer, self.outbox, self.client, self.clip_pool, cfg.get("settings", {}),
+                             metrics_queue=self.metrics_queue)
             self.workers[cid] = w
             w.start()
             log.info("Iniciada cámara %s", c["name"])
@@ -153,8 +210,15 @@ class Agent:
     def run(self) -> None:
         self.outbox.start()
         last_cfg = last_status = -1e9
+        last_schedule = last_metrics = time.monotonic()
         while not self._stop.is_set():
             now = time.monotonic()
+            if now - last_schedule >= SCHEDULE_EVERY_SECONDS and self._last_cfg is not None:
+                last_schedule = now
+                self.apply_config(self._last_cfg)  # abre o cierra cámaras según el horario, sin pedir nada
+            if now - last_metrics >= METRICS_EVERY_SECONDS:
+                last_metrics = now
+                self.clip_pool.submit(self.metrics_queue.flush)
             if self._force_config:
                 self._force_config = False
                 last_cfg = -1e9
@@ -189,7 +253,9 @@ class Agent:
                 last_status = now
                 try:
                     resp = self.client.status({"cameras": [w.status() for w in self.workers.values()]
-                                               + [l.status() for l in self.listeners.values()],
+                                               + [l.status() for l in self.listeners.values()]
+                                               + [{"camera_id": cid, "state": "fuera_de_horario"}
+                                                  for cid in self._closed if cid not in self.listeners],
                                                "live": self.live_ids(),
                                                "outbox_pending": self.outbox.pending(), "version": VERSION,
                                                **(self.alarms.status() if self.alarms else {})})
@@ -247,13 +313,28 @@ class Agent:
         w = self.workers.get(cid)
         lw = self.live_workers.get(cid)
         if w is not None:
-            return ESTADOS.get(w.state, w.state) + (f" · {w.fps:.0f} fps" if w.state == "en_linea" and w.fps else "")
+            txt = ESTADOS.get(w.state, w.state)
+            if w.state == "en_linea" and w.fps:
+                txt += f" · {w.fps:.0f} fps"
+                if w.idle_pct:
+                    txt += f" · {w.idle_pct:.0%} quieta"
+            return txt + (" · solo métricas" if w.metrics_only else "")
         if lw is not None and lw.thread.is_alive():
             return "En vivo (panel)"
         if cid in self.listeners:
             lst = self.listeners[cid]
-            return ESTADOS.get(lst.state, lst.state)
+            return ESTADOS.get(lst.state, lst.state) + (" (local cerrado)" if cid in self._closed else "")
+        if cid in self._closed:
+            return self._closed_text(cid)
         return "Escuchando alarmas"
+
+    def _closed_text(self, cid: int) -> str:
+        at = reopens_at(self._cams_cfg.get(cid) or {})
+        if at is None:
+            return "Local cerrado"
+        days = (at.date() - datetime.now(at.tzinfo).date()).days
+        when = f"{at:%H:%M}" if days == 0 else ("mañana " if days == 1 else f"{at:%d/%m} ") + f"{at:%H:%M}"
+        return f"Local cerrado · vuelve {when}"
 
     def window_cameras(self) -> list[tuple[int, str, str, str]]:
         """Todas las cámaras asignadas, para la lista de la izquierda: (id, cliente, nombre, estado)."""
@@ -278,6 +359,8 @@ class Agent:
                               .get(w.state, w.state)))
             elif lw is not None and lw.thread.is_alive():
                 tiles.append((name, lw.display, "Abriendo el stream..."))
+            elif cid in self._closed and cid not in self.listeners:
+                tiles.append((name, None, self._closed_text(cid) + " (no se gasta video ni análisis)"))
             else:
                 tiles.append((name, None, "Escuchando alarmas del grabador (video solo cuando alguien mira desde el panel)"))
         return tiles
@@ -330,6 +413,7 @@ class Agent:
             w.stop()
         for w in self.workers.values():
             w.thread.join(15)
+        self.metrics_queue.flush()  # lo último medido
         self.clip_pool.shutdown(wait=True)
         self.outbox.stop()
 

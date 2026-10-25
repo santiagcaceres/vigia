@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.metrics import empty_bucket, merge_bucket
 from core.rules import EVENT_TYPES, SEVERITY, parse_config
+from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
 from . import hikconnect, hpp, probe, training
@@ -156,10 +157,13 @@ class ClientIn(BaseModel):
     hc_secret: str | None = Field(None, max_length=256)
     hc_api_url: str | None = Field(None, max_length=255)
     hc_code: str | None = Field(None, max_length=64)  # código de cifrado de video; vacío = no cambia, "-" = borrar
+    # horario del local: {"lun": "09:00-17:00", ..., "dom": ""} (core/schedule.py). Solo se toca si viene;
+    # {} o todo vacío = sin horario (se mira las 24 h)
+    hours: dict[str, str] | None = None
 
     def client_fields(self) -> dict:
         return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url",
-                                        "hc_code"})
+                                        "hc_code", "hours"})
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -210,7 +214,11 @@ class AlarmCfgIn(BaseModel):
     post_seconds: float = Field(20.0, ge=3, le=90)
 
 
-MIN_FPS = 5.0  # cuadros por segundo analizados, como mínimo, en todas las cámaras
+MIN_FPS = 5.0  # cuadros por segundo analizados, como mínimo, en las cámaras que buscan hurtos
+# Cámaras solo de métricas (cliente sin plan «hurto» o tipo «Solo métricas»): contar gente y medir tiempos
+# no necesita 5 fps ni guardar clips. Con zona de entrada o surtidor un poco más, para no perder a quien cruza.
+METRICS_FPS = 2.0
+METRICS_COUNT_FPS = 3.0
 
 # Tipo de cámara (qué mira): qué reglas de hurto se aplican si no se eligieron a mano en «Zonas y reglas».
 CAMERA_PROFILES = {
@@ -222,7 +230,9 @@ CAMERA_PROFILES = {
                  "whole_zone": "restricted"},
     "exterior": {"name": "Calle / exterior", "rules": ["fuera_de_horario"], "vehicles": True},
     "surtidor": {"name": "Surtidor (estación)", "rules": [], "vehicles": True},
+    "metricas": {"name": "Solo métricas (conteo y tiempos, sin hurto)", "rules": []},
 }
+OFF_HOURS = ("apagada", "alarmas", "vivo")
 
 
 class CameraIn(BaseModel):
@@ -249,7 +259,9 @@ class CameraIn(BaseModel):
     mode: Literal["vivo", "alarmas", "alarmas_equipo"] = "vivo"
     hpp_serial: str | None = Field(None, max_length=64)  # la larga de Hik-Connect se acorta al validar
     hc_resource_id: str | None = Field(None, max_length=64)
-    profile: Literal["general", "gondola", "caja", "entrada", "deposito", "exterior", "surtidor"] = "general"
+    profile: Literal["general", "gondola", "caja", "entrada", "deposito", "exterior", "surtidor", "metricas"] = "general"
+    # con el local cerrado (según el horario del cliente). None = no cambia (al crear: apagada)
+    off_hours: Literal["apagada", "alarmas", "vivo"] | None = None
     # usuario que la ve y la analiza en su PC (lo elige el admin). None = no cambia; 0 = sin asignar
     operator_id: int | None = None
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
@@ -458,7 +470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": c.id, "name": c.name, "timezone": c.timezone, "telegram_chat_id": c.telegram_chat_id,
                 "contact_whatsapp": c.contact_whatsapp, "contact_email": c.contact_email,
                 "webhook_url": c.webhook_url, "notify_channels": notifier.available(c),
-                "plans": list(c.plans or ["hurto"]), "created_at": iso(c.created_at)}
+                "plans": list(c.plans or ["hurto"]), "hours": c.hours, "created_at": iso(c.created_at)}
 
     def user_dict(u: User) -> dict:
         return {"id": u.id, "username": u.username, "role": u.role, "client_id": u.client_id, "active": u.active}
@@ -499,7 +511,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
                      hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c),
-                     profile=c.profile or "general")
+                     profile=c.profile or "general", off_hours=c.off_hours or "apagada")
             op = (ops or {}).get(c.agent_id) if c.agent_id else None
             d.update(operator_id=op[0] if op else None, operator_name=op[1] if op else None)
         return d
@@ -677,6 +689,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"hc_app_key": c.hc_app_key, "hc_api_url": c.hc_api_url, "hc_has_secret": bool(c.hc_secret_enc),
                 "hc_has_code": bool(c.hc_code_enc)}
 
+    def set_client_hours(c: Client, body: ClientIn) -> None:
+        if "hours" not in body.model_fields_set:
+            return
+        try:
+            c.hours = normalize_hours(body.hours)
+        except ValueError as exc:
+            raise HTTPException(422, f"Horario: {exc}") from exc
+
     def set_client_hc(c: Client, body: ClientIn) -> None:
         sent = body.model_fields_set
         if "hc_app_key" in sent:
@@ -732,6 +752,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if s.query(Client).filter_by(name=body.name).first():
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         c = Client(**body.client_fields())
+        set_client_hours(c, body)
         set_client_hc(c, body)
         s.add(c)
         s.flush()
@@ -747,6 +768,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         for k, v in body.client_fields().items():
             setattr(c, k, v)
+        set_client_hours(c, body)
         set_client_hc(c, body)
         set_client_web_user(s, c, body)
         s.commit()
@@ -939,6 +961,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         f = body.model_dump(exclude={"password", "source_url", "operator_id"})
         if "agent_id" not in body.model_fields_set:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
+        if f.get("off_hours") is None:
+            f.pop("off_hours")  # una app vieja no lo manda: queda como estaba
         return f
 
     def apply_operator(s, c: Camera, body: CameraIn, user: User) -> None:
@@ -1133,7 +1157,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             zones.append({"name": prof["name"], "type": whole, "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]})
         vehicles = ("estacion" in plans or bool(prof.get("vehicles"))
                     or any((z or {}).get("type") == "pump" for z in zones))
-        return {"zones": zones, "rules": rules, "vehicles": vehicles, "plans": plans, "profile": c.profile or "general"}
+        # sin plan de hurto (o sin ninguna regla): la cámara solo mide; no hay alertas ni clips
+        # (sin cliente = video subido para entrenar: siempre con las reglas de hurto)
+        metrics_only = (client is not None and "hurto" not in plans) or rules.get("enabled_rules") == []
+        if metrics_only:
+            rules["enabled_rules"] = []
+        out = {"zones": zones, "rules": rules, "vehicles": vehicles, "plans": plans, "profile": c.profile or "general",
+               "metrics_only": metrics_only}
+        if client is not None and client.hours:
+            out["schedule"] = client.hours  # para la regla «fuera de horario»
+        return out
+
+    def camera_fps(c: Camera, analysis: dict) -> float:
+        if analysis.get("metrics_only"):
+            counting = any((z or {}).get("type") in ("entrance", "pump") for z in analysis.get("zones") or [])
+            return METRICS_COUNT_FPS if counting else METRICS_FPS
+        return max(MIN_FPS, c.process_fps or MIN_FPS)
 
     def model_spec(s, client_id: int) -> dict | None:
         m = active_model(s, client_id)
@@ -1156,9 +1195,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     def agent_camera_cfg(c: Camera, client: Client) -> dict:
+        analysis = camera_analysis(c, client)
         return {
             "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": client.name,
-            "enabled": c.enabled, "detector": c.detector, "process_fps": max(MIN_FPS, c.process_fps or MIN_FPS),
+            "enabled": c.enabled, "detector": c.detector, "process_fps": camera_fps(c, analysis),
+            "metrics_only": analysis["metrics_only"],
+            # con el local cerrado la PC central no abre el video (salvo que la cámara diga otra cosa)
+            "schedule": {"hours": client.hours, "margin_min": DEFAULT_MARGIN_MIN, "off_hours": c.off_hours or "apagada"},
             "mode": c.mode or "vivo", "alarm_cfg": alarm_cfg_of(c),
             "connection": {"brand": c.brand, "host": c.host, "username": c.username,
                            "password": box.decrypt(c.password_enc),
@@ -1167,7 +1210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            "playback_time": c.playback_time, "timezone": client.timezone,
                            "source_url": box.decrypt(c.source_url_enc) or None,
                            "camera_id": c.id, "serial": c.hpp_serial},
-            "analysis": camera_analysis(c, client),
+            "analysis": analysis,
         }
 
     def hc_stream_url(s, c: Camera, kind: str, quality: str = "sub", start: datetime | None = None,
@@ -1502,7 +1545,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_device_alarm(body: DeviceAlarmIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         """El agente avisa una alarma que le mandó el propio grabador (modo alarmas_equipo)."""
         cam = agent_camera(s, ag, body.camera_id)
-        if (cam.mode or "vivo") != "alarmas_equipo" or not cam.enabled:
+        listens = (cam.mode or "vivo") == "alarmas_equipo" or (cam.off_hours == "alarmas" and cam.brand != "hikconnect")
+        if not listens or not cam.enabled:
             raise HTTPException(409, "La cámara no está en modo «alarmas del propio grabador»")
         if body.event_type not in alarm_cfg_of(cam)["event_types"]:
             return {"result": "ignorada"}
@@ -1640,7 +1684,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_next_alarm(ag: Agent = Depends(current_agent), s=Depends(db)):
         """Entrega a la PC central la próxima alarma lista para bajar su tramo de video."""
         now = utcnow()
-        mine = agent_cameras_q(s, ag).filter(Camera.mode.in_(("alarmas", "alarmas_equipo")), Camera.enabled.is_(True))
+        mine = agent_cameras_q(s, ag).filter(or_(Camera.mode.in_(("alarmas", "alarmas_equipo")), Camera.off_hours == "alarmas"),
+                                             Camera.enabled.is_(True))
         cams = {c.id: c for c in mine}
         if not cams:
             return Response(status_code=204)

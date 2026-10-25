@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time
 
 from .geometry import BBox, Point, bbox_foot, point_in_polygon
+from .schedule import is_open, parse_hours
 from .tracker import Track
 
 # shelf/checkout/exit/restricted: reglas de hurto. entrance: conteo de ingresos (comercios).
@@ -60,6 +61,8 @@ class RuleConfig:
     restricted_min_seconds: float = 1.0
     cooldown_seconds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_COOLDOWNS))
     opening_hours: tuple[time, time] | None = None
+    # horario del local por día (core/schedule.py); si está, manda sobre opening_hours
+    schedule: dict | None = None
     enabled_rules: tuple[str, ...] = RULE_TYPES
 
     @classmethod
@@ -123,7 +126,10 @@ def parse_zones(items: list[dict] | None) -> list[Zone]:
 
 def parse_config(config: dict | None) -> tuple[list[Zone], RuleConfig]:
     config = config or {}
-    return parse_zones(config.get("zones")), RuleConfig.from_dict(config.get("rules"))
+    cfg = RuleConfig.from_dict(config.get("rules"))
+    # el horario del local viaja aparte de las reglas (un agente viejo lo ignora en vez de fallar)
+    cfg.schedule = parse_hours(config.get("schedule")) or None
+    return parse_zones(config.get("zones")), cfg
 
 
 @dataclass
@@ -221,7 +227,10 @@ class RuleEngine:
                              f"Persona #{t.id} salió por «{name}» tras {st.pending_dwell:.0f}s en "
                              f"«{st.pending_zone}» sin pasar por caja")
 
-            if self.cfg.opening_hours and wall_time is not None:
+            if self.cfg.schedule and wall_time is not None:
+                if not is_open(self.cfg.schedule, wall_time, 0):
+                    emit(FUERA_DE_HORARIO, None, f"Persona #{t.id} detectada con el local cerrado")
+            elif self.cfg.opening_hours and wall_time is not None:
                 start, end = self.cfg.opening_hours
                 if not _within(wall_time.time(), start, end):
                     emit(FUERA_DE_HORARIO, None,
