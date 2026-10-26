@@ -112,3 +112,36 @@ def test_alertas_por_cliente_y_camara_y_exportar_metricas(app):
     cli.post("/api/login", json={"username": "kiosco", "password": "clave-kiosco-1"})
     assert cli.get("/api/metrics/export", params={"desde": "2026-10-20", "hasta": "2026-10-20"}).status_code == 200
     assert cli.get("/api/stats/alerts").status_code == 403
+
+
+def test_borrar_varias_camaras_y_sus_alertas(app):
+    a = admin(app)
+    cl = a.post("/api/clients", json={"name": "Minas"}).json()
+    c1, c2, c3 = cam(a, cl, "C1"), cam(a, cl, "C2"), cam(a, cl, "C3")
+    from server.db import ClientReport, Event
+
+    with app.state.Session() as s:
+        e = Event(uuid="ev-borrar", client_id=cl["id"], camera_id=c2["id"], type="merodeo", severity="media",
+                  description="x", snapshot_path="c1/foto.jpg")
+        s.add(e)
+        s.flush()
+        s.add(ClientReport(client_id=cl["id"], event_id=e.id, public_token="t" * 40, message="posible hurto",
+                            expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=14)))
+        s.commit()
+    # una sin alertas se borra sola
+    assert a.delete(f"/api/cameras/{c1['id']}").status_code == 204
+    # con alertas pide confirmación y no borra nada
+    r = a.post("/api/cameras/delete", json={"camera_ids": [c2["id"], c3["id"]]})
+    assert r.status_code == 409 and "1 alerta" in r.json()["detail"]
+    assert len(a.get("/api/cameras").json()) == 2
+    r = a.post("/api/cameras/delete", json={"camera_ids": [c2["id"], c3["id"]], "con_alertas": True})
+    assert r.status_code == 200 and r.json()["deleted"] == 2
+    assert a.get("/api/cameras").json() == []
+    with app.state.Session() as s:
+        assert s.query(Event).count() == 0 and s.query(ClientReport).count() == 0
+    # un empleado no puede borrar
+    a.post("/api/users", json={"username": "ana", "password": "clave-ana-123", "role": "entrenador"})
+    e = TestClient(app)
+    e.post("/api/login", json={"username": "ana", "password": "clave-ana-123"})
+    c4 = cam(a, cl, "C4")
+    assert e.post("/api/cameras/delete", json={"camera_ids": [c4["id"]]}).status_code == 403

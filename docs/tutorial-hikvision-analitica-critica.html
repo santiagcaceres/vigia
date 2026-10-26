@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Tutorial Hikvision · Analítica Crítica · Cómo darnos acceso a sus cámaras</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#1f5fbf; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 11pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 25pt; margin: 0 0 2px; letter-spacing: -0.3px; }
+  h2 { font-size: 15.5pt; margin: 22px 0 8px; padding-top: 8px; border-top: 2px solid var(--accent); page-break-after: avoid; }
+  h2 .n { display: inline-block; min-width: 30px; height: 30px; line-height: 30px; text-align: center; border-radius: 50%;
+          background: var(--accent); color: #fff; font-size: 13pt; margin-right: 8px; }
+  h3 { font-size: 12pt; margin: 14px 0 6px; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  ol, ul { margin: 6px 0 6px 22px; padding: 0; }
+  li { margin: 4px 0; }
+  b.m { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-weight: 600; white-space: nowrap; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 10pt; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 10pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  td.k { width: 36%; font-weight: 600; }
+  td.blank { height: 26px; }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 8px 12px; margin: 10px 0; border-radius: 6px; page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .box.bad { border-left-color: var(--bad); }
+  .muted { color: var(--muted); }
+  .small { font-size: 9.5pt; }
+  .cover { border-bottom: 3px solid var(--accent); padding-bottom: 12px; margin-bottom: 14px; }
+  .brand { font-size: 11pt; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .sub { font-size: 14pt; color: var(--muted); margin-top: 2px; }
+  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin: 8px 0; }
+  .steps div { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  .steps b { color: var(--accent); }
+  .check { list-style: none; margin-left: 0; }
+  .check li::before { content: "☐  "; }
+  .opt { border: 1px dashed var(--line); border-radius: 6px; padding: 6px 12px; margin: 8px 0; page-break-inside: avoid; }
+  .opt h4 { margin: 2px 0 4px; font-size: 11pt; }
+  .pb { page-break-before: always; }
+  .foot { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 9pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="brand">Analítica Crítica</div>
+  <h1>Tutorial Hikvision</h1>
+  <div class="sub">Cómo darnos acceso a sus cámaras</div>
+  <p class="muted small">Para comercios con grabador Hikvision (DVR o NVR) · Versión del 26 de octubre de 2026 · Tiempo estimado: 20 a 40 minutos</p>
+</div>
+
+<div class="box ok">
+  <b>Qué vamos a lograr.</b> Que nuestro sistema pueda ver el video de sus cámaras por la nube de Hikvision
+  (Hik-Connect) para analizarlo y avisarle de situaciones sospechosas. <b>No hay que abrir puertos en el router ni
+  instalar nada en el local.</b> El grabador sigue grabando igual que siempre y usted sigue viendo todo en su app.
+</div>
+
+<h3>Los 6 pasos</h3>
+<div class="steps">
+  <div><b>1.</b> Tener el grabador en la app Hik-Connect</div>
+  <div><b>2.</b> Apagar el cifrado de video</div>
+  <div><b>3.</b> Ajustar la segunda señal (recomendado)</div>
+  <div><b>4.</b> Pasar la cuenta a Hik-Connect para equipos</div>
+  <div><b>5.</b> Crear la clave de acceso (API)</div>
+  <div><b>6.</b> Enviarnos los datos</div>
+</div>
+
+<h3>Qué necesita tener a mano</h3>
+<ul class="check">
+  <li>Un celular con la app <b>Hik-Connect</b> y la cuenta (correo o usuario y clave) donde está su grabador.</li>
+  <li>Una computadora con internet (para el portal web del paso 4 y 5).</li>
+  <li>El <b>código de verificación</b> del grabador: 6 letras mayúsculas en la etiqueta del equipo, o el que se creó al
+      activar Hik-Connect.</li>
+  <li>Si es posible, acceso al grabador con <b>monitor y mouse</b> (por si alguna opción no aparece en la app).</li>
+</ul>
+<p class="muted small">Los nombres de los menús pueden cambiar un poco según el modelo y la versión del grabador o de la app
+(algunos aparecen en inglés). Si no encuentra una opción, mándenos una foto de la pantalla y lo resolvemos juntos.</p>
+
+<h2><span class="n">1</span>Su grabador en la app Hik-Connect</h2>
+<p>Si ya ve sus cámaras en la app Hik-Connect, este paso está hecho: pase al 2.</p>
+<p>Si no:</p>
+<ol>
+  <li>En el grabador (con monitor y mouse): <b class="m">Configuración</b> → <b class="m">Red</b> →
+      <b class="m">Acceso a plataforma</b> (o <b class="m">Hik-Connect</b>).</li>
+  <li>Marque <b>Habilitar</b>, cree un <b>código de verificación</b> (6 a 12 letras o números; anótelo) y toque
+      <b class="m">Aplicar</b>. Espere a que el estado diga <b>En línea</b>.</li>
+  <li>En el celular, en la app Hik-Connect: <b class="m">+</b> → <b class="m">Escanear código QR</b> y escanee el QR de la
+      etiqueta del grabador (o el que muestra esa misma pantalla del menú). Cuando lo pida, ponga el código de verificación.</li>
+</ol>
+
+<h2><span class="n">2</span>Apagar el cifrado de video</h2>
+<div class="box warn">
+  <b>Por qué.</b> Con el cifrado prendido, Hikvision solo entrega el video a su propia app y nuestro sistema no lo puede
+  ver (aparece el error <code>EVZ60019</code>). El video sigue viajando por la conexión de Hik-Connect; lo que se apaga es
+  una capa extra de protección. Puede volver a prenderlo cuando quiera, pero en ese momento dejamos de ver las cámaras.
+</div>
+<p>Hágalo de <b>una</b> de estas formas (la A es la más simple; si falla, use la B):</p>
+
+<div class="opt">
+  <h4>A · Desde la app Hik-Connect (celular)</h4>
+  <ol>
+    <li>Toque su grabador → el engranaje <b class="m">⚙ Configuración</b>.</li>
+    <li>Busque <b class="m">Cifrado de video</b> (o <b class="m">Cifrado de imagen</b> / <b class="m">Video Encryption</b>) y
+        apáguelo. Le pide el código de verificación.</li>
+    <li>Si se queda cargando o dice «tiempo agotado / conexión fallida», use la forma B.</li>
+  </ol>
+</div>
+<div class="opt">
+  <h4>B · En el grabador, con monitor y mouse (siempre funciona)</h4>
+  <ol>
+    <li><b class="m">Configuración</b> → <b class="m">Red</b> → <b class="m">Acceso a plataforma</b> (o
+        <b class="m">Hik-Connect</b>; en equipos viejos puede estar dentro de <b class="m">DDNS</b>).</li>
+    <li>Desmarque <b class="m">Cifrado de stream</b> (o <b class="m">Habilitar cifrado de flujo</b> / <b class="m">Stream Encryption</b>).</li>
+    <li>Toque <b class="m">Aplicar</b>.</li>
+  </ol>
+</div>
+<div class="opt">
+  <h4>C · Desde una computadora en la misma red del grabador</h4>
+  <ol>
+    <li>Escriba la IP del grabador en el navegador (por ejemplo <code>192.168.1.64</code>) y entre con el usuario
+        administrador.</li>
+    <li><b class="m">Configuración</b> → <b class="m">Red</b> → <b class="m">Configuración avanzada</b> →
+        <b class="m">Acceso a plataforma</b> → desmarque el cifrado → <b class="m">Guardar</b>.</li>
+  </ol>
+  <p class="muted small">En algunos modelos esta opción no aparece en la página web: en ese caso, use la forma B.</p>
+</div>
+
+<h2><span class="n">3</span>Ajustar la segunda señal (recomendado)</h2>
+<p>Cada cámara manda dos señales: la principal (para grabar, en alta calidad) y la <b>segunda señal</b> (o
+«substream»), más liviana. Nosotros analizamos la segunda: así casi no consume internet del local. La <b>principal no se
+toca</b>: sus grabaciones siguen igual.</p>
+<p>En el grabador: <b class="m">Configuración</b> → <b class="m">Grabación</b> (o <b class="m">Cámara</b>) →
+<b class="m">Parámetros</b> → pestaña <b class="m">Secundario</b> / <b class="m">Sub-stream</b>, y para cada cámara:</p>
+<table>
+  <tr><th>Opción</th><th>Valor recomendado</th><th>Por qué</th></tr>
+  <tr><td>Compresión</td><td><b>H.264</b> (no H.265 ni H.265+)</td><td>Con H.265 la nube de Hikvision no nos entrega el video.</td></tr>
+  <tr><td>Resolución</td><td>640×360, D1 o WD1 (la que más se acerque)</td><td>Alcanza para detectar personas.</td></tr>
+  <tr><td>Cuadros por segundo</td><td>8 (entre 6 y 10)</td><td>Analizamos 5 por segundo.</td></tr>
+  <tr><td>Tasa de bits</td><td>Variable, máximo 384 kbps</td><td>Menos internet del local.</td></tr>
+</table>
+<p class="muted small">Si su instalador maneja el grabador a distancia (Hik-Partner Pro), puede hacer este paso él.</p>
+
+<h2><span class="n">4</span>Pasar la cuenta a Hik-Connect para equipos</h2>
+<p>Hik-Connect tiene un modo para empresas, llamado <b>Hik-Connect for Teams</b> (o «modo equipo»). Es el que permite dar
+acceso a un sistema externo como el nuestro con una clave propia, <b>sin compartir la contraseña de su cuenta</b>.</p>
+<ol>
+  <li>En una computadora, entre a <b>www.hik-connect.com</b> con la misma cuenta del celular.</li>
+  <li>Elija el modo <b class="m">Equipo</b> / <b class="m">Team</b> y toque <b class="m">Crear equipo</b> (Create Team). Como
+      nombre ponga el de su comercio; país Uruguay (o el suyo).</li>
+  <li>Pase el grabador al equipo: en el portal del equipo, <b class="m">Dispositivos</b> → <b class="m">Agregar</b> →
+      <b class="m">Importar desde Hik-Connect (modo personal)</b>. Si no aparece esa opción, agréguelo con el
+      <b>número de serie</b> y el <b>código de verificación</b>.</li>
+  <li>Revise que el grabador figure <b>En línea</b> y que se vean sus cámaras en el portal.</li>
+</ol>
+<div class="box warn"><b>Si el portal le ofrece una prueba o le pide una licencia o un pago, avísenos antes de aceptar.</b>
+Lo vemos con usted.</div>
+
+<h2><span class="n">5</span>Crear la clave de acceso (API)</h2>
+<ol>
+  <li>En el portal del equipo: <b class="m">Gestión del equipo</b> (Team Management) →
+      <b class="m">Integración de API</b> (API Integration).</li>
+  <li>Si le pide completar una solicitud, use:
+    <table>
+      <tr><td class="k">Nombre de la aplicación</td><td><code>Analitica_Critica</code> (solo letras, números y guión bajo: sin espacios ni tildes)</td></tr>
+      <tr><td class="k">Descripción</td><td>Análisis de video para prevención de hurtos (Analítica Crítica)</td></tr>
+    </table>
+    Envíela y, si hace falta, espere la aprobación (puede tardar).</li>
+  <li>Toque <b class="m">Crear</b> / <b class="m">Generar</b>. Aparecen dos datos:
+    <ul>
+      <li><b>AppKey</b> (puede figurar como <i>Account</i> o <i>API Key</i>).</li>
+      <li><b>SecretKey</b> (puede figurar como <i>API Secret</i>). <b>Puede mostrarse una sola vez:</b> cópielo en ese momento.</li>
+    </ul>
+  </li>
+</ol>
+
+<h2><span class="n">6</span>Enviarnos los datos</h2>
+<div class="box bad"><b>Mándelos por privado</b> (WhatsApp o correo directo a su contacto en Analítica Crítica), <b>nunca en un
+grupo</b>. <b>No nos mande la contraseña de su cuenta Hik-Connect:</b> no la necesitamos.</div>
+<table>
+  <tr><td class="k">Nombre del comercio</td><td class="blank"></td></tr>
+  <tr><td class="k">Dirección</td><td class="blank"></td></tr>
+  <tr><td class="k">Contacto (nombre y celular)</td><td class="blank"></td></tr>
+  <tr><td class="k">Horario de apertura (por día)</td><td class="blank">Lun a Vie: ______ · Sáb: ______ · Dom: ______</td></tr>
+  <tr><td class="k">Cuenta Hik-Connect (correo o usuario)</td><td class="blank"></td></tr>
+  <tr><td class="k">Número de serie del grabador</td><td class="blank"><span class="muted small">En la app: grabador → ⚙ → Información del dispositivo. Cópielo tal cual aparece.</span></td></tr>
+  <tr><td class="k">AppKey</td><td class="blank"></td></tr>
+  <tr><td class="k">SecretKey</td><td class="blank"></td></tr>
+</table>
+<h3>Sus cámaras</h3>
+<table>
+  <tr><th style="width:10%">Canal</th><th style="width:32%">Nombre en el grabador</th><th>Qué mira (caja, góndola, entrada, depósito, calle, surtidor…)</th><th style="width:14%">¿Analizarla?</th></tr>
+  <tr><td class="blank">1</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">2</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">3</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">4</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">5</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">6</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">7</td><td></td><td></td><td>Sí / No</td></tr>
+  <tr><td class="blank">8</td><td></td><td></td><td>Sí / No</td></tr>
+</table>
+<p class="muted small">Con eso cargamos sus cámaras, marcamos las zonas (caja, góndolas, salida) y le pasamos su usuario para ver
+sus alertas y el resumen de su local desde el celular o la computadora.</p>
+
+<h2>Qué acceso nos da y cómo quitarlo</h2>
+<ul>
+  <li>Con la clave de API vemos el video de las cámaras de su equipo para analizarlo. <b>No la usamos para cambiar la
+      configuración del grabador ni para borrar grabaciones.</b></li>
+  <li>El grabador sigue grabando igual y usted sigue viendo todo en su app, como siempre.</li>
+  <li>Cada alerta la revisa una persona antes de avisarle. Es un <b>aviso para que mire</b>, no una acusación ni una prueba.</li>
+  <li><b>Para quitarnos el acceso</b> en cualquier momento: en el portal, <b class="m">Gestión del equipo</b> →
+      <b class="m">Integración de API</b> → borre (o restablezca) la clave. Dejamos de ver las cámaras en el momento.</li>
+  <li>Recomendación: si la contraseña del grabador es la de fábrica, cámbiela, y no la comparta por mensajes.</li>
+</ul>
+
+<h2>Si algo no funciona</h2>
+<table>
+  <tr><th style="width:40%">Qué pasa</th><th>Qué hacer</th></tr>
+  <tr><td>La app se queda cargando o dice «tiempo agotado» al apagar el cifrado</td><td>Hágalo en el grabador con monitor y mouse (paso 2, forma B).</td></tr>
+  <tr><td>No encuentra la opción de cifrado en la página web del grabador</td><td>En algunos modelos solo está en el menú del propio grabador (paso 2, forma B).</td></tr>
+  <tr><td>El grabador figura «fuera de línea»</td><td>Revise que tenga internet (cable de red, router encendido). Reinicie el router y después el grabador. Confirme que <b>Acceso a plataforma</b> esté habilitado (paso 1).</td></tr>
+  <tr><td>Las cámaras usan H.265 o H.265+</td><td>Cambie la segunda señal a H.264 (paso 3).</td></tr>
+  <tr><td>No aparece «Integración de API»</td><td>Confirme que está en modo <b>Equipo</b> y que es administrador del equipo. Si sigue sin aparecer, mándenos una foto del menú.</td></tr>
+  <tr><td>El portal pide una licencia o un pago</td><td>Avísenos antes de pagar.</td></tr>
+  <tr><td>No recuerda el código de verificación</td><td>En el grabador: <b class="m">Red</b> → <b class="m">Acceso a plataforma</b>: ahí se ve o se cambia.</td></tr>
+</table>
+
+<div class="foot">Analítica Crítica · Análisis de video con revisión humana para comercios · Ante cualquier duda, escríbale a su contacto
+en Analítica Crítica y, si puede, mande una foto de la pantalla donde se trancó.</div>
+
+</body>
+</html>

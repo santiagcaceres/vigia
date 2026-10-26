@@ -425,7 +425,7 @@ class Oficina:
         self.cam_title = ttk.Label(right, text="Elegí un cliente", font=("Segoe UI", 11, "bold"))
         self.cam_title.pack(anchor="w")
         self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "pc", "analiza", "alertas",
-                                                     "zonas"), show="headings", height=12, selectmode="browse")
+                                                     "zonas"), show="headings", height=12, selectmode="extended")
         for col, txt, w in (("nombre", "Cámara", 120), ("estado", "Estado", 130), ("modo", "Modo", 110),
                             ("conexion", "Grabador", 140), ("pc", "Revisa", 70), ("analiza", "Analiza", 120),
                             ("alertas", "Alertas", 90), ("zonas", "Zonas", 45)):
@@ -441,6 +441,8 @@ class Oficina:
         ttk.Button(b2, text="Probar conexión", command=lambda: self.probe(self._sel_camera())).pack(side="left", padx=4)
         if self.is_admin:
             ttk.Button(b2, text="Eliminar", command=self.delete_camera).pack(side="left")
+            ttk.Button(b2, text="Elegir todas", command=lambda: self.cam_tree.selection_set(
+                self.cam_tree.get_children())).pack(side="left", padx=4)
         ttk.Button(b2, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
         ttk.Button(b2, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
         self.cam_info = tk.Text(right, height=10, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
@@ -1035,10 +1037,26 @@ class Oficina:
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
     def delete_camera(self) -> None:
-        cam = self._sel_camera()
-        if cam and self.mb.askyesno("Vigía", f"¿Eliminar la cámara «{cam['name']}»?\nSe borran también sus métricas. "
-                                              "Si tiene alertas, no se puede: deshabilitala."):
-            self.bg.run(lambda: self.api.delete(f"/api/cameras/{cam['id']}"), lambda _: self.refresh_all(), self.err)
+        """Borra las cámaras elegidas (con Ctrl o Shift se eligen varias; «Elegir todas» toma las del cliente)."""
+        ids = [int(i) for i in self.cam_tree.selection()]
+        cams = [c for c in self.cameras if c["id"] in ids]
+        if not cams:
+            return self.mb.showinfo("Vigía", "Elegí una o varias cámaras (Ctrl o Shift para varias).")
+        names = ", ".join(c["name"] for c in cams[:5]) + (f" y {len(cams) - 5} más" if len(cams) > 5 else "")
+        what = f"la cámara «{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras ({names})"
+        if not self.mb.askyesno("Vigía", f"¿Eliminar {what}?\n\nSe borran también sus métricas. No se puede deshacer."):
+            return
+
+        def send(force: bool):
+            return self.api.post("/api/cameras/delete", {"camera_ids": [c["id"] for c in cams], "con_alertas": force})
+
+        def fail(exc: Exception) -> None:
+            if isinstance(exc, ApiError) and exc.status == 409:
+                if self.mb.askyesno("Vigía", f"{exc}\n\n¿Borrar también sus alertas, fotos y clips? No se puede deshacer."):
+                    self.bg.run(lambda: send(True), lambda _: self.config_saved(), self.err)
+                return
+            self.err(exc)
+        self.bg.run(lambda: send(False), lambda _: self.config_saved(), fail)
 
     def probe(self, cam: dict | None) -> None:
         if not cam:

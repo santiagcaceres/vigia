@@ -131,6 +131,11 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
   ZTE F6600 → DDNS No-IP → prueba con reinicio → app).
+  **Tutorial para clientes Hikvision (26 oct):** `docs/tutorial-hikvision-analitica-critica.html` + `.pdf` («Tutorial
+  Hikvision · Analítica Crítica · Cómo darnos acceso a sus cámaras», de usted): Hik-Connect → apagar cifrado (app,
+  grabador o web) → substream H.264 640×360 8 fps 384 kbps → Hik-Connect for Teams → AppKey/SecretKey → planilla de
+  datos y cámaras. Los nombres de menú no se verificaron en todos los modelos. PDF con Playwright
+  (`executable_path="/opt/pw-browsers/chromium"`, A4, `print_background=True`).
 - **Usuario web al crear el cliente (23 oct):** `ClientIn.web_username/web_password` → crea (o edita) el
   usuario de rol `cliente` en la misma transacción; staff (admin y empleado) puede. `GET /api/clients` trae
   `web_username`. En la app: recuadro «Acceso a la web del cliente» (usuario sugerido del nombre, «Generar»
@@ -241,7 +246,10 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   `agent_data/vigia.log`. Cerrar la ventana **cierra el programa** (pide confirmación). Sin ventana, la consola
   pide usuario/clave o un token pegado. Un solo programa atiende todos los clientes.
 - **Borrar desde el panel (22 oct):** admin puede eliminar clientes (`DELETE /api/clients/{id}`, borra todo lo
-  suyo; pide escribir el nombre), cámaras (sin alertas) y agentes. El conector MCP de Supabase no deja hacer
+  suyo; pide escribir el nombre), cámaras y agentes. **Cámaras (26 oct, app 1.17.0):** en la app se eligen varias
+  (Ctrl/Mayús o «Elegir todas») → `POST /api/cameras/delete` (`camera_ids`, `con_alertas`); si tienen alertas o
+  videos responde 409 y la app pregunta antes de borrar todo (`remove_cameras`: alertas, avisos, incidentes, videos,
+  métricas, alarmas y sus archivos). `DELETE /api/cameras/{id}?con_alertas=true` hace lo mismo con una. El conector MCP de Supabase no deja hacer
   DELETE/UPDATE (pide una confirmación que no llega): usar el panel o el SQL Editor de Supabase.
 - **Planes y métricas por cliente (22 oct, pedido del dueño):** `Client.plans` (JSON: `hurto`, `comercio`,
   `estacion`; lo elige el staff en el formulario del cliente). `core/metrics.py` (`MetricsCollector`) usa los
@@ -430,7 +438,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 168 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 172 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

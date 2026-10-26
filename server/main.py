@@ -198,6 +198,11 @@ class UserCamerasIn(BaseModel):
     camera_ids: list[int] = Field(default_factory=list, max_length=2000)
 
 
+class CamerasDeleteIn(BaseModel):
+    camera_ids: list[int] = Field(min_length=1, max_length=2000)
+    con_alertas: bool = False  # borrar también sus alertas, clips y videos subidos
+
+
 class EnrollIn(BaseModel):
     """Alta de una máquina de análisis (servidor) con la clave de máquinas, sin usuario ni clave de nadie."""
     key: str = Field(min_length=10, max_length=200)
@@ -1362,21 +1367,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return camera_dict(c, user, ops=operator_map(s))
 
-    @app.delete("/api/cameras/{cam_id}", status_code=204)
-    def delete_camera(cam_id: int, _: User = Depends(admin_only), s=Depends(db)) -> None:
-        c = get_or_404(s, Camera, cam_id, "Cámara")
-        if s.query(Event).filter_by(camera_id=cam_id).first() or s.query(VideoImport).filter_by(camera_id=cam_id).first():
-            raise HTTPException(409, "La cámara tiene alertas o videos: deshabilitala en lugar de borrarla")
-        s.query(CameraMetric).filter_by(camera_id=cam_id).delete(synchronize_session=False)
-        s.query(Alarm).filter_by(camera_id=cam_id).delete(synchronize_session=False)
-        files = ([c.preview_path] if c.preview_path else []) + [live_path(c)]
-        s.delete(c)
+    def remove_cameras(s, cams: list[Camera], with_alerts: bool) -> None:
+        """Borra cámaras con sus métricas y alarmas. Si tienen alertas o videos subidos, solo con `with_alerts`
+        (se borran también, con sus fotos, clips y avisos). No se puede deshacer."""
+        ids = [c.id for c in cams]
+        n_events = s.query(func.count(Event.id)).filter(Event.camera_id.in_(ids)).scalar() or 0
+        imps = s.query(VideoImport).filter(VideoImport.camera_id.in_(ids)).all()
+        if (n_events or imps) and not with_alerts:
+            raise HTTPException(409, f"{'La cámara tiene' if len(ids) == 1 else 'Estas cámaras tienen'} {n_events} "
+                                     f"alerta(s){f' y {len(imps)} video(s) subidos' if imps else ''}. Para borrar"
+                                     f"{'la' if len(ids) == 1 else 'las'} hay que borrar eso también.")
+        files: list[str] = []
+        imp_ids = [i.id for i in imps]
+        ev_ids = [eid for (eid,) in s.query(Event.id).filter(or_(Event.camera_id.in_(ids), Event.import_id.in_(imp_ids)))]
+        if ev_ids:
+            for e in s.query(Event).filter(Event.id.in_(ev_ids)):
+                files += [p for p in (e.snapshot_path, e.clip_path) if p]
+            s.query(ClientReport).filter(ClientReport.event_id.in_(ev_ids)).delete(synchronize_session=False)
+            s.query(Alarm).filter(Alarm.event_id.in_(ev_ids)).update({"event_id": None}, synchronize_session=False)
+            s.query(Event).filter(Event.id.in_(ev_ids)).delete(synchronize_session=False)
+        if imps:
+            s.query(Incident).filter(Incident.import_id.in_(imp_ids)).delete(synchronize_session=False)
+            files += [i.storage_path for i in imps if i.storage_path]
+            s.query(VideoImport).filter(VideoImport.id.in_(imp_ids)).delete(synchronize_session=False)
+        s.query(CameraMetric).filter(CameraMetric.camera_id.in_(ids)).delete(synchronize_session=False)
+        s.query(Alarm).filter(Alarm.camera_id.in_(ids)).delete(synchronize_session=False)
+        for c in cams:
+            files += ([c.preview_path] if c.preview_path else []) + [live_path(c)]
+            s.delete(c)
         bump_rev(s)
         s.commit()
         try:
             storage.remove(files)
         except StorageError:
-            pass
+            log.warning("No se pudieron borrar %d archivos de cámaras borradas", len(files))
+        log.info("Cámaras borradas: %s (%d alertas)", ids, n_events)
+
+    @app.delete("/api/cameras/{cam_id}", status_code=204)
+    def delete_camera(cam_id: int, con_alertas: bool = False, _: User = Depends(admin_only), s=Depends(db)) -> None:
+        remove_cameras(s, [get_or_404(s, Camera, cam_id, "Cámara")], con_alertas)
+
+    @app.post("/api/cameras/delete")
+    def delete_cameras(body: CamerasDeleteIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+        """Borrar varias cámaras de una vez (por ejemplo, las de un grabador que se cargaron de más)."""
+        cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids))).all()
+        if not cams:
+            raise HTTPException(404, "No se encontraron esas cámaras")
+        remove_cameras(s, cams, body.con_alertas)
+        return {"deleted": len(cams)}
 
     @app.post("/api/cameras/{cam_id}/probe")
     def camera_probe(cam_id: int, _: User = Depends(staff), s=Depends(db)) -> dict:
