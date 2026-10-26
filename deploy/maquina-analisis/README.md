@@ -81,6 +81,35 @@ dejá «Cámaras por máquina» (Administración) un 15 % por debajo de ese núm
 
    `VIGIA_MAX_MAQUINAS` es un tope para que un error nunca prenda máquinas de más.
 
+## Prueba gratis: Oracle Cloud «Always Free» (sin placa de video)
+
+Sirve para probar el circuito completo con **pocas cámaras** (estimado 3 a 6 de hurto o ~10 de conteo con 4
+núcleos ARM; sin medir). No necesita el encendedor: queda siempre prendida.
+
+1. Creá la cuenta en oracle.com/cloud/free. **Elegí como región «Brazil East (São Paulo)»**: lo gratis solo
+   anda en la región que elegís al crear la cuenta y no se puede cambiar. Pide tarjeta para verificar (no cobra).
+2. Menú → Compute → Instances → **Create instance**:
+   - Image: **Canonical Ubuntu 22.04** (la versión aarch64 aparece al elegir la forma Ampere).
+   - Shape: **Ampere → VM.Standard.A1.Flex**, con todos los núcleos y la memoria que deje gratis (4 y 24 GB,
+     o 2 y 12 GB si Oracle ya bajó el límite).
+   - Bajá la clave SSH que te ofrece (o pegá la tuya). Lo demás, como viene.
+   - Si dice «Out of capacity», probá otro «availability domain» o reintentá más tarde (pasa seguido).
+3. Entrá por SSH (`ssh -i clave.key ubuntu@IP_PUBLICA`) y corré lo mismo que en AWS:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh -o instalar.sh
+   sudo VIGIA_POOL_KEY=vgm_LA_CLAVE bash instalar.sh
+   ```
+
+   Se da cuenta de que no hay placa y analiza con el procesador (1 proceso, 4 cámaras; `CAPACIDAD=6` para
+   cambiarlo). En la app aparece en Administración → Máquinas de análisis.
+4. **Mandale solo las cámaras de prueba**: dejá el ajuste general en «En la PC de cada usuario» y en el
+   cliente (o en cada cámara) elegí «Dónde se analiza: En las máquinas de análisis». Así el resto sigue igual.
+5. Mirá en la app los fps de esas cámaras (tienen que dar 5) y en la máquina `top` (procesador). Si no llega,
+   sacale cámaras o bajá «Cámaras por máquina».
+
+Oracle puede recuperar una máquina gratis que pase una semana casi sin usar el procesador; analizando no pasa.
+
 ## Tigo u otra nube
 
 `instalar.sh` sirve en cualquier Ubuntu con placa NVIDIA. Si la nube no se puede manejar por programa,

@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# Instala Vigía en una máquina de análisis: Ubuntu 22.04 o 24.04 con placa NVIDIA y su driver
-# (en AWS: la imagen «Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)» ya lo trae).
+# Instala Vigía en una máquina de análisis: Ubuntu 22.04 o 24.04.
+# - Con placa NVIDIA y su driver (en AWS: «Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)»).
+# - Sin placa (por ejemplo Oracle Cloud gratis, procesador ARM): se da cuenta solo y analiza con el procesador.
 #
-#   sudo VIGIA_POOL_KEY=vgm_... bash instalar.sh            # máquina de análisis (2 procesos)
+#   sudo VIGIA_POOL_KEY=vgm_... bash instalar.sh            # máquina de análisis
 #   sudo VIGIA_POOL_KEY=vgm_... PROCESOS=3 CAPACIDAD=12 bash instalar.sh
 #   sudo VIGIA_POOL_KEY=vgm_... MODO=escalador bash instalar.sh   # el encendedor (máquina chica)
 set -euo pipefail
 MODO=${MODO:-maquina}
-PROCESOS=${PROCESOS:-2}
-CAPACIDAD=${CAPACIDAD:-15}   # cámaras de hurto a 5 fps por proceso (2 x 15 = 30 por máquina, hasta medir)
+if nvidia-smi >/dev/null 2>&1; then
+  GPU=si; REQ=requirements-servidor.txt
+  PROCESOS=${PROCESOS:-2}
+  CAPACIDAD=${CAPACIDAD:-15}   # cámaras de hurto a 5 fps por proceso (2 x 15 = 30 por máquina, hasta medir)
+else
+  GPU=no; REQ=requirements-servidor-cpu.txt
+  PROCESOS=${PROCESOS:-1}
+  CAPACIDAD=${CAPACIDAD:-4}    # sin placa: pocas cámaras (estimado para 4 núcleos ARM; medir y ajustar)
+fi
 SERVIDOR=${VIGIA_SERVER:-https://vigia-three-ashy.vercel.app}
 REPO=${VIGIA_REPO:-https://github.com/santiagcaceres/vigia.git}
 : "${VIGIA_POOL_KEY:?Falta VIGIA_POOL_KEY (se crea en la app: Administración → Máquinas de análisis)}"
@@ -41,21 +49,25 @@ CFG
   exit 0
 fi
 
-sudo -u vigia /opt/vigia/.venv/bin/pip install -q -r /opt/vigia/requirements-servidor.txt
+sudo -u vigia /opt/vigia/.venv/bin/pip install -q -r "/opt/vigia/$REQ"
+echo "VIGIA_REQ=$REQ" > /etc/vigia/actualizar.env
 cat > /etc/vigia/maquina.env <<CFG
 VIGIA_SERVER=$SERVIDOR
 VIGIA_POOL_KEY=$VIGIA_POOL_KEY
 VIGIA_CAPACIDAD=$CAPACIDAD
 CFG
+# sin placa de video: un solo modelo que usa todos los núcleos del procesador
+[ "$GPU" = "no" ] && echo "VIGIA_HILOS=$(nproc)" >> /etc/vigia/maquina.env
 chown root:vigia /etc/vigia/maquina.env && chmod 640 /etc/vigia/maquina.env
 cp /opt/vigia/deploy/maquina-analisis/vigia-actualizar.service /opt/vigia/deploy/maquina-analisis/vigia-maquina@.service \
    /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable vigia-actualizar
 for i in $(seq 1 "$PROCESOS"); do systemctl enable --now "vigia-maquina@$i"; done
-if nvidia-smi >/dev/null 2>&1; then
+if [ "$GPU" = "si" ]; then
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+  echo "Listo. Registro: journalctl -u 'vigia-maquina@*' -f   (tiene que decir «Detector de personas en GPU»)"
 else
-  echo "OJO: no se ve la placa NVIDIA (nvidia-smi). Va a analizar con el procesador (mucho más lento)."
+  echo "Sin placa NVIDIA: analiza con el procesador ($(nproc) núcleos, $CAPACIDAD cámaras de hurto por proceso)."
+  echo "Listo. Registro: journalctl -u 'vigia-maquina@*' -f"
 fi
-echo "Listo. Registro: journalctl -u 'vigia-maquina@*' -f   (tiene que decir «Detector de personas en GPU»)"

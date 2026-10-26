@@ -216,6 +216,23 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     hace `git pull` en cada arranque, `vigia-escalador`). `requirements-servidor.txt` (onnxruntime-gpu con CUDA y
     cuDNN por pip: solo hace falta el driver). **Sin probar en una máquina con GPU real todavía**: medir cuántas
     cámaras aguanta (Administración → «Cámaras por máquina», 30 por defecto).
+- **Panel de datos y prueba por cliente (26 oct, app 1.16.0):** la PC del dueño (Dell sin placa de video) queda
+  como panel: no analiza ni recibe video, solo datos.
+  - **Dónde se analiza, por cliente y por cámara:** `clients.analysis_location` y `cameras.analysis_location`
+    (`general` | `pcs` | `servidores`; la cámara manda sobre el cliente y el cliente sobre el ajuste general).
+    `locations()` / `sync_locations()` en main.py hacen la transición (guardan la PC vieja en
+    `app_settings.pcs_backup` y la restauran al volver). `camera_weights`, el reparto y el plan solo cuentan las
+    cámaras que van a máquinas. Así se prueba **un cliente** (Minas) en una máquina sin mover las 129 cámaras.
+  - **Alertas por cliente y cámara:** `GET /api/stats/alerts` (hoy desde la medianoche del local, 7 días, sin
+    revisar en 60 días; solo `alert=True` y fuentes vivo/alarma/prueba). En la app, columna «Alertas» (hoy · 7 días ·
+    sin revisar) en clientes y cámaras, y columnas «Revisa» / «Analiza».
+  - **Exportar métricas:** `GET /api/metrics/export?client_id&desde&hasta&agrupar=dia|hora` → CSV para Excel (BOM,
+    `;`, decimales con coma), una fila por cámara y día u hora. En la app, botón «Exportar métricas…».
+  - **Árbol máquina → cliente → cámara** en Administración (máquinas de análisis y PCs).
+  - **Máquinas sin placa de video** (Oracle Cloud «Always Free», ARM): `instalar.sh` lo detecta (sin `nvidia-smi`),
+    instala `requirements-servidor-cpu.txt`, 1 proceso de 4 cámaras y `VIGIA_HILOS=$(nproc)` (un solo modelo
+    compartido que usa todos los núcleos). Pasos en `deploy/maquina-analisis/README.md` (región São Paulo al crear
+    la cuenta; puede haber «Out of capacity»; límite quizá bajado a 2 núcleos/12 GB en jun 2026, sin confirmar).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -413,7 +430,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 164 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 168 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

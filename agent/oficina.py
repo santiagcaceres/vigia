@@ -22,7 +22,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,10 @@ ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cl
 # dónde se analizan las cámaras (server/pool.py)
 ANALYSIS_MODES = {"pcs": "En la PC de cada usuario",
                   "servidores": "En las máquinas de análisis (nube)"}
+# por cliente o por cámara: «general» sigue el ajuste de arriba (cliente) o el del cliente (cámara)
+LOCATION_NAMES = {"general": "Como el ajuste general", "pcs": "En la PC de quien la revisa",
+                  "servidores": "En las máquinas de análisis (nube)"}
+CAM_LOCATION_NAMES = {**LOCATION_NAMES, "general": "Como su cliente"}
 AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes y cámaras» (solo con la pestaña a la vista)
 MODE_NAMES = {"vivo": "En vivo", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
 BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
@@ -69,6 +73,13 @@ ALARM_TYPES = {"VMD": "Movimiento", "fielddetection": "Intrusión", "linedetecti
 STATE_NAMES = {"escuchando": "Escuchando alarmas", "en_linea": "En línea", "sin_conexion": "Sin conexión",
                "reconectando": "Reconectando", "error": "Error", "iniciando": "Iniciando", "detenida": "Detenida",
                "fuera_de_horario": "Local cerrado (no se mira)"}
+
+
+def fmt_counts(d: dict | None) -> str:
+    """«hoy · 7 días · sin revisar» de alertas."""
+    if not d:
+        return "0 · 0 · 0"
+    return f"{d.get('today', 0)} · {d.get('week', 0)} · {d.get('unreviewed', 0)}"
 
 
 def fmt_date(iso: str | None) -> str:
@@ -349,9 +360,10 @@ class Oficina:
             return
 
         def done(res):
-            self.cameras, self.agents = res
+            self.cameras, self.agents, self.alert_counts = res
             self._fill_clients(keep_info=True)
-        self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents")), done, lambda e: None)
+        self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents"),
+                             self.api.get("/api/stats/alerts")), done, lambda e: None)
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
 
     def config_saved(self) -> None:
@@ -363,10 +375,10 @@ class Oficina:
     def refresh_all(self) -> None:
         def load():
             return (self.api.get("/api/clients"), self.api.get("/api/cameras"),
-                    self.api.get("/api/agents"))
+                    self.api.get("/api/agents"), self.api.get("/api/stats/alerts"))
 
         def done(res):
-            self.clients, self.cameras, self.agents = res
+            self.clients, self.cameras, self.agents, self.alert_counts = res
             self._fill_clients()
             self._fill_alert_filters()
         self.bg.run(load, done, self._net_fail)
@@ -389,12 +401,16 @@ class Oficina:
         left = ttk.Frame(f)
         left.pack(side="left", fill="y")
         ttk.Label(left, text="Clientes", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        self.cl_tree = ttk.Treeview(left, columns=("planes",), show="tree headings", height=20, selectmode="browse")
+        self.cl_tree = ttk.Treeview(left, columns=("planes", "alertas"), show="tree headings", height=20,
+                                    selectmode="browse")
         self.cl_tree.heading("#0", text="Cliente")
         self.cl_tree.heading("planes", text="Planes")
-        self.cl_tree.column("#0", width=200)
-        self.cl_tree.column("planes", width=170)
+        self.cl_tree.heading("alertas", text="Alertas")
+        self.cl_tree.column("#0", width=170)
+        self.cl_tree.column("planes", width=110)
+        self.cl_tree.column("alertas", width=100, anchor="center")
         self.cl_tree.pack(fill="y", expand=True)
+        ttk.Label(left, text="Alertas: hoy · últimos 7 días · sin revisar", foreground="#666").pack(anchor="w")
         self.cl_tree.bind("<<TreeviewSelect>>", lambda e: self._fill_cameras())
         b = ttk.Frame(left)
         b.pack(fill="x", pady=6)
@@ -408,10 +424,11 @@ class Oficina:
         right.pack(side="left", fill="both", expand=True)
         self.cam_title = ttk.Label(right, text="Elegí un cliente", font=("Segoe UI", 11, "bold"))
         self.cam_title.pack(anchor="w")
-        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "pc", "zonas"),
-                                     show="headings", height=12, selectmode="browse")
-        for col, txt, w in (("nombre", "Cámara", 160), ("estado", "Estado", 130), ("modo", "Modo", 160),
-                            ("conexion", "Grabador", 230), ("pc", "Asignada a", 140), ("zonas", "Zonas", 55)):
+        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "pc", "analiza", "alertas",
+                                                     "zonas"), show="headings", height=12, selectmode="browse")
+        for col, txt, w in (("nombre", "Cámara", 120), ("estado", "Estado", 130), ("modo", "Modo", 110),
+                            ("conexion", "Grabador", 140), ("pc", "Revisa", 70), ("analiza", "Analiza", 120),
+                            ("alertas", "Alertas", 90), ("zonas", "Zonas", 45)):
             self.cam_tree.heading(col, text=txt)
             self.cam_tree.column(col, width=w)
         self.cam_tree.pack(fill="x")
@@ -424,7 +441,8 @@ class Oficina:
         ttk.Button(b2, text="Probar conexión", command=lambda: self.probe(self._sel_camera())).pack(side="left", padx=4)
         if self.is_admin:
             ttk.Button(b2, text="Eliminar", command=self.delete_camera).pack(side="left")
-        ttk.Button(b2, text="Métricas del cliente", command=self.metrics_dialog).pack(side="right")
+        ttk.Button(b2, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
+        ttk.Button(b2, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
         self.cam_info = tk.Text(right, height=10, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
         self.cam_info.pack(fill="both", expand=True, pady=(6, 0))
         self._set_info("Elegí una cámara para ver el detalle. Doble clic para editarla.")
@@ -446,10 +464,12 @@ class Oficina:
     def _fill_clients(self, keep_info: bool = False) -> None:
         prev = self.cl_tree.selection()
         self.cl_tree.delete(*self.cl_tree.get_children())
+        counts = (getattr(self, "alert_counts", None) or {}).get("clients") or {}
         for c in self.clients:
             n = sum(1 for x in self.cameras if x["client_id"] == c["id"])
             self.cl_tree.insert("", "end", iid=str(c["id"]), text=f"{c['name']}  ({n})",
-                                values=(", ".join(PLAN_NAMES.get(p, p).split()[0] for p in c.get("plans") or []),))
+                                values=(", ".join(PLAN_NAMES.get(p, p).split()[0] for p in c.get("plans") or []),
+                                        fmt_counts(counts.get(str(c["id"])))))
         if prev and self.cl_tree.exists(prev[0]):
             self.cl_tree.selection_set(prev)
         elif self.clients:
@@ -480,6 +500,7 @@ class Oficina:
             return
         web = f"   ·   acceso web: {c['web_username']}" if c.get("web_username") else "   ·   sin acceso web (Editar para crearlo)"
         self.cam_title.configure(text=f"Cámaras de {c['name']}{web}")
+        counts = (getattr(self, "alert_counts", None) or {}).get("cameras") or {}
         for cam in [x for x in self.cameras if x["client_id"] == c["id"]]:
             conn = (f"Hik-Connect · serie {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
                     if cam.get("brand") == "hikconnect" else
@@ -487,7 +508,8 @@ class Oficina:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
                 cam["name"], self._cam_state(cam),
                 f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))} · {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]}", conn,
-                cam.get("operator_name") or "sin asignar", len(cam.get("zones") or [])))
+                cam.get("operator_name") or "sin asignar", cam.get("analyzer_name") or "ninguna",
+                fmt_counts(counts.get(str(cam["id"]))), len(cam.get("zones") or [])))
         self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
         if prev_cam and self.cam_tree.exists(prev_cam[0]):
             self.cam_tree.selection_set(prev_cam)  # sigue elegida (el detalle se actualiza solo si no hay otra cosa)
@@ -634,6 +656,15 @@ class Oficina:
         if c.get("id") and c.get("hc_app_key"):
             ttk.Button(hf, text="Probar: ver cámaras de Hik-Connect",
                        command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        loc = tk.StringVar(value=LOCATION_NAMES.get(c.get("analysis_location") or "general"))
+        if self.is_admin:
+            lf = ttk.LabelFrame(right, text="Dónde se analizan sus cámaras", padding=6)
+            lf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+            ttk.Combobox(lf, textvariable=loc, values=list(LOCATION_NAMES.values()), state="readonly",
+                         width=40).pack(anchor="w")
+            ttk.Label(lf, text="Sirve para pasar de a un cliente a las máquinas de análisis (por ejemplo, para "
+                               "probar una máquina nueva con un solo cliente).", foreground="#666", wraplength=400,
+                      justify="left").pack(anchor="w", pady=(2, 0))
 
         if not c.get("id") and not web_user.get():
             # sugerir el usuario a partir del nombre (se puede cambiar)
@@ -649,6 +680,8 @@ class Oficina:
             body["webhook_url"] = c.get("webhook_url")
             body["plans"] = [p for p, var in plans.items() if var.get()]
             body["hours"] = {d: var.get().strip() for d, var in hours.items()}
+            if self.is_admin:
+                body["analysis_location"] = next((k for k, t in LOCATION_NAMES.items() if t == loc.get()), "general")
             try:
                 open_hours_per_week(body["hours"])
             except ValueError as exc:
@@ -680,6 +713,62 @@ class Oficina:
         bb.grid(row=15, column=0, columnspan=3, sticky="e")
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
+
+    def export_dialog(self) -> None:
+        """Métricas a un archivo CSV que abre Excel: por cliente (o todos), entre dos fechas, por día u hora."""
+        tk, ttk = self.tk, self.ttk
+        c = self._sel_client()
+        top, frm = self._dialog("Exportar métricas", width=460)
+        todos = "Todos los clientes"
+        who = tk.StringVar(value=c["name"] if c else todos)
+        today = datetime.now().date()
+        d1 = tk.StringVar(value=(today - timedelta(days=6)).strftime("%d/%m/%Y"))
+        d2 = tk.StringVar(value=today.strftime("%d/%m/%Y"))
+        grp = tk.StringVar(value="Por día")
+        self._row(frm, 0, "Cliente", ttk.Combobox(frm, textvariable=who, state="readonly",
+                                                 values=[todos] + [x["name"] for x in self.clients]))
+        self._row(frm, 1, "Desde (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d1))
+        self._row(frm, 2, "Hasta (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d2))
+        self._row(frm, 3, "Agrupar", ttk.Combobox(frm, textvariable=grp, state="readonly", values=["Por día", "Por hora"]))
+        ttk.Label(frm, text="Se abre con Excel. Una fila por cámara y por día (u hora), en la hora del local: personas, "
+                            "tiempo promedio, ingresos, vehículos, surtidor y zonas.", foreground="#666",
+                  wraplength=420, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        def go() -> None:
+            try:
+                a = datetime.strptime(d1.get().strip(), "%d/%m/%Y").date()
+                b = datetime.strptime(d2.get().strip(), "%d/%m/%Y").date()
+            except ValueError:
+                return self.mb.showwarning("Vigía", "Fechas con formato dd/mm/aaaa (por ejemplo 01/11/2026).", parent=top)
+            cl = next((x for x in self.clients if x["name"] == who.get()), None)
+            from tkinter import filedialog
+
+            name = (cl["name"] if cl else "todos").replace(" ", "_")
+            path = filedialog.asksaveasfilename(parent=top, defaultextension=".csv", filetypes=[("CSV para Excel", "*.csv")],
+                                                initialfile=f"metricas_{name}_{a:%Y-%m-%d}_a_{b:%Y-%m-%d}.csv")
+            if not path:
+                return
+
+            def work():
+                return self.api.get("/api/metrics/export", client_id=cl["id"] if cl else None, desde=a.isoformat(),
+                                    hasta=b.isoformat(), agrupar="hora" if grp.get() == "Por hora" else "dia")
+
+            def done(data):
+                Path(path).write_bytes(data if isinstance(data, bytes) else str(data).encode("utf-8"))
+                top.destroy()
+                if self.mb.askyesno("Vigía", f"Listo: {path}\n\n¿Abrirlo ahora?"):
+                    try:
+                        if sys.platform.startswith("win"):
+                            os.startfile(path)  # type: ignore[attr-defined]
+                        else:
+                            subprocess.Popen(["xdg-open", path])
+                    except Exception:  # noqa: BLE001
+                        pass
+            self.bg.run(work, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+        bb = ttk.Frame(frm)
+        bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
+        ttk.Button(bb, text="Exportar", command=go).pack(side="right", padx=6)
 
     def hikconnect_cameras(self, client: dict, pick: Callable[[list[dict]], None] | None, parent=None,
                            multi: bool = False) -> None:
@@ -782,6 +871,7 @@ class Oficina:
             "profile": tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general")),
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
             "off_hours": tk.StringVar(value=OFF_HOURS_NAMES.get(cam.get("off_hours") or "apagada")),
+            "location": tk.StringVar(value=CAM_LOCATION_NAMES.get(cam.get("analysis_location") or "general")),
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
@@ -860,14 +950,16 @@ class Oficina:
         ttk.Label(frm, text=hours_txt, foreground="#666", wraplength=560, justify="left").grid(
             row=16, column=0, columnspan=2, sticky="w")
         if self.is_admin:
-            row(None, 18, "Asignada a (quién la ve)", ttk.Combobox(frm, textvariable=v["operator"], values=op_names,
-                                                                   state="readonly"))
+            row(None, 18, "Asignada a (quién la revisa)", ttk.Combobox(frm, textvariable=v["operator"], values=op_names,
+                                                                       state="readonly"))
+            row(None, 19, "Dónde se analiza", ttk.Combobox(frm, textvariable=v["location"],
+                                                           values=list(CAM_LOCATION_NAMES.values()), state="readonly"))
         row(None, 17, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
         if "hurto" not in ((owner or {}).get("plans") or ["hurto"]):
             ttk.Label(frm, text="Este cliente es solo de métricas: la cámara usa 2-3 cuadros por segundo y no guarda "
                                 "clips (lo de arriba no se aplica).", foreground="#666", wraplength=560,
-                      justify="left").grid(row=19, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=20, column=0, columnspan=2, sticky="w")
+                      justify="left").grid(row=20, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=21, column=0, columnspan=2, sticky="w")
 
         inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
 
@@ -909,6 +1001,7 @@ class Oficina:
                 return self.mb.showwarning("Vigía", "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
             if self.is_admin:
                 common["operator_id"] = next((u["id"] for u in staff if u["username"] == v["operator"].get()), 0)
+                common["analysis_location"] = inv(CAM_LOCATION_NAMES, v["location"].get()) or "general"
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
                     return self.mb.showwarning("Vigía", "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
@@ -937,7 +1030,7 @@ class Oficina:
                     self.mb.showinfo("Vigía", f"Se agregaron {len(res)} cámaras.")
             self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=21, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=22, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
@@ -1258,14 +1351,14 @@ class Oficina:
         ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave, y revisan las "
                           "cámaras que les asignes. Los clientes entran a la web y ven solo su local.",
                   foreground="#666", wraplength=900, justify="left").pack(anchor="w")
-        self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "camaras", "activo"), show="tree headings", height=8,
+        self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "camaras", "activo"), show="tree headings", height=5,
                                     selectmode="browse")
         self.us_tree.heading("#0", text="Usuario")
         for col, txt, w in (("rol", "Rol", 120), ("cliente", "Cliente", 160), ("camaras", "Cámaras asignadas", 130),
                             ("activo", "Activo", 60)):
             self.us_tree.heading(col, text=txt)
             self.us_tree.column(col, width=w)
-        self.us_tree.pack(fill="both", expand=True)
+        self.us_tree.pack(fill="x")
         self.us_tree.bind("<Double-1>", lambda e: self.user_dialog(self._sel_user()))
         b = ttk.Frame(f)
         b.pack(fill="x", pady=6)
@@ -1294,14 +1387,14 @@ class Oficina:
         self.an_info = tk.StringVar(value="Cargando…")
         ttk.Label(f, textvariable=self.an_info, foreground="#444", wraplength=900, justify="left").pack(anchor="w")
         self.mq_tree = ttk.Treeview(f, columns=("estado", "camaras", "carga", "instancia"), show="tree headings",
-                                    height=5, selectmode="browse")
+                                    height=8, selectmode="browse")
         self.mq_tree.heading("#0", text="Máquina")
         self.mq_tree.column("#0", width=300)
         for col, txt, w in (("estado", "Estado", 150), ("camaras", "Cámaras", 80), ("carga", "Carga / capacidad", 130),
                             ("instancia", "Instancia en la nube", 190)):
             self.mq_tree.heading(col, text=txt)
             self.mq_tree.column(col, width=w)
-        self.mq_tree.pack(fill="x")
+        self.mq_tree.pack(fill="both", expand=True)
         b = ttk.Frame(f)
         b.pack(fill="x", pady=6)
         ttk.Button(b, text="Clave para máquinas nuevas", command=self.pool_key_dialog).pack(side="left")
@@ -1310,7 +1403,8 @@ class Oficina:
         self.analysis: dict = {}
 
     def load_machines(self) -> None:
-        def done(a):
+        def done(res):
+            a, cameras, agents = res
             self.analysis = a
             self.an_mode.set(ANALYSIS_MODES.get(a.get("mode"), ANALYSIS_MODES["pcs"]))
             self.an_cap.set(str(int(a.get("capacity") or 30)))
@@ -1323,19 +1417,53 @@ class Oficina:
                 if not a.get("has_pool_key"):
                     info += "  Falta crear la clave para máquinas (botón de abajo)."
             else:
-                info = ("Cada usuario analiza en su PC las cámaras que revisa. Para analizar en la nube (y que los "
-                        "usuarios solo revisen), elegí «máquinas de análisis», instalalas "
-                        "(deploy/maquina-analisis/README.md) y guardá.")
+                info = ("Cada usuario analiza en su PC las cámaras que revisa. Para analizar en la nube, instalá las "
+                        "máquinas (deploy/maquina-analisis/README.md) y elegí acá «máquinas de análisis», o solo para "
+                        "algunos clientes: Editar cliente → «Dónde se analizan sus cámaras».")
+                if a.get("cameras"):
+                    p = a.get("plan") or {}
+                    info += (f"  Ahora {a['cameras']} cámara(s) van a máquinas · carga {p.get('units', 0)} · hacen falta "
+                             f"{p.get('desired', 0)} máquina(s) · {p.get('online', 0)} en línea.")
             self.an_info.set(info)
-            self.mq_tree.delete(*self.mq_tree.get_children())
-            for m in a.get("machines") or []:
-                estado = "Vaciando para apagar" if m["online"] and m["draining"] else (
-                    "En línea" if m["online"] else "Apagada")
-                name = m["names"][0] if len(m["names"]) == 1 else (
-                    m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
-                self.mq_tree.insert("", "end", iid=m["key"], text=name, values=(
-                    estado, m["cameras"], f"{m['load']} / {m['capacity']:.0f}", m.get("instance_id") or "—"))
-        self.bg.run(lambda: self.api.get("/api/analysis"), done, self._net_fail)
+            self._fill_machine_tree(a, cameras, agents)
+        self.bg.run(lambda: (self.api.get("/api/analysis"), self.api.get("/api/cameras"), self.api.get("/api/agents")),
+                    done, self._net_fail)
+
+    def _fill_machine_tree(self, a: dict, cameras: list[dict], agents: list[dict]) -> None:
+        """Qué analiza cada máquina (y cada PC): máquina → cliente → cámara. Solo datos, sin imágenes."""
+        tree = self.mq_tree
+        opened = {i for i in tree.get_children() if tree.item(i, "open")}
+        tree.delete(*tree.get_children())
+        by_agent = {x["id"]: x for x in agents}
+        groups: list[tuple[str, str, str, str, str, set]] = []
+        used: set[int] = set()
+        for m in a.get("machines") or []:
+            name = m["names"][0] if len(m["names"]) == 1 else (
+                m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
+            estado = "Vaciando para apagar" if m["online"] and m["draining"] else (
+                "En línea" if m["online"] else "Apagada")
+            groups.append((m["key"], name, estado, f"{m['load']} / {m['capacity']:.0f}", m.get("instance_id") or "—",
+                           set(m["agent_ids"])))
+            used |= set(m["agent_ids"])
+        for aid in sorted({c["agent_id"] for c in cameras if c.get("agent_id") and c["agent_id"] not in used}):
+            ag = by_agent.get(aid) or {}
+            groups.append((f"pc-{aid}", ag.get("name") or f"PC {aid}", "En línea" if ag.get("online") else "Desconectada",
+                           "—", "PC", {aid}))
+        if any(not c.get("agent_id") for c in cameras):
+            groups.append(("ninguna", "Sin máquina ni PC", "No se analizan", "—", "—", {None}))
+        for key, name, estado, carga, inst, ids in groups:
+            cams = [c for c in cameras if c.get("agent_id") in ids]
+            node = tree.insert("", "end", iid=key, text=name, values=(estado, len(cams), carga, inst),
+                               open=key in opened)
+            by_client: dict[int, list[dict]] = {}
+            for c in cams:
+                by_client.setdefault(c["client_id"], []).append(c)
+            for cl_id, lst in sorted(by_client.items(), key=lambda kv: self.client_name(kv[0])):
+                cnode = tree.insert(node, "end", iid=f"{key}/c{cl_id}", text=self.client_name(cl_id),
+                                    values=("", len(lst), "", ""))
+                for c in sorted(lst, key=lambda x: x["name"]):
+                    tree.insert(cnode, "end", iid=f"{key}/k{c['id']}", text=c["name"],
+                                values=(self._cam_state(c), "", "", ""))
 
     def save_analysis(self) -> None:
         mode = next((k for k, t in ANALYSIS_MODES.items() if t == self.an_mode.get()), "pcs")
@@ -1380,9 +1508,12 @@ class Oficina:
 
     def remove_machine(self) -> None:
         sel = self.mq_tree.selection()
-        m = next((x for x in (self.analysis.get("machines") or []) if x["key"] == (sel[0] if sel else "")), None)
+        key = sel[0] if sel else ""
+        while key and self.mq_tree.parent(key):
+            key = self.mq_tree.parent(key)
+        m = next((x for x in (self.analysis.get("machines") or []) if x["key"] == key), None)
         if not m:
-            return self.mb.showinfo("Vigía", "Elegí una máquina de la lista.")
+            return self.mb.showinfo("Vigía", "Elegí una máquina de análisis de la lista (las PCs no se quitan desde acá).")
         if not self.mb.askyesno("Vigía", f"¿Quitar «{', '.join(m['names'])}»? Sus cámaras pasan a las otras máquinas. "
                                          "Si la máquina sigue prendida, se vuelve a dar de alta sola."):
             return

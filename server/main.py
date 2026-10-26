@@ -160,10 +160,12 @@ class ClientIn(BaseModel):
     # horario del local: {"lun": "09:00-17:00", ..., "dom": ""} (core/schedule.py). Solo se toca si viene;
     # {} o todo vacío = sin horario (se mira las 24 h)
     hours: dict[str, str] | None = None
+    # dónde se analizan sus cámaras: general (ajuste de Administración) | pcs | servidores. None = no cambia
+    analysis_location: Literal["general", "pcs", "servidores"] | None = None
 
     def client_fields(self) -> dict:
         return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url",
-                                        "hc_code", "hours"})
+                                        "hc_code", "hours", "analysis_location"})
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -279,6 +281,8 @@ class CameraIn(BaseModel):
     profile: Literal["general", "gondola", "caja", "entrada", "deposito", "exterior", "surtidor", "metricas"] = "general"
     # con el local cerrado (según el horario del cliente). None = no cambia (al crear: apagada)
     off_hours: Literal["apagada", "alarmas", "vivo"] | None = None
+    # dónde se analiza: general (lo que diga su cliente) | pcs | servidores. None = no cambia
+    analysis_location: Literal["general", "pcs", "servidores"] | None = None
     # usuario que la ve y la analiza en su PC (lo elige el admin). None = no cambia; 0 = sin asignar
     operator_id: int | None = None
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
@@ -487,7 +491,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": c.id, "name": c.name, "timezone": c.timezone, "telegram_chat_id": c.telegram_chat_id,
                 "contact_whatsapp": c.contact_whatsapp, "contact_email": c.contact_email,
                 "webhook_url": c.webhook_url, "notify_channels": notifier.available(c),
-                "plans": list(c.plans or ["hurto"]), "hours": c.hours, "created_at": iso(c.created_at)}
+                "plans": list(c.plans or ["hurto"]), "hours": c.hours,
+                "analysis_location": c.analysis_location or "general", "created_at": iso(c.created_at)}
 
     def user_dict(u: User) -> dict:
         return {"id": u.id, "username": u.username, "role": u.role, "client_id": u.client_id, "active": u.active}
@@ -534,6 +539,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def analysis_mode(s) -> str:
         return setting(s, "analysis_mode", "pcs")
 
+    def locations(s) -> dict[int, str]:
+        """Dónde se analiza cada cámara: lo que diga la cámara; si no, su cliente; si no, el ajuste general."""
+        mode = analysis_mode(s)
+        clients = dict(s.query(Client.id, Client.analysis_location).all())
+        out = {}
+        for cid, client_id, loc in s.query(Camera.id, Camera.client_id, Camera.analysis_location):
+            cl = clients.get(client_id) or "general"
+            out[cid] = loc if loc in ("pcs", "servidores") else (cl if cl in ("pcs", "servidores") else mode)
+        return out
+
+    def camera_on_pcs(s, c: Camera) -> bool:
+        if c.analysis_location in ("pcs", "servidores"):
+            return c.analysis_location == "pcs"
+        cl = s.get(Client, c.client_id)
+        loc = cl.analysis_location if cl is not None else "general"
+        return (loc if loc in ("pcs", "servidores") else analysis_mode(s)) == "pcs"
+
+    def sync_locations(s, before: dict[int, str]) -> int:
+        """Después de cambiar dónde se analiza (en general, un cliente o una cámara): las cámaras que pasan a
+        las máquinas guardan qué PC tenían; las que vuelven a «pcs» van a la PC de quien las revisa o a la
+        que tenían antes. Las que van a máquinas las reparte `rebalance`."""
+        after = locations(s)
+        changed = [cid for cid, loc in after.items() if before.get(cid) != loc]
+        if not changed:
+            return 0
+        try:
+            backup = {int(k): v for k, v in json.loads(setting(s, "pcs_backup", "{}") or "{}").items()}
+        except ValueError:
+            backup = {}
+        servers = {a.id for a in server_agents(s)}
+        alive = {a for (a,) in s.query(Agent.id)}
+        for c in s.query(Camera).filter(Camera.id.in_(changed)):
+            if after[c.id] == "servidores":
+                if c.agent_id not in servers:
+                    backup[c.id] = c.agent_id
+            elif c.operator_id:
+                op = s.get(User, c.operator_id)
+                c.agent_id = user_agent(s, op).id if op else None
+            elif c.agent_id in servers or c.agent_id is None:
+                prev = backup.get(c.id)
+                c.agent_id = prev if prev in alive and prev not in servers else None
+        set_setting(s, "pcs_backup", json.dumps({str(k): v for k, v in backup.items()}))
+        bump_rev(s)
+        return len(changed)
+
     def pool_capacity(s) -> float:
         try:
             return float(setting(s, "pool_capacity") or pool.DEFAULT_CAPACITY)
@@ -554,8 +604,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return bool(a.last_seen and now - a.last_seen < pool.ONLINE)
 
     def camera_weights(s, times: list[datetime]) -> tuple[list[Camera], list[dict[int, float]]]:
-        """Peso de cada cámara habilitada en cada momento pedido (ver server/pool.py)."""
-        cams = s.query(Camera).filter(Camera.enabled.is_(True)).order_by(Camera.id).all()
+        """Peso de cada cámara habilitada que se analiza en las máquinas, en cada momento pedido (server/pool.py)."""
+        locs = locations(s)
+        cams = [c for c in s.query(Camera).filter(Camera.enabled.is_(True)).order_by(Camera.id)
+                if locs.get(c.id) == "servidores"]
         clients = ({c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))}
                    if cams else {})
         out: list[dict[int, float]] = [{} for _ in times]
@@ -596,7 +648,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def rebalance(s, force: bool = False) -> bool:
         """Reparte las cámaras entre las máquinas de análisis en línea. Como mucho cada 20 s (salvo `force`)."""
-        if analysis_mode(s) != "servidores":
+        if "servidores" not in set(locations(s).values()):
             return False
         now = utcnow()
         last = setting(s, "balance_at")
@@ -628,6 +680,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return moved > 0
 
+    def pc_mode(s, ag: Agent) -> str:
+        """Para la nota de la app: «servidores» si las cámaras que revisa este usuario las analizan las máquinas."""
+        if ag.user_id is None:
+            return analysis_mode(s)
+        locs = locations(s)
+        mine = [cid for (cid,) in s.query(Camera.id).filter(Camera.operator_id == ag.user_id)]
+        if mine and all(locs.get(c) == "servidores" for c in mine):
+            return "servidores"
+        return analysis_mode(s)
+
     def check_pool_key(s, key: str) -> None:
         stored = setting(s, "pool_key_hash")
         if not stored or not secrets.compare_digest(token_hash(key.strip()), stored):
@@ -639,9 +701,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ms = machines_of(s, now, w_now)
         spare = int(setting(s, "pool_spare", "0") or 0)
         mode = analysis_mode(s)
-        p = pool.plan(sum(w_now.values()), sum(w_soon.values()), ms, pool_capacity(s), spare)
-        if mode != "servidores":  # las cámaras las analizan las PCs de los usuarios: no hacen falta máquinas
-            p = pool.plan(0.0, 0.0, ms, pool_capacity(s), 0)
+        # solo cuentan las cámaras que se analizan en máquinas (en general, por cliente o por cámara)
+        p = pool.plan(sum(w_now.values()), sum(w_soon.values()), ms, pool_capacity(s), spare if cams else 0)
         if apply_draining:
             by_id = {a.id: a for a in server_agents(s)}
             for m in ms:
@@ -655,7 +716,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if c.agent_id is not None:
                 cam_count[c.agent_id] = cam_count.get(c.agent_id, 0) + 1
         open_now = sum(1 for w in w_now.values() if w > 0)
-        return {"mode": mode, "capacity": pool_capacity(s), "spare": spare,
+        clients_on = sorted({c.client_id for c in cams})
+        return {"mode": mode, "capacity": pool_capacity(s), "spare": spare, "clients_on_servers": clients_on,
                 "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
                 "cameras": len(cams), "cameras_active": open_now,
                 "online_instances": [m.instance_id for m in ms if m.online and m.instance_id],
@@ -675,7 +737,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
                      hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c),
-                     profile=c.profile or "general", off_hours=c.off_hours or "apagada")
+                     profile=c.profile or "general", off_hours=c.off_hours or "apagada",
+                     analysis_location=c.analysis_location or "general")
             ops = ops or {}
             op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
             d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
@@ -918,6 +981,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if s.query(Client).filter_by(name=body.name).first():
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         c = Client(**body.client_fields())
+        c.analysis_location = body.analysis_location or "general"
         set_client_hours(c, body)
         set_client_hc(c, body)
         s.add(c)
@@ -932,13 +996,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         other = s.query(Client).filter(Client.name == body.name, Client.id != cid).first()
         if other:
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
+        before = locations(s)
         for k, v in body.client_fields().items():
             setattr(c, k, v)
+        if body.analysis_location is not None:
+            c.analysis_location = body.analysis_location
         set_client_hours(c, body)
         set_client_hc(c, body)
         set_client_web_user(s, c, body)
+        s.flush()
+        sync_locations(s, before)
         bump_rev(s)  # horario y planes cambian qué hacen sus cámaras
         s.commit()
+        rebalance(s, force=True)
         return client_out(s, c)
 
     @app.delete("/api/clients/{cid}", status_code=204)
@@ -991,13 +1061,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         u = get_or_404(s, User, uid, "Usuario")
         if u.role not in ("admin", "entrenador"):
             raise HTTPException(422, "Las cámaras se asignan a administradores o empleados")
-        pcs = analysis_mode(s) == "pcs"
         a = user_agent(s, u)
         want = set(body.camera_ids)
+        locs = locations(s)
         for c in s.query(Camera).filter(or_(Camera.id.in_(want), Camera.operator_id == u.id)):
             mine = c.id in want
             c.operator_id = u.id if mine else None
-            if pcs:
+            if locs.get(c.id) == "pcs":
                 c.agent_id = a.id if mine else (None if c.agent_id == a.id else c.agent_id)
         bump_rev(s)
         s.commit()
@@ -1131,25 +1201,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.spare is not None:
             set_setting(s, "pool_spare", body.spare)
         if body.mode is not None and body.mode != analysis_mode(s):
+            before = locations(s)
             set_setting(s, "analysis_mode", body.mode)
-            if body.mode == "servidores":  # recordar qué PC tenía cada cámara, para poder volver atrás
-                set_setting(s, "pcs_backup", json.dumps({str(c.id): c.agent_id for c in s.query(Camera).all()}))
-            else:  # vuelven a la PC de quien las revisa, o a la PC que tenían antes
-                servers = {a.id for a in server_agents(s)}
-                try:
-                    backup = {int(k): v for k, v in json.loads(setting(s, "pcs_backup", "{}") or "{}").items()}
-                except ValueError:
-                    backup = {}
-                alive = {a for (a,) in s.query(Agent.id)}
-                for c in s.query(Camera).all():
-                    if c.operator_id:
-                        op = s.get(User, c.operator_id)
-                        c.agent_id = user_agent(s, op).id if op else None
-                    elif c.agent_id in servers:
-                        prev = backup.get(c.id)
-                        c.agent_id = prev if prev in alive and prev not in servers else None
-            bump_rev(s)
-            log.info("Las cámaras ahora se analizan en: %s", body.mode)
+            s.flush()
+            n = sync_locations(s, before)
+            log.info("Ajuste general: las cámaras se analizan en %s (%d cambian)", body.mode, n)
         s.commit()
         rebalance(s, force=True)
         return analysis_overview(s)
@@ -1215,6 +1271,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
         if f.get("off_hours") is None:
             f.pop("off_hours")  # una app vieja no lo manda: queda como estaba
+        if f.get("analysis_location") is None:
+            f.pop("analysis_location")
         return f
 
     def apply_operator(s, c: Camera, body: CameraIn, user: User) -> None:
@@ -1222,7 +1280,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         que la analiza la elige el reparto (server/pool.py)."""
         if body.operator_id is None or user.role != "admin":
             return  # sin dato (o un empleado): la asignación queda como estaba
-        pcs = analysis_mode(s) == "pcs"
+        pcs = camera_on_pcs(s, c)
         if body.operator_id == 0:
             c.operator_id = None
             if pcs:
@@ -1277,8 +1335,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_camera(cam_id: int, body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         check_camera_body(s, body)
+        before = locations(s)
         for k, v in camera_fields(body).items():
             setattr(c, k, v)
+        s.flush()
+        sync_locations(s, before)
         apply_operator(s, c, body, user)
         if body.password:
             c.password_enc = box.encrypt(body.password)
@@ -1450,7 +1511,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         models = {cid: model_spec(s, cid) for cid in clients}  # cada cliente puede tener su propio modelo
         return {
             "agent_id": ag.id, "client_id": ag.client_id, "central": ag.client_id is None,
-            "process_imports": ag.process_imports, "kind": ag.kind or "pc", "analysis_mode": analysis_mode(s),
+            "process_imports": ag.process_imports, "kind": ag.kind or "pc", "analysis_mode": pc_mode(s, ag),
             "rev": setting(s, "config_rev", "0"),
             "settings": {"clip_pre_seconds": st.clip_pre_seconds, "clip_post_seconds": st.clip_post_seconds,
                          "clip_max_seconds": st.clip_max_seconds},
@@ -2274,6 +2335,94 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "by_day": [{"date": d, **by_day[d]} for d in sorted(by_day)],
                 "by_hour": [{"hour": h, **by_hour[h]} for h in sorted(by_hour)],
                 "by_camera": [{"camera_id": cid, "name": cams.get(cid, f"Cámara {cid}"), **by_cam[cid]} for cid in sorted(by_cam)]}
+
+    @app.get("/api/stats/alerts")
+    def alert_counts(_: User = Depends(staff), s=Depends(db)) -> dict:
+        """Alertas por cámara y por cliente: hoy (desde la medianoche del local), últimos 7 días y sin revisar
+        (sin etiqueta, últimos 60 días). Solo números: no baja fotos ni clips."""
+        now = utcnow()
+        base = (Event.source.in_(("vivo", "alarma", "prueba")), Event.alert.is_(True))
+        cams: dict[int, dict] = {}
+
+        def add(q, key: str) -> None:
+            for cam_id, client_id, n in q.group_by(Event.camera_id, Event.client_id):
+                d = cams.setdefault(cam_id, {"client_id": client_id, "today": 0, "week": 0, "unreviewed": 0})
+                d[key] += n
+
+        def q():
+            return s.query(Event.camera_id, Event.client_id, func.count(Event.id)).filter(*base)
+
+        add(q().filter(Event.occurred_at >= now - timedelta(days=7)), "week")
+        add(q().filter(Event.label.is_(None), Event.occurred_at >= now - timedelta(days=60)), "unreviewed")
+        by_tz: dict[str, list[int]] = {}
+        for cid, tz in s.query(Client.id, Client.timezone):
+            by_tz.setdefault(tz or "America/Montevideo", []).append(cid)
+        for tz, ids in by_tz.items():  # «hoy» empieza a distinta hora según el país del local
+            try:
+                local = datetime.now(ZoneInfo(tz))
+            except Exception:  # noqa: BLE001 - zona mal cargada
+                local = datetime.now(ZoneInfo("America/Montevideo"))
+            start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
+            add(q().filter(Event.client_id.in_(ids), Event.occurred_at >= start), "today")
+        clients: dict[int, dict] = {}
+        for d in cams.values():
+            t = clients.setdefault(d["client_id"], {"today": 0, "week": 0, "unreviewed": 0})
+            for k in ("today", "week", "unreviewed"):
+                t[k] += d[k]
+        return {"cameras": {str(k): v for k, v in cams.items()}, "clients": {str(k): v for k, v in clients.items()}}
+
+    @app.get("/api/metrics/export")
+    def metrics_export(client_id: int | None = None, desde: str | None = None, hasta: str | None = None,
+                       agrupar: Literal["hora", "dia"] = "dia", user: User = Depends(current_user),
+                       s=Depends(db)) -> Response:
+        """Métricas en CSV para Excel (separado por «;», decimales con coma, con BOM): por cámara, por día u
+        hora, en hora del local. Sin cliente = todos (solo el personal). Fechas AAAA-MM-DD; por defecto la
+        última semana."""
+        client_id = scope_client(user, client_id)
+        try:
+            d2 = datetime.strptime(hasta, "%Y-%m-%d") if hasta else datetime.now().replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            d1 = datetime.strptime(desde, "%Y-%m-%d") if desde else d2 - timedelta(days=6)
+        except ValueError as exc:
+            raise HTTPException(422, "Fechas con formato AAAA-MM-DD") from exc
+        if d1 > d2:
+            d1, d2 = d2, d1
+        if (d2 - d1).days > 366:
+            raise HTTPException(422, "Como mucho un año por vez")
+        q = s.query(CameraMetric).filter(CameraMetric.bucket_start >= d1, CameraMetric.bucket_start < d2 + timedelta(days=1))
+        if client_id is not None:
+            q = q.filter(CameraMetric.client_id == client_id)
+        rows = q.order_by(CameraMetric.bucket_start, CameraMetric.camera_id).all()
+        cams = dict(s.query(Camera.id, Camera.name).all())
+        cls = dict(s.query(Client.id, Client.name).all())
+        groups: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r.bucket_start if agrupar == "hora" else r.bucket_start.replace(hour=0), r.client_id, r.camera_id)
+            groups[key] = merge_bucket(groups.get(key, empty_bucket()), r.data)
+
+        def num(v: float, dec: int = 1) -> str:
+            return f"{v:.{dec}f}".replace(".", ",")
+
+        head = ["Fecha"] + (["Hora"] if agrupar == "hora" else []) + [
+            "Cliente", "Cámara", "Personas", "Tiempo promedio en escena (min)", "Máximo a la vez", "Ingresos",
+            "Vehículos", "Vehículos en surtidor", "Espera promedio en surtidor (min)", "Surtidor sin atender",
+            "Visitas a la tienda", "Zonas (visitas · minutos)"]
+        lines = [";".join(head)]
+        for (when, cl_id, cam_id), b in sorted(groups.items(), key=lambda kv: (kv[0][0], cls.get(kv[0][1], ""),
+                                                                                  cams.get(kv[0][2], ""))):
+            zones = " | ".join(f"{name}: {z.get('visits', 0)} · {num(z.get('dwell_s', 0) / 60)}"
+                               for name, z in sorted((b.get("zones") or {}).items()))
+            cells = [when.strftime("%d/%m/%Y")] + ([when.strftime("%H:00")] if agrupar == "hora" else []) + [
+                cls.get(cl_id, str(cl_id)), cams.get(cam_id, f"Cámara {cam_id}"), str(b["people"]),
+                num(b["people_dwell_s"] / b["people"] / 60) if b["people"] else "", str(b["people_max"]),
+                str(b["entries"]), str(b["vehicles"]), str(b["pump_vehicles"]),
+                num(b["pump_wait_s"] / b["pump_wait_n"] / 60) if b["pump_wait_n"] else "", str(b["pump_unattended"]),
+                str(b["shop_visits"]), zones]
+            lines.append(";".join(c.replace(";", ",") for c in cells))
+        name = (cls.get(client_id, "cliente") if client_id else "todos").replace(" ", "_")
+        fname = f"metricas_{name}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.csv"
+        return Response(content="\ufeff" + "\r\n".join(lines) + "\r\n", media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
     @app.get("/api/stats")
     def stats(client_id: int | None = None, days: int = Query(30, ge=1, le=365),

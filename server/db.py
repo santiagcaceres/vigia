@@ -38,6 +38,8 @@ class Client(Base):
     plans: Mapped[list] = mapped_column(JSON, default=lambda: ["hurto"])
     # horario del local por día (core/schedule.py): fuera de horario la PC central no abre el video
     hours: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # dónde se analizan sus cámaras: general (el ajuste de Administración) | pcs | servidores
+    analysis_location: Mapped[str] = mapped_column(String(20), default="general")
     # Hik-Connect for Teams (video de Hikvision sin abrir puertos): clave de la API del equipo del cliente
     hc_app_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     hc_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -118,6 +120,8 @@ class Camera(Base):
     profile: Mapped[str] = mapped_column(String(20), default="general")
     # con el local cerrado: apagada (no se abre el video) | alarmas (escucha al grabador) | vivo (sigue 24 h)
     off_hours: Mapped[str] = mapped_column(String(20), default="apagada")
+    # dónde se analiza: general (lo que diga su cliente) | pcs | servidores
+    analysis_location: Mapped[str] = mapped_column(String(20), default="general")
     # quién la revisa (admin o empleado). Quién la analiza es `agent_id`: la PC de ese usuario (modo «pcs») o
     # la máquina de análisis que le toque (modo «servidores», lo reparte server/pool.py)
     operator_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
@@ -316,7 +320,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-26.1"
+SCHEMA_VERSION = "2026-10-26.2"
 
 
 class CameraMetric(Base):

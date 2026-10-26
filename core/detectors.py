@@ -306,9 +306,10 @@ def build_detector(name: str, model_path: str | Path | None = None, vehicles: bo
                 return _shared[key]
             sess = _sessions.get(str(model_path))
             if sess is None:
-                sess = OnnxSession(model_path, max_batch=None)
+                # VIGIA_HILOS (máquina sin placa de video): un solo modelo que usa todos los núcleos, compartido
+                sess = OnnxSession(model_path, threads=int(os.getenv("VIGIA_HILOS") or 2), max_batch=None)
             det = OnnxYoloDetector(classes=classes, session=sess)
-            if det.on_gpu or sess.max_batch > 1:  # con y sin vehículos usan la misma sesión (y los mismos lotes)
+            if det.on_gpu or sess.max_batch > 1 or os.getenv("VIGIA_HILOS"):  # una sola sesión para todas las cámaras
                 _sessions[str(model_path)] = sess
                 _shared[key] = det
             if key not in _logged:
