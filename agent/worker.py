@@ -184,6 +184,9 @@ class CameraWorker:
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
                 self.state, self.error = "sin_conexion", f"No se pudo abrir {self.hik.redacted(url)}"
+                why = self.hik.open_failure(url)
+                if why:
+                    self.error += f" — {why}"
                 log.warning("[%s] %s; reintento en %.0fs", self.name, self.error, backoff)
                 cap.release()
                 self._stop.wait(backoff)

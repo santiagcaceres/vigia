@@ -11,6 +11,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
+
+import httpx
 
 from .cameras import BaseCamera
 
@@ -46,6 +49,26 @@ class HikConnectCamera(BaseCamera):
 
     def redacted(self, url: str) -> str:
         return url.split("?")[0]  # el link lleva un token en la consulta
+
+    def open_failure(self, url: str) -> str | None:
+        return diagnose(url)
+
+
+def diagnose(url: str, timeout: float = 10.0) -> str:
+    """Pide la lista de video (HLS) directo para saber por qué OpenCV no la pudo abrir."""
+    parts = urlsplit(url)
+    try:
+        r = httpx.get(url, timeout=timeout, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        return (f"no se pudo conectar con {parts.hostname}:{parts.port or 443} ({type(exc).__name__}); "
+                "revisá que el antivirus o el firewall de esta PC o de la red no lo bloqueen")
+    body = " ".join(r.text[:300].split())
+    if r.status_code != 200:
+        return f"Hik-Connect respondió {r.status_code}: {body[:200] or 'sin detalle'}"
+    if "#EXTM3U" not in body:
+        return f"Hik-Connect no mandó una lista de video: {body[:200] or 'respuesta vacía'}"
+    return ("la lista de video llega bien pero el video no se pudo leer: revisá que la segunda señal de esa "
+            "cámara esté en H.264 (no H.265)")
 
 
 def probe(cam: HikConnectCamera) -> dict:

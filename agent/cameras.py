@@ -77,6 +77,10 @@ class BaseCamera:
     def ffmpeg_input_args(self) -> list[str]:
         return ["-rtsp_transport", "tcp", "-timeout", "10000000"]
 
+    def open_failure(self, url: str) -> str | None:
+        """Por qué no abrió el video, si se puede averiguar (OpenCV no lo dice). None = no se sabe."""
+        return None
+
 
 @dataclass
 class AutoCamera(BaseCamera):

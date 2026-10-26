@@ -182,3 +182,22 @@ def test_minimo_5_fps_y_camara_por_ip(app):
         assert c.post("/api/cameras", json={**base, "process_fps": 3}).status_code == 422
         cam = c.post("/api/cameras", json={**base, "process_fps": 5}).json()
         assert cam["brand"] == "ip"
+
+
+def test_diagnostico_cuando_no_abre_el_video(monkeypatch):
+    import httpx
+
+    from agent import hikconnect
+
+    respuestas = {"limite": (403, '{"code":"EVZ60011","msg":"stream limit"}'), "ok": (200, "#EXTM3U\nseg0.ts\n")}
+
+    def falso_get(url, **_):
+        if "caida" in url:
+            raise httpx.ConnectTimeout("timeout")
+        code, body = respuestas["limite" if "limite" in url else "ok"]
+        return httpx.Response(code, text=body)
+
+    monkeypatch.setattr(hikconnect.httpx, "get", falso_get)
+    assert "403" in hikconnect.diagnose("https://vtm.example:4443/limite.m3u8?t=1")
+    assert "H.264" in hikconnect.diagnose("https://vtm.example:4443/ok.m3u8?t=1")
+    assert "vtm.example:4443" in hikconnect.diagnose("https://vtm.example:4443/caida.m3u8?t=1")

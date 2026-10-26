@@ -401,6 +401,12 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   apagado el cifrado. El HLS llega en ráfagas de 1-4 s: el `CameraWorker` usa `MediaClock` (marcas de tiempo del
   video, o cuadros/fps) en vez del reloj de la PC para elegir qué cuadros analizar (antes salía 0-1 fps). Los errores de Hik-Connect quedan en los
   logs de Vercel (`vigia.hikconnect`): mirarlos en la primera prueba.
+  **26 oct (app 1.17.1):** si OpenCV no abre el HLS («No se pudo abrir …m3u8»), `BaseCamera.open_failure` →
+  `agent/hikconnect.diagnose` pide la lista directo y suma el motivo al error (código HTTP y cuerpo de Hik-Connect,
+  no se pudo conectar al puerto 4443, o lista OK = video no legible, ¿H.265?). Ese día, en Minas, los canales 3, 5
+  y 13 de E02380030 andaban en DESKTOP-JL2DU44 y los 1 y 2 no abrían en la PC de admin (misma versión de librerías
+  desde la 1.13: no era la app); sospecha: límite de transmisiones simultáneas por grabador en la nube. El segundo
+  grabador de Minas (GE7132986) tiene el cifrado prendido (EVZ60019).
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
   y otros en UTC. Se elige por cámara con `playback_time`; si el clip llega corrido, probar la otra.
@@ -443,7 +449,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 173 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 174 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
