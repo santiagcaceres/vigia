@@ -266,3 +266,43 @@ def test_volver_a_pcs_devuelve_las_camaras_sin_revisor_a_su_pc_vieja(app):
         assert a.get("/api/cameras").json()[0]["analyzer_name"] == "m1"
         a.put("/api/analysis", json={"mode": "pcs"})
         assert a.get("/api/cameras").json()[0]["analyzer_name"] == "PC vieja"
+
+
+def test_id_de_la_instancia_en_aws_y_google_cloud(monkeypatch):
+    """Google Cloud también contesta en 169.254.169.254: al PUT de AWS le responde 405 con una página HTML (con
+    «’»), que no se puede usar como token. Antes eso tiraba la máquina al arrancar."""
+    import httpx
+
+    monkeypatch.delenv("VIGIA_INSTANCE_ID", raising=False)
+
+    def nube(put, get):
+        monkeypatch.setattr(maquina.httpx, "put", put)
+        monkeypatch.setattr(maquina.httpx, "get", get)
+        return maquina.instance_id()
+
+    def gcp_put(url, **_):
+        return httpx.Response(405, text="<html>That’s an error. Method not allowed</html>")
+
+    def gcp_get(url, headers=None, **_):
+        if url.endswith("/computeMetadata/v1/instance/name") and (headers or {}).get("Metadata-Flavor") == "Google":
+            return httpx.Response(200, text="vigia-analisis-1")
+        return httpx.Response(404, text="no")
+
+    assert nube(gcp_put, gcp_get) == "vigia-analisis-1"
+
+    def aws_put(url, **_):
+        return httpx.Response(200, text="token-aws")
+
+    def aws_get(url, headers=None, **_):
+        if url.endswith("/latest/meta-data/instance-id") and (headers or {}).get("X-aws-ec2-metadata-token") == "token-aws":
+            return httpx.Response(200, text="i-0abc123")
+        return httpx.Response(404, text="no")
+
+    assert nube(aws_put, aws_get) == "i-0abc123"
+
+    def caida(url, **_):
+        raise httpx.ConnectTimeout("sin metadata")
+
+    assert nube(caida, caida) is None  # otra nube o una PC: se usa el nombre de la máquina
+    monkeypatch.setenv("VIGIA_INSTANCE_ID", "a-mano")
+    assert maquina.instance_id() == "a-mano"

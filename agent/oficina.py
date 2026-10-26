@@ -381,11 +381,11 @@ class Oficina:
             self.clients, self.cameras, self.agents, self.alert_counts = res
             self._fill_clients()
             self._fill_alert_filters()
+            if self.is_admin:  # después de los clientes: muestran sus nombres (antes salía «—» si llegaban primero)
+                self.load_users()
+                self.load_machines()
         self.bg.run(load, done, self._net_fail)
         self.load_alerts()
-        if self.is_admin:
-            self.load_users()
-            self.load_machines()
 
     def _net_fail(self, exc: Exception) -> None:
         if isinstance(exc, ApiError) and exc.status == 401:

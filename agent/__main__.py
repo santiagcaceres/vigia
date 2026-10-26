@@ -702,9 +702,50 @@ def run_machine(a, data_dir: Path, verify: bool | str) -> None:
     agent.run()
 
 
+_instance_lock = None  # archivo abierto y trabado mientras corre la app (una sola por PC)
+
+
+def single_instance(data_dir: Path, wait_s: float = 8.0):
+    """Traba `vigia.lock` para que no haya dos Vigía abiertos en la misma PC: cada copia pide el token de la PC
+    de su usuario y le quita la sesión a la otra (401). Espera un poco por si la anterior se está cerrando
+    (al actualizar o cerrar sesión). Devuelve el archivo trabado, o None si ya hay otra abierta."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    f = open(data_dir / "vigia.lock", "a+")
+    end = time.monotonic() + wait_s
+    while True:
+        try:
+            f.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() >= end:
+                f.close()
+                return None
+            time.sleep(0.5)
+
+
+def release_instance() -> None:
+    global _instance_lock
+    if _instance_lock is not None:
+        try:
+            _instance_lock.close()  # cerrar el archivo suelta la traba
+        except OSError:
+            pass
+        _instance_lock = None
+
+
 def restart_app() -> None:
     """Vuelve a abrir el programa (para cerrar sesión y entrar con otro usuario)."""
     import subprocess
+
+    release_instance()  # la copia nueva tiene que poder trabar el archivo
 
     if getattr(sys, "frozen", False):
         cmd = [sys.executable] + sys.argv[1:]
@@ -725,6 +766,13 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     ni vincular PCs: la PC de cada usuario se crea sola en el servidor."""
     from .oficina import Api, ApiError, Oficina
 
+    global _instance_lock
+    _instance_lock = single_instance(data_dir)
+    if _instance_lock is None:
+        ventana.messagebox.showinfo("Vigía", "Vigía ya está abierto en esta PC. Usá esa ventana (fijate en la barra "
+                                             "de tareas): con dos abiertos, uno le cierra la sesión al otro.")
+        ventana.close()
+        return
     saved = dict(read_env_file(cfg_path))
     api = Api(a.server, verify=verify)
 

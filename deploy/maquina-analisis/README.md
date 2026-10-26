@@ -113,6 +113,11 @@ cliente, se van a la máquina todas sus cámaras. El ajuste general queda en «E
    «[Cliente · Cámara] conectada».
 4. Al terminar la prueba: **Detener** la instancia (no gasta procesador; el disco cuesta centavos) o borrarla.
 
+**Probado el 26 oct de 2026:** una e2-standard-4 en São Paulo analizó 3 cámaras de Minas por Hik-Connect a 5 fps con
+~11 % de procesador. La máquina toma como id el nombre de la instancia (ya no hace falta `VIGIA_INSTANCE_ID`). Los
+avisos de ffmpeg «[tls] IO error: End of file» cada tanto son normales: Hik-Connect corta la conexión y ffmpeg
+la reabre sin perder el video.
+
 ### Opción B: Oracle Cloud «Always Free» (gratis para siempre, pero chica)
 
 Desde agosto de 2026 (según varios sitios; Oracle no lo confirma en su página) lo gratis de ARM bajó a **2 núcleos y

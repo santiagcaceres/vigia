@@ -15,20 +15,30 @@ from pathlib import Path
 import httpx
 
 log = logging.getLogger("vigia.maquina")
-METADATA = "http://169.254.169.254/latest"  # AWS (IMDSv2); en otras nubes no responde y se usa el nombre
+METADATA = "http://169.254.169.254"  # AWS (IMDSv2) y Google Cloud responden en la misma dirección
 
 
 def instance_id() -> str | None:
-    """Id de la instancia en la nube (para que el encendedor sepa cuál apagar)."""
+    """Id de la instancia en la nube (para que el encendedor sepa cuál apagar). En AWS, el id de la instancia; en
+    Google Cloud, su nombre; en otras nubes, None (se usa el nombre de la máquina)."""
     if os.getenv("VIGIA_INSTANCE_ID"):
         return os.environ["VIGIA_INSTANCE_ID"]
-    try:
-        tok = httpx.put(f"{METADATA}/api/token", timeout=1.0,
-                        headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"}).text
-        r = httpx.get(f"{METADATA}/meta-data/instance-id", timeout=1.0, headers={"X-aws-ec2-metadata-token": tok})
-        if r.status_code == 200 and r.text.startswith("i-"):
+    try:  # AWS (IMDSv2). Google Cloud contesta 405 con una página HTML: no es un token
+        t = httpx.put(f"{METADATA}/latest/api/token", timeout=1.0,
+                      headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"})
+        if t.status_code == 200 and t.text.isascii():
+            r = httpx.get(f"{METADATA}/latest/meta-data/instance-id", timeout=1.0,
+                          headers={"X-aws-ec2-metadata-token": t.text})
+            if r.status_code == 200 and r.text.startswith("i-"):
+                return r.text.strip()
+    except (httpx.HTTPError, UnicodeError):
+        pass
+    try:  # Google Cloud: el nombre de la instancia
+        r = httpx.get(f"{METADATA}/computeMetadata/v1/instance/name", timeout=1.0,
+                      headers={"Metadata-Flavor": "Google"})
+        if r.status_code == 200 and r.text.strip() and r.text.isascii():
             return r.text.strip()
-    except httpx.HTTPError:
+    except (httpx.HTTPError, UnicodeError):
         pass
     return None
 

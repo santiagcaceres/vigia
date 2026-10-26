@@ -135,3 +135,15 @@ def test_borrar_usuario_y_no_repetir_camaras(app):
         assert pc["id"] not in [x["id"] for x in a.get("/api/agents").json()]  # su PC se fue con ella
         assert next(c for c in a.get("/api/cameras").json() if c["id"] == dos["id"])["agent_id"] is None
         assert b.get("/api/me").status_code == 401  # su sesión ya no sirve
+
+
+def test_una_sola_app_abierta_por_pc(tmp_path):
+    from agent.__main__ import single_instance
+
+    primera = single_instance(tmp_path, wait_s=0)
+    assert primera is not None
+    assert single_instance(tmp_path, wait_s=0) is None  # la segunda copia no arranca
+    primera.close()  # se cerró la primera (o se reinició para actualizar)
+    segunda = single_instance(tmp_path, wait_s=0)
+    assert segunda is not None
+    segunda.close()

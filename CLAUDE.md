@@ -264,6 +264,16 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   no tengan cámaras). **No se repiten cámaras de Hik-Connect** (`check_not_repeated`: mismo cliente, serie y canal
   → 409; la app, al agregar varias, saltea las que ya estaban y lo dice). En Administración los botones de máquinas
   quedaban tapados en pantallas de 768 de alto: ahora van antes que la lista.
+  **Google Cloud probado (26 oct, otra sesión de Claude con el dueño; app 1.18.2):** VM `vigia-analisis-1`
+  (proyecto `vigia-512822`, southamerica-east1-c, e2-standard-4, Ubuntu 24.04) con `instalar.sh`: 3 cámaras de Minas
+  (camera 3/5/13@E02380030) a 5 fps, ~11 % de procesador. Se caía al arrancar: Google contesta en 169.254.169.254 un
+  405 con HTML («’») al PUT de AWS y `instance_id()` lo usaba como token (UnicodeEncodeError, que no es
+  httpx.HTTPError). Ahora mira el código, prueba `computeMetadata/v1/instance/name` (`Metadata-Flavor: Google`) y
+  atrapa `UnicodeError`. Los «[tls] IO error: End of file» de ffmpeg con el HLS de Hik-Connect son normales (reabre).
+  **Una sola app por PC** (`single_instance`: traba `vigia.lock` en la carpeta de datos, msvcrt en Windows y flock en
+  Linux; espera 8 s por si la anterior se está cerrando; `restart_app` la suelta): con dos copias abiertas cada una
+  pedía el token de la PC del usuario y la otra quedaba con 401 y se cerraba la sesión. En Administración los
+  usuarios y máquinas se cargan después de los clientes (antes a veces salía «—» en vez del nombre del cliente).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -470,7 +480,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 179 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 181 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
