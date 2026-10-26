@@ -143,6 +143,29 @@ def test_detector_por_lotes_junta_cuadros_de_varias_camaras():
     assert frames == 6 and avg > 1  # se analizaron juntos
 
 
+def test_maquina_sin_placa_usa_un_modelo_por_nucleo(monkeypatch):
+    if not MODEL.exists():
+        pytest.skip("sin modelo")
+    import threading
+
+    from core import detectors
+
+    monkeypatch.setenv("VIGIA_HILOS", "3")
+    monkeypatch.setattr(detectors, "_shared", {})
+    monkeypatch.setattr(detectors, "_sessions", {})
+    det = detectors.build_detector("yolo", MODEL)
+    assert isinstance(det.runner, detectors.SessionPool) and len(det.runner.pool) == 3
+    assert detectors.build_detector("yolo", MODEL, vehicles=True).runner is det.runner  # todas las cámaras comparten
+    frame = np.full((360, 640, 3), 120, np.uint8)
+    out: list = []
+    hilos = [threading.Thread(target=lambda: out.append(det.detect(frame))) for _ in range(6)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+    assert out == [[]] * 6 and det.runner.take_stats()[0] == 6
+
+
 # ---------------------------------------------------------------- servidor
 @pytest.fixture
 def app(tmp_path, db_url):

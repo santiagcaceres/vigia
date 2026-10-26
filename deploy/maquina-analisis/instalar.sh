@@ -15,7 +15,7 @@ if nvidia-smi >/dev/null 2>&1; then
 else
   GPU=no; REQ=requirements-servidor-cpu.txt
   PROCESOS=${PROCESOS:-1}
-  CAPACIDAD=${CAPACIDAD:-4}    # sin placa: pocas cámaras (estimado para 4 núcleos ARM; medir y ajustar)
+  CAPACIDAD=${CAPACIDAD:-$(nproc)}  # sin placa: 1 cámara de hurto por núcleo (prudente para ARM; medir y ajustar)
 fi
 SERVIDOR=${VIGIA_SERVER:-https://vigia-three-ashy.vercel.app}
 REPO=${VIGIA_REPO:-https://github.com/santiagcaceres/vigia.git}
@@ -56,8 +56,9 @@ VIGIA_SERVER=$SERVIDOR
 VIGIA_POOL_KEY=$VIGIA_POOL_KEY
 VIGIA_CAPACIDAD=$CAPACIDAD
 CFG
-# sin placa de video: un solo modelo que usa todos los núcleos del procesador
-[ "$GPU" = "no" ] && echo "VIGIA_HILOS=$(nproc)" >> /etc/vigia/maquina.env
+# sin placa de video: un modelo por núcleo, repartidos entre los procesos
+HILOS=$(( $(nproc) / PROCESOS )); [ "$HILOS" -ge 1 ] || HILOS=1
+[ "$GPU" = "no" ] && echo "VIGIA_HILOS=$HILOS" >> /etc/vigia/maquina.env
 chown root:vigia /etc/vigia/maquina.env && chmod 640 /etc/vigia/maquina.env
 cp /opt/vigia/deploy/maquina-analisis/vigia-actualizar.service /opt/vigia/deploy/maquina-analisis/vigia-maquina@.service \
    /etc/systemd/system/

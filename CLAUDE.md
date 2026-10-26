@@ -234,10 +234,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **Exportar métricas:** `GET /api/metrics/export?client_id&desde&hasta&agrupar=dia|hora` → CSV para Excel (BOM,
     `;`, decimales con coma), una fila por cámara y día u hora. En la app, botón «Exportar métricas…».
   - **Árbol máquina → cliente → cámara** en Administración (máquinas de análisis y PCs).
-  - **Máquinas sin placa de video** (Oracle Cloud «Always Free», ARM): `instalar.sh` lo detecta (sin `nvidia-smi`),
-    instala `requirements-servidor-cpu.txt`, 1 proceso de 4 cámaras y `VIGIA_HILOS=$(nproc)` (un solo modelo
-    compartido que usa todos los núcleos). Pasos en `deploy/maquina-analisis/README.md` (región São Paulo al crear
-    la cuenta; puede haber «Out of capacity»; límite quizá bajado a 2 núcleos/12 GB en jun 2026, sin confirmar).
+  - **Máquinas sin placa de video** (Google Cloud con los US$ 300 de prueba, u Oracle «Always Free» ARM): `instalar.sh`
+    lo detecta (sin `nvidia-smi`), instala `requirements-servidor-cpu.txt`, 1 proceso con capacidad = núcleos y
+    `VIGIA_HILOS` = núcleos / procesos → `SessionPool` en `core/detectors.py`: **una sesión de 1 hilo por núcleo**
+    compartidas por todas las cámaras (26 oct: en 4 núcleos x86, 42 cuadros/s contra 29 con una sola sesión de 4
+    hilos; ≈ 8 cámaras de hurto a 5 fps sin contar decodificar; ARM rinde menos). Pasos en
+    `deploy/maquina-analisis/README.md` («Prueba gratis con pocas cámaras»: Google Cloud e2-standard-4 en São Paulo,
+    Ubuntu 24.04, botón SSH del navegador; Oracle bajó lo gratis a 2 núcleos/12 GB desde el 18 ago 2026 según
+    terceros → 2-3 cámaras). Probado de punta a punta con un venv que solo tiene `requirements-servidor-cpu.txt`
+    (servidor local + 5 cámaras): se da de alta, recibe las cámaras y las analiza.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -438,7 +443,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 172 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 173 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

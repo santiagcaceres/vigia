@@ -81,34 +81,60 @@ dejá «Cámaras por máquina» (Administración) un 15 % por debajo de ese núm
 
    `VIGIA_MAX_MAQUINAS` es un tope para que un error nunca prenda máquinas de más.
 
-## Prueba gratis: Oracle Cloud «Always Free» (sin placa de video)
+## Prueba gratis con pocas cámaras (sin placa de video)
 
-Sirve para probar el circuito completo con **pocas cámaras** (estimado 3 a 6 de hurto o ~10 de conteo con 4
-núcleos ARM; sin medir). No necesita el encendedor: queda siempre prendida.
+Para probar el circuito completo con un cliente (por ejemplo 5 cámaras de Minas). Sin placa de video se analiza con
+el procesador: medido en 4 núcleos x86, unos 42 cuadros por segundo (≈ 8 cámaras de hurto a 5 fps sin contar la
+decodificación); en ARM rinde menos. No hace falta el encendedor: la máquina queda siempre prendida.
 
-1. Creá la cuenta en oracle.com/cloud/free. **Elegí como región «Brazil East (São Paulo)»**: lo gratis solo
-   anda en la región que elegís al crear la cuenta y no se puede cambiar. Pide tarjeta para verificar (no cobra).
-2. Menú → Compute → Instances → **Create instance**:
-   - Image: **Canonical Ubuntu 22.04** (la versión aarch64 aparece al elegir la forma Ampere).
-   - Shape: **Ampere → VM.Standard.A1.Flex**, con todos los núcleos y la memoria que deje gratis (4 y 24 GB,
-     o 2 y 12 GB si Oracle ya bajó el límite).
-   - Bajá la clave SSH que te ofrece (o pegá la tuya). Lo demás, como viene.
-   - Si dice «Out of capacity», probá otro «availability domain» o reintentá más tarde (pasa seguido).
-3. Entrá por SSH (`ssh -i clave.key ubuntu@IP_PUBLICA`) y corré lo mismo que en AWS:
+**Antes, en la app:** Administración → **Clave para máquinas nuevas** (copiala). En el cliente de prueba, dejá solo
+las cámaras a probar o elegí «Dónde se analiza: En las máquinas de análisis» **cámara por cámara**: si lo ponés en el
+cliente, se van a la máquina todas sus cámaras. El ajuste general queda en «En la PC de cada usuario».
+
+### Opción A: Google Cloud (US$ 300 gratis por 90 días, la recomendada para 5 cámaras)
+
+1. console.cloud.google.com → **Probar gratis** (pide tarjeta para verificar; no cobra nada salvo que actives la
+   cuenta paga). Creá un proyecto `vigia`.
+2. Menú → Compute Engine → **Instancias de VM** → Habilitar (tarda un minuto) → **Crear instancia**:
+   - Nombre `vigia-analisis-1`. Región **southamerica-east1 (São Paulo)**.
+   - Máquina: E2 → **e2-standard-4** (4 vCPU, 16 GB; a la derecha muestra el costo por mes, ~US$ 150 prendida
+     las 24 h). Si los fps no llegan a 5, e2-standard-8.
+   - Disco de arranque → Cambiar → **Ubuntu 24.04 LTS (x86/64)**, 30 GB.
+   - Firewall: sin tildar HTTP ni HTTPS (no necesita puertos de entrada).
+3. En la lista de instancias, botón **SSH** (abre una terminal en el navegador) y corré:
 
    ```bash
    curl -fsSL https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh -o instalar.sh
    sudo VIGIA_POOL_KEY=vgm_LA_CLAVE bash instalar.sh
+   journalctl -u 'vigia-maquina@*' -f
    ```
 
-   Se da cuenta de que no hay placa y analiza con el procesador (1 proceso, 4 cámaras; `CAPACIDAD=6` para
-   cambiarlo). En la app aparece en Administración → Máquinas de análisis.
-4. **Mandale solo las cámaras de prueba**: dejá el ajuste general en «En la PC de cada usuario» y en el
-   cliente (o en cada cámara) elegí «Dónde se analiza: En las máquinas de análisis». Así el resto sigue igual.
-5. Mirá en la app los fps de esas cámaras (tienen que dar 5) y en la máquina `top` (procesador). Si no llega,
-   sacale cámaras o bajá «Cámaras por máquina».
+   Tiene que decir «Detector de personas en procesador (4 cuadros a la vez)», «Máquina … dada de alta» y, al rato,
+   «[Cliente · Cámara] conectada».
+4. Al terminar la prueba: **Detener** la instancia (no gasta procesador; el disco cuesta centavos) o borrarla.
+
+### Opción B: Oracle Cloud «Always Free» (gratis para siempre, pero chica)
+
+Desde agosto de 2026 (según varios sitios; Oracle no lo confirma en su página) lo gratis de ARM bajó a **2 núcleos y
+12 GB**: alcanza para 2 o 3 cámaras de hurto a 5 fps (más si son de conteo).
+
+1. Creá la cuenta en oracle.com/cloud/free. **Elegí como región «Brazil East (São Paulo)»**: lo gratis solo
+   anda en la región que elegís al crear la cuenta y no se puede cambiar. Pide tarjeta para verificar (no cobra).
+2. Menú → Compute → Instances → **Create instance**:
+   - Image: **Canonical Ubuntu 24.04** (la versión aarch64 aparece al elegir la forma Ampere).
+   - Shape: **Ampere → VM.Standard.A1.Flex**, con todos los núcleos y la memoria que deje gratis.
+   - Bajá la clave SSH que te ofrece. Lo demás, como viene.
+   - Si dice «Out of capacity», probá otro «availability domain» o reintentá más tarde (pasa seguido).
+3. Entrá por SSH (`ssh -i clave.key ubuntu@IP_PUBLICA`; en Windows, desde PowerShell) y corré los mismos comandos
+   que en Google Cloud. En la app aparece en Administración → Máquinas de análisis.
 
 Oracle puede recuperar una máquina gratis que pase una semana casi sin usar el procesador; analizando no pasa.
+
+### Qué mirar en la prueba
+
+- En la app, columna «Analiza» de las cámaras = la máquina, y estado «en línea» con 5 fps.
+- En la máquina, `top`: si el procesador está al 100 % y los fps bajan de 5, sacale cámaras o usá una más grande.
+- Una alerta de punta a punta: foto, clip dentro de la app, etiqueta y «Avisar al cliente».
 
 ## Tigo u otra nube
 
