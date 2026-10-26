@@ -80,7 +80,10 @@ def test_camara_por_hik_connect_de_punta_a_punta(app, fake):
         assert c.post("/api/cameras", json={**base, "hpp_serial": "f12345678", "mode": "alarmas_equipo"}).status_code == 422
         cam = c.post("/api/cameras", json={**base, "hpp_serial": "f12345678"}).json()
         assert cam["brand"] == "hikconnect" and cam["hpp_serial"] == "F12345678" and cam["hc_resource_id"] is None
-        largo = c.post("/api/cameras", json={**base, "name": "L", "hpp_serial": "DVR/DVS-34-A1620191217CCWRF12345678WCVU"}).json()
+        serie_larga = "DVR/DVS-34-A1620191217CCWRF12345678WCVU"
+        # la misma cámara con la serie larga es la misma: no se repite
+        assert c.post("/api/cameras", json={**base, "name": "L", "hpp_serial": serie_larga}).status_code == 409
+        largo = c.post("/api/cameras", json={**base, "name": "L", "channel": 3, "hpp_serial": serie_larga}).json()
         assert largo["hpp_serial"] == "F12345678"
         c.delete(f"/api/cameras/{largo['id']}")
         conn = c.get("/api/agent/config", headers=h).json()["cameras"][0]["connection"]

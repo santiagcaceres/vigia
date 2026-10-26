@@ -1011,14 +1011,26 @@ class Oficina:
 
             def send():
                 if cam.get("id"):
-                    return [self.api.put(f"/api/cameras/{cam['id']}", bodies[0])]
-                return [self.api.post("/api/cameras", b) for b in bodies]
+                    return [self.api.put(f"/api/cameras/{cam['id']}", bodies[0])], []
+                added, repeated = [], []
+                for b in bodies:
+                    try:
+                        added.append(self.api.post("/api/cameras", b))
+                    except ApiError as exc:
+                        if exc.status != 409 or len(bodies) == 1:
+                            raise
+                        repeated.append(b["name"])  # ya estaba cargada: no se repite
+                return added, repeated
 
             def done(res):
+                added, repeated = res
                 top.destroy()
                 self.config_saved()
-                if len(res) > 1:
-                    self.mb.showinfo("Vigía", f"Se agregaron {len(res)} cámaras.")
+                if repeated:
+                    self.mb.showinfo("Vigía", f"Se agregaron {len(added)} cámara(s). {len(repeated)} ya estaban cargadas "
+                                              f"y no se repitieron: {', '.join(repeated[:6])}{'…' if len(repeated) > 6 else ''}.")
+                elif len(added) > 1:
+                    self.mb.showinfo("Vigía", f"Se agregaron {len(added)} cámaras.")
             self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=22, column=0, columnspan=2, sticky="e", pady=(8, 0))
@@ -1371,6 +1383,7 @@ class Oficina:
         b.pack(fill="x", pady=6)
         ttk.Button(b, text="Nuevo usuario", command=lambda: self.user_dialog()).pack(side="left")
         ttk.Button(b, text="Editar", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=4)
+        ttk.Button(b, text="Eliminar", command=self.delete_user).pack(side="left")
         self.users: list[dict] = []
         self._build_machines(f)
 
@@ -1401,11 +1414,11 @@ class Oficina:
                             ("instancia", "Instancia en la nube", 190)):
             self.mq_tree.heading(col, text=txt)
             self.mq_tree.column(col, width=w)
+        b = ttk.Frame(f)  # los botones van antes que la lista: en pantallas bajas no quedan tapados
+        b.pack(side="bottom", fill="x", pady=6)
         self.mq_tree.pack(fill="both", expand=True)
-        b = ttk.Frame(f)
-        b.pack(fill="x", pady=6)
         ttk.Button(b, text="Clave para máquinas nuevas", command=self.pool_key_dialog).pack(side="left")
-        ttk.Button(b, text="Quitar máquina", command=self.remove_machine).pack(side="left", padx=4)
+        ttk.Button(b, text="Quitar máquina o PC", command=self.remove_machine).pack(side="left", padx=4)
         ttk.Button(b, text="Actualizar", command=self.load_machines).pack(side="left")
         self.analysis: dict = {}
 
@@ -1424,7 +1437,7 @@ class Oficina:
                 if not a.get("has_pool_key"):
                     info += "  Falta crear la clave para máquinas (botón de abajo)."
             else:
-                info = ("Cada usuario analiza en su PC las cámaras que revisa. Para analizar en la nube, instalá las "
+                info = ("Cada cámara se analiza en la PC de quien la abre en «En vivo». Para analizar en la nube, instalá las "
                         "máquinas (deploy/maquina-analisis/README.md) y elegí acá «máquinas de análisis», o solo para "
                         "algunos clientes: Editar cliente → «Dónde se analizan sus cámaras».")
                 if a.get("cameras"):
@@ -1452,7 +1465,9 @@ class Oficina:
             groups.append((m["key"], name, estado, f"{m['load']} / {m['capacity']:.0f}", m.get("instance_id") or "—",
                            set(m["agent_ids"])))
             used |= set(m["agent_ids"])
-        for aid in sorted({c["agent_id"] for c in cameras if c.get("agent_id") and c["agent_id"] not in used}):
+        pcs = {c["agent_id"] for c in cameras if c.get("agent_id") and c["agent_id"] not in used}
+        pcs |= {x["id"] for x in agents if (x.get("kind") or "pc") == "pc" and x["id"] not in used}
+        for aid in sorted(pcs, key=lambda i: ((by_agent.get(i) or {}).get("name") or "", i)):
             ag = by_agent.get(aid) or {}
             groups.append((f"pc-{aid}", ag.get("name") or f"PC {aid}", "En línea" if ag.get("online") else "Desconectada",
                            "—", "PC", {aid}))
@@ -1518,9 +1533,16 @@ class Oficina:
         key = sel[0] if sel else ""
         while key and self.mq_tree.parent(key):
             key = self.mq_tree.parent(key)
+        if key.startswith("pc-"):
+            name = self.mq_tree.item(key, "text")
+            if not self.mb.askyesno("Vigía", f"¿Quitar la PC «{name}»? Deja de analizar y las cámaras que tenga abiertas "
+                                             "se cierran. Si alguien vuelve a entrar en esa PC con su usuario, aparece de "
+                                             "nuevo (sin cámaras)."):
+                return
+            return self.bg.run(lambda: self.api.delete(f"/api/agents/{key[3:]}"), lambda _: self.load_machines(), self.err)
         m = next((x for x in (self.analysis.get("machines") or []) if x["key"] == key), None)
         if not m:
-            return self.mb.showinfo("Vigía", "Elegí una máquina de análisis de la lista (las PCs no se quitan desde acá).")
+            return self.mb.showinfo("Vigía", "Elegí una máquina o una PC de la lista.")
         if not self.mb.askyesno("Vigía", f"¿Quitar «{', '.join(m['names'])}»? Sus cámaras pasan a las otras máquinas. "
                                          "Si la máquina sigue prendida, se vuelve a dar de alta sola."):
             return
@@ -1540,6 +1562,15 @@ class Oficina:
     def _sel_user(self) -> dict | None:
         sel = self.us_tree.selection()
         return next((u for u in self.users if str(u["id"]) == (sel[0] if sel else "")), None)
+
+    def delete_user(self) -> None:
+        u = self._sel_user()
+        if not u:
+            return self.mb.showinfo("Vigía", "Elegí un usuario de la lista.")
+        if not self.mb.askyesno("Vigía", f"¿Eliminar el usuario «{u['username']}»?\n\nYa no va a poder entrar. Lo que hizo "
+                                         "(etiquetas, avisos) queda guardado. No se puede deshacer."):
+            return
+        self.bg.run(lambda: self.api.delete(f"/api/users/{u['id']}"), lambda _: self.load_users(), self.err)
 
     def user_dialog(self, u: dict | None = None) -> None:
         tk, ttk = self.tk, self.ttk

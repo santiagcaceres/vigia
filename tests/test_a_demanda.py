@@ -107,3 +107,31 @@ def test_la_app_avisa_que_abrio_y_que_cerro(tmp_path):
 
     ag.shutdown()  # al cerrar la app se liberan las cámaras
     assert ag.client.sent[-1] == []
+
+
+def test_borrar_usuario_y_no_repetir_camaras(app):
+    with TestClient(app) as a, TestClient(app) as b:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cl = a.post("/api/clients", json={"name": "Minas"}).json()
+        hc = {"client_id": cl["id"], "brand": "hikconnect", "hpp_serial": "E02380030", "hc_resource_id": "r1"}
+        uno = a.post("/api/cameras", json={**hc, "name": "Caja", "channel": 1})
+        assert uno.status_code == 201
+        rep = a.post("/api/cameras", json={**hc, "name": "Caja otra vez", "channel": 1})
+        assert rep.status_code == 409 and "Caja" in rep.json()["detail"]
+        dos = a.post("/api/cameras", json={**hc, "name": "Puerta", "channel": 2}).json()
+        assert a.put(f"/api/cameras/{dos['id']}", json={**hc, "name": "Puerta", "channel": 1}).status_code == 409
+        assert a.put(f"/api/cameras/{dos['id']}", json={**hc, "name": "Puerta", "channel": 2}).status_code == 200
+
+        ana = a.post("/api/users", json={"username": "ana", "password": "clave-ana-123", "role": "entrenador"}).json()
+        b.post("/api/login", json={"username": "ana", "password": "clave-ana-123"})
+        pc = b.post("/api/agent/session").json()
+        b.put("/api/agent/watch", headers={"X-Agent-Token": pc["token"]}, json={"camera_ids": [dos["id"]]})
+        assert next(c for c in a.get("/api/cameras").json() if c["id"] == dos["id"])["agent_id"] == pc["id"]
+
+        me = a.get("/api/me").json()
+        assert a.delete(f"/api/users/{me['id']}").status_code == 409  # no se borra a sí mismo
+        assert a.delete(f"/api/users/{ana['id']}").status_code == 204
+        assert "ana" not in [u["username"] for u in a.get("/api/users").json()]
+        assert pc["id"] not in [x["id"] for x in a.get("/api/agents").json()]  # su PC se fue con ella
+        assert next(c for c in a.get("/api/cameras").json() if c["id"] == dos["id"])["agent_id"] is None
+        assert b.get("/api/me").status_code == 401  # su sesión ya no sirve

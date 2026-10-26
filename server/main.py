@@ -1092,6 +1092,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return user_dict(u)
 
+    @app.delete("/api/users/{uid}", status_code=204)
+    def delete_user(uid: int, me_: User = Depends(admin_only), s=Depends(db)) -> None:
+        """Borra un usuario. Lo que hizo (etiquetas, avisos, videos subidos) queda, sin su nombre; su PC se borra
+        y las cámaras que tenía abiertas quedan cerradas. No se puede borrar el propio usuario ni el último admin."""
+        u = get_or_404(s, User, uid, "Usuario")
+        if u.id == me_.id:
+            raise HTTPException(409, "No podés borrar tu propio usuario")
+        if u.role == "admin" and not s.query(User).filter(User.role == "admin", User.active.is_(True),
+                                                          User.id != u.id).first():
+            raise HTTPException(409, "Es el único administrador activo: creá otro antes de borrarlo")
+        pcs = [a for (a,) in s.query(Agent.id).filter(Agent.user_id == uid)]
+        if pcs:
+            s.query(Camera).filter(Camera.agent_id.in_(pcs)).update({"agent_id": None}, synchronize_session=False)
+            s.query(VideoImport).filter(VideoImport.claimed_by.in_(pcs)).update({"claimed_by": None},
+                                                                              synchronize_session=False)
+            s.query(Alarm).filter(Alarm.claimed_by.in_(pcs)).update({"claimed_by": None}, synchronize_session=False)
+            s.query(Agent).filter(Agent.id.in_(pcs)).delete(synchronize_session=False)
+        s.query(Camera).filter(Camera.operator_id == uid).update({"operator_id": None}, synchronize_session=False)
+        s.query(VideoImport).filter(VideoImport.created_by == uid).update({"created_by": None}, synchronize_session=False)
+        s.query(Event).filter(Event.labeled_by == uid).update({"labeled_by": None}, synchronize_session=False)
+        s.query(ClientReport).filter(ClientReport.sent_by == uid).update({"sent_by": None}, synchronize_session=False)
+        s.query(FilterModel).filter(FilterModel.created_by == uid).update({"created_by": None},
+                                                                          synchronize_session=False)
+        s.query(SessionToken).filter(SessionToken.user_id == uid).delete(synchronize_session=False)
+        name = u.username
+        s.delete(u)
+        bump_rev(s)
+        s.commit()
+        log.info("Usuario %s borrado por %s", name, me_.username)
+
     @app.put("/api/users/{uid}")
     def update_user(uid: int, body: UserIn, me_: User = Depends(admin_only), s=Depends(db)) -> dict:
         u = get_or_404(s, User, uid, "Usuario")
@@ -1324,9 +1354,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "Las alarmas por Hik-Partner Pro son solo para Hikvision; "
                                      "usá «alarmas del propio grabador»")
 
+    def check_not_repeated(s, body: CameraIn, exclude: int | None = None) -> None:
+        """Por Hik-Connect, el mismo grabador y canal no se carga dos veces en un cliente (se repetía al elegir
+        varias veces las mismas de la lista, y cada copia pedía su propia transmisión al grabador)."""
+        if body.brand != "hikconnect":
+            return
+        q = s.query(Camera).filter(Camera.client_id == body.client_id, Camera.brand == "hikconnect",
+                                   Camera.hpp_serial == body.hpp_serial, Camera.channel == body.channel)
+        dup = q.filter(Camera.id != exclude).first() if exclude else q.first()
+        if dup:
+            raise HTTPException(409, f"Esa cámara ya está cargada en este cliente: «{dup.name}»")
+
     @app.post("/api/cameras", status_code=201)
     def create_camera(body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         check_camera_body(s, body)
+        check_not_repeated(s, body)
         c = Camera(**camera_fields(body), password_enc=box.encrypt(body.password),
                    source_url_enc=box.encrypt(body.source_url))
         apply_operator(s, c, body, user)
@@ -1340,6 +1382,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_camera(cam_id: int, body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         check_camera_body(s, body)
+        check_not_repeated(s, body, exclude=cam_id)
         before = locations(s)
         for k, v in camera_fields(body).items():
             setattr(c, k, v)

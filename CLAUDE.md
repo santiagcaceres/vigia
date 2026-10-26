@@ -256,7 +256,14 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   abrió no tiene imagen para dibujar zonas: abrirla antes. `operator_id` y `PUT /api/users/{id}/cameras` siguen en
   el servidor pero la app ya no los usa. Ese día se pidió borrar las 8 PCs viejas sin usuario y las cámaras
   repetidas de Minas (128 → 35, una por grabador y canal); el conector de Supabase no pudo (la confirmación no
-  llega): se le pasó el SQL al dueño para el SQL Editor.
+  llega): se le pasó el SQL al dueño para el SQL Editor (ojo: ese editor corre cada sentencia aparte, una
+  `temp table ... on commit drop` no sirve; usar subconsultas). Quedó 1 PC («PC de admin») y Minas con 35 cámaras.
+  **Borrar todo desde la app (pedido del dueño, app 1.18.1):** clientes (ya estaba: escribir el nombre), cámaras
+  (varias), **usuarios** (`DELETE /api/users/{id}`: no el propio ni el último admin activo; su PC se borra y lo que
+  hizo queda sin nombre) y **PCs** («Quitar máquina o PC» en Administración; la lista muestra todas las PCs aunque
+  no tengan cámaras). **No se repiten cámaras de Hik-Connect** (`check_not_repeated`: mismo cliente, serie y canal
+  → 409; la app, al agregar varias, saltea las que ya estaban y lo dice). En Administración los botones de máquinas
+  quedaban tapados en pantallas de 768 de alto: ahora van antes que la lista.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -463,7 +470,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 177 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 179 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
