@@ -274,6 +274,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Linux; espera 8 s por si la anterior se está cerrando; `restart_app` la suelta): con dos copias abiertas cada una
   pedía el token de la PC del usuario y la otra quedaba con 401 y se cerraba la sesión. En Administración los
   usuarios y máquinas se cargan después de los clientes (antes a veces salía «—» en vez del nombre del cliente).
+  **App 1.18.3:** «Buscar actualización» en la 1.18.1 no mostró nada (los registros de Vercel muestran que esos clics
+  no llegaron al servidor: la ventana estaba trabada). Causa encontrada: al cerrar una cámara, `apply_config` hacía
+  `thread.join(15)` en el hilo de la ventana (si el video estaba abriendo, hasta 15 s por cámara sin responder). Con
+  ventana ya no se espera (`Agent._stopping`; se esperan al cerrar la app); las máquinas sin ventana siguen esperando.
+  El botón ahora dice «Buscando…», deja la respuesta en el registro y avisa si no hay respuesta en 30 s. Queda: el
+  bucle de la ventana todavía hace pedidos de red (config, estado, lista de cámaras) en el mismo hilo.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -480,7 +486,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 181 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 182 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

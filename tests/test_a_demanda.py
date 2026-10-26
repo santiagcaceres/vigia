@@ -147,3 +147,35 @@ def test_una_sola_app_abierta_por_pc(tmp_path):
     segunda = single_instance(tmp_path, wait_s=0)
     assert segunda is not None
     segunda.close()
+
+
+def test_cerrar_una_camara_trabada_no_congela_la_ventana(tmp_path):
+    """Con ventana, cerrar una cámara no espera a que termine su hilo (si estaba abriendo el video, la espera
+    dejaba la ventana sin responder: no andaban ni los botones). Al cerrar la app sí se espera."""
+    import threading
+
+    from agent.__main__ import Agent
+
+    ag = Agent("http://127.0.0.1:9", "token", tmp_path, None)
+    ag.window = FakeWindow()
+    suelta = threading.Event()
+
+    class Trabada:
+        name, fingerprint = "Minas · Caja", "x"
+
+        def __init__(self):
+            self.thread = threading.Thread(target=suelta.wait, args=(10,), daemon=True)
+            self.thread.start()
+
+        def stop(self):
+            pass
+
+    w = Trabada()
+    ag.workers[1] = w
+    t0 = time.monotonic()
+    ag.apply_config({"cameras": []})
+    assert time.monotonic() - t0 < 1 and 1 not in ag.workers and ag._stopping == [w]
+    suelta.set()
+    w.thread.join(2)
+    ag.apply_live([])  # limpia las que ya terminaron
+    assert ag._stopping == []

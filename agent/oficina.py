@@ -298,10 +298,38 @@ class Oficina:
         self.bg.run(lambda: self.api.get("/api/app/update"), done, lambda e: log.debug("Sin datos de versión: %s", e))
 
     def update_dialog(self) -> None:
+        """«Buscar actualización»: el botón dice «Buscando…» y siempre termina en un mensaje (también si el servidor
+        no contesta en 30 s), y la respuesta queda en el registro."""
+        if getattr(self, "_checking_update", False):
+            return
+        self._checking_update = True
+        self.upd_btn.configure(text="Buscando…", state="disabled")
+        log.info("Buscando actualización…")
+
+        def finish(newer: str | None = None) -> None:
+            self._checking_update = False
+            self.upd_btn.configure(state="normal", text=f"★ Actualizar a {newer}" if newer else "Buscar actualización")
+
+        def fail(exc: Exception) -> None:
+            finish()
+            log.warning("No se pudo buscar la actualización: %s", exc)
+            self.mb.showerror("Vigía", f"No se pudo buscar la actualización: {exc}")
+
+        def timeout() -> None:
+            if self._checking_update:
+                finish()
+                log.warning("Buscar actualización: el servidor no contestó en 30 s")
+                self.mb.showwarning("Vigía", "El servidor no contestó en 30 segundos. Probá de nuevo en un rato, o bajá "
+                                             "VigiaAgente-windows.zip de GitHub (Releases) y reemplazá el .exe a mano.")
+        self.v.root.after(30000, timeout)
+
         def done(info):
             self.latest = info
             new = info.get("version")
-            if not actualizar.is_newer(new):
+            newer = actualizar.is_newer(new)
+            finish(new if newer else None)
+            log.info("Última versión publicada: %s (esta es %s)", new or "?", VERSION)
+            if not newer:
                 return self.mb.showinfo("Vigía", f"Ya tenés la última versión ({VERSION}).")
             if not actualizar.can_self_update():
                 return self.mb.showinfo("Vigía", f"Hay una versión nueva ({new}). Esta copia corre con Python: "
@@ -313,7 +341,7 @@ class Oficina:
                                 "Se descarga, se reemplaza el programa y se vuelve a abrir solo, con la misma sesión."
                                 + extra + "\n\n¿Actualizar ahora?"):
                 self._install_update(new)
-        self.bg.run(lambda: self.api.get("/api/app/update"), done, self.err)
+        self.bg.run(lambda: self.api.get("/api/app/update"), done, fail)
 
     def _install_update(self, new: str) -> None:
         tk, ttk = self.tk, self.ttk

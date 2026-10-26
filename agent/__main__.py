@@ -115,6 +115,7 @@ class Agent:
         self._closed: set[int] = set()  # cámaras que no se miran ahora porque el local está cerrado
         self._alarms_until = 0.0
         self.workers: dict[int, CameraWorker] = {}
+        self._stopping: list[CameraWorker] = []  # cámaras cerradas que todavía están terminando (app de escritorio)
         self.listeners: dict[int, DeviceAlarmListener] = {}
         self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
         self._cams_cfg: dict[int, dict] = {}
@@ -202,7 +203,10 @@ class Agent:
             if cid not in wanted or w.fingerprint != CameraWorker.fingerprint_of(wanted[cid]):
                 log.info("Deteniendo cámara %s", w.name)
                 w.stop()
-                w.thread.join(15)
+                if self.window is None:
+                    w.thread.join(15)
+                else:  # con ventana no se espera: si el video estaba abriendo, la ventana quedaba sin responder
+                    self._stopping.append(w)
                 del self.workers[cid]
             elif w.analysis_fp != CameraWorker.analysis_of(wanted[cid]):  # solo cambiaron zonas o reglas
                 w.analysis_fp = CameraWorker.analysis_of(wanted[cid])
@@ -505,6 +509,7 @@ class Agent:
         for cid in list(self.live_workers):
             if not self.live_workers[cid].thread.is_alive():
                 del self.live_workers[cid]
+        self._stopping = [w for w in self._stopping if w.thread.is_alive()]
 
     def stop(self) -> None:
         self._stop.set()
@@ -525,7 +530,7 @@ class Agent:
             lw.stop()
         for w in self.workers.values():
             w.stop()
-        for w in self.workers.values():
+        for w in list(self.workers.values()) + self._stopping:
             w.thread.join(15)
         self.metrics_queue.flush()  # lo último medido
         self.clip_pool.shutdown(wait=True)
