@@ -1132,14 +1132,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             set_setting(s, "pool_spare", body.spare)
         if body.mode is not None and body.mode != analysis_mode(s):
             set_setting(s, "analysis_mode", body.mode)
-            if body.mode == "pcs":  # vuelven a la PC de quien las revisa
+            if body.mode == "servidores":  # recordar qué PC tenía cada cámara, para poder volver atrás
+                set_setting(s, "pcs_backup", json.dumps({str(c.id): c.agent_id for c in s.query(Camera).all()}))
+            else:  # vuelven a la PC de quien las revisa, o a la PC que tenían antes
                 servers = {a.id for a in server_agents(s)}
+                try:
+                    backup = {int(k): v for k, v in json.loads(setting(s, "pcs_backup", "{}") or "{}").items()}
+                except ValueError:
+                    backup = {}
+                alive = {a for (a,) in s.query(Agent.id)}
                 for c in s.query(Camera).all():
                     if c.operator_id:
                         op = s.get(User, c.operator_id)
                         c.agent_id = user_agent(s, op).id if op else None
                     elif c.agent_id in servers:
-                        c.agent_id = None
+                        prev = backup.get(c.id)
+                        c.agent_id = prev if prev in alive and prev not in servers else None
             bump_rev(s)
             log.info("Las cámaras ahora se analizan en: %s", body.mode)
         s.commit()

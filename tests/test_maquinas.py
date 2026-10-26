@@ -225,3 +225,21 @@ def test_flujo_maquinas_en_la_nube(app):
         a.put("/api/analysis", json={"mode": "pcs"})
         assert {c["analyzer_name"] for c in a.get("/api/cameras").json()} == {"PC de ana"}
         assert m["m1"].get("/api/agent/config").json()["cameras"] == []
+
+
+def test_volver_a_pcs_devuelve_las_camaras_sin_revisor_a_su_pc_vieja(app):
+    """En producción hay cámaras en PCs vinculadas a la antigua (sin usuario que las revise)."""
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cl = a.post("/api/clients", json={"name": "X"}).json()
+        pc = a.post("/api/agents", json={"name": "PC vieja"}).json()
+        c = a.post("/api/cameras", json={"client_id": cl["id"], "name": "Vieja", "brand": "ip", "host": "dvr",
+                                         "password": "x", "agent_id": pc["id"]}).json()
+        assert c["analyzer_name"] == "PC vieja" and c["operator_name"] is None
+        key = a.post("/api/analysis/pool-key").json()["key"]
+        tok = TestClient(app).post("/api/agent/enroll", json={"key": key, "name": "m1", "instance_id": "i-1"}).json()
+        TestClient(app, headers={"X-Agent-Token": tok["token"]}).post("/api/agent/status", json={"cameras": []})
+        a.put("/api/analysis", json={"mode": "servidores"})
+        assert a.get("/api/cameras").json()[0]["analyzer_name"] == "m1"
+        a.put("/api/analysis", json={"mode": "pcs"})
+        assert a.get("/api/cameras").json()[0]["analyzer_name"] == "PC vieja"
