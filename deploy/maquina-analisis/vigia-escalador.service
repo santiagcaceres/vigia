@@ -1,0 +1,15 @@
+[Unit]
+Description=Vigía: encendedor de máquinas de análisis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=vigia
+WorkingDirectory=/opt/vigia
+Environment=VIGIA_ESCALADOR_CONFIG=/etc/vigia/escalador.env
+ExecStart=/opt/vigia/.venv/bin/python -m agent.escalador
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

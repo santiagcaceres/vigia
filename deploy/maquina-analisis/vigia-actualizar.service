@@ -1,0 +1,14 @@
+[Unit]
+Description=Vigía: bajar la última versión antes de analizar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=vigia
+WorkingDirectory=/opt/vigia
+# La máquina se prende cada mañana: arranca siempre con la última versión. Si falla (sin internet), sigue con la que tiene.
+ExecStart=-/usr/bin/git pull --ff-only -q
+ExecStart=-/opt/vigia/.venv/bin/pip install -q -r requirements-servidor.txt
+TimeoutStartSec=600

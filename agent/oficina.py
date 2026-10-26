@@ -39,6 +39,9 @@ log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
+# dónde se analizan las cámaras (server/pool.py)
+ANALYSIS_MODES = {"pcs": "En la PC de cada usuario",
+                  "servidores": "En las máquinas de análisis (nube)"}
 AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes y cámaras» (solo con la pestaña a la vista)
 MODE_NAMES = {"vivo": "En vivo", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
 BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
@@ -370,6 +373,7 @@ class Oficina:
         self.load_alerts()
         if self.is_admin:
             self.load_users()
+            self.load_machines()
 
     def _net_fail(self, exc: Exception) -> None:
         if isinstance(exc, ApiError) and exc.status == 401:
@@ -504,6 +508,7 @@ class Oficina:
             f"{cam['name']}\n"
             f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
             f"Modo: {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
+            f"Revisa: {cam.get('operator_name') or 'sin asignar'} · Analiza: {cam.get('analyzer_name') or 'ninguna PC'}\n"
             f"Grabador: {BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · RTSP {cam.get('rtsp_port')} · "
             f"HTTP {cam.get('http_port')} · canal {cam.get('channel')} · usuario {cam.get('username')}\n"
             f"Zonas: {zones}\n\n"
@@ -1250,10 +1255,10 @@ class Oficina:
     def _build_admin(self) -> None:
         ttk, f = self.ttk, self.tab_admin
         ttk.Label(f, text="Usuarios", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave, y ven y analizan las "
+        ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave, y revisan las "
                           "cámaras que les asignes. Los clientes entran a la web y ven solo su local.",
                   foreground="#666", wraplength=900, justify="left").pack(anchor="w")
-        self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "camaras", "activo"), show="tree headings", height=16,
+        self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "camaras", "activo"), show="tree headings", height=8,
                                     selectmode="browse")
         self.us_tree.heading("#0", text="Usuario")
         for col, txt, w in (("rol", "Rol", 120), ("cliente", "Cliente", 160), ("camaras", "Cámaras asignadas", 130),
@@ -1267,6 +1272,122 @@ class Oficina:
         ttk.Button(b, text="Nuevo usuario", command=lambda: self.user_dialog()).pack(side="left")
         ttk.Button(b, text="Editar y asignar cámaras", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=4)
         self.users: list[dict] = []
+        self._build_machines(f)
+
+    # ---------- máquinas de análisis ----------
+    def _build_machines(self, f) -> None:
+        tk, ttk = self.tk, self.ttk
+        ttk.Separator(f).pack(fill="x", pady=8)
+        ttk.Label(f, text="Dónde se analizan las cámaras", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        top = ttk.Frame(f)
+        top.pack(fill="x", pady=(2, 4))
+        self.an_mode = tk.StringVar()
+        self.an_cap = tk.StringVar(value="30")
+        self.an_spare = tk.StringVar(value="0")
+        ttk.Combobox(top, textvariable=self.an_mode, values=list(ANALYSIS_MODES.values()), state="readonly",
+                     width=34).pack(side="left")
+        ttk.Label(top, text="  Cámaras por máquina").pack(side="left")
+        ttk.Spinbox(top, from_=5, to=500, textvariable=self.an_cap, width=5).pack(side="left", padx=4)
+        ttk.Label(top, text="Máquinas de reserva").pack(side="left")
+        ttk.Spinbox(top, from_=0, to=5, textvariable=self.an_spare, width=3).pack(side="left", padx=4)
+        ttk.Button(top, text="Guardar", command=self.save_analysis).pack(side="left", padx=6)
+        self.an_info = tk.StringVar(value="Cargando…")
+        ttk.Label(f, textvariable=self.an_info, foreground="#444", wraplength=900, justify="left").pack(anchor="w")
+        self.mq_tree = ttk.Treeview(f, columns=("estado", "camaras", "carga", "instancia"), show="tree headings",
+                                    height=5, selectmode="browse")
+        self.mq_tree.heading("#0", text="Máquina")
+        self.mq_tree.column("#0", width=300)
+        for col, txt, w in (("estado", "Estado", 150), ("camaras", "Cámaras", 80), ("carga", "Carga / capacidad", 130),
+                            ("instancia", "Instancia en la nube", 190)):
+            self.mq_tree.heading(col, text=txt)
+            self.mq_tree.column(col, width=w)
+        self.mq_tree.pack(fill="x")
+        b = ttk.Frame(f)
+        b.pack(fill="x", pady=6)
+        ttk.Button(b, text="Clave para máquinas nuevas", command=self.pool_key_dialog).pack(side="left")
+        ttk.Button(b, text="Quitar máquina", command=self.remove_machine).pack(side="left", padx=4)
+        ttk.Button(b, text="Actualizar", command=self.load_machines).pack(side="left")
+        self.analysis: dict = {}
+
+    def load_machines(self) -> None:
+        def done(a):
+            self.analysis = a
+            self.an_mode.set(ANALYSIS_MODES.get(a.get("mode"), ANALYSIS_MODES["pcs"]))
+            self.an_cap.set(str(int(a.get("capacity") or 30)))
+            self.an_spare.set(str(a.get("spare") or 0))
+            p = a.get("plan") or {}
+            if a.get("mode") == "servidores":
+                info = (f"Ahora: {a.get('cameras_active', 0)} de {a.get('cameras', 0)} cámaras para analizar "
+                        f"(las demás con el local cerrado) · carga {p.get('units', 0)} · hacen falta "
+                        f"{p.get('desired', 0)} máquina(s) · {p.get('online', 0)} en línea.")
+                if not a.get("has_pool_key"):
+                    info += "  Falta crear la clave para máquinas (botón de abajo)."
+            else:
+                info = ("Cada usuario analiza en su PC las cámaras que revisa. Para analizar en la nube (y que los "
+                        "usuarios solo revisen), elegí «máquinas de análisis», instalalas "
+                        "(deploy/maquina-analisis/README.md) y guardá.")
+            self.an_info.set(info)
+            self.mq_tree.delete(*self.mq_tree.get_children())
+            for m in a.get("machines") or []:
+                estado = "Vaciando para apagar" if m["online"] and m["draining"] else (
+                    "En línea" if m["online"] else "Apagada")
+                name = m["names"][0] if len(m["names"]) == 1 else (
+                    m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
+                self.mq_tree.insert("", "end", iid=m["key"], text=name, values=(
+                    estado, m["cameras"], f"{m['load']} / {m['capacity']:.0f}", m.get("instance_id") or "—"))
+        self.bg.run(lambda: self.api.get("/api/analysis"), done, self._net_fail)
+
+    def save_analysis(self) -> None:
+        mode = next((k for k, t in ANALYSIS_MODES.items() if t == self.an_mode.get()), "pcs")
+        try:
+            body = {"mode": mode, "capacity": float(self.an_cap.get()), "spare": int(self.an_spare.get())}
+        except ValueError:
+            return self.mb.showwarning("Vigía", "Cámaras por máquina y reserva tienen que ser números.")
+        if mode != (self.analysis.get("mode") or "pcs"):
+            msg = ("Las cámaras pasan a analizarse en las máquinas de análisis. Mientras no haya ninguna en línea, "
+                   "siguen en la PC de cada usuario.") if mode == "servidores" else (
+                   "Las cámaras vuelven a analizarse en la PC de quien las revisa.")
+            if not self.mb.askyesno("Vigía", msg + "\n\n¿Seguir?"):
+                return
+        self.bg.run(lambda: self.api.put("/api/analysis", body), lambda _: (self.load_machines(), self.config_saved()),
+                    self.err)
+
+    def pool_key_dialog(self) -> None:
+        if self.analysis.get("has_pool_key") and not self.mb.askyesno(
+                "Vigía", "Ya hay una clave. Si creás otra, las máquinas nuevas tienen que usar la nueva "
+                         "(las que ya están dadas de alta siguen andando).\n\n¿Crear otra?"):
+            return
+
+        def done(res):
+            ttk = self.ttk
+            key = res["key"]
+            top, frm = self._dialog("Clave para máquinas de análisis", width=560)
+            ttk.Label(frm, text="Copiala ahora: no se vuelve a mostrar. Va en la instalación de cada máquina "
+                                "(VIGIA_POOL_KEY) y en el encendedor.", wraplength=520, justify="left").grid(
+                row=0, column=0, columnspan=2, sticky="w")
+            box = self.tk.Text(frm, height=3, width=64, wrap="char")
+            box.insert("1.0", key)
+            box.grid(row=1, column=0, columnspan=2, sticky="ew", pady=6)
+
+            def copy():
+                self.v.root.clipboard_clear()
+                self.v.root.clipboard_append(key)
+                btn.configure(text="Copiada ✓")
+            btn = ttk.Button(frm, text="Copiar", command=copy)
+            btn.grid(row=2, column=1, sticky="e")
+            self.load_machines()
+        self.bg.run(lambda: self.api.post("/api/analysis/pool-key"), done, self.err)
+
+    def remove_machine(self) -> None:
+        sel = self.mq_tree.selection()
+        m = next((x for x in (self.analysis.get("machines") or []) if x["key"] == (sel[0] if sel else "")), None)
+        if not m:
+            return self.mb.showinfo("Vigía", "Elegí una máquina de la lista.")
+        if not self.mb.askyesno("Vigía", f"¿Quitar «{', '.join(m['names'])}»? Sus cámaras pasan a las otras máquinas. "
+                                         "Si la máquina sigue prendida, se vuelve a dar de alta sola."):
+            return
+        self.bg.run(lambda: [self.api.delete(f"/api/agents/{aid}") for aid in m["agent_ids"]],
+                    lambda _: self.load_machines(), self.err)
 
     def load_users(self) -> None:
         def done(users):

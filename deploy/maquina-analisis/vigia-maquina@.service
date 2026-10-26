@@ -1,0 +1,19 @@
+[Unit]
+Description=Vigía: máquina de análisis (proceso %i)
+After=network-online.target vigia-actualizar.service
+Wants=network-online.target vigia-actualizar.service
+
+[Service]
+User=vigia
+EnvironmentFile=/etc/vigia/maquina.env
+Environment=VIGIA_PROCESO=%i
+Environment=VIGIA_AGENT_DATA=/var/lib/vigia/proceso-%i
+Environment=VIGIA_VENTANA=0
+WorkingDirectory=/opt/vigia
+ExecStart=/opt/vigia/.venv/bin/python -m agent --sin-ventana
+Restart=always
+RestartSec=10
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

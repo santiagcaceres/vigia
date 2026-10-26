@@ -1,0 +1,9 @@
+# Máquinas de análisis: Linux sin pantalla con placa NVIDIA (AWS, Tigo u otra nube).
+# Ver deploy/maquina-analisis/README.md. La app de Windows usa requirements-agent.txt.
+httpx>=0.27
+numpy>=1.26
+opencv-python-headless>=4.9
+onnx>=1.16  # arma el modelo para analizar varias cámaras juntas (core/lotes.py)
+# CUDA y cuDNN vienen por pip: en la máquina solo hace falta el driver de NVIDIA (nvidia-smi)
+onnxruntime-gpu[cuda,cudnn]>=1.21
+tzdata>=2024.1

@@ -68,7 +68,8 @@ class SessionToken(Base):
 class Agent(Base):
     """PC que corre el análisis. Con client_id es el agente de un local; con client_id NULL es
     un agente *central* (la PC de la empresa) que atiende las cámaras que se le asignen, de
-    cualquier cliente, llegando a cada DVR por VPN."""
+    cualquier cliente, llegando a cada DVR por VPN. Con kind="servidor" es una **máquina de análisis**
+    (servidor en la nube, sin pantalla): el servidor le reparte las cámaras solo (server/pool.py)."""
     __tablename__ = "agents"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
@@ -77,6 +78,10 @@ class Agent(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     process_imports: Mapped[bool] = mapped_column(Boolean, default=True)
+    kind: Mapped[str] = mapped_column(String(20), default="pc")  # pc | servidor
+    capacity: Mapped[float | None] = mapped_column(Float, nullable=True)  # máquinas: cámaras de hurto a 5 fps
+    instance_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)  # en la nube
+    draining: Mapped[bool] = mapped_column(Boolean, default=False)  # se la vacía para apagarla
     last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_status: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -113,6 +118,10 @@ class Camera(Base):
     profile: Mapped[str] = mapped_column(String(20), default="general")
     # con el local cerrado: apagada (no se abre el video) | alarmas (escucha al grabador) | vivo (sigue 24 h)
     off_hours: Mapped[str] = mapped_column(String(20), default="apagada")
+    # quién la revisa (admin o empleado). Quién la analiza es `agent_id`: la PC de ese usuario (modo «pcs») o
+    # la máquina de análisis que le toque (modo «servidores», lo reparte server/pool.py)
+    operator_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+                                                    index=True)
     alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # vista en vivo: el panel marca que alguien la está mirando; la PC central sube cuadros mientras dure
@@ -307,7 +316,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-25.1"
+SCHEMA_VERSION = "2026-10-26.1"
 
 
 class CameraMetric(Base):
@@ -321,6 +330,13 @@ class CameraMetric(Base):
     bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)  # hora local del cliente, sin tz
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppSetting(Base):
+    """Ajustes generales: dónde se analizan las cámaras, clave para dar de alta máquinas, etc."""
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
 
 
 class SchemaMeta(Base):
@@ -340,8 +356,13 @@ def ensure_schema(engine) -> bool:
         pass  # la tabla todavía no existe: hay que crear todo
     try:
         Base.metadata.create_all(engine)
-        add_missing_columns(engine)
+        added = add_missing_columns(engine)
         with engine.begin() as conn:
+            if "cameras.operator_id" in added:
+                # quién revisa cada cámara salía de la PC que la analizaba (la PC de un usuario)
+                conn.execute(text("UPDATE cameras SET operator_id = (SELECT user_id FROM agents WHERE agents.id = "
+                                  "cameras.agent_id) WHERE operator_id IS NULL AND agent_id IN "
+                                  "(SELECT id FROM agents WHERE user_id IS NOT NULL)"))
             if engine.dialect.name == "postgresql":
                 # Las tablas quedan cerradas para la API pública de Supabase (anon/authenticated):
                 # solo este servidor, conectado como dueño de la base, puede leerlas.

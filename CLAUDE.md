@@ -181,6 +181,41 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **Lo que tiene que hacer el dueño:** cargar el horario de cada cliente; sacar «Detección de hurtos» a los clientes
     que son solo métricas; en los grabadores, substream a 640×360, 6-8 fps, 256-384 kbps (desde Hik-Partner Pro):
     eso baja internet y decodificación, que el filtro de movimiento no ahorra.
+- **Máquinas de análisis en la nube (26 oct, decisión del dueño: sin inversión inicial, opciones C/D; app 1.15.0):**
+  - **Quién revisa y quién analiza están separados.** `cameras.operator_id` = usuario que la revisa (Alertas del
+    empleado, «Asignada a»); `cameras.agent_id` = qué la analiza. Ajuste global `app_settings.analysis_mode`
+    (Administración → «Dónde se analizan las cámaras»): `pcs` (como antes: la PC de quien la revisa) o
+    `servidores` (máquinas de análisis; los usuarios solo revisan, cualquier notebook sirve). Al pasar a
+    `servidores`, mientras no haya máquinas en línea las cámaras siguen en las PCs. La migración llenó
+    `operator_id` desde la PC que analizaba (`ensure_schema`).
+  - **Máquina de análisis** = `Agent.kind="servidor"` (`capacity`, `instance_id`, `draining`). Se da de alta sola:
+    `python -m agent --clave-maquinas vgm_…` → `POST /api/agent/enroll` (clave de máquinas: Administración →
+    «Clave para máquinas nuevas», se guarda solo su hash en `app_settings.pool_key_hash`) → token en
+    `<datos>/token-maquina-<instancia>` (una copia clonada se da de alta de nuevo). Si la borran, se vuelve a
+    dar de alta. `agent/maquina.py` (id de instancia por el metadata de AWS, IMDSv2) y `run_machine`.
+  - **Reparto** (`server/pool.py`, `rebalance` en main.py, como mucho cada 20 s, con `pg_try_advisory_xact_lock`):
+    peso por cámara (hurto 5 fps = 1,0; conteo 2 fps ≈ 0,5; alarmas 0,1; local cerrado y «No mirar» = 0); cada
+    cámara se queda en su máquina si entra, si no va a la menos cargada (si no entra en ninguna, igual va: mejor
+    apretada que sin mirar). Máquina sin noticias 90 s = caída → sus cámaras pasan a las otras. `/api/agent/status`
+    devuelve `rev` (`app_settings.config_rev`, se sube al tocar cámaras/zonas/clientes) y los ids de sus cámaras:
+    si cambian, el agente pide la configuración ya (la config se pide cada 60 s igual).
+  - **Plan y encendedor:** `GET /api/agent/scale` (cabecera `X-Pool-Key`) calcula cuántas máquinas hacen falta
+    ahora y dentro de 20 min (horarios de los locales), marca para vaciar las que sobran y lista las que ya se
+    pueden apagar (sin cámaras). `agent/escalador.py` (corre en una máquina chica siempre prendida) prende/apaga
+    instancias EC2 con la etiqueta `vigia-grupo` (o crea con una plantilla de lanzamiento), con tope
+    `VIGIA_MAX_MAQUINAS`; `VIGIA_NUBE=ninguna` solo informa (Tigo mientras no se sepa su API). Sin claves de AWS en
+    Vigía: rol de IAM en la instancia del encendedor.
+  - **GPU por lotes** (`core/lotes.py` + `OnnxSession` en `core/detectors.py`): en NVIDIA (CUDA/TensorRT) el modelo
+    se transforma en memoria (paquete `onnx`) para recibir **lotes** de cuadros uint8 BGR tal cual salen de OpenCV
+    (la conversión a decimales y RGB la hace la GPU) y devolver solo persona y vehículos; un hilo junta cuadros de
+    todas las cámaras (hasta 16, espera máx. 8 ms). Verificado: mismas detecciones que de a uno (bus.jpg y
+    zidane.jpg). `VIGIA_LOTE=N` lo fuerza (o lo apaga con 1); `VIGIA_TENSORRT=1` usa TensorRT FP16 (motor guardado
+    en `~/.cache/vigia-tensorrt`). La app de Windows (DirectML) sigue de a un cuadro.
+  - **Instalación:** `deploy/maquina-analisis/` (`README.md` paso a paso para AWS São Paulo, `instalar.sh` para
+    Ubuntu con driver NVIDIA, systemd `vigia-maquina@N` con varios procesos por máquina, `vigia-actualizar` que
+    hace `git pull` en cada arranque, `vigia-escalador`). `requirements-servidor.txt` (onnxruntime-gpu con CUDA y
+    cuDNN por pip: solo hace falta el driver). **Sin probar en una máquina con GPU real todavía**: medir cuántas
+    cámaras aguanta (Administración → «Cámaras por máquina», 30 por defecto).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -378,7 +413,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 155 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 164 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

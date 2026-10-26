@@ -85,8 +85,11 @@ LIVE_EXTEND_SECONDS = 45.0  # cuánto sigue el vivo después del último aviso d
 class Agent:
     def __init__(self, server: str, token: str, data_dir: Path, model_path: str | None, verify: bool | str = True,
                  process_imports: bool = True, alarm_workers: int = 2, window: "bool | Ventana" = False,
-                 relogin: "Callable[[str | None], str | None] | None" = None, pc_name: str = ""):
+                 relogin: "Callable[[str | None], str | None] | None" = None, pc_name: str = "",
+                 machine: dict | None = None):
         self.client = ServerClient(server, token, verify=verify)
+        # máquina de análisis (servidor): {"capacity": .., "instance_id": ..}; se informa con cada estado
+        self.machine = machine
         # cámaras por Hik-Connect: el link de video lo da el servidor (siempre con el cliente vigente)
         hikconnect.set_url_provider(lambda cid, kind, quality, start, end:
                                     self.client.stream_url(cid, kind, quality, start, end))
@@ -94,6 +97,10 @@ class Agent:
         self.pc_name = pc_name
         self._logout_requested = False
         self._force_config = False
+        self._rev: str | None = None  # versión de la configuración (el servidor la sube cuando algo cambia)
+        self._cfg_ids: set[int] = set()
+        self.analysis_mode = "pcs"
+        self._stats_at = time.monotonic()
         self.process_imports = process_imports
         self.imports: ImportJobRunner | None = None
         self.alarms: AlarmRunner | None = None
@@ -127,6 +134,10 @@ class Agent:
         return build_detector(name, self.model_path, vehicles=vehicles)
 
     def apply_config(self, cfg: dict) -> None:
+        if "rev" in cfg:
+            self._rev = str(cfg["rev"])
+        self._cfg_ids = {c["id"] for c in cfg.get("cameras", [])}
+        self.analysis_mode = cfg.get("analysis_mode", self.analysis_mode)
         if self.process_imports and cfg.get("process_imports", True) and self.imports is None:
             self.imports = ImportJobRunner(self.client, self.model_path, self.data_dir / "imports")
             self.imports.start()
@@ -228,7 +239,11 @@ class Agent:
                     last_cfg = now
                     if self.window is not None:
                         n = len(self._cams_cfg)
-                        self.window.set_status(f"{self.pc_name} · analizando {n} cámara{'s' if n != 1 else ''}")
+                        if not n and self.analysis_mode == "servidores":
+                            self.window.set_status(f"{self.pc_name} · solo revisa: las cámaras las analizan "
+                                                   "las máquinas de análisis")
+                        else:
+                            self.window.set_status(f"{self.pc_name} · analizando {n} cámara{'s' if n != 1 else ''}")
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code == 401:
                         log.error("Esta PC ya no está vinculada (la borraron del panel o cambió la clave).")
@@ -258,14 +273,26 @@ class Agent:
                                                   for cid in self._closed if cid not in self.listeners],
                                                "live": self.live_ids(),
                                                "outbox_pending": self.outbox.pending(), "version": VERSION,
-                                               **(self.alarms.status() if self.alarms else {})})
+                                               **(self.alarms.status() if self.alarms else {}),
+                                               **self.machine_status()})
                     self.apply_live(resp.get("live") or [])
+                    # cambió algo (cámaras, zonas, horario) o el reparto le dio o le sacó cámaras: pedir ya
+                    rev, ids = resp.get("rev"), resp.get("cameras")
+                    if (rev is not None and self._rev is not None and str(rev) != self._rev) or \
+                            (isinstance(ids, list) and set(ids) != self._cfg_ids):
+                        self._force_config = True
                 except httpx.HTTPError:
                     pass
             if self.window is not None:
                 self.window.set_cameras(self.window_cameras())
-                note = "" if self._cams_cfg else ("Esta PC todavía no tiene cámaras asignadas. En «Clientes y cámaras», "
-                                                  f"al cargar o editar una cámara, elegí esta PC ({self.pc_name}).")
+                if self._cams_cfg:
+                    note = ""
+                elif self.analysis_mode == "servidores":
+                    note = ("Las cámaras se analizan en las máquinas de análisis (en la nube): esta PC solo revisa "
+                            "las alertas (pestaña Alertas).")
+                else:
+                    note = ("Todavía no tenés cámaras asignadas: el administrador te las asigna en Administración "
+                            "(«Editar y asignar cámaras») o en la cámara («Asignada a»).")
                 self.window.refresh(self.window_tiles(self.window.selected_ids()), note or " ")
                 if not self.window.pump(40):
                     log.info("Ventana cerrada: Vigía se detiene")
@@ -293,12 +320,25 @@ class Agent:
             video = {"ok": False, "error": str(exc)}
         return {"http": info, "video": video, "rtsp_url": cam.redacted(cam.live_url())}
 
+    def machine_status(self) -> dict:
+        """Lo que informa una máquina de análisis: capacidad, instancia y cuánto está usando la placa."""
+        if not self.machine:
+            return {}
+        from core.detectors import session_stats
+
+        frames, batch = session_stats()
+        now = time.monotonic()
+        secs, self._stats_at = max(now - self._stats_at, 1e-3), now
+        return {"capacity": self.machine.get("capacity"), "instance_id": self.machine.get("instance_id"),
+                "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2)}
+
     def _request_logout(self) -> None:
         self._logout_requested = True
 
     def _ask_login(self, error: str | None) -> bool:
-        """Vuelve a pedir usuario y clave (si hay ventana). True si quedó vinculada con un token nuevo."""
-        if self.relogin is None or self.window is None:
+        """Vuelve a pedir usuario y clave (ventana) o, en una máquina de análisis, se vuelve a dar de alta con
+        la clave de máquinas. True si quedó vinculada con un token nuevo."""
+        if self.relogin is None:
             return False
         token = self.relogin(error)
         if not token:
@@ -524,6 +564,12 @@ def main() -> None:
     p.add_argument("--ventana", dest="ventana", action="store_true", default=None,
                    help="Mostrar la ventana con las cámaras y los recuadros (en el .exe viene activada)")
     p.add_argument("--sin-ventana", dest="ventana", action="store_false", help="Sin ventana (servidor sin pantalla)")
+    p.add_argument("--clave-maquinas", default=env.get("VIGIA_POOL_KEY"),
+                   help="Máquina de análisis: se da de alta sola con esta clave (Administración → Máquinas)")
+    p.add_argument("--capacidad", type=float, default=float(env.get("VIGIA_CAPACIDAD") or 0) or None,
+                   help="Máquina de análisis: cuántas cámaras de hurto a 5 fps aguanta")
+    p.add_argument("--proceso", default=env.get("VIGIA_PROCESO"),
+                   help="Máquina de análisis: número de proceso si corren varios en la misma máquina")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
     if a.ventana is None:
@@ -538,6 +584,8 @@ def main() -> None:
         if not ventana.failed:
             return run_app(a, env, cfg_path, data_dir, ventana, verify)
         log.warning("Sin ventana: sigue como servicio (solo análisis)")
+    if a.clave_maquinas:
+        return run_machine(a, data_dir, verify)
     # sin ventana (servidor): solo analiza, con el token del agente
     pc_name = env.get("VIGIA_PC_NAME") or default_pc_name()
     if not a.token:
@@ -548,6 +596,35 @@ def main() -> None:
                   alarm_workers=max(1, a.alarm_workers), window=False, pc_name=pc_name)
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
+    agent.run()
+
+
+def run_machine(a, data_dir: Path, verify: bool | str) -> None:
+    """Máquina de análisis en la nube: se da de alta sola, recibe del servidor las cámaras que le tocan y las
+    analiza. Sin ventana ni usuario. Si el servidor la rechaza (la borraron), se vuelve a dar de alta."""
+    from . import maquina
+
+    instance = maquina.instance_id()
+    name = maquina.machine_name(instance, a.proceso)
+
+    def enroll(_error: str | None = None) -> str | None:
+        while True:
+            try:
+                token = maquina.enroll(a.server, a.clave_maquinas, name, instance, a.capacidad, verify=verify)
+                maquina.save_token(data_dir, token, instance)
+                log.info("Máquina %s dada de alta en %s", name, a.server)
+                return token
+            except ValueError as exc:
+                log.error("No se pudo dar de alta la máquina: %s (reintento en 30 s)", exc)
+                time.sleep(30)
+
+    token = a.token or maquina.saved_token(data_dir, instance) or enroll()
+    agent = Agent(a.server, token, data_dir, a.model, verify=verify, process_imports=not a.no_imports,
+                  alarm_workers=max(1, a.alarm_workers), window=False, relogin=enroll, pc_name=name,
+                  machine={"capacity": a.capacidad, "instance_id": instance})
+    signal.signal(signal.SIGTERM, lambda *_: agent.stop())
+    signal.signal(signal.SIGINT, lambda *_: agent.stop())
+    log.info("Máquina de análisis %s (instancia %s, capacidad %s)", name, instance or "—", a.capacidad or "por defecto")
     agent.run()
 
 

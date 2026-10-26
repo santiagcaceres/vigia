@@ -25,8 +25,8 @@ from core.rules import EVENT_TYPES, SEVERITY, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
-from . import hikconnect, hpp, probe, training
-from .db import (ROLES, Agent, Alarm, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
+from . import hikconnect, hpp, pool, probe, training
+from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
@@ -194,6 +194,23 @@ class PasswordIn(BaseModel):
 
 class UserCamerasIn(BaseModel):
     camera_ids: list[int] = Field(default_factory=list, max_length=2000)
+
+
+class EnrollIn(BaseModel):
+    """Alta de una máquina de análisis (servidor) con la clave de máquinas, sin usuario ni clave de nadie."""
+    key: str = Field(min_length=10, max_length=200)
+    name: str = Field(min_length=1, max_length=120)
+    instance_id: str | None = Field(None, max_length=80)
+    capacity: float | None = Field(None, gt=0, le=1000)
+    process_imports: bool = False
+
+
+class AnalysisSettingsIn(BaseModel):
+    # pcs: cada usuario analiza en su PC las cámaras que revisa. servidores: las analizan las máquinas de
+    # análisis (en la nube) y los usuarios solo revisan
+    mode: Literal["pcs", "servidores"] | None = None
+    capacity: float | None = Field(None, gt=0, le=1000)  # cámaras de hurto a 5 fps por máquina
+    spare: int | None = Field(None, ge=0, le=20)  # máquinas de reserva prendidas de más
 
 
 class AgentLoginIn(BaseModel):
@@ -479,12 +496,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         online = bool(a.last_seen and utcnow() - a.last_seen < timedelta(minutes=3))
         return {"id": a.id, "client_id": a.client_id, "central": a.client_id is None, "name": a.name,
                 "last_seen": iso(a.last_seen), "online": online, "status": a.last_status or {},
-                "process_imports": a.process_imports}
+                "process_imports": a.process_imports, "kind": a.kind or "pc", "capacity": a.capacity,
+                "instance_id": a.instance_id, "draining": bool(a.draining),
+                "version": (a.last_status or {}).get("version")}
 
-    def operator_map(s) -> dict[int, tuple[int, str]]:
-        """PC (agente) de cada usuario → (id del usuario, nombre): a quién está asignada cada cámara."""
-        rows = s.query(Agent.id, User.id, User.username).join(User, User.id == Agent.user_id).all()
-        return {aid: (uid, name) for aid, uid, name in rows}
+    def operator_map(s) -> dict:
+        """Nombres para mostrar en cada cámara: quién la revisa (usuario) y qué la analiza (PC o máquina)."""
+        return {"users": dict(s.query(User.id, User.username).all()),
+                "agents": dict(s.query(Agent.id, Agent.name).all())}
 
     def user_agent(s, u: User) -> Agent:
         """La PC de un usuario: se crea sola la primera vez (no hay que vincular ni nombrar PCs)."""
@@ -497,8 +516,153 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return a
 
     def assigned_camera_ids(s, u: User) -> list[int]:
-        return [cid for (cid,) in s.query(Camera.id).join(Agent, Agent.id == Camera.agent_id)
-                .filter(Agent.user_id == u.id)]
+        """Las cámaras que revisa el usuario (en modo «pcs», además, las analiza su PC)."""
+        return [cid for (cid,) in s.query(Camera.id).filter(Camera.operator_id == u.id).order_by(Camera.id)]
+
+    # ------------------------------------------------------------ máquinas de análisis (server/pool.py)
+    def setting(s, key: str, default: str = "") -> str:
+        row = s.get(AppSetting, key)
+        return row.value if row is not None and row.value is not None else default
+
+    def set_setting(s, key: str, value) -> None:
+        row = s.get(AppSetting, key)
+        if row is None:
+            s.add(AppSetting(key=key, value=str(value)))
+        else:
+            row.value = str(value)
+
+    def analysis_mode(s) -> str:
+        return setting(s, "analysis_mode", "pcs")
+
+    def pool_capacity(s) -> float:
+        try:
+            return float(setting(s, "pool_capacity") or pool.DEFAULT_CAPACITY)
+        except ValueError:
+            return pool.DEFAULT_CAPACITY
+
+    def bump_rev(s) -> None:
+        """Algo cambió en cámaras, zonas o clientes: las PCs y máquinas piden la configuración ya."""
+        try:
+            set_setting(s, "config_rev", int(setting(s, "config_rev", "0") or 0) + 1)
+        except ValueError:
+            set_setting(s, "config_rev", 1)
+
+    def server_agents(s) -> list[Agent]:
+        return s.query(Agent).filter(Agent.kind == "servidor").order_by(Agent.id).all()
+
+    def is_online(a: Agent, now: datetime) -> bool:
+        return bool(a.last_seen and now - a.last_seen < pool.ONLINE)
+
+    def camera_weights(s, times: list[datetime]) -> tuple[list[Camera], list[dict[int, float]]]:
+        """Peso de cada cámara habilitada en cada momento pedido (ver server/pool.py)."""
+        cams = s.query(Camera).filter(Camera.enabled.is_(True)).order_by(Camera.id).all()
+        clients = ({c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))}
+                   if cams else {})
+        out: list[dict[int, float]] = [{} for _ in times]
+        for c in cams:
+            cl = clients.get(c.client_id)
+            if cl is None:
+                continue
+            fps = camera_fps(c, camera_analysis(c, cl))
+            for i, t in enumerate(times):
+                out[i][c.id] = pool.camera_weight(fps=fps, mode=c.mode or "vivo", brand=c.brand, hours=cl.hours,
+                                                  tz=cl.timezone, off_hours=c.off_hours or "apagada", now=t)
+        return cams, out
+
+    def machines_of(s, now: datetime, weights: dict[int, float]) -> list[pool.Machine]:
+        agents = server_agents(s)
+        cap = pool_capacity(s)
+        load: dict[int, float] = {}
+        if agents:
+            for cid, aid in s.query(Camera.id, Camera.agent_id).filter(Camera.agent_id.in_([a.id for a in agents])):
+                load[aid] = load.get(aid, 0.0) + weights.get(cid, 0.0)
+        groups: dict[str, pool.Machine] = {}
+        for a in agents:  # varios procesos en la misma máquina = una sola máquina
+            key = a.instance_id or f"agente-{a.id}"
+            m = groups.setdefault(key, pool.Machine(key, a.instance_id, [], False, True, 0.0, 0.0))
+            m.agent_ids.append(a.id)
+            m.names.append(a.name)
+            m.online = m.online or is_online(a, now)
+            m.draining = m.draining and bool(a.draining)
+            m.capacity += a.capacity or cap
+            m.load += load.get(a.id, 0.0)
+        return list(groups.values())
+
+    def try_lock(s) -> bool:
+        """Un solo reparto a la vez (Vercel puede atender dos pedidos juntos)."""
+        if s.get_bind().dialect.name != "postgresql":
+            return True
+        return bool(s.execute(select(func.pg_try_advisory_xact_lock(727001))).scalar())
+
+    def rebalance(s, force: bool = False) -> bool:
+        """Reparte las cámaras entre las máquinas de análisis en línea. Como mucho cada 20 s (salvo `force`)."""
+        if analysis_mode(s) != "servidores":
+            return False
+        now = utcnow()
+        last = setting(s, "balance_at")
+        if not force and last:
+            try:
+                if now - datetime.fromisoformat(last) < timedelta(seconds=20):
+                    return False
+            except ValueError:
+                pass
+        if not try_lock(s):
+            return False
+        set_setting(s, "balance_at", now.isoformat())
+        cap = pool_capacity(s)
+        servers = {a.id: (a.capacity or cap) for a in server_agents(s) if is_online(a, now) and not a.draining}
+        if not servers:
+            s.commit()
+            return False
+        cams, (w_now,) = camera_weights(s, [now])
+        result = pool.assign([(c.id, w_now.get(c.id, 0.0), c.agent_id) for c in cams], servers)
+        moved = 0
+        for c in cams:
+            new = result.get(c.id)
+            if new is not None and c.agent_id != new:
+                c.agent_id = new
+                moved += 1
+        if moved:
+            bump_rev(s)
+            log.info("Reparto de cámaras: %d movidas entre %d máquinas", moved, len(servers))
+        s.commit()
+        return moved > 0
+
+    def check_pool_key(s, key: str) -> None:
+        stored = setting(s, "pool_key_hash")
+        if not stored or not secrets.compare_digest(token_hash(key.strip()), stored):
+            raise HTTPException(401, "Clave de máquinas inválida (se crea en Administración → Máquinas de análisis)")
+
+    def analysis_overview(s, apply_draining: bool = False) -> dict:
+        now = utcnow()
+        cams, (w_now, w_soon) = camera_weights(s, [now, pool.soon(now)])
+        ms = machines_of(s, now, w_now)
+        spare = int(setting(s, "pool_spare", "0") or 0)
+        mode = analysis_mode(s)
+        p = pool.plan(sum(w_now.values()), sum(w_soon.values()), ms, pool_capacity(s), spare)
+        if mode != "servidores":  # las cámaras las analizan las PCs de los usuarios: no hacen falta máquinas
+            p = pool.plan(0.0, 0.0, ms, pool_capacity(s), 0)
+        if apply_draining:
+            by_id = {a.id: a for a in server_agents(s)}
+            for m in ms:
+                if m.key in p.draining:
+                    for aid in m.agent_ids:
+                        by_id[aid].draining = p.draining[m.key]
+                    m.draining = p.draining[m.key]
+            s.commit()
+        cam_count: dict[int, int] = {}
+        for c in cams:
+            if c.agent_id is not None:
+                cam_count[c.agent_id] = cam_count.get(c.agent_id, 0) + 1
+        open_now = sum(1 for w in w_now.values() if w > 0)
+        return {"mode": mode, "capacity": pool_capacity(s), "spare": spare,
+                "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
+                "cameras": len(cams), "cameras_active": open_now,
+                "online_instances": [m.instance_id for m in ms if m.online and m.instance_id],
+                "machines": [{"key": m.key, "instance_id": m.instance_id, "names": m.names, "agent_ids": m.agent_ids,
+                              "online": m.online, "draining": m.draining, "capacity": m.capacity,
+                              "load": round(m.load, 2), "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
+                             for m in ms]}
 
     def camera_dict(c: Camera, user: User, status: dict | None = None, ops: dict | None = None) -> dict:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
@@ -512,8 +676,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
                      hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c),
                      profile=c.profile or "general", off_hours=c.off_hours or "apagada")
-            op = (ops or {}).get(c.agent_id) if c.agent_id else None
-            d.update(operator_id=op[0] if op else None, operator_name=op[1] if op else None)
+            ops = ops or {}
+            op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
+            d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
+                     analyzer_name=(ops.get("agents") or {}).get(c.agent_id) if c.agent_id else None)
         return d
 
     def alarm_cfg_of(c: Camera) -> dict:
@@ -771,6 +937,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_client_hours(c, body)
         set_client_hc(c, body)
         set_client_web_user(s, c, body)
+        bump_rev(s)  # horario y planes cambian qué hacen sus cámaras
         s.commit()
         return client_out(s, c)
 
@@ -813,21 +980,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/users")
     def list_users(_: User = Depends(admin_only), s=Depends(db)) -> list[dict]:
         cams: dict[int, list[int]] = {}
-        for cid, uid in s.query(Camera.id, Agent.user_id).join(Agent, Agent.id == Camera.agent_id).filter(
-                Agent.user_id.is_not(None)):
+        for cid, uid in s.query(Camera.id, Camera.operator_id).filter(Camera.operator_id.is_not(None)):
             cams.setdefault(uid, []).append(cid)
         return [{**user_dict(u), "camera_ids": cams.get(u.id, [])} for u in s.query(User).order_by(User.username).all()]
 
     @app.put("/api/users/{uid}/cameras")
     def set_user_cameras(uid: int, body: UserCamerasIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
-        """Las cámaras que ve y analiza (en su PC) un administrador o empleado. Una cámara es de un solo usuario."""
+        """Las cámaras que revisa un administrador o empleado (en modo «pcs», además, las analiza su PC).
+        Una cámara la revisa un solo usuario."""
         u = get_or_404(s, User, uid, "Usuario")
         if u.role not in ("admin", "entrenador"):
             raise HTTPException(422, "Las cámaras se asignan a administradores o empleados")
+        pcs = analysis_mode(s) == "pcs"
         a = user_agent(s, u)
         want = set(body.camera_ids)
-        for c in s.query(Camera).filter(or_(Camera.id.in_(want), Camera.agent_id == a.id)):
-            c.agent_id = a.id if c.id in want else None
+        for c in s.query(Camera).filter(or_(Camera.id.in_(want), Camera.operator_id == u.id)):
+            mine = c.id in want
+            c.operator_id = u.id if mine else None
+            if pcs:
+                c.agent_id = a.id if mine else (None if c.agent_id == a.id else c.agent_id)
+        bump_rev(s)
         s.commit()
         return {"user_id": u.id, "camera_ids": assigned_camera_ids(s, u)}
 
@@ -890,7 +1062,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = new_token()
         a.token_hash = token_hash(token)
         s.commit()
-        return {**agent_dict(a), "token": token, "camera_ids": assigned_camera_ids(s, u)}
+        return {**agent_dict(a), "token": token, "camera_ids": assigned_camera_ids(s, u),
+                "analysis_mode": analysis_mode(s)}
 
     @app.post("/api/agent/login")
     def agent_login(body: AgentLoginIn, s=Depends(db)) -> dict:
@@ -914,6 +1087,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.info("PC central %r vinculada por %s", name, u.username)
         return {**agent_dict(a), "token": token}
 
+    @app.post("/api/agent/enroll")
+    def agent_enroll(body: EnrollIn, s=Depends(db)) -> dict:
+        """Una máquina de análisis se da de alta sola al arrancar, con la clave de máquinas. Si ya existía
+        (mismo nombre), se le genera un token nuevo."""
+        check_pool_key(s, body.key)
+        name = body.name.strip()
+        a = s.query(Agent).filter(Agent.kind == "servidor", Agent.name == name).order_by(Agent.id).first()
+        token = new_token()
+        if a is None:
+            a = Agent(client_id=None, name=name, kind="servidor", token_hash=token_hash(token),
+                      process_imports=body.process_imports)
+            s.add(a)
+        else:
+            a.token_hash = token_hash(token)
+        a.instance_id = body.instance_id or a.instance_id
+        a.capacity = body.capacity or a.capacity
+        a.draining = False
+        a.last_seen = utcnow()
+        s.commit()
+        log.info("Máquina de análisis %r dada de alta (instancia %s)", name, a.instance_id)
+        rebalance(s, force=True)  # que reciba cámaras ya, en su primer pedido de configuración
+        return {**agent_dict(a), "token": token}
+
+    @app.get("/api/agent/scale")
+    def agent_scale(x_pool_key: str = Header(...), s=Depends(db)) -> dict:
+        """El encendedor (agent/escalador.py) pregunta cuántas máquinas tienen que estar prendidas y cuáles se
+        pueden apagar. Marca para vaciar las que sobran; se apagan cuando ya no tienen cámaras."""
+        check_pool_key(s, x_pool_key)
+        rebalance(s)
+        out = analysis_overview(s, apply_draining=True)
+        rebalance(s, force=True)  # sacarle ya las cámaras a las que se están vaciando
+        return out
+
+    @app.get("/api/analysis")
+    def get_analysis(_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        return analysis_overview(s)
+
+    @app.put("/api/analysis")
+    def put_analysis(body: AnalysisSettingsIn, _: User = Depends(admin_only), s=Depends(db)) -> dict:
+        if body.capacity is not None:
+            set_setting(s, "pool_capacity", body.capacity)
+        if body.spare is not None:
+            set_setting(s, "pool_spare", body.spare)
+        if body.mode is not None and body.mode != analysis_mode(s):
+            set_setting(s, "analysis_mode", body.mode)
+            if body.mode == "pcs":  # vuelven a la PC de quien las revisa
+                servers = {a.id for a in server_agents(s)}
+                for c in s.query(Camera).all():
+                    if c.operator_id:
+                        op = s.get(User, c.operator_id)
+                        c.agent_id = user_agent(s, op).id if op else None
+                    elif c.agent_id in servers:
+                        c.agent_id = None
+            bump_rev(s)
+            log.info("Las cámaras ahora se analizan en: %s", body.mode)
+        s.commit()
+        rebalance(s, force=True)
+        return analysis_overview(s)
+
+    @app.post("/api/analysis/pool-key")
+    def new_pool_key(_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        """Clave para dar de alta máquinas de análisis (va en el archivo de configuración de cada máquina).
+        Se muestra una sola vez; crear otra invalida la anterior para máquinas nuevas (las ya dadas de alta
+        siguen con su token)."""
+        key = "vgm_" + new_token()
+        set_setting(s, "pool_key_hash", token_hash(key))
+        s.commit()
+        return {"key": key}
+
     @app.post("/api/agents/{aid}/token")
     def rotate_agent_token(aid: int, _: User = Depends(admin_only), s=Depends(db)) -> dict:
         a = get_or_404(s, Agent, aid, "Agente")
@@ -928,7 +1170,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.query(Camera).filter_by(agent_id=aid).update({"agent_id": None})
         s.query(VideoImport).filter_by(claimed_by=aid).update({"claimed_by": None})
         s.delete(a)
+        bump_rev(s)
         s.commit()
+        rebalance(s, force=True)
 
     # ------------------------------------------------------------ cámaras
     def agent_status_map(s) -> dict[int, dict]:
@@ -966,15 +1210,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return f
 
     def apply_operator(s, c: Camera, body: CameraIn, user: User) -> None:
+        """Quién revisa la cámara. En modo «pcs» también la analiza su PC; en modo «servidores» la máquina
+        que la analiza la elige el reparto (server/pool.py)."""
         if body.operator_id is None or user.role != "admin":
             return  # sin dato (o un empleado): la asignación queda como estaba
+        pcs = analysis_mode(s) == "pcs"
         if body.operator_id == 0:
-            c.agent_id = None
+            c.operator_id = None
+            if pcs:
+                c.agent_id = None
             return
         op = get_or_404(s, User, body.operator_id, "Usuario")
         if op.role not in ("admin", "entrenador"):
             raise HTTPException(422, "Las cámaras se asignan a administradores o empleados")
-        c.agent_id = user_agent(s, op).id
+        c.operator_id = op.id
+        if pcs:
+            c.agent_id = user_agent(s, op).id
 
     def check_camera_body(s, body: CameraIn) -> None:
         get_or_404(s, Client, body.client_id, "Cliente")
@@ -1009,7 +1260,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    source_url_enc=box.encrypt(body.source_url))
         apply_operator(s, c, body, user)
         s.add(c)
+        bump_rev(s)
         s.commit()
+        rebalance(s, force=True)
         return camera_dict(c, user, ops=operator_map(s))
 
     @app.put("/api/cameras/{cam_id}")
@@ -1022,7 +1275,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.password:
             c.password_enc = box.encrypt(body.password)
         c.source_url_enc = box.encrypt(body.source_url) if body.source_url else None
+        bump_rev(s)
         s.commit()
+        rebalance(s, force=True)
         return camera_dict(c, user, ops=operator_map(s))
 
     @app.put("/api/cameras/{cam_id}/analysis")
@@ -1034,8 +1289,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         c.zones, c.rules = cfg["zones"], cfg["rules"]
+        bump_rev(s)
         s.commit()
-        return camera_dict(c, user)
+        return camera_dict(c, user, ops=operator_map(s))
 
     @app.delete("/api/cameras/{cam_id}", status_code=204)
     def delete_camera(cam_id: int, _: User = Depends(admin_only), s=Depends(db)) -> None:
@@ -1046,6 +1302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.query(Alarm).filter_by(camera_id=cam_id).delete(synchronize_session=False)
         files = ([c.preview_path] if c.preview_path else []) + [live_path(c)]
         s.delete(c)
+        bump_rev(s)
         s.commit()
         try:
             storage.remove(files)
@@ -1185,7 +1442,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         models = {cid: model_spec(s, cid) for cid in clients}  # cada cliente puede tener su propio modelo
         return {
             "agent_id": ag.id, "client_id": ag.client_id, "central": ag.client_id is None,
-            "process_imports": ag.process_imports,
+            "process_imports": ag.process_imports, "kind": ag.kind or "pc", "analysis_mode": analysis_mode(s),
+            "rev": setting(s, "config_rev", "0"),
             "settings": {"clip_pre_seconds": st.clip_pre_seconds, "clip_post_seconds": st.clip_post_seconds,
                          "clip_max_seconds": st.clip_max_seconds},
             "filter_model": model_spec(s, ag.client_id) if ag.client_id is not None else None,
@@ -1285,10 +1543,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                          **{k: payload[k] for k in ("alarms_with_person", "alarms_discarded", "alarms_failed")
                             if isinstance(payload.get(k), int)}}
         a.last_seen = utcnow()
+        if (a.kind or "pc") == "servidor":  # máquina de análisis: capacidad e instancia, y repartir si hace falta
+            if isinstance(payload.get("capacity"), (int, float)) and 0 < payload["capacity"] <= 1000:
+                a.capacity = float(payload["capacity"])
+            if isinstance(payload.get("instance_id"), str) and payload["instance_id"]:
+                a.instance_id = payload["instance_id"][:80]
+            for k in ("batch_avg", "frames_per_s"):
+                if isinstance(payload.get(k), (int, float)):
+                    a.last_status = {**a.last_status, k: payload[k]}
         s.commit()
+        if (a.kind or "pc") == "servidor":
+            rebalance(s)
         since = utcnow() - timedelta(seconds=st.live_seconds)
         live = [c.id for c in agent_cameras_q(s, ag).filter(Camera.live_requested_at >= since, Camera.enabled.is_(True))]
-        return {"ok": True, "live": live}
+        # para que la PC pida la configuración apenas cambie algo (sin esperar al minuto)
+        mine = sorted(cid for (cid,) in agent_cameras_q(s, ag).with_entities(Camera.id))
+        return {"ok": True, "live": live, "rev": setting(s, "config_rev", "0"), "cameras": mine,
+                "draining": bool(a.draining)}
 
     @app.post("/api/agent/metrics")
     def agent_metrics(body: MetricsIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
