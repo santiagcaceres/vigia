@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import queue
 from collections.abc import Callable
 import os
 import signal
@@ -40,6 +41,7 @@ from .imports import ImportJobRunner
 from .live import LiveWorker
 from .outbox import Outbox, ServerClient, login_pc
 from .ventana import ESTADOS, Ventana, default_pc_name
+from .vista import RemoteView, ViewWorker
 from .worker import METRICS_EVERY_SECONDS, CameraWorker, MetricsQueue
 
 log = logging.getLogger("vigia.agent")
@@ -87,8 +89,10 @@ class Agent:
     def __init__(self, server: str, token: str, data_dir: Path, model_path: str | None, verify: bool | str = True,
                  process_imports: bool = True, alarm_workers: int = 2, window: "bool | Ventana" = False,
                  relogin: "Callable[[str | None], str | None] | None" = None, pc_name: str = "",
-                 machine: dict | None = None, on_demand: bool = False):
+                 machine: dict | None = None, on_demand: bool = False,
+                 beat: "Callable[[int], dict] | None" = None):
         self.client = ServerClient(server, token, verify=verify)
+        self.server = server
         # máquina de análisis (servidor): {"capacity": .., "instance_id": ..}; se informa con cada estado
         self.machine = machine
         # cámaras por Hik-Connect: el link de video lo da el servidor (siempre con el cliente vigente)
@@ -130,9 +134,16 @@ class Agent:
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
-        # app de escritorio: la lista de «En vivo» son todas las cámaras y las que se eligen se abren en esta PC
-        # (se ven y se analizan mientras estén abiertas); nadie asigna cámaras
+        # app de escritorio: la lista de «En vivo» son todas las cámaras y las que se eligen se miran en esta PC,
+        # sin analizarlas (lo que se analiza se elige en «Clientes» y lo hacen las máquinas de análisis)
         self.on_demand = on_demand and self.window is not None
+        self.beat = beat  # latido «alguien mira» con la sesión del usuario (imagen de la máquina)
+        self.viewers: dict[int, ViewWorker | RemoteView] = {}
+        self._view_ready: queue.Queue = queue.Queue()
+        self._view_pending: set[int] = set()
+        self._view_gone: set[int] = set()  # elegidas que el servidor no devolvió (borradas o deshabilitadas)
+        self._view_retry_at = 0.0
+        self._viewing_shown = -1
         self._catalog: list[dict] = []
         self._catalog_at = -1e9
         self._watch_sent: set[int] | None = None  # lo último que se le avisó al servidor
@@ -144,8 +155,8 @@ class Agent:
         return build_detector(name, self.model_path, vehicles=vehicles)
 
     def apply_config(self, cfg: dict) -> None:
-        if self.on_demand and self._watch_sent is None:
-            cfg = {**cfg, "cameras": []}  # hasta avisar qué hay abierto, no abrir lo que quedó de antes
+        if self.on_demand:
+            cfg = {**cfg, "cameras": []}  # la app no analiza: solo mira (las máquinas analizan)
         if "rev" in cfg:
             self._rev = str(cfg["rev"])
         self._cfg_ids = {c["id"] for c in cfg.get("cameras", [])}
@@ -252,7 +263,7 @@ class Agent:
                 try:
                     self.apply_config(self.client.config())
                     last_cfg = now
-                    if self.window is not None:
+                    if self.window is not None and not self.on_demand:
                         n = len(self._cams_cfg)
                         if not n and self.analysis_mode == "servidores":
                             self.window.set_status(f"{self.pc_name} · solo revisa: las cámaras las analizan "
@@ -303,7 +314,7 @@ class Agent:
             if self.window is not None:
                 self.window.set_cameras(self.window_cameras())
                 if self.on_demand:
-                    note = "" if self.window.selected_ids() else "Hacé clic en una cámara para abrirla."
+                    note = "" if self.window.selected_ids() else "Hacé clic en una cámara para verla."
                 elif self._cams_cfg:
                     note = ""
                 elif self.analysis_mode == "servidores":
@@ -325,49 +336,76 @@ class Agent:
         self._force_config = True
         self._catalog_at = -1e9
 
-    # ---- cámaras a demanda (app de escritorio) ----
+    # ---- «En vivo» de la app: mirar sin analizar ----
     def _demand_tick(self, now: float) -> None:
-        """Actualiza la lista de cámaras y, si cambió la selección (y pasó un momento sin cambios), le avisa al
-        servidor cuáles quedan abiertas en esta PC; después pide la configuración para abrirlas o cerrarlas."""
+        """La lista de «En vivo» son todas las cámaras; las elegidas se abren solo para mirar. Al entrar se le
+        avisa al servidor que esta PC no analiza nada (por si le quedó algo asignado de antes)."""
         if now - self._catalog_at >= CATALOG_EVERY_SECONDS:
             self._catalog_at = now
             try:
                 self._catalog = self.client.catalog()
             except httpx.HTTPError as exc:
                 log.debug("No se pudo traer la lista de cámaras: %s", exc)
-        if not self._catalog or self._watch_busy or now < self._watch_retry_at:
-            return
-        chosen = self.window.selected_ids() & {c["id"] for c in self._catalog}
-        if chosen == self._watch_sent or now - self.window.selected_at < 0.8:
-            return
-        self._watch_busy = True
-        self.clip_pool.submit(self._send_watch, chosen)
+        if self._watch_sent is None and not self._watch_busy and now >= self._watch_retry_at:
+            self._watch_busy = True
+            self.clip_pool.submit(self._send_watch, set())
+        chosen = self.window.selected_ids() & {c["id"] for c in self._catalog} if self._catalog else set()
+        while True:  # llegó cómo conectarse a cámaras elegidas
+            try:
+                cfgs, asked = self._view_ready.get_nowait()
+            except queue.Empty:
+                break
+            self._view_gone |= asked - {c["id"] for c in cfgs}
+            for cfg in cfgs:
+                if cfg["id"] in chosen and cfg["id"] not in self.viewers:
+                    remote = cfg.get("analyzed") and self.beat
+                    v = RemoteView(cfg, self.beat, self.server) if remote else ViewWorker(cfg)
+                    v.start()
+                    self.viewers[cfg["id"]] = v
+        for cid in list(self.viewers):
+            if cid not in chosen:
+                self.viewers.pop(cid).stop()  # no se espera: la ventana sigue respondiendo
+        self._view_gone &= chosen
+        missing = chosen - set(self.viewers) - self._view_pending - self._view_gone
+        if missing and now >= self._view_retry_at and now - self.window.selected_at >= 0.5:
+            self._view_pending |= missing
+            self.clip_pool.submit(self._fetch_view, missing)
+        if len(self.viewers) != self._viewing_shown:
+            self._viewing_shown = len(self.viewers)
+            n = self._viewing_shown
+            self.window.set_status(f"{self.pc_name} · mirando {n} cámara{'s' if n != 1 else ''}")
+
+    def _fetch_view(self, ids: set[int]) -> None:
+        try:
+            self._view_ready.put((self.client.view(sorted(ids)), ids))
+        except httpx.HTTPError as exc:
+            log.warning("No se pudieron abrir las cámaras para mirar (%s); se reintenta", exc)
+            self._view_retry_at = time.monotonic() + 5
+        finally:
+            self._view_pending -= ids
 
     def _send_watch(self, ids: set[int]) -> None:
         try:
-            res = self.client.watch(sorted(ids))
+            self.client.watch(sorted(ids))
             self._watch_sent = ids
             self._force_config = True
             self._catalog_at = -1e9
-            if res.get("on_servers"):
-                log.info("%d cámara(s) elegidas las analiza una máquina de análisis: no se abren en esta PC",
-                         len(res["on_servers"]))
         except httpx.HTTPError as exc:
-            log.warning("No se pudieron abrir o cerrar las cámaras elegidas (%s); se reintenta", exc)
+            log.warning("No se pudo avisar al servidor qué cámaras tiene esta PC (%s); se reintenta", exc)
             self._watch_retry_at = time.monotonic() + 10
         finally:
             self._watch_busy = False
 
     def _demand_state(self, c: dict) -> str:
-        cid = c["id"]
-        if cid in self._cams_cfg:
-            return self._cam_state(cid)
-        if c.get("on_servers"):
-            return "En una máquina"
-        if self.window is not None and cid in self.window.selected_ids():
+        v = self.viewers.get(c["id"])
+        if v is not None:
+            return v.text()
+        if c["id"] in self._view_gone:
+            return "No disponible"
+        if self.window is not None and c["id"] in self.window.selected_ids():
             return "Abriendo..."
-        if c.get("elsewhere"):
-            return f"Abierta en {c['elsewhere']}"
+        if c.get("on_servers"):
+            return "Se analiza" + (f" · {c['elsewhere']}" if c.get("elsewhere") else "")
         return ""
 
     def local_probe(self, cam_id: int) -> dict | None:
@@ -450,6 +488,14 @@ class Agent:
 
     def window_tiles(self, ids: set[int]) -> list:
         """Celdas del mosaico: solo las cámaras elegidas; las demás no gastan en dibujar recuadros."""
+        if self.on_demand:  # «En vivo» de la app: las que se están mirando
+            out = []
+            for c in self._catalog:
+                if c["id"] in ids:
+                    v = self.viewers.get(c["id"])
+                    out.append((f"{c.get('client_name') or ''} · {c['name']}", v.display if v else None,
+                                v.text() if v else "Abriendo..."))
+            return out
         tiles = []
         for cid, c in sorted(self._cams_cfg.items()):
             w = self.workers.get(cid)
@@ -470,12 +516,6 @@ class Agent:
                 tiles.append((name, None, self._closed_text(cid) + " (no se gasta video ni análisis)"))
             else:
                 tiles.append((name, None, "Escuchando alarmas del grabador (video solo cuando alguien mira desde el panel)"))
-        if self.on_demand:  # elegidas que todavía no se abrieron (o que analiza una máquina)
-            for c in self._catalog:
-                if c["id"] in ids and c["id"] not in self._cams_cfg:
-                    name = f"{c.get('client_name') or ''} · {c['name']}"
-                    tiles.append((name, None, "La analiza una maquina de analisis" if c.get("on_servers")
-                                  else "Abriendo..."))
         return tiles
 
     # ---- vista en vivo ----
@@ -515,6 +555,8 @@ class Agent:
         self._stop.set()
 
     def shutdown(self) -> None:
+        for v in self.viewers.values():
+            v.stop()
         if self.on_demand and self._watch_sent:
             try:
                 self.client.watch([])
@@ -850,7 +892,8 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
 
     agent = Agent(a.server, session["token"], data_dir, a.model, verify=verify, process_imports=not a.no_imports,
                   alarm_workers=max(1, a.alarm_workers), window=ventana, relogin=relogin,
-                  pc_name=f"PC de {user.get('username')}", on_demand=True)
+                  pc_name=f"PC de {user.get('username')}", on_demand=True,
+                  beat=lambda cid: api.post(f"/api/cameras/{cid}/live"))
     holder["agent"] = agent
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())

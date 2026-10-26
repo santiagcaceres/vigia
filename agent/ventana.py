@@ -239,8 +239,10 @@ class Ventana:
             self.notebook.add(body, text="  En vivo  ")
             left = ttk.Frame(body, padding=6)
             left.pack(side="left", fill="y")
-            ttk.Label(left, text="Clientes y cámaras", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-            help_text = ("Clic en una cámara = se abre y se analiza.\nCtrl o Shift para varias. Sacarla = se cierra."
+            ttk.Label(left, text="Cámaras" if on_demand else "Clientes y cámaras",
+                      font=("Segoe UI", 11, "bold")).pack(anchor="w")
+            help_text = ("Clic en una cámara = se ve en vivo (no se analiza).\nCtrl o Shift para varias. Lo que se "
+                         "analiza se elige en «Clientes»."
                          if on_demand else "Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.")
             ttk.Label(left, text=help_text, foreground="#666").pack(anchor="w", pady=(0, 6))
             self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=18)

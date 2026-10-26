@@ -4,9 +4,10 @@ La web queda para los clientes (su resumen y sus alertas). Todo lo de la empresa
 la misma API del servidor, con la sesión de un usuario (admin o empleado). Las llamadas a la red
 corren en hilos aparte (`Bg`) y el resultado se aplica en el hilo de la ventana, así nada se congela.
 
-Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana):
-- Clientes y cámaras: alta/edición/borrado de clientes y cámaras, probar conexión, zonas y reglas,
-  métricas del día.
+Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «En vivo», para mirar cualquier cámara
+sin analizarla, la arma `Ventana`):
+- Clientes: alta/edición/borrado de clientes y cámaras, qué cámaras se analizan («✔ Analizar», en las máquinas
+  de análisis), probar conexión, zonas y reglas, métricas del día.
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
   "Avisar al cliente".
 - Administración (solo admin): usuarios y PCs centrales.
@@ -39,14 +40,14 @@ log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
-# dónde se analizan las cámaras (server/pool.py)
-ANALYSIS_MODES = {"pcs": "En la PC de cada usuario",
-                  "servidores": "En las máquinas de análisis (nube)"}
-# por cliente o por cámara: «general» sigue el ajuste de arriba (cliente) o el del cliente (cámara)
-LOCATION_NAMES = {"general": "Como el ajuste general", "pcs": "En la PC de quien la revisa",
-                  "servidores": "En las máquinas de análisis (nube)"}
-CAM_LOCATION_NAMES = {**LOCATION_NAMES, "general": "Como su cliente"}
-AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes y cámaras» (solo con la pestaña a la vista)
+# qué cámaras analizan las máquinas (server/pool.py): las elegidas en «Clientes» o todas
+ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
+                  "servidores": "Todas las cámaras"}
+# por cliente: qué cámaras se analizan («general» sigue el ajuste de Administración). Lo que se marque en cada
+# cámara («✔ Analizar» / «✘ No analizar») manda sobre esto.
+LOCATION_NAMES = {"general": "Como el ajuste general", "pcs": "Solo las cámaras marcadas «Analizar»",
+                  "servidores": "Todas sus cámaras"}
+AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes» (solo con la pestaña a la vista)
 MODE_NAMES = {"vivo": "En vivo", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
 BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
 # tipo de cámara: decide qué reglas se aplican (el servidor tiene la lista, CAMERA_PROFILES)
@@ -269,7 +270,7 @@ class Oficina:
         self.notebook = notebook
         self.tab_clients = ttk.Frame(notebook, padding=8)
         self.tab_alerts = ttk.Frame(notebook, padding=8)
-        notebook.add(self.tab_clients, text="  Clientes y cámaras  ")
+        notebook.add(self.tab_clients, text="  Clientes  ")
         notebook.add(self.tab_alerts, text="  Alertas  ")
         self._build_clients()
         self._build_alerts()
@@ -455,7 +456,7 @@ class Oficina:
         self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "analiza", "alertas",
                                                      "zonas"), show="headings", height=12, selectmode="extended")
         for col, txt, w in (("nombre", "Cámara", 120), ("estado", "Estado", 130), ("modo", "Modo", 110),
-                            ("conexion", "Grabador", 160), ("analiza", "Abierta en", 120),
+                            ("conexion", "Grabador", 160), ("analiza", "Analizar", 120),
                             ("alertas", "Alertas", 90), ("zonas", "Zonas", 45)):
             self.cam_tree.heading(col, text=txt)
             self.cam_tree.column(col, width=w)
@@ -469,10 +470,15 @@ class Oficina:
         ttk.Button(b2, text="Probar conexión", command=lambda: self.probe(self._sel_camera())).pack(side="left", padx=4)
         if self.is_admin:
             ttk.Button(b2, text="Eliminar", command=self.delete_camera).pack(side="left")
-            ttk.Button(b2, text="Elegir todas", command=lambda: self.cam_tree.selection_set(
-                self.cam_tree.get_children())).pack(side="left", padx=4)
-        ttk.Button(b2, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
-        ttk.Button(b2, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
+        # qué se analiza (en las máquinas de análisis): se eligen varias con Ctrl o Shift
+        b3 = ttk.Frame(right)
+        b3.pack(fill="x")
+        ttk.Button(b3, text="✔ Analizar", command=lambda: self.set_analyze(True)).pack(side="left")
+        ttk.Button(b3, text="✘ No analizar", command=lambda: self.set_analyze(False)).pack(side="left", padx=4)
+        ttk.Button(b3, text="Elegir todas", command=lambda: self.cam_tree.selection_set(
+            self.cam_tree.get_children())).pack(side="left")
+        ttk.Button(b3, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
+        ttk.Button(b3, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
         self.cam_info = tk.Text(right, height=10, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
         self.cam_info.pack(fill="both", expand=True, pady=(6, 0))
         self._set_info("Elegí una cámara para ver el detalle. Doble clic para editarla.")
@@ -510,8 +516,10 @@ class Oficina:
         st = c.get("status")
         if not c.get("enabled", True):
             return "Deshabilitada"
-        if not st:  # nadie la tiene abierta («En vivo» la abre)
-            return "Cerrada" if not c.get("agent_id") else "Sin datos de la PC"
+        if not st:  # nadie la analiza (en «En vivo» se puede mirar igual)
+            if not c.get("analyzed"):
+                return "Sin analizar"
+            return "Esperando máquina" if not c.get("agent_id") else "Sin datos de la máquina"
         if not st.get("agent_online"):
             return "PC desconectada"
         txt = STATE_NAMES.get(st.get("state"), st.get("state") or "—")
@@ -538,7 +546,7 @@ class Oficina:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
                 cam["name"], self._cam_state(cam),
                 f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))} · {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]}", conn,
-                cam.get("analyzer_name") or "—",
+                ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")) if cam.get("analyzed") else "No",
                 fmt_counts(counts.get(str(cam["id"]))), len(cam.get("zones") or [])))
         self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
         if prev_cam and self.cam_tree.exists(prev_cam[0]):
@@ -560,7 +568,7 @@ class Oficina:
             f"{cam['name']}\n"
             f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
             f"Modo: {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
-            f"Abierta en: {cam.get('analyzer_name') or 'ninguna (se abre desde «En vivo»)'}\n"
+            f"Analizar: {('sí · ' + (cam.get('analyzer_name') or 'esperando una máquina en línea')) if cam.get('analyzed') else 'no (se puede mirar en «En vivo»)'}\n"
             f"Grabador: {BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · RTSP {cam.get('rtsp_port')} · "
             f"HTTP {cam.get('http_port')} · canal {cam.get('channel')} · usuario {cam.get('username')}\n"
             f"Zonas: {zones}\n\n"
@@ -688,12 +696,12 @@ class Oficina:
                        command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         loc = tk.StringVar(value=LOCATION_NAMES.get(c.get("analysis_location") or "general"))
         if self.is_admin:
-            lf = ttk.LabelFrame(right, text="Dónde se analizan sus cámaras", padding=6)
+            lf = ttk.LabelFrame(right, text="Qué cámaras se analizan (en las máquinas)", padding=6)
             lf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
             ttk.Combobox(lf, textvariable=loc, values=list(LOCATION_NAMES.values()), state="readonly",
                          width=40).pack(anchor="w")
-            ttk.Label(lf, text="Sirve para pasar de a un cliente a las máquinas de análisis (por ejemplo, para "
-                               "probar una máquina nueva con un solo cliente).", foreground="#666", wraplength=400,
+            ttk.Label(lf, text="Lo normal es marcar cámara por cámara con «✔ Analizar». «Todas sus cámaras» pasa "
+                               "el cliente entero (salvo las marcadas «No analizar»).", foreground="#666", wraplength=400,
                       justify="left").pack(anchor="w", pady=(2, 0))
 
         if not c.get("id") and not web_user.get():
@@ -897,7 +905,7 @@ class Oficina:
             "profile": tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general")),
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
             "off_hours": tk.StringVar(value=OFF_HOURS_NAMES.get(cam.get("off_hours") or "apagada")),
-            "location": tk.StringVar(value=CAM_LOCATION_NAMES.get(cam.get("analysis_location") or "general")),
+            "analyze": tk.BooleanVar(value=bool(cam.get("analyzed"))),
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
@@ -975,9 +983,8 @@ class Oficina:
                                                        for d in DAYS))
         ttk.Label(frm, text=hours_txt, foreground="#666", wraplength=560, justify="left").grid(
             row=16, column=0, columnspan=2, sticky="w")
-        if self.is_admin:
-            row(None, 19, "Dónde se analiza", ttk.Combobox(frm, textvariable=v["location"],
-                                                           values=list(CAM_LOCATION_NAMES.values()), state="readonly"))
+        ttk.Checkbutton(frm, text="Analizar en las máquinas de análisis (si no, solo se mira en «En vivo»)",
+                        variable=v["analyze"]).grid(row=19, column=1, sticky="w")
         row(None, 17, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
         if "hurto" not in ((owner or {}).get("plans") or ["hurto"]):
             ttk.Label(frm, text="Este cliente es solo de métricas: la cámara usa 2-3 cuadros por segundo y no guarda "
@@ -1023,8 +1030,6 @@ class Oficina:
                                   hpp_serial=cam.get("hpp_serial"))
             except ValueError:
                 return self.mb.showwarning("Vigía", "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
-            if self.is_admin:
-                common["analysis_location"] = inv(CAM_LOCATION_NAMES, v["location"].get()) or "general"
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
                     return self.mb.showwarning("Vigía", "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
@@ -1037,17 +1042,23 @@ class Oficina:
                     return self.mb.showwarning("Vigía", "Faltan el nombre o la IP del grabador.", parent=top)
                 bodies = [{**common, "name": v["name"].get().strip()}]
 
+            analyze = v["analyze"].get()
+
             def send():
                 if cam.get("id"):
-                    return [self.api.put(f"/api/cameras/{cam['id']}", bodies[0])], []
-                added, repeated = [], []
-                for b in bodies:
-                    try:
-                        added.append(self.api.post("/api/cameras", b))
-                    except ApiError as exc:
-                        if exc.status != 409 or len(bodies) == 1:
-                            raise
-                        repeated.append(b["name"])  # ya estaba cargada: no se repite
+                    added, repeated = [self.api.put(f"/api/cameras/{cam['id']}", bodies[0])], []
+                else:
+                    added, repeated = [], []
+                    for b in bodies:
+                        try:
+                            added.append(self.api.post("/api/cameras", b))
+                        except ApiError as exc:
+                            if exc.status != 409 or len(bodies) == 1:
+                                raise
+                            repeated.append(b["name"])  # ya estaba cargada: no se repite
+                changed = [x["id"] for x in added if bool(x.get("analyzed")) != analyze]
+                if changed:  # analizar o no: el mismo camino que los botones de la lista
+                    self.api.post("/api/cameras/analyze", {"camera_ids": changed, "analyze": analyze})
                 return added, repeated
 
             def done(res):
@@ -1064,6 +1075,19 @@ class Oficina:
         bb.grid(row=22, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
+
+    def set_analyze(self, analyze: bool) -> None:
+        """Elegir qué cámaras se analizan: las marcadas van a las máquinas de análisis; las demás solo se miran
+        en «En vivo»."""
+        ids = [int(i) for i in self.cam_tree.selection()]
+        if not ids:
+            return self.mb.showinfo("Vigía", "Elegí una o varias cámaras (Ctrl o Shift para varias).")
+        if not analyze and not self.mb.askyesno(
+                "Vigía", f"¿Dejar de analizar {len(ids)} cámara(s)?\n\nNo van a generar alertas ni métricas. "
+                         "Se pueden seguir mirando en «En vivo»."):
+            return
+        self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}),
+                    lambda _: self.config_saved(), self.err)
 
     def delete_camera(self) -> None:
         """Borra las cámaras elegidas (con Ctrl o Shift se eligen varias; «Elegir todas» toma las del cliente)."""
@@ -1465,9 +1489,8 @@ class Oficina:
                 if not a.get("has_pool_key"):
                     info += "  Falta crear la clave para máquinas (botón de abajo)."
             else:
-                info = ("Cada cámara se analiza en la PC de quien la abre en «En vivo». Para analizar en la nube, instalá las "
-                        "máquinas (deploy/maquina-analisis/README.md) y elegí acá «máquinas de análisis», o solo para "
-                        "algunos clientes: Editar cliente → «Dónde se analizan sus cámaras».")
+                info = ("Las máquinas de análisis analizan las cámaras marcadas «✔ Analizar» en Clientes. Las demás solo "
+                        "se miran en «En vivo». Cómo instalar una máquina: deploy/maquina-analisis/README.md.")
                 if a.get("cameras"):
                     p = a.get("plan") or {}
                     info += (f"  Ahora {a['cameras']} cámara(s) van a máquinas · carga {p.get('units', 0)} · hacen falta "

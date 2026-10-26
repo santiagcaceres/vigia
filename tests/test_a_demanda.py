@@ -63,50 +63,95 @@ class FakeWindow:
 class FakeClient:
     def __init__(self):
         self.sent: list[list[int]] = []
+        self.asked: list[list[int]] = []
 
     def catalog(self):
         return [{"id": 1, "client_name": "Minas", "name": "Caja", "here": False, "on_servers": False, "elsewhere": None},
-                {"id": 2, "client_name": "Minas", "name": "Puerta", "here": False, "on_servers": True, "elsewhere": None},
+                {"id": 2, "client_name": "Minas", "name": "Puerta", "here": False, "on_servers": True,
+                 "elsewhere": "maquina-1"},
                 {"id": 3, "client_name": "Minas", "name": "Depósito", "here": False, "on_servers": False,
-                 "elsewhere": "PC de ana"}]
+                 "elsewhere": None}]
 
     def watch(self, ids):
         self.sent.append(list(ids))
-        return {"camera_ids": [i for i in ids if i != 2], "on_servers": [i for i in ids if i == 2]}
+        return {"camera_ids": list(ids), "on_servers": []}
+
+    def view(self, ids):  # la 3 la borraron mientras tanto: no vuelve
+        self.asked.append(list(ids))
+        conn = {"brand": "hikvision", "host": "127.0.0.1", "source_url": "/no/existe.mp4", "channel": 1}
+        return [{"id": i, "client_name": "Minas", "name": n, "analyzed": i == 2, "analyzer": "maquina-1" if i == 2 else None,
+                 "connection": conn} for i, n in ((1, "Caja"), (2, "Puerta")) if i in ids]
 
 
-def test_la_app_avisa_que_abrio_y_que_cerro(tmp_path):
+def test_en_vivo_solo_mira_y_no_analiza(tmp_path):
+    """«En vivo» de la app: lo elegido se mira (video directo, o la imagen de la máquina si la analiza una
+    máquina); la PC no analiza nada."""
     from agent.__main__ import Agent
+    from agent.vista import RemoteView, ViewWorker
 
     ag = Agent("http://127.0.0.1:9", "token", tmp_path, None)
     ag.window, ag.on_demand, ag.client = FakeWindow(), True, FakeClient()
+    ag.window.set_status = lambda *a, **k: None
+    ag.beat = lambda cid: {"frame_url": None, "agent_online": True}
 
     def tick():
         ag._demand_tick(time.monotonic())
-        for _ in range(100):
-            if not ag._watch_busy:
+        for _ in range(200):
+            if not ag._watch_busy and not ag._view_pending:
                 break
             time.sleep(0.01)
 
-    # al entrar: avisa que no hay nada abierto (lo que quedó de antes se libera) y no abre nada hasta entonces
+    # la app no analiza: aunque el servidor le mande cámaras, no abre ninguna para analizar
     ag.apply_config({"cameras": [{"id": 9, "name": "vieja", "connection": {}}]})
     assert ag.workers == {} and ag._cams_cfg == {}
     tick()
-    assert ag.client.sent == [[]] and ag._force_config
-    tick()
-    assert ag.client.sent == [[]]  # sin cambios no vuelve a avisar
+    assert ag.client.sent == [[]]  # al entrar le avisa al servidor que esta PC no tiene nada asignado
 
-    ag.window.sel, ag.window.selected_at = {1, 2}, time.monotonic()
+    ag.window.sel, ag.window.selected_at = {1, 2, 3}, time.monotonic()
     tick()
-    assert ag.client.sent == [[]]  # recién elegidas: espera un momento por si sigue eligiendo
+    assert ag.client.asked == []  # recién elegidas: espera un momento por si sigue eligiendo
     ag.window.selected_at -= 1
     tick()
-    assert ag.client.sent[-1] == [1, 2]
-    assert [c[3] for c in ag.window_cameras()] == ["Abriendo...", "En una máquina", "Abierta en PC de ana"]
-    assert [t[2] for t in ag.window_tiles({1, 2})] == ["Abriendo...", "La analiza una maquina de analisis"]
+    tick()
+    assert ag.client.asked == [[1, 2, 3]]
+    assert isinstance(ag.viewers[1], ViewWorker) and isinstance(ag.viewers[2], RemoteView)
+    tick()
+    assert ag.client.asked == [[1, 2, 3]]  # la que no existe más no se pide de nuevo
+    estados = [c[3] for c in ag.window_cameras()]
+    assert estados[1] == "Esperando la imagen de la máquina..." and estados[2] == "No disponible"
+    assert [t[0] for t in ag.window_tiles({1, 2})] == ["Minas · Caja", "Minas · Puerta"]
+    assert ag.workers == {}  # nada se analiza en la PC
 
-    ag.shutdown()  # al cerrar la app se liberan las cámaras
-    assert ag.client.sent[-1] == []
+    ag.window.sel, ag.window.selected_at = {2}, time.monotonic() - 1
+    tick()
+    assert list(ag.viewers) == [2]  # la Caja se cerró
+    ag.shutdown()
+
+
+def test_elegir_que_se_analiza_y_mirar_cualquiera(app):
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cl = a.post("/api/clients", json={"name": "Minas"}).json()
+        ids = [a.post("/api/cameras", json={"client_id": cl["id"], "name": f"Cámara {i}", "host": "10.0.0.1",
+                                            "channel": i}).json()["id"] for i in (1, 2, 3)]
+        assert not any(c["analyzed"] for c in a.get("/api/cameras").json())  # nueva = no se analiza
+        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[:2], "analyze": True}).json()["changed"] == 2
+        cams = {c["id"]: c for c in a.get("/api/cameras").json()}
+        assert cams[ids[0]]["analyzed"] and cams[ids[1]]["analyzed"] and not cams[ids[2]]["analyzed"]
+        a.post("/api/cameras/analyze", json={"camera_ids": [ids[1]], "analyze": False})
+        cams = {c["id"]: c for c in a.get("/api/cameras").json()}
+        assert not cams[ids[1]]["analyzed"] and cams[ids[1]]["agent_id"] is None
+
+        pc = a.post("/api/agent/session").json()
+        h = {"X-Agent-Token": pc["token"]}
+        vista = a.post("/api/agent/view", headers=h, json={"camera_ids": [ids[0], ids[2]]}).json()["cameras"]
+        assert {v["id"]: v["analyzed"] for v in vista} == {ids[0]: True, ids[2]: False}
+        assert all(v["connection"]["host"] == "10.0.0.1" for v in vista)
+        assert a.get("/api/agent/config", headers=h).json()["cameras"] == []  # la PC no analiza nada
+        # una PC vieja (sin usuario) no puede mirar
+        vieja = a.post("/api/agents", json={"name": "PC vieja", "client_id": None}).json()
+        assert a.post("/api/agent/view", headers={"X-Agent-Token": vieja["token"]},
+                      json={"camera_ids": [ids[0]]}).status_code == 403
 
 
 def test_borrar_usuario_y_no_repetir_camaras(app):

@@ -167,6 +167,12 @@ class ServerClient:
         r.raise_for_status()
         return r.json()["cameras"]
 
+    def view(self, camera_ids: list[int]) -> list[dict]:
+        """Cómo conectarse a las cámaras que se abren en «En vivo» para mirarlas (sin analizar)."""
+        r = self.http.post("/api/agent/view", json={"camera_ids": camera_ids})
+        r.raise_for_status()
+        return r.json()["cameras"]
+
     def watch(self, camera_ids: list[int]) -> dict:
         """Las cámaras abiertas en esta PC (las analiza mientras estén abiertas)."""
         r = self.http.put("/api/agent/watch", json={"camera_ids": camera_ids})

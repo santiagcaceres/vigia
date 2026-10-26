@@ -280,6 +280,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   ventana ya no se espera (`Agent._stopping`; se esperan al cerrar la app); las máquinas sin ventana siguen esperando.
   El botón ahora dice «Buscando…», deja la respuesta en el registro y avisa si no hay respuesta en 30 s. Queda: el
   bucle de la ventana todavía hace pedidos de red (config, estado, lista de cámaras) en el mismo hilo.
+- **«En vivo» solo para mirar; qué se analiza se elige en «Clientes» (26 oct, decisión del dueño; app 1.19.0).**
+  Reemplaza a «cámaras a demanda» (1.18): **la app ya no analiza nada** (`apply_config` con `on_demand` deja las
+  cámaras vacías; al entrar avisa `watch([])` para soltar lo que tuviera). Pestañas: **En vivo** (lista «Cámaras» con
+  todas las de todos los clientes; clic = mirar, sin analizar) y **Clientes** (antes «Clientes y cámaras»).
+  - **Qué se analiza:** en Clientes, columna «Analizar» (Sí · máquina / No) y botones «✔ Analizar» / «✘ No analizar»
+    (varias a la vez) → `POST /api/cameras/analyze` (`camera_ids`, `analyze`): `analysis_location` = `servidores`
+    o `pcs` (con «No», `agent_id` y `operator_id` en NULL). Lo analizan las máquinas de análisis. En el formulario de
+    la cámara, casilla «Analizar en las máquinas de análisis» (usa el mismo pedido). `camera_dict.analyzed` = dónde se
+    analiza en efecto (`locations()`). Cámara nueva = no se analiza (sigue el ajuste general, «pcs»). Ajuste general
+    renombrado: «Solo las elegidas en «Clientes»» (pcs) / «Todas las cámaras» (servidores); en el cliente: «Solo las
+    cámaras marcadas» / «Todas sus cámaras».
+  - **Mirar** (`agent/vista.py`): `POST /api/agent/view` (PC de un usuario del equipo) da la conexión de las elegidas.
+    Si no se analiza → `ViewWorker` (abre el video directo, sin detector, 10 cuadros/s a la ventana). Si la analiza
+    una máquina → `RemoteView`: la imagen que sube la máquina (1 por segundo, con recuadros) con el latido del panel
+    (`POST /api/cameras/{id}/live` con la sesión del usuario, `Agent(beat=...)`), para no pedirle otra transmisión
+    al grabador (Hik-Connect da pocas a la vez). El link de Hik-Connect (`stream-url`) también se da a la PC de un
+    usuario del equipo para mirar. Estados en la lista: «Viendo · N fps», «Imagen de la máquina», «Se analiza ·
+    máquina», «No disponible». Probado de punta a punta con servidor, máquina y app locales (captura).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -486,7 +504,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 182 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 184 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

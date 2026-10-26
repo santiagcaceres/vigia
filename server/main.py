@@ -198,6 +198,11 @@ class UserCamerasIn(BaseModel):
     camera_ids: list[int] = Field(default_factory=list, max_length=2000)
 
 
+class CamerasAnalyzeIn(BaseModel):
+    camera_ids: list[int] = Field(min_length=1, max_length=2000)
+    analyze: bool
+
+
 class CamerasDeleteIn(BaseModel):
     camera_ids: list[int] = Field(min_length=1, max_length=2000)
     con_alertas: bool = False  # borrar también sus alertas, clips y videos subidos
@@ -511,9 +516,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "version": (a.last_status or {}).get("version")}
 
     def operator_map(s) -> dict:
-        """Nombres para mostrar en cada cámara: quién la revisa (usuario) y qué la analiza (PC o máquina)."""
+        """Nombres para mostrar en cada cámara: quién la revisa (usuario) y qué la analiza (PC o máquina), y dónde
+        se analiza cada una."""
         return {"users": dict(s.query(User.id, User.username).all()),
-                "agents": dict(s.query(Agent.id, Agent.name).all())}
+                "agents": dict(s.query(Agent.id, Agent.name).all()), "locs": locations(s)}
 
     def user_agent(s, u: User) -> Agent:
         """La PC de un usuario: se crea sola la primera vez (no hay que vincular ni nombrar PCs)."""
@@ -747,7 +753,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ops = ops or {}
             op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
             d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
-                     analyzer_name=(ops.get("agents") or {}).get(c.agent_id) if c.agent_id else None)
+                     analyzer_name=(ops.get("agents") or {}).get(c.agent_id) if c.agent_id else None,
+                     analyzed=(ops.get("locs") or {}).get(c.id) == "servidores")
         return d
 
     def alarm_cfg_of(c: Camera) -> dict:
@@ -1446,6 +1453,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("No se pudieron borrar %d archivos de cámaras borradas", len(files))
         log.info("Cámaras borradas: %s (%d alertas)", ids, n_events)
 
+    @app.post("/api/cameras/analyze")
+    def cameras_analyze(body: CamerasAnalyzeIn, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """Elegir qué cámaras se analizan (en las máquinas de análisis). Las demás solo se miran en «En vivo» de
+        la app, sin analizar."""
+        cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids))).all()
+        if not cams:
+            raise HTTPException(404, "No se encontraron esas cámaras")
+        before = locations(s)
+        for c in cams:
+            c.analysis_location = "servidores" if body.analyze else "pcs"
+        s.flush()
+        sync_locations(s, before)
+        if not body.analyze:
+            for c in cams:  # sin analizar: no la tiene ninguna PC ni máquina
+                c.agent_id = None
+                c.operator_id = None
+        bump_rev(s)
+        s.commit()
+        rebalance(s, force=True)
+        return {"changed": len(cams), "analyze": body.analyze}
+
     @app.delete("/api/cameras/{cam_id}", status_code=204)
     def delete_camera(cam_id: int, con_alertas: bool = False, _: User = Depends(admin_only), s=Depends(db)) -> None:
         remove_cameras(s, [get_or_404(s, Camera, cam_id, "Cámara")], con_alertas)
@@ -1606,6 +1634,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "elsewhere": names.get(c.agent_id) if c.agent_id not in (None, ag.id) else None,
         } for c in cams]}
 
+    @app.post("/api/agent/view")
+    def agent_view(body: UserCamerasIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """«En vivo» de la app: las cámaras que el usuario quiere mirar, sin analizarlas. Las que analiza una
+        máquina se muestran con la imagen que sube la máquina (no se le pide otra transmisión al grabador)."""
+        watcher(s, ag)
+        locs = locations(s)
+        names = dict(s.query(Agent.id, Agent.name).all())
+        cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids)), Camera.enabled.is_(True)).all()
+        clients = {c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))} if cams else {}
+        return {"cameras": [{
+            "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": clients[c.client_id].name,
+            "analyzed": locs.get(c.id) == "servidores", "analyzer": names.get(c.agent_id) if c.agent_id else None,
+            "connection": camera_connection(c, clients[c.client_id]),
+        } for c in cams]}
+
     @app.put("/api/agent/watch")
     def agent_watch(body: UserCamerasIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         """Las cámaras que el usuario tiene abiertas en «En vivo»: las analiza su PC mientras estén abiertas.
@@ -1641,6 +1684,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             } for c in cams],
         }
 
+    def camera_connection(c: Camera, client: Client) -> dict:
+        return {"brand": c.brand, "host": c.host, "username": c.username, "password": box.decrypt(c.password_enc),
+                "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
+                "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips, "playback_time": c.playback_time,
+                "timezone": client.timezone, "source_url": box.decrypt(c.source_url_enc) or None,
+                "camera_id": c.id, "serial": c.hpp_serial}
+
     def agent_camera_cfg(c: Camera, client: Client) -> dict:
         analysis = camera_analysis(c, client)
         return {
@@ -1650,13 +1700,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # con el local cerrado la PC central no abre el video (salvo que la cámara diga otra cosa)
             "schedule": {"hours": client.hours, "margin_min": DEFAULT_MARGIN_MIN, "off_hours": c.off_hours or "apagada"},
             "mode": c.mode or "vivo", "alarm_cfg": alarm_cfg_of(c),
-            "connection": {"brand": c.brand, "host": c.host, "username": c.username,
-                           "password": box.decrypt(c.password_enc),
-                           "channel": c.channel, "rtsp_port": c.rtsp_port, "http_port": c.http_port,
-                           "detect_stream": c.detect_stream, "nvr_clips": c.nvr_clips,
-                           "playback_time": c.playback_time, "timezone": client.timezone,
-                           "source_url": box.decrypt(c.source_url_enc) or None,
-                           "camera_id": c.id, "serial": c.hpp_serial},
+            "connection": camera_connection(c, client),
             "analysis": analysis,
         }
 
@@ -1709,7 +1753,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """La PC central pide un link de video nuevo (las cámaras por Hik-Connect no tienen IP ni puertos)."""
         c = get_or_404(s, Camera, cam_id, "Cámara")
         if not agent_owns(ag, c):
-            raise HTTPException(403, "La cámara no es de esta PC")
+            try:
+                watcher(s, ag)  # la app de un usuario del equipo puede mirar cualquier cámara
+            except HTTPException:
+                raise HTTPException(403, "La cámara no es de esta PC") from None
         if c.brand != "hikconnect":
             raise HTTPException(422, "La cámara no está configurada por Hik-Connect")
         try:
