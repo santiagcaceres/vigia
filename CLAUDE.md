@@ -243,6 +243,20 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     Ubuntu 24.04, botón SSH del navegador; Oracle bajó lo gratis a 2 núcleos/12 GB desde el 18 ago 2026 según
     terceros → 2-3 cámaras). Probado de punta a punta con un venv que solo tiene `requirements-servidor-cpu.txt`
     (servidor local + 5 cámaras): se da de alta, recibe las cámaras y las analiza.
+- **Cámaras a demanda: el admin abre y listo (26 oct, decisión del dueño; app 1.18.0).** «Nada de PCs ni de asignar
+  cámaras»: se entra a la app con el usuario admin y la pestaña **En vivo** lista **todas** las cámaras de todos los
+  clientes (`GET /api/agent/catalog`, token de la PC del usuario). Clic en una cámara = se abre en esa PC (se ve y se
+  analiza: recuadros, alertas, métricas); sacarla de la selección = se cierra. La app avisa qué tiene abierto con
+  `PUT /api/agent/watch` (pone `cameras.agent_id` = la PC del usuario y libera las que dejó; las que van a las
+  máquinas de análisis no se tocan) y pide la configuración ya. Espera 0,8 s sin cambios de selección antes de
+  avisar; al entrar no abre nada hasta avisar; al cerrar la app libera todo (`watch([])`). Clic en un cliente no
+  abre todas sus cámaras y no hay botón «Todas» (sí «Cerrar todas»). `Agent(on_demand=True)` en `run_app`,
+  `Ventana.build_main(on_demand=True)`. Fuera de la app: sin «Asignada a» en la cámara, sin «Cámaras asignadas» en
+  los usuarios ni columna «Revisa»; «Abierta en» dice qué PC la tiene; estado «Cerrada». Una cámara que nunca se
+  abrió no tiene imagen para dibujar zonas: abrirla antes. `operator_id` y `PUT /api/users/{id}/cameras` siguen en
+  el servidor pero la app ya no los usa. Ese día se pidió borrar las 8 PCs viejas sin usuario y las cámaras
+  repetidas de Minas (128 → 35, una por grabador y canal); el conector de Supabase no pudo (la confirmación no
+  llega): se le pasó el SQL al dueño para el SQL Editor.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -449,7 +463,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 174 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 177 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

@@ -160,6 +160,19 @@ class ServerClient:
         except ValueError:
             return {}
 
+    # ---- cámaras a demanda (app de escritorio) ----
+    def catalog(self) -> list[dict]:
+        """Todas las cámaras, para elegir cuáles abrir en «En vivo»."""
+        r = self.http.get("/api/agent/catalog")
+        r.raise_for_status()
+        return r.json()["cameras"]
+
+    def watch(self, camera_ids: list[int]) -> dict:
+        """Las cámaras abiertas en esta PC (las analiza mientras estén abiertas)."""
+        r = self.http.put("/api/agent/watch", json={"camera_ids": camera_ids})
+        r.raise_for_status()
+        return r.json()
+
     # ---- métricas ----
     def post_metrics(self, buckets: list[dict]) -> dict:
         r = self.http.post("/api/agent/metrics", json={"buckets": buckets})

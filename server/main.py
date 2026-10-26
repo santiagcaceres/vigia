@@ -1542,6 +1542,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         m = active_model(s, client_id)
         return dict(m.spec, id=m.id) if m else None
 
+    def watcher(s, ag: Agent) -> User:
+        """La PC de un usuario activo del equipo (admin o empleado): la que abre cámaras a demanda."""
+        u = s.get(User, ag.user_id) if ag.user_id else None
+        if u is None or not u.active or u.role not in ("admin", "entrenador"):
+            raise HTTPException(403, "Solo la app de un usuario del equipo abre cámaras a demanda")
+        return u
+
+    @app.get("/api/agent/catalog")
+    def agent_catalog(ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """Todas las cámaras, para la lista de «En vivo»: el usuario elige cuáles abrir (sin asignar nada)."""
+        watcher(s, ag)
+        locs = locations(s)
+        clients = dict(s.query(Client.id, Client.name).all())
+        names = dict(s.query(Agent.id, Agent.name).all())
+        cams = s.query(Camera).filter(Camera.enabled.is_(True)).order_by(Camera.client_id, Camera.name, Camera.id)
+        return {"cameras": [{
+            "id": c.id, "client_id": c.client_id, "client_name": clients.get(c.client_id, ""), "name": c.name,
+            "here": c.agent_id == ag.id, "on_servers": locs.get(c.id) == "servidores",
+            "elsewhere": names.get(c.agent_id) if c.agent_id not in (None, ag.id) else None,
+        } for c in cams]}
+
+    @app.put("/api/agent/watch")
+    def agent_watch(body: UserCamerasIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """Las cámaras que el usuario tiene abiertas en «En vivo»: las analiza su PC mientras estén abiertas.
+        Las que dejó de mirar quedan libres. Las que van a las máquinas de análisis no se tocan."""
+        watcher(s, ag)
+        locs = locations(s)
+        want = {cid for cid in body.camera_ids if locs.get(cid) == "pcs"}
+        changed = 0
+        for c in s.query(Camera).filter(or_(Camera.agent_id == ag.id, Camera.id.in_(want))):
+            new = ag.id if c.id in want else None
+            if c.agent_id != new:
+                c.agent_id = new
+                changed += 1
+        if changed:
+            bump_rev(s)
+        s.commit()
+        return {"camera_ids": sorted(want), "on_servers": sorted(set(body.camera_ids) - want)}
+
     @app.get("/api/agent/config")
     def agent_config(ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         cams = agent_cameras_q(s, ag).order_by(Camera.id).all()

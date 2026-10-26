@@ -24,6 +24,7 @@ import logging
 import math
 import queue
 import socket
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -113,6 +114,8 @@ class Ventana:
         self.on_logout: Callable[[], None] | None = None
         self.hooks: list[Callable[[], None]] = []  # se llaman en cada pump (resultados de red de la oficina)
         self.analyze = False
+        self.on_demand = False  # app de escritorio: lo elegido se abre en esta PC (ver Agent._demand_tick)
+        self.selected_at = 0.0  # cuándo cambió la selección (para no avisar en cada clic con Shift)
         self._selected: set[int] | None = self._load_selection()  # None = todavía no hay cámaras
         self._tree_ids: dict[str, int] = {}  # id del árbol -> id de cámara
         self._cam_rows: dict[int, str] = {}
@@ -206,12 +209,14 @@ class Ventana:
         return result["res"]
 
     # ---------------- pantalla principal ----------------
-    def build_main(self, title: str, analyze: bool = True) -> None:
-        """Cabecera + pestañas. Con `analyze`, la primera pestaña es «En vivo» (mosaico de la IA)."""
+    def build_main(self, title: str, analyze: bool = True, on_demand: bool = False) -> None:
+        """Cabecera + pestañas. Con `analyze`, la primera pestaña es «En vivo» (mosaico de la IA). Con
+        `on_demand`, la lista trae todas las cámaras y la que se elige se abre (se ve y se analiza) en esta PC."""
         if not self.open or self.main_built:
             return
         tk, ttk = self.tk, self.ttk
         self.analyze = analyze
+        self.on_demand = on_demand
         top = ttk.Frame(self.root, padding=(10, 6))
         top.pack(side="top", fill="x")
         self.header = top  # la Oficina suma acá el botón de actualizar
@@ -235,8 +240,9 @@ class Ventana:
             left = ttk.Frame(body, padding=6)
             left.pack(side="left", fill="y")
             ttk.Label(left, text="Clientes y cámaras", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-            ttk.Label(left, text="Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.",
-                      foreground="#666").pack(anchor="w", pady=(0, 6))
+            help_text = ("Clic en una cámara = se abre y se analiza.\nCtrl o Shift para varias. Sacarla = se cierra."
+                         if on_demand else "Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.")
+            ttk.Label(left, text=help_text, foreground="#666").pack(anchor="w", pady=(0, 6))
             self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=18)
             self.tree.heading("#0", text="Cámara")
             self.tree.heading("estado", text="Estado")
@@ -246,8 +252,10 @@ class Ventana:
             self.tree.bind("<<TreeviewSelect>>", self._on_select)
             btns = ttk.Frame(left)
             btns.pack(fill="x", pady=6)
-            ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left")
-            ttk.Button(btns, text="Ninguna", command=self._select_none).pack(side="left", padx=4)
+            if not on_demand:  # a demanda no: abriría todas las cámaras de golpe
+                ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left", padx=(0, 4))
+            ttk.Button(btns, text="Cerrar todas" if on_demand else "Ninguna",
+                       command=self._select_none).pack(side="left")
             self.info = ttk.Label(left, text="", foreground="#666", wraplength=340, justify="left")
             self.info.pack(anchor="w", pady=(4, 0))
             right = tk.Frame(body, bg="#111")
@@ -313,9 +321,10 @@ class Ventana:
         for item in self.tree.selection():
             if item in self._tree_ids:
                 chosen.add(self._tree_ids[item])
-            else:  # un cliente: todas sus cámaras
+            elif not self.on_demand:  # un cliente: todas sus cámaras (a demanda no: se abrirían todas)
                 chosen.update(self._tree_ids[c] for c in self.tree.get_children(item) if c in self._tree_ids)
         self._selected = chosen
+        self.selected_at = time.monotonic()
         self._save_selection()
 
     def _select_all(self) -> None:
@@ -324,6 +333,7 @@ class Ventana:
     def _select_none(self) -> None:
         self.tree.selection_set(())
         self._selected = set()
+        self.selected_at = time.monotonic()
         self._save_selection()
 
     def set_cameras(self, cams: list[tuple[int, str, str, str]]) -> None:
@@ -340,7 +350,9 @@ class Ventana:
                 row = self.tree.insert(self._client_rows[client], "end", text=name, values=(state,))
                 self._tree_ids[row] = cid
                 self._cam_rows[cid] = row
-            if self._selected is None:  # primera vez: todas (si son pocas) o el primer cliente
+            if self._selected is None and self.on_demand:  # primera vez a demanda: nada abierto
+                self._selected = set()
+            elif self._selected is None:  # primera vez: todas (si son pocas) o el primer cliente
                 ids = [c[0] for c in cams]
                 first = cams[0][1] if cams else None
                 self._selected = set(ids) if len(ids) <= 4 else {c[0] for c in cams if c[1] == first}
