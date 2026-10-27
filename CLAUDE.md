@@ -344,12 +344,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   tiempos (rigen enseguida en la máquina). **Ese día se bajó la 6 (id 38) a 5 fps** por SQL (el UPDATE por el
   conector de Supabase anduvo) y se subió `config_rev`; quedan en 15 fps (sin analizar) Depósito galpón, Oficina,
   Entrada, Pasillo bebidas y Depósito cajas: bajarlas a 5 antes de analizarlas (15 fps = 3 veces el costo).
-- **Costos estimados (27 oct, precios de terceros, verificar):** máquina de 4 vCPU ≈ 6 cámaras de hurto a 5 fps
-  (conservador; banco: 8). GCP e2-standard-4 São Paulo: US$ 0,213/h a demanda (≈ 155/mes 24 h), 0,134 con compromiso
-  1 año, Spot 0,034 (≈ 25/mes). AWS c7i.xlarge sa-east-1: 0,275/h (≈ 201/mes), Spot ≈ 0,05-0,06. AWS g4dn.xlarge
-  (T4) sa-east-1: 0,894/h, Spot ≈ 0,09-0,12; estimado 40 cámaras por máquina (sin probar). Hetzner AX42 (8 núcleos):
-  ≈ € 46-50/mes + alta (subiendo en 2026). Fijos: Vercel Pro US$ 20 + Supabase Pro US$ 25 por mes. Prender las
-  máquinas solo en horario necesita el encendedor (hoy solo para AWS: `agent/escalador.py`).
+- **Costos (27 oct; precios oficiales leídos por la sesión «Prueba Vigía app» en las calculadoras, USD, Linux, São
+  Paulo, sin disco):** GCP e2-standard-4: a demanda 0,2127/h = 155,30/mes; **Spot 0,0443/h = 32,34/mes**; compromiso
+  1 año 97,84/mes. AWS sa-east-1: c7i.xlarge 0,2751/h = 200,82/mes, **Spot 0,049** (≈ 36/mes), Savings Plan 1 año
+  152,91/mes; c6a.xlarge 0,2358 (Spot 0,0528, SP 0,17955); c7a no existe en sa-east-1; **g4dn.xlarge (T4) 0,894/h =
+  652,62/mes, Spot 0,0894** (≈ 65/mes), SP 1 año 397,85/mes. Fijos: Vercel Pro US$ 20 + Supabase Pro US$ 25 por mes.
+  **Medido con `python -m agent.medir`** (agent/medir.py: análisis completo + decodificación, 30 % de margen) en la
+  sesión cloud (Xeon 2,1 GHz, núcleos sin hyperthreading): 14 / 26 / 48 cuadros analizados por segundo con 1 / 2 / 4
+  núcleos → ~2 cámaras de hurto por núcleo físico, **crece en proporción** (una máquina grande de procesador cuesta lo
+  mismo por cámara que varias chicas). Lo que no es detector: ~830 cuadros/s por núcleo. Una vCPU de e2/c7i/c6a es
+  medio núcleo (hyperthreading): e2-standard-4 ≈ 4-5 cámaras (falta medir en la VM). Con placa de video, el
+  procesador solo decodifica y hace el resto: g4dn.xlarge estimado 40-80 cámaras (sin probar). Prender solo en horario
+  necesita el encendedor (hoy solo AWS: `agent/escalador.py`).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -556,7 +562,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 195 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 196 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
