@@ -278,8 +278,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   no llegaron al servidor: la ventana estaba trabada). Causa encontrada: al cerrar una cámara, `apply_config` hacía
   `thread.join(15)` en el hilo de la ventana (si el video estaba abriendo, hasta 15 s por cámara sin responder). Con
   ventana ya no se espera (`Agent._stopping`; se esperan al cerrar la app); las máquinas sin ventana siguen esperando.
-  El botón ahora dice «Buscando…», deja la respuesta en el registro y avisa si no hay respuesta en 30 s. Queda: el
-  bucle de la ventana todavía hace pedidos de red (config, estado, lista de cámaras) en el mismo hilo.
+  El botón ahora dice «Buscando…», deja la respuesta en el registro y avisa si no hay respuesta en 30 s.
+  **App 1.21.1 (27 oct):** con ventana, los pedidos de config, estado y lista de cámaras van en otros hilos
+  (`Agent._call`, `_net` con 3 hilos; sin ventana siguen directos). Antes la ventana esperaba cada respuesta (0,3-3 s)
+  y un clic que llegaba en ese rato se procesaba tarde, con el puntero ya en otro lado, y el botón no se disparaba
+  (lo vio la sesión «Prueba Vigía app»: «Guardar nombres» y «Buscar actualización» no respondían al mouse; con
+  Tab + espacio sí). Prueba: `test_la_ventana_sigue_respondiendo_mientras_el_servidor_tarda`.
 - **«En vivo» solo para mirar; qué se analiza se elige en «Clientes» (26 oct, decisión del dueño; app 1.19.0).**
   Reemplaza a «cámaras a demanda» (1.18): **la app ya no analiza nada** (`apply_config` con `on_demand` deja las
   cámaras vacías; al entrar avisa `watch([])` para soltar lo que tuviera). Pestañas: **En vivo** (lista «Cámaras» con
@@ -332,6 +336,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   profile?}]}`; sube `config_rev`). **Renombrar no corta el video**: `CameraWorker.fingerprint_of` ya no incluye
   `name`/`client_name` y `apply_config` llama a `rename` (las máquinas lo toman después de actualizarse con
   `git pull`, es decir al reiniciar). El nombre cambia en Vigía, no en el grabador.
+  **27 oct (sesión «Prueba Vigía app»):** Minas renombrada (Góndolas ventana, Depósito galpón, Caja mostrador, Oficina,
+  Depósito estanterías, Portón calle, Entrada, Pasillo bebidas, Depósito cajas; «Camera 01» de GE7132986 sin imagen por
+  el cifrado). De noche la IA no vio nada (infrarrojo). **Ninguna cámara de Minas tiene zonas**: la máquina analiza
+  (3, 5 y 6) pero no puede dar alertas hasta que se dibujen. La 6 (Portón calle) va a 12-15 fps y deja la máquina en
+  4,6/4. En «Ajustar…», si la cámara ya se analiza, la ventana avisa y pide confirmación antes de guardar zonas o
+  tiempos (rigen enseguida en la máquina).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -538,7 +548,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 194 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 195 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

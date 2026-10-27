@@ -22,7 +22,7 @@ import signal
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -149,6 +149,10 @@ class Agent:
         self._watch_sent: set[int] | None = None  # lo último que se le avisó al servidor
         self._watch_busy = False
         self._watch_retry_at = 0.0
+        # con ventana, los pedidos al servidor van en otros hilos: mientras esperaba la respuesta (0,3 a 3 s) la ventana
+        # no atendía, y un clic que llegaba en ese rato se procesaba tarde, con el mouse ya en otro lado (no andaba)
+        self._net = ThreadPoolExecutor(max_workers=3, thread_name_prefix="red") if self.window is not None else None
+        self._jobs: dict[str, Future] = {}
 
     def _detector(self, name: str, cam_cfg: dict | None = None) -> Detector:
         vehicles = bool(((cam_cfg or {}).get("analysis") or {}).get("vehicles"))
@@ -248,6 +252,26 @@ class Agent:
             w.start()
             log.info("Iniciada cámara %s", c["name"])
 
+    def _call(self, key: str, fn: Callable[[], object] | None) -> tuple[bool, object] | None:
+        """Un pedido al servidor. Con ventana corre en otro hilo: devuelve None mientras sigue en curso (`fn` se usa
+        solo para empezarlo) y (True, resultado) o (False, excepción) cuando terminó. Sin ventana, en el momento."""
+        if self._net is None:
+            try:
+                return True, fn()
+            except Exception as exc:  # noqa: BLE001 - lo decide quien llama
+                return False, exc
+        fut = self._jobs.get(key)
+        if fut is None:
+            if fn is None:
+                return None
+            self._jobs[key] = self._net.submit(fn)
+            return None
+        if not fut.done():
+            return None
+        del self._jobs[key]
+        exc = fut.exception()
+        return (False, exc) if exc is not None else (True, fut.result())
+
     def run(self) -> None:
         self.outbox.start()
         last_cfg = last_status = -1e9
@@ -263,9 +287,12 @@ class Agent:
             if self._force_config:
                 self._force_config = False
                 last_cfg = -1e9
-            if now - last_cfg >= CONFIG_EVERY_SECONDS:
-                try:
-                    self.apply_config(self.client.config())
+            res = (self._call("config", self.client.config)
+                   if now - last_cfg >= CONFIG_EVERY_SECONDS or "config" in self._jobs else None)
+            if res is not None:
+                ok, val = res
+                if ok:
+                    self.apply_config(val)
                     last_cfg = now
                     if self.window is not None and not self.on_demand:
                         n = len(self._cams_cfg)
@@ -274,45 +301,53 @@ class Agent:
                                                    "las máquinas de análisis")
                         else:
                             self.window.set_status(f"{self.pc_name} · analizando {n} cámara{'s' if n != 1 else ''}")
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 401:
+                elif isinstance(val, httpx.HTTPStatusError):
+                    if val.response.status_code == 401:
                         log.error("Esta PC ya no está vinculada (la borraron del panel o cambió la clave).")
                         if self._ask_login("Esta PC ya no está vinculada. Entrá de nuevo con tu usuario."):
                             last_cfg = -1e9
                             continue
                     else:
-                        log.warning("No se pudo obtener la configuración: %s", exc)
+                        log.warning("No se pudo obtener la configuración: %s", val)
                     last_cfg = now - CONFIG_EVERY_SECONDS + 15
-                except httpx.HTTPError as exc:
-                    log.warning("Servidor no disponible (%s); las cámaras siguen funcionando", exc)
+                elif isinstance(val, httpx.HTTPError):
+                    log.warning("Servidor no disponible (%s); las cámaras siguen funcionando", val)
                     if self.window is not None:
                         self.window.set_status(f"{self.pc_name} · sin conexión con el servidor (reintentando)", ok=False)
                     last_cfg = now - CONFIG_EVERY_SECONDS + 15
+                else:
+                    raise val
             if self._logout_requested:
                 self._logout_requested = False
                 self.apply_config({"cameras": []})  # deja de mirar las cámaras hasta volver a entrar
                 if self._ask_login(None):
                     last_cfg = -1e9
                     continue
-            if now - last_status >= STATUS_EVERY_SECONDS:
+            res = None
+            if "status" in self._jobs:
+                res = self._call("status", None)
+            elif now - last_status >= STATUS_EVERY_SECONDS:
                 last_status = now
-                try:
-                    resp = self.client.status({"cameras": [w.status() for w in self.workers.values()]
-                                               + [l.status() for l in self.listeners.values()]
-                                               + [{"camera_id": cid, "state": "fuera_de_horario"}
-                                                  for cid in self._closed if cid not in self.listeners],
-                                               "live": self.live_ids(),
-                                               "outbox_pending": self.outbox.pending(), "version": VERSION,
-                                               **(self.alarms.status() if self.alarms else {}),
-                                               **self.machine_status()})
+                payload = {"cameras": [w.status() for w in self.workers.values()]
+                           + [l.status() for l in self.listeners.values()]
+                           + [{"camera_id": cid, "state": "fuera_de_horario"}
+                              for cid in self._closed if cid not in self.listeners],
+                           "live": self.live_ids(),
+                           "outbox_pending": self.outbox.pending(), "version": VERSION,
+                           **(self.alarms.status() if self.alarms else {}),
+                           **self.machine_status()}
+                res = self._call("status", lambda p=payload: self.client.status(p))
+            if res is not None:
+                ok, resp = res
+                if ok:
                     self.apply_live(resp.get("live") or [])
                     # cambió algo (cámaras, zonas, horario) o el reparto le dio o le sacó cámaras: pedir ya
                     rev, ids = resp.get("rev"), resp.get("cameras")
                     if (rev is not None and self._rev is not None and str(rev) != self._rev) or \
                             (isinstance(ids, list) and set(ids) != self._cfg_ids):
                         self._force_config = True
-                except httpx.HTTPError:
-                    pass
+                elif not isinstance(resp, httpx.HTTPError):
+                    raise resp
             if self.on_demand and self.window is not None:
                 self._demand_tick(now)
             if self.window is not None:
@@ -344,12 +379,18 @@ class Agent:
     def _demand_tick(self, now: float) -> None:
         """La lista de «En vivo» son todas las cámaras; las elegidas se abren solo para mirar. Al entrar se le
         avisa al servidor que esta PC no analiza nada (por si le quedó algo asignado de antes)."""
-        if now - self._catalog_at >= CATALOG_EVERY_SECONDS:
+        res = None
+        if "catalog" in self._jobs:
+            res = self._call("catalog", None)
+        elif now - self._catalog_at >= CATALOG_EVERY_SECONDS:
             self._catalog_at = now
-            try:
-                self._catalog = self.client.catalog()
-            except httpx.HTTPError as exc:
-                log.debug("No se pudo traer la lista de cámaras: %s", exc)
+            res = self._call("catalog", self.client.catalog)
+        if res is not None:
+            ok, val = res
+            if ok:
+                self._catalog = val
+            else:
+                log.debug("No se pudo traer la lista de cámaras: %s", val)
         if self._watch_sent is None and not self._watch_busy and now >= self._watch_retry_at:
             self._watch_busy = True
             self.clip_pool.submit(self._send_watch, set())
@@ -566,6 +607,8 @@ class Agent:
         self._stop.set()
 
     def shutdown(self) -> None:
+        if self._net is not None:
+            self._net.shutdown(wait=False, cancel_futures=True)
         for v in self.viewers.values():
             v.stop()
         if self.on_demand and self._watch_sent:

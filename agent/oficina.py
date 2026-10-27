@@ -1710,11 +1710,12 @@ class ZonesEditor:
     W, H = 720, 405
 
     def __init__(self, app: Oficina, cam: dict, image: np.ndarray | None = None,
-                 on_saved: Callable[[dict], None] | None = None):
+                 on_saved: Callable[[dict], None] | None = None, confirm: str | None = None):
         """`image`: dibujar sobre esa imagen (la del ajuste) en vez de bajar la última de la cámara. `on_saved`
-        recibe lo guardado (zonas y reglas)."""
+        recibe lo guardado (zonas y reglas). `confirm`: pregunta antes de guardar (cámara que ya se analiza)."""
         self.app, self.cam = app, cam
         self.on_saved = on_saved
+        self.confirm = confirm
         tk, ttk = app.tk, app.ttk
         self.zones = [dict(z) for z in cam.get("zones") or []]
         self.rules = dict(cam.get("rules") or {})
@@ -1849,6 +1850,8 @@ class ZonesEditor:
             rules = {**self.rules, **{k: float(v.get()) for k, v in self.rv.items()}}
         except ValueError:
             return self.app.mb.showwarning("Vigía", "Las reglas tienen que ser números.", parent=self.top)
+        if self.confirm and not self.app.mb.askyesno("Vigía", self.confirm, parent=self.top):
+            return
         body = {"zones": self.zones, "rules": rules}
 
         def done(_):
@@ -1913,6 +1916,8 @@ class TuneWindow:
         self.pos.pack(anchor="w")
         self.state_lbl = ttk.Label(left, text="Preparando el detector…", font=("Segoe UI", 10, "bold"))
         self.state_lbl.pack(anchor="w", pady=(2, 0))
+        self.live_warn = ttk.Label(left, text="", foreground="#b45309", wraplength=self.W, justify="left")
+        self.live_warn.pack(anchor="w")
         ttk.Label(left, foreground="#666", wraplength=self.W, justify="left", text=(
             "Se analiza en esta PC igual que en las máquinas. Debajo de cada persona: segundos en cada zona contra el "
             "tiempo de la regla (en rojo: llegó) y «TOMO ALGO» si estuvo en una góndola y todavía no pasó por caja. "
@@ -1980,6 +1985,10 @@ class TuneWindow:
                                   "Detector: movimiento (solo para pruebas; cambialo a YOLO en «Editar»).")
             if self.info["camera"].get("filter_model"):
                 self.detector_text += " Con el modelo entrenado del cliente: cada alerta muestra su puntaje."
+            if self.info.get("analyzed"):
+                self.live_warn.configure(text="⚠ Esta cámara ya se analiza en las máquinas: las zonas y tiempos que "
+                                              "guardes empiezan a regir ahí enseguida (alertas reales). Probar tiempos "
+                                              "sin guardar no cambia nada.")
             self._fill_times()
             if self.tuner is None:
                 self.start_live()
@@ -2057,9 +2066,18 @@ class TuneWindow:
             self.app.bg.run(lambda: t.set_times(times), lambda _: self._redraw(),
                             lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
 
+    def _confirm_live(self) -> str | None:
+        if not (self.info or {}).get("analyzed"):
+            return None
+        return (f"«{self.cam['name']}» ya se analiza en las máquinas de análisis: lo que guardes empieza a regir ahí "
+                "enseguida y puede dar alertas reales a los empleados.\n\n¿Guardar igual?")
+
     def save_times(self, then: Callable[[], None] | None = None) -> None:
         times = self._times()
         if times is None or self.info is None:
+            return
+        warn = self._confirm_live()
+        if then is None and warn and not self.app.mb.askyesno("Vigía", warn, parent=self.top):
             return
         raw = self.info["raw"]
         rules = {**(raw.get("rules") or {}), **times}
@@ -2087,7 +2105,7 @@ class TuneWindow:
         img = self.tuner.image(self.index) if self.tuner is not None else None
         cam = {**self.cam, "zones": self.info["raw"].get("zones") or [],
                "rules": {**(self.info["raw"].get("rules") or {}), **times}}
-        ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved)
+        ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved, confirm=self._confirm_live())
 
     def zones_saved(self, _body: dict) -> None:
         """Se guardaron zonas (y tiempos) en el editor: traer la configuración nueva y recalcular."""

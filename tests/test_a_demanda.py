@@ -224,3 +224,57 @@ def test_cerrar_una_camara_trabada_no_congela_la_ventana(tmp_path):
     w.thread.join(2)
     ag.apply_live([])  # limpia las que ya terminaron
     assert ag._stopping == []
+
+
+def test_la_ventana_sigue_respondiendo_mientras_el_servidor_tarda(tmp_path):
+    """Los pedidos al servidor (configuración, estado, lista de cámaras) van en otros hilos: antes la ventana se
+    quedaba esperando cada respuesta y los clics que llegaban en ese rato no hacían nada."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent.__main__ import Agent
+
+    class Lento(FakeClient):
+        def config(self):
+            time.sleep(1.0)
+            return {"cameras": [], "rev": "1"}
+
+        def status(self, payload):
+            time.sleep(1.0)
+            return {"rev": "1", "cameras": []}
+
+        def catalog(self):
+            time.sleep(1.0)
+            return super().catalog()
+
+    class Ventanita(FakeWindow):
+        def __init__(self):
+            super().__init__()
+            self.pumps = 0
+
+        def set_cameras(self, cams):
+            pass
+
+        def refresh(self, tiles, note=""):
+            pass
+
+        def set_status(self, *a, **k):
+            pass
+
+        def pump(self, ms=40):
+            self.pumps += 1
+            time.sleep(ms / 1000)
+            return True
+
+    ag = Agent("http://127.0.0.1:9", "token", tmp_path, None)
+    ag.window, ag.on_demand, ag.client = Ventanita(), True, Lento()
+    ag._net = ThreadPoolExecutor(max_workers=3)
+    ag.outbox.start = lambda: None
+    t = threading.Thread(target=ag.run, daemon=True)
+    t.start()
+    time.sleep(0.8)
+    assert ag.window.pumps >= 10  # en 0,8 s, con los tres pedidos en curso, la ventana atendió igual
+    time.sleep(1.0)
+    assert ag._catalog and ag._rev == "1"  # y las respuestas llegaron y se aplicaron
+    ag.stop()
+    t.join(5)
