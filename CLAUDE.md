@@ -353,9 +353,17 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   sesión cloud (Xeon 2,1 GHz, núcleos sin hyperthreading): 14 / 26 / 48 cuadros analizados por segundo con 1 / 2 / 4
   núcleos → ~2 cámaras de hurto por núcleo físico, **crece en proporción** (una máquina grande de procesador cuesta lo
   mismo por cámara que varias chicas). Lo que no es detector: ~830 cuadros/s por núcleo. Una vCPU de e2/c7i/c6a es
-  medio núcleo (hyperthreading): e2-standard-4 ≈ 4-5 cámaras (falta medir en la VM). Con placa de video, el
-  procesador solo decodifica y hace el resto: g4dn.xlarge estimado 40-80 cámaras (sin probar). Prender solo en horario
-  necesita el encendedor (hoy solo AWS: `agent/escalador.py`).
+  medio núcleo (hyperthreading). **VM real (e2-standard-4 = Broadwell 2,2 GHz, 2 núcleos con HT):** el servicio usa
+  172 % de procesador con 3 cámaras en horario comercial (≈ 0,57 vCPU por cámara) → ~5 cámaras con margen; RES 3,0 GB
+  a las 11:58 UTC del 27 oct (vigilar si crece). **A demanda, la grande cuesta exactamente 4 veces la chica en las dos
+  nubes** (mismo costo por cámara). En Spot no: AWS c6a.4xlarge 0,1133/h (≈ 83/mes, contra 4 × c6a.xlarge = 154) y
+  c7g.4xlarge (ARM) 0,0889/h (≈ 65/mes) salen mucho más baratas por vCPU; Google c2d-standard-16 Spot 0,18384/h
+  (≈ 134/mes, núcleos AMD rápidos). Otros precios 27 oct: Google t2d-standard-4 0,2682 (Spot 0,0929), n2d-standard-4
+  0,2682 (Spot 0,0759), n1-standard-4 + T4 0,7816 (Spot 0,3820, 1 año 0,4901); en São Paulo no hay g2 (L4) ni c3d.
+  AWS c7g.xlarge 0,2222 (Spot 0,0495), g4dn.2xlarge 1,278 (Spot 0,1278: el Spot de g4dn figura exactamente al 10 %,
+  confirmar), g6.xlarge (L4) 1,368, g5.xlarge (A10G) 1,71. Con placa de video, el procesador solo decodifica y hace
+  el resto: g4dn.xlarge estimado 40-80 cámaras (sin probar). Prender solo en horario necesita el encendedor (hoy solo
+  AWS: `agent/escalador.py`).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
