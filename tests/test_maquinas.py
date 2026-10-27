@@ -306,3 +306,14 @@ def test_id_de_la_instancia_en_aws_y_google_cloud(monkeypatch):
     assert nube(caida, caida) is None  # otra nube o una PC: se usa el nombre de la máquina
     monkeypatch.setenv("VIGIA_INSTANCE_ID", "a-mano")
     assert maquina.instance_id() == "a-mano"
+
+
+def test_medir_cuantas_camaras_aguanta_la_maquina():
+    """`python -m agent.medir`: mide análisis y decodificación con el mismo código de las máquinas."""
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-m", "agent.medir", "--segundos", "1", "--nucleos", "1"],
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert "Núcleos: 1" in out.stdout and "cámaras de hurto" in out.stdout
