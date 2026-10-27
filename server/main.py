@@ -203,6 +203,17 @@ class CamerasAnalyzeIn(BaseModel):
     analyze: bool
 
 
+class TuningIn(BaseModel):
+    """Puesta a punto de una cámara («Ajustar» en la app). `analyze` (si viene) la manda o la saca de las máquinas."""
+    status: Literal["sin_ajustar", "en_ajuste", "aprobada"]
+    notes: str | None = Field(None, max_length=1000)
+    analyze: bool | None = None
+
+
+class TuneIn(BaseModel):
+    camera_id: int
+
+
 class CamerasDeleteIn(BaseModel):
     camera_ids: list[int] = Field(min_length=1, max_length=2000)
     con_alertas: bool = False  # borrar también sus alertas, clips y videos subidos
@@ -749,7 +760,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      nvr_clips=c.nvr_clips, playback_time=c.playback_time, has_source_url=bool(c.source_url_enc),
                      hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c),
                      profile=c.profile or "general", off_hours=c.off_hours or "apagada",
-                     analysis_location=c.analysis_location or "general")
+                     analysis_location=c.analysis_location or "general", tuning=c.tuning or "sin_ajustar",
+                     tuned_by=c.tuned_by, tuned_at=iso(c.tuned_at), tuning_notes=c.tuning_notes)
             ops = ops or {}
             op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
             d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
@@ -1453,6 +1465,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("No se pudieron borrar %d archivos de cámaras borradas", len(files))
         log.info("Cámaras borradas: %s (%d alertas)", ids, n_events)
 
+    def set_analyzed(s, cams: list[Camera], analyze: bool) -> None:
+        """Las marcadas van a las máquinas de análisis; las demás solo se miran en «En vivo» de la app."""
+        before = locations(s)
+        for c in cams:
+            c.analysis_location = "servidores" if analyze else "pcs"
+        s.flush()
+        sync_locations(s, before)
+        if not analyze:
+            for c in cams:  # sin analizar: no la tiene ninguna PC ni máquina
+                c.agent_id = None
+                c.operator_id = None
+        bump_rev(s)
+        s.commit()
+        rebalance(s, force=True)
+
     @app.post("/api/cameras/analyze")
     def cameras_analyze(body: CamerasAnalyzeIn, _: User = Depends(staff), s=Depends(db)) -> dict:
         """Elegir qué cámaras se analizan (en las máquinas de análisis). Las demás solo se miran en «En vivo» de
@@ -1460,19 +1487,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids))).all()
         if not cams:
             raise HTTPException(404, "No se encontraron esas cámaras")
-        before = locations(s)
-        for c in cams:
-            c.analysis_location = "servidores" if body.analyze else "pcs"
-        s.flush()
-        sync_locations(s, before)
-        if not body.analyze:
-            for c in cams:  # sin analizar: no la tiene ninguna PC ni máquina
-                c.agent_id = None
-                c.operator_id = None
-        bump_rev(s)
-        s.commit()
-        rebalance(s, force=True)
+        set_analyzed(s, cams, body.analyze)
         return {"changed": len(cams), "analyze": body.analyze}
+
+    @app.post("/api/cameras/{cam_id}/tuning")
+    def camera_tuning(cam_id: int, body: TuningIn, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """Estado de la puesta a punto («Ajustar» en la app): quién la aprobó, cuándo y con qué notas. Aprobar con
+        `analyze` la manda a las máquinas de análisis."""
+        c = get_or_404(s, Camera, cam_id, "Cámara")
+        c.tuning = None if body.status == "sin_ajustar" else body.status
+        c.tuned_by, c.tuned_at = user.username, utcnow()
+        if body.notes is not None:
+            c.tuning_notes = body.notes.strip() or None
+        s.commit()
+        if body.analyze is not None:
+            set_analyzed(s, [c], body.analyze)
+        log.info("Cámara %s (%s): ajuste «%s» por %s", c.id, c.name, body.status, user.username)
+        return camera_dict(c, user, ops=operator_map(s))
 
     @app.delete("/api/cameras/{cam_id}", status_code=204)
     def delete_camera(cam_id: int, con_alertas: bool = False, _: User = Depends(admin_only), s=Depends(db)) -> None:
@@ -1648,6 +1679,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "analyzed": locs.get(c.id) == "servidores", "analyzer": names.get(c.agent_id) if c.agent_id else None,
             "connection": camera_connection(c, clients[c.client_id]),
         } for c in cams]}
+
+    @app.post("/api/agent/tune")
+    def agent_tune(body: TuneIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """«Ajustar» en la app: la configuración completa de UNA cámara para analizarla en la PC del usuario (en vivo
+        o con un video), con alertas de prueba que no salen de la app. `raw` son las zonas y reglas tal como se
+        guardan (sin lo que agrega el tipo de cámara), para volver a guardarlas."""
+        watcher(s, ag)
+        c = get_or_404(s, Camera, body.camera_id, "Cámara")
+        client = s.get(Client, c.client_id)
+        return {"camera": agent_camera_cfg(c, client), "raw": {"zones": c.zones or [], "rules": c.rules or {}},
+                "tuning": c.tuning or "sin_ajustar", "tuning_notes": c.tuning_notes,
+                "analyzed": locations(s).get(c.id) == "servidores"}
 
     @app.put("/api/agent/watch")
     def agent_watch(body: UserCamerasIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
@@ -1906,7 +1949,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/agent/cameras/{cam_id}/preview")
     def agent_preview(cam_id: int, image: UploadFile = File(...), ag: Agent = Depends(current_agent),
                             s=Depends(db)) -> dict:
-        c = agent_camera(s, ag, cam_id)
+        c = s.get(Camera, cam_id)
+        if c is None or not agent_owns(ag, c):
+            watcher(s, ag)  # la app de un usuario del equipo, al ajustar una cámara, deja su imagen
+            c = get_or_404(s, Camera, cam_id, "Cámara")
         data = image.file.read(5 * 1024 * 1024 + 1)
         if len(data) > 5 * 1024 * 1024:
             raise HTTPException(413, "Imagen demasiado grande")

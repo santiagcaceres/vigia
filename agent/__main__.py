@@ -408,6 +408,13 @@ class Agent:
             return "Se analiza" + (f" · {c['elsewhere']}" if c.get("elsewhere") else "")
         return ""
 
+    def tune_setup(self, cam_id: int) -> tuple[dict, Detector]:
+        """«Ajustar» en la app: lo que hace falta para analizar una cámara en esta PC (configuración y detector).
+        Corre en otro hilo: armar el detector la primera vez tarda unos segundos."""
+        info = self.client.tune(cam_id)
+        cam = info["camera"]
+        return info, self._detector(cam.get("detector") or "yolo", cam)
+
     def local_probe(self, cam_id: int) -> dict | None:
         """Prueba la cámara DESDE ESTA PC (página del grabador + video). None si no la analiza esta PC."""
         c = self._cams_cfg.get(cam_id)
@@ -879,7 +886,8 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
 
     oficina = Oficina(ventana, api, on_logout=logout, on_restart=reopen,
                       local_probe=lambda cid: holder["agent"].local_probe(cid) if "agent" in holder else None,
-                      on_config_saved=lambda: holder["agent"].refresh_config() if "agent" in holder else None)
+                      on_config_saved=lambda: holder["agent"].refresh_config() if "agent" in holder else None,
+                      agent=lambda: holder.get("agent"))
     oficina.build(ventana.notebook)
     ventana.hooks.append(oficina.bg.drain)
 

@@ -251,6 +251,14 @@ class RuleEngine:
         feats = track_features(t, st, ts, visible, size, wall)
         events.append(RuleEvent(rule, SEVERITY[rule], t.id, zone, description, ts, t.bbox, feats, st.first_ts))
 
+    def progress(self, ts: float) -> dict[int, dict]:
+        """Por persona (llamar después de `update`): en qué zonas está parada y hace cuántos segundos, y si ya
+        «tomó algo» (estuvo en una góndola y todavía no pasó por caja). Lo muestra el ajuste de cámaras."""
+        types = {z.name: z.type for z in self.zones}
+        return {tid: {"zones": [(n, types.get(n, ""), ts - since) for n, since in st.zone_since.items()],
+                      "took": st.pending_items}
+                for tid, st in self._states.items()}
+
     def current_features(self, tracks: list[Track], ts: float, frame_size: tuple[int, int],
                          wall_time: datetime | None = None) -> dict[int, dict[str, float]]:
         """Medidas actuales de cada persona visible (llamar después de update con el mismo cuadro)."""

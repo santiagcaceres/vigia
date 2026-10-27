@@ -7,7 +7,8 @@ corren en hilos aparte (`Bg`) y el resultado se aplica en el hilo de la ventana,
 Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «En vivo», para mirar cualquier cámara
 sin analizarla, la arma `Ventana`):
 - Clientes: alta/edición/borrado de clientes y cámaras, qué cámaras se analizan («✔ Analizar», en las máquinas
-  de análisis), probar conexión, zonas y reglas, métricas del día.
+  de análisis), probar conexión, zonas y reglas, métricas del día. «Ajustar…» pone a punto una cámara analizándola
+  en esta PC (en vivo o con videos grabados) antes de aprobarla (`TuneWindow`, motor en agent/ajuste.py).
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
   "Avisar al cliente".
 - Administración (solo admin): usuarios y PCs centrales.
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -71,6 +73,7 @@ ZONE_COLORS = {"shelf": "#ffc800", "checkout": "#00c800", "exit": "#0096ff", "re
                "entrance": "#c800ff", "pump": "#ff7800", "shop": "#00c8c8"}
 ALARM_TYPES = {"VMD": "Movimiento", "fielddetection": "Intrusión", "linedetection": "Cruce de línea",
                "regionEntrance": "Entrada a zona", "regionExiting": "Salida de zona"}
+TUNING_NAMES = {"sin_ajustar": "—", "en_ajuste": "En ajuste", "aprobada": "✔ Aprobada"}
 STATE_NAMES = {"escuchando": "Escuchando alarmas", "en_linea": "En línea", "sin_conexion": "Sin conexión",
                "reconectando": "Reconectando", "error": "Error", "iniciando": "Iniciando", "detenida": "Detenida",
                "fuera_de_horario": "Local cerrado (no se mira)"}
@@ -243,8 +246,10 @@ class Oficina:
     def __init__(self, ventana, api: Api, on_logout: Callable[[], None] | None = None,
                  local_probe: Callable[[int], dict | None] | None = None,
                  on_config_saved: Callable[[], None] | None = None,
-                 on_restart: Callable[[], None] | None = None):
+                 on_restart: Callable[[], None] | None = None,
+                 agent: Callable[[], Any] | None = None):
         self.local_probe = local_probe
+        self.agent_of = agent  # el analizador de esta PC (para «Ajustar»: analizar una cámara acá)
         self.on_restart = on_restart
         self.latest: dict | None = None  # última versión publicada (para el botón de actualizar)
         self.on_config_saved = on_config_saved
@@ -453,11 +458,11 @@ class Oficina:
         right.pack(side="left", fill="both", expand=True)
         self.cam_title = ttk.Label(right, text="Elegí un cliente", font=("Segoe UI", 11, "bold"))
         self.cam_title.pack(anchor="w")
-        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "analiza", "alertas",
-                                                     "zonas"), show="headings", height=12, selectmode="extended")
-        for col, txt, w in (("nombre", "Cámara", 120), ("estado", "Estado", 130), ("modo", "Modo", 110),
-                            ("conexion", "Grabador", 160), ("analiza", "Analizar", 120),
-                            ("alertas", "Alertas", 90), ("zonas", "Zonas", 45)):
+        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "ajuste", "analiza",
+                                                     "alertas", "zonas"), show="headings", height=12, selectmode="extended")
+        for col, txt, w in (("nombre", "Cámara", 120), ("estado", "Estado", 115), ("modo", "Modo", 95),
+                            ("conexion", "Grabador", 125), ("ajuste", "Ajuste", 80), ("analiza", "Analizar", 105),
+                            ("alertas", "Alertas", 80), ("zonas", "Zonas", 45)):
             self.cam_tree.heading(col, text=txt)
             self.cam_tree.column(col, width=w)
         self.cam_tree.pack(fill="x")
@@ -466,7 +471,9 @@ class Oficina:
         b2.pack(fill="x", pady=6)
         ttk.Button(b2, text="Agregar cámara", command=lambda: self.camera_dialog()).pack(side="left")
         ttk.Button(b2, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left", padx=4)
-        ttk.Button(b2, text="Zonas y reglas", command=lambda: self.zones_dialog(self._sel_camera())).pack(side="left")
+        ttk.Button(b2, text="Ajustar…", command=lambda: self.tune_dialog(self._sel_camera())).pack(side="left")
+        ttk.Button(b2, text="Zonas y reglas", command=lambda: self.zones_dialog(self._sel_camera())).pack(side="left",
+                                                                                                         padx=(4, 0))
         ttk.Button(b2, text="Probar conexión", command=lambda: self.probe(self._sel_camera())).pack(side="left", padx=4)
         if self.is_admin:
             ttk.Button(b2, text="Eliminar", command=self.delete_camera).pack(side="left")
@@ -546,6 +553,7 @@ class Oficina:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
                 cam["name"], self._cam_state(cam),
                 f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))} · {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]}", conn,
+                TUNING_NAMES.get(cam.get("tuning") or "sin_ajustar", "—"),
                 ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")) if cam.get("analyzed") else "No",
                 fmt_counts(counts.get(str(cam["id"]))), len(cam.get("zones") or [])))
         self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
@@ -569,6 +577,7 @@ class Oficina:
             f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
             f"Modo: {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
             f"Analizar: {('sí · ' + (cam.get('analyzer_name') or 'esperando una máquina en línea')) if cam.get('analyzed') else 'no (se puede mirar en «En vivo»)'}\n"
+            f"Ajuste: {self._tuning_text(cam)}\n"
             f"Grabador: {BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · RTSP {cam.get('rtsp_port')} · "
             f"HTTP {cam.get('http_port')} · canal {cam.get('channel')} · usuario {cam.get('username')}\n"
             f"Zonas: {zones}\n\n"
@@ -576,6 +585,16 @@ class Oficina:
             f"rtsp://{cam.get('username')}:CLAVE@{cam.get('host')}:{cam.get('rtsp_port')}/"
             + (f"cam/realmonitor?channel={cam.get('channel')}&subtype=1" if cam.get("brand") == "dahua"
                else f"Streaming/Channels/{cam.get('channel')}02"))
+
+    @staticmethod
+    def _tuning_text(cam: dict) -> str:
+        t = cam.get("tuning") or "sin_ajustar"
+        if t == "sin_ajustar":
+            return "sin ajustar («Ajustar…» la analiza en esta PC, en vivo o con videos, antes de aprobarla)"
+        txt = {"en_ajuste": "en ajuste", "aprobada": "aprobada"}.get(t, t)
+        if cam.get("tuned_by"):
+            txt += f" por {cam['tuned_by']} el {fmt_date(cam.get('tuned_at'))}"
+        return txt + (f" · {cam['tuning_notes']}" if cam.get("tuning_notes") else "")
 
     # ---------- diálogos de cliente ----------
     def _dialog(self, title: str, width: int = 520):
@@ -1086,6 +1105,12 @@ class Oficina:
                 "Vigía", f"¿Dejar de analizar {len(ids)} cámara(s)?\n\nNo van a generar alertas ni métricas. "
                          "Se pueden seguir mirando en «En vivo»."):
             return
+        raw = [c["name"] for c in self.cameras if c["id"] in ids and c.get("tuning") != "aprobada" and not c.get("analyzed")]
+        if analyze and raw and not self.mb.askyesno(
+                "Vigía", f"{len(raw)} cámara(s) sin aprobar en «Ajustar…» ({', '.join(raw[:4])}"
+                         f"{'…' if len(raw) > 4 else ''}).\n\nSin ajustar pueden dar muchas alertas falsas. "
+                         "¿Analizarlas igual?"):
+            return
         self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}),
                     lambda _: self.config_saved(), self.err)
 
@@ -1166,11 +1191,20 @@ class Oficina:
                 self._set_info(msg + f"\n\nEnlace para VLC: {r.get('rtsp_url')}")
         self.bg.run(run, done, self.err)
 
-    # ---------- zonas ----------
+    # ---------- zonas y ajuste ----------
     def zones_dialog(self, cam: dict | None) -> None:
         if not cam:
             return self.mb.showinfo("Vigía", "Elegí una cámara.")
         ZonesEditor(self, cam)
+
+    def tune_dialog(self, cam: dict | None) -> None:
+        if not cam:
+            return self.mb.showinfo("Vigía", "Elegí una cámara.")
+        if len(self.cam_tree.selection()) > 1:
+            return self.mb.showinfo("Vigía", "«Ajustar» es de a una cámara: elegí solo una.")
+        if self.agent_of is None or self.agent_of() is None:
+            return self.mb.showinfo("Vigía", "La app todavía está arrancando el analizador. Probá en unos segundos.")
+        TuneWindow(self, cam)
 
     # ---------- métricas ----------
     def metrics_dialog(self) -> None:
@@ -1663,8 +1697,12 @@ class ZonesEditor:
 
     W, H = 720, 405
 
-    def __init__(self, app: Oficina, cam: dict):
+    def __init__(self, app: Oficina, cam: dict, image: np.ndarray | None = None,
+                 on_saved: Callable[[dict], None] | None = None):
+        """`image`: dibujar sobre esa imagen (la del ajuste) en vez de bajar la última de la cámara. `on_saved`
+        recibe lo guardado (zonas y reglas)."""
         self.app, self.cam = app, cam
+        self.on_saved = on_saved
         tk, ttk = app.tk, app.ttk
         self.zones = [dict(z) for z in cam.get("zones") or []]
         self.rules = dict(cam.get("rules") or {})
@@ -1717,7 +1755,12 @@ class ZonesEditor:
         self.canvas.bind("<Double-Button-1>", lambda e: self.close_zone())
         self.refresh_list()
         self.draw()
-        self.load_image()
+        if image is not None:
+            self.photo = ppm_photo(tk, cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA), self.W, self.H)
+            self.info.configure(text="Imagen del ajuste (lo que se está analizando)")
+            self.draw()
+        else:
+            self.load_image()
 
     def load_image(self) -> None:
         if not self.cam.get("has_preview"):
@@ -1799,7 +1842,441 @@ class ZonesEditor:
         def done(_):
             self.top.destroy()
             self.app.config_saved()
+            if self.on_saved:
+                self.on_saved(body)
             self.app.v.log_handler.q.put_nowait(f"{datetime.now():%H:%M:%S}  Zonas de «{self.cam['name']}» guardadas: "
                                                  "la PC central las aplica en segundos")
         self.app.bg.run(lambda: self.app.api.put(f"/api/cameras/{self.cam['id']}/analysis", body), done,
                         lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+
+
+class TuneWindow:
+    """«Ajustar cámara»: la analiza en esta PC (en vivo o con videos grabados, por ejemplo hurtos de esa cámara) con
+    alertas de prueba que no salen de la app. Los tiempos se prueban y todo lo analizado se recalcula al instante;
+    «Aprobar y analizar» la manda a las máquinas de análisis. El motor está en agent/ajuste.py (`Tuner`)."""
+
+    W, H = 640, 360  # el tamaño en que se guardan los cuadros: entra en una pantalla de 1366x768
+    TIMES = (("loiter_seconds", "Merodeo: tiempo en góndola", 45),
+             ("shelf_dwell_seconds", "En góndola para «tomó algo»", 3),
+             ("checkout_min_seconds", "En caja para «pagó»", 1),
+             ("restricted_min_seconds", "En zona restringida", 1))
+
+    def __init__(self, app: Oficina, cam: dict):
+        self.app, self.cam = app, cam
+        tk, ttk = app.tk, app.ttk
+        self.agent = app.agent_of() if app.agent_of else None
+        self.tuner = None
+        self.info: dict | None = None  # lo que da /api/agent/tune
+        self.detector = None
+        self.analysis: dict = {}  # zonas y reglas con las que se analiza (con los tiempos que se están probando)
+        self.index: int | None = None  # cuadro que se muestra (None = el último)
+        self.playing = False
+        self._play_f = 0.0
+        self._last_tick = time.monotonic()
+        self._shown: tuple | None = None
+        self._alerts_key: tuple | None = None
+        self._alert_rows: list = []
+        self._stats_at = 0.0
+        self._setting_scale = False
+        self.dirty = False  # tiempos probados sin guardar
+        self.closed = False
+        self.preview_sent = False
+        self.top, frm = app._dialog(f"Ajustar cámara · {cam['name']}")
+        self.top.resizable(True, True)
+        self.top.protocol("WM_DELETE_WINDOW", self.close)
+
+        left = ttk.Frame(frm)
+        left.grid(row=0, column=0, sticky="nw")
+        self.canvas = tk.Canvas(left, width=self.W, height=self.H, bg="#111", highlightthickness=0)
+        self.canvas.pack()
+        self.photo = None
+        nav = ttk.Frame(left)
+        nav.pack(fill="x", pady=(4, 0))
+        self.play_btn = ttk.Button(nav, text="▶", width=3, command=self.toggle_play)
+        self.play_btn.pack(side="left")
+        self.scale = ttk.Scale(nav, from_=0, to=1, orient="horizontal", command=self.on_scale)
+        self.scale.pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(nav, text="Último ▸▸", command=self.follow).pack(side="left")
+        self.pos = ttk.Label(left, text="", foreground="#666")
+        self.pos.pack(anchor="w")
+        self.state_lbl = ttk.Label(left, text="Preparando el detector…", font=("Segoe UI", 10, "bold"))
+        self.state_lbl.pack(anchor="w", pady=(2, 0))
+        ttk.Label(left, foreground="#666", wraplength=self.W, justify="left", text=(
+            "Se analiza en esta PC igual que en las máquinas. Debajo de cada persona: segundos en cada zona contra el "
+            "tiempo de la regla (en rojo: llegó) y «TOMO ALGO» si estuvo en una góndola y todavía no pasó por caja. "
+            "En vivo se recuerdan los últimos 10 minutos y se usa una transmisión del grabador mientras esta ventana "
+            "esté abierta.")).pack(anchor="w", pady=(2, 0))
+        self.rules_lbl = ttk.Label(left, text="", foreground="#666", wraplength=self.W, justify="left")
+        self.rules_lbl.pack(anchor="w", pady=(4, 0))
+        nf = ttk.Frame(left)
+        nf.pack(fill="x", pady=(8, 0))
+        ttk.Label(nf, text="Notas del ajuste").pack(side="left")
+        self.notes = tk.StringVar(value=cam.get("tuning_notes") or "")
+        ttk.Entry(nf, textvariable=self.notes).pack(side="left", fill="x", expand=True, padx=4)
+        bb = ttk.Frame(left)
+        bb.pack(fill="x", pady=(8, 0))
+        ttk.Button(bb, text="Cerrar", command=self.close).pack(side="right")
+        ttk.Button(bb, text="✔ Aprobar y analizar", command=self.approve).pack(side="right", padx=4)
+        self.save_btn = ttk.Button(bb, text="Guardar tiempos", command=self.save_times)
+        self.save_btn.pack(side="right")
+
+        right = ttk.Frame(frm, padding=(12, 0, 0, 0))
+        right.grid(row=0, column=1, sticky="nsew")
+        src = ttk.LabelFrame(right, text="Qué se analiza", padding=6)
+        src.pack(fill="x")
+        ttk.Button(src, text="En vivo", command=self.start_live).pack(side="left")
+        ttk.Button(src, text="Probar con videos…", command=self.pick_videos).pack(side="left", padx=4)
+        self.bar = ttk.Progressbar(src, length=110, mode="determinate", maximum=100)
+        self.bar.pack(side="left", padx=4)
+        tf = ttk.LabelFrame(right, text="Tiempos de las reglas (segundos)", padding=6)
+        tf.pack(fill="x", pady=(6, 0))
+        self.tv: dict[str, Any] = {}
+        for key, lab, default in self.TIMES:
+            row = ttk.Frame(tf)
+            row.pack(fill="x")
+            ttk.Label(row, text=lab, width=28).pack(side="left")
+            var = tk.StringVar(value=str(default))
+            ttk.Entry(row, textvariable=var, width=6).pack(side="left")
+            self.tv[key] = var
+        bt = ttk.Frame(tf)
+        bt.pack(fill="x", pady=(4, 0))
+        ttk.Button(bt, text="Probar estos tiempos", command=self.apply_times).pack(side="left")
+        ttk.Button(bt, text="Zonas…", command=self.edit_zones).pack(side="left", padx=4)
+        af = ttk.LabelFrame(right, text="Alertas de prueba (no le llegan a nadie) · clic = ir al momento", padding=6)
+        af.pack(fill="both", expand=True, pady=(6, 0))
+        self.alist = tk.Listbox(af, height=6, width=50)
+        self.alist.pack(fill="both", expand=True)
+        self.alist.bind("<<ListboxSelect>>", self.goto_alert)
+        sf = ttk.LabelFrame(right, text="Cómo anda la cámara", padding=6)
+        sf.pack(fill="x", pady=(6, 0))
+        self.stats_txt = tk.Text(sf, height=10, width=50, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 9))
+        self.stats_txt.pack(fill="x")
+        self.load()
+        self.top.after(150, self.tick)
+
+    # ---------- preparar ----------
+    def load(self) -> None:
+        """Configuración de la cámara y detector (en otro hilo: armar el detector tarda la primera vez); después
+        arranca en vivo."""
+        def done(res):
+            if self.closed:
+                return
+            self.info, self.detector = res
+            self.analysis = self.info["camera"].get("analysis") or {}
+            self._fill_times()
+            if self.tuner is None:
+                self.start_live()
+
+        def fail(exc):
+            self.state_lbl.configure(text=f"No se pudo preparar el ajuste: {exc}")
+        self.app.bg.run(lambda: self.agent.tune_setup(self.cam["id"]), done, fail)
+
+    def _fill_times(self) -> None:
+        rules = self.analysis.get("rules") or {}
+        for key, _lab, default in self.TIMES:
+            v = float(rules.get(key, default))
+            self.tv[key].set(f"{v:g}")
+        enabled = rules.get("enabled_rules")
+        if self.analysis.get("metrics_only"):
+            txt = "Esta cámara es «solo métricas»: no da alertas."
+        else:
+            names = [TYPE_NAMES.get(r, r) for r in (enabled if enabled is not None else
+                                                     ("salida_sin_pago", "merodeo", "zona_restringida", "fuera_de_horario"))]
+            prof = PROFILE_NAMES.get(self.analysis.get("profile") or "general", "").split(" (")[0]
+            txt = f"Reglas de esta cámara (tipo {prof}): {', '.join(names).lower() or 'ninguna'}."
+        self.rules_lbl.configure(text=txt + " El tipo de cámara se cambia en «Editar».")
+
+    def _times(self) -> dict[str, float] | None:
+        try:
+            times = {k: float(v.get().replace(",", ".")) for k, v in self.tv.items()}
+        except ValueError:
+            self.app.mb.showwarning("Vigía", "Los tiempos tienen que ser números.", parent=self.top)
+            return None
+        if any(v < 0 for v in times.values()):
+            self.app.mb.showwarning("Vigía", "Los tiempos no pueden ser negativos.", parent=self.top)
+            return None
+        return times
+
+    # ---------- qué se analiza ----------
+    def _start(self, videos: list[str] | None = None) -> None:
+        if self.info is None:
+            return
+        from .ajuste import Tuner
+        if self.tuner is not None:
+            self.tuner.stop()
+        cfg = {**self.info["camera"], "analysis": self.analysis}
+        try:
+            self.tuner = Tuner(cfg, self.detector, videos)
+        except ValueError as exc:
+            self.tuner = None
+            return self.app.mb.showerror("Vigía", f"Las zonas o reglas de la cámara tienen un error: {exc}", parent=self.top)
+        self.index, self.playing, self._shown, self._alerts_key = None, False, None, None
+        self.play_btn.configure(text="▶")
+        self.bar["value"] = 0
+        self.tuner.start()
+
+    def start_live(self) -> None:
+        self._start()
+
+    def pick_videos(self) -> None:
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(parent=self.top, title="Videos de esta cámara (se analizan uno tras otro)",
+                                            filetypes=[("Videos", "*.mp4 *.avi *.mkv *.mov *.ts *.dav *.264 *.h264"),
+                                                       ("Todos los archivos", "*.*")])
+        if paths:
+            self._start(list(paths))
+
+    # ---------- tiempos y zonas ----------
+    def apply_times(self) -> None:
+        times = self._times()
+        if times is None:
+            return
+        self.analysis = {**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}}
+        self.dirty = True
+        self.save_btn.configure(text="Guardar tiempos *")
+        if self.tuner is not None:
+            t = self.tuner
+            self.app.bg.run(lambda: t.set_times(times), lambda _: self._redraw(),
+                            lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+
+    def save_times(self, then: Callable[[], None] | None = None) -> None:
+        times = self._times()
+        if times is None or self.info is None:
+            return
+        raw = self.info["raw"]
+        rules = {**(raw.get("rules") or {}), **times}
+        cid = self.cam["id"]
+
+        def work():
+            self.app.api.put(f"/api/cameras/{cid}/analysis", {"zones": raw.get("zones") or [], "rules": rules})
+            if (self.info or {}).get("tuning", "sin_ajustar") == "sin_ajustar":
+                self.app.api.post(f"/api/cameras/{cid}/tuning", {"status": "en_ajuste"})
+                self.info["tuning"] = "en_ajuste"
+
+        def done(_):
+            raw["rules"] = rules
+            self.dirty = False
+            self.save_btn.configure(text="Guardar tiempos")
+            self.app.config_saved()
+            if then:
+                then()
+        self.app.bg.run(work, done, lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+
+    def edit_zones(self) -> None:
+        if self.info is None:
+            return
+        times = self._times() or {}
+        img = self.tuner.image(self.index) if self.tuner is not None else None
+        cam = {**self.cam, "zones": self.info["raw"].get("zones") or [],
+               "rules": {**(self.info["raw"].get("rules") or {}), **times}}
+        ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved)
+
+    def zones_saved(self, _body: dict) -> None:
+        """Se guardaron zonas (y tiempos) en el editor: traer la configuración nueva y recalcular."""
+        def done(info):
+            if self.closed:
+                return
+            self.info = {**info}
+            self.analysis = info["camera"].get("analysis") or {}
+            self.dirty = False
+            self.save_btn.configure(text="Guardar tiempos")
+            self._fill_times()
+            if self.tuner is not None:
+                t, analysis = self.tuner, self.analysis
+                self.app.bg.run(lambda: t.set_analysis(analysis), lambda _: self._redraw(),
+                                lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+        self.app.bg.run(lambda: self.agent.client.tune(self.cam["id"]), done,
+                        lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+
+    # ---------- aprobar y cerrar ----------
+    def approve(self) -> None:
+        if self.info is None:
+            return
+        msg = (f"¿Aprobar «{self.cam['name']}» y mandarla a analizar en las máquinas de análisis?\n\nDesde ahí da alertas "
+               "de verdad (les llegan a los empleados) y métricas.")
+        if self.dirty:
+            msg += "\n\nLos tiempos que estás probando se guardan."
+        if not self.app.mb.askyesno("Vigía", msg, parent=self.top):
+            return
+        cid, notes = self.cam["id"], self.notes.get().strip()
+
+        def send():
+            def work():
+                return self.app.api.post(f"/api/cameras/{cid}/tuning",
+                                         {"status": "aprobada", "notes": notes, "analyze": True})
+
+            def done(_):
+                self.app.config_saved()
+                self.app.mb.showinfo("Vigía", f"«{self.cam['name']}» quedó aprobada. Las máquinas de análisis la toman en "
+                                              "menos de un minuto (si hay alguna en línea: mirá «Analizar» en Clientes).",
+                                     parent=self.top)
+                self.close(force=True)
+            self.app.bg.run(work, done, lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+        if self.dirty:
+            self.save_times(then=send)
+        else:
+            send()
+
+    def close(self, force: bool = False) -> None:
+        if not force and self.dirty and not self.app.mb.askyesno(
+                "Vigía", "Hay tiempos probados sin guardar. ¿Cerrar igual?", parent=self.top):
+            return
+        self.closed = True
+        if self.tuner is not None:
+            self.tuner.stop()
+        try:
+            self.top.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---------- recorrer lo analizado ----------
+    def toggle_play(self) -> None:
+        t = self.tuner
+        if t is None:
+            return
+        if self.playing:
+            self.playing = False
+            self.play_btn.configure(text="▶")
+            return
+        first, end = t.bounds()
+        if end <= first:
+            return
+        if self.index is None or self.index >= end - 1:
+            self.index = first
+        self._play_f = float(self.index)
+        self.playing = True
+        self.play_btn.configure(text="⏸")
+
+    def on_scale(self, value) -> None:
+        if self._setting_scale:
+            return
+        self.index = int(float(value))
+        self.playing = False
+        self.play_btn.configure(text="▶")
+
+    def follow(self) -> None:
+        self.index, self.playing = None, False
+        self.play_btn.configure(text="▶")
+
+    def goto_alert(self, _ev=None) -> None:
+        sel = self.alist.curselection()
+        if sel and sel[0] < len(self._alert_rows):
+            self.index, self.playing = self._alert_rows[sel[0]].index, False
+            self.play_btn.configure(text="▶")
+
+    def _redraw(self) -> None:
+        self._shown, self._alerts_key = None, None
+
+    def tick(self) -> None:
+        if self.closed:
+            return
+        try:
+            self._tick()
+        except Exception:  # noqa: BLE001 - la ventana sigue aunque falle un dibujo
+            log.exception("Ajuste: error en la ventana")
+        self.top.after(100, self.tick)
+
+    def _tick(self) -> None:
+        t = self.tuner
+        now = time.monotonic()
+        dt, self._last_tick = now - self._last_tick, now
+        if t is None:
+            return
+        first, end = t.bounds()
+        if end > first:
+            if self.playing:
+                self._play_f = min(max(self._play_f, first) + dt * t.process_fps, end - 1)
+                self.index = int(self._play_f)
+                if self.index >= end - 1:
+                    self.playing = False
+                    self.play_btn.configure(text="▶")
+            idx = end - 1 if self.index is None else min(max(self.index, first), end - 1)
+            key = (id(t), idx, id(t.alerts), id(t.marks))
+            if key != self._shown:
+                img = t.render(idx)
+                if img is not None:
+                    self.photo = ppm_photo(self.app.tk, img, self.W, self.H)
+                    self.canvas.delete("all")
+                    self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+                self._shown = key
+                s = t.sample_at(idx)
+                if s is not None:
+                    self.pos.configure(text=f"{t.clock_text(s)} · cuadro {idx - first + 1} de {end - first}"
+                                            + ("" if self.index is not None else " · mostrando el último"))
+            self._setting_scale = True
+            self.scale.configure(from_=first, to=max(first, end - 1))
+            self.scale.set(idx)
+            self._setting_scale = False
+            if t.live and not self.preview_sent:  # la cámara queda con imagen (para dibujar zonas y en la lista)
+                self.preview_sent = True
+                jpg = t.sample_at(end - 1).jpg
+                self.app.bg.run(lambda: self.agent.client.preview(self.cam["id"], jpg), None, lambda e: None)
+        self._show_state(t)
+        self._show_alerts(t)
+        if now - self._stats_at > 1.0:
+            self._stats_at = now
+            self._show_stats(t)
+
+    def _show_state(self, t) -> None:
+        if t.live:
+            st = t.stats()
+            txt = {"iniciando": "Conectando…", "conectando": "Conectando con la cámara…",
+                   "en_linea": f"En vivo · se analizan {st['fps'] or 0:.1f} cuadros por segundo en esta PC",
+                   "sin_conexion": f"Sin conexión: {t.error}", "error": f"Error: {t.error}",
+                   "detenido": "Detenido"}.get(t.state, t.state)
+        else:
+            n = len(t.videos)
+            if t.state == "analizando":
+                txt = f"Analizando video {t.seg_now + 1} de {n}: {t.seg_names[t.seg_now]} · {t.progress * 100:.0f} %"
+            elif t.state == "listo":
+                txt = (f"Listo: {n} video(s) analizados ({t.speed or 0:.1f} veces más rápido que el video). Recorrelos con "
+                       "la barra o ▶.") + (" Se cortó a los 30 minutos de video." if t.truncated else "")
+            elif t.state == "error":
+                txt = f"Error: {t.error}"
+            else:
+                txt = "Preparando…"
+            self.bar["value"] = t.progress * 100
+        self.state_lbl.configure(text=txt)
+
+    def _show_alerts(self, t) -> None:
+        alerts = t.alerts
+        key = (id(t), id(alerts), len(alerts))
+        if key == self._alerts_key:
+            return
+        self._alerts_key = key
+        self._alert_rows = list(alerts)
+        self.alist.delete(0, "end")
+        for a in self._alert_rows:
+            self.alist.insert("end", f"{t.clock_text(a)}   {TYPE_NAMES.get(a.type, a.type)} · {a.description}")
+        if not self._alert_rows:
+            self.alist.insert("end", "Todavía ninguna." if t.state not in ("listo",) else "Ninguna con estas zonas y tiempos.")
+            self._alert_rows = []
+
+    def _show_stats(self, t) -> None:
+        st = t.stats()
+        lines = []
+        if st["frames"]:
+            lines.append(f"Analizado: {fmt_dur(st['seconds'])} · personas distintas: {st['persons']} · con gente en el "
+                         f"{st['people_pct']:.0f} % de los cuadros")
+            if st["detections"]:
+                lines.append(f"Tamaño medio de las personas: {st['height_pct']:.0f} % del alto de la imagen · confianza "
+                             f"del detector: {st['conf']:.2f} de 1")
+            per_hour = f" (≈ {st['per_hour']:.1f} por hora)" if st.get("per_hour") is not None else ""
+            lines.append(f"Alertas de prueba: {st['alerts']}{per_hour}")
+        if not t.live:
+            for seg in t.segments():
+                if seg["error"]:
+                    res = seg["error"]
+                elif not seg["alerts"]:
+                    res = "sin alertas" if seg["done"] else "analizando…"
+                else:
+                    res = ", ".join(f"{TYPE_NAMES.get(a.type, a.type).lower()} {t.clock_text(a).split()[-1]}"
+                                    for a in seg["alerts"][:4]) + ("…" if len(seg["alerts"]) > 4 else "")
+                lines.append(f"• {seg['name']}: {res}")
+        hints = t.hints()
+        if hints:
+            lines += [""] + [f"→ {h}" for h in hints]
+        self.stats_txt.configure(state="normal")
+        self.stats_txt.delete("1.0", "end")
+        self.stats_txt.insert("1.0", "\n".join(lines) or "Esperando los primeros cuadros…")
+        self.stats_txt.configure(state="disabled")

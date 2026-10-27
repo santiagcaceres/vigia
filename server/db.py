@@ -127,6 +127,11 @@ class Camera(Base):
     operator_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
                                                     index=True)
     alarm_cfg: Mapped[dict] = mapped_column(JSON, default=dict)  # tipos de alarma, segundos antes/después
+    # puesta a punto («Ajustar» en la app): None = sin ajustar | en_ajuste | aprobada (quién, cuándo y notas)
+    tuning: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    tuned_by: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    tuned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tuning_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # vista en vivo: el panel marca que alguien la está mirando; la PC central sube cuadros mientras dure
     live_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -320,7 +325,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-26.2"
+SCHEMA_VERSION = "2026-10-26.3"
 
 
 class CameraMetric(Base):

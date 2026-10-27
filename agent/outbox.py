@@ -173,6 +173,13 @@ class ServerClient:
         r.raise_for_status()
         return r.json()["cameras"]
 
+    def tune(self, camera_id: int) -> dict:
+        """Todo lo de una cámara para ajustarla en esta PC: {camera: config como la de /config, raw: zonas y reglas
+        tal como se guardan, tuning, tuning_notes, analyzed}."""
+        r = self.http.post("/api/agent/tune", json={"camera_id": camera_id})
+        r.raise_for_status()
+        return r.json()
+
     def watch(self, camera_ids: list[int]) -> dict:
         """Las cámaras abiertas en esta PC (las analiza mientras estén abiertas)."""
         r = self.http.put("/api/agent/watch", json={"camera_ids": camera_ids})

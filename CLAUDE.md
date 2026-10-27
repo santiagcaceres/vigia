@@ -298,6 +298,25 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     al grabador (Hik-Connect da pocas a la vez). El link de Hik-Connect (`stream-url`) también se da a la PC de un
     usuario del equipo para mirar. Estados en la lista: «Viendo · N fps», «Imagen de la máquina», «Se analiza ·
     máquina», «No disponible». Probado de punta a punta con servidor, máquina y app locales (captura).
+- **«Ajustar…»: poner a punto cada cámara antes de analizarla (27 oct, pedido del dueño; app 1.20.0).** En Clientes,
+  botón «Ajustar…» (de a una cámara) → `TuneWindow` (agent/oficina.py) con el motor `Tuner` (agent/ajuste.py): la
+  cámara se analiza **en la PC del usuario** (no en las máquinas), en vivo o con **videos grabados** («Probar con
+  videos…», varios a la vez, uno tras otro; tope 30 min; .dav/.264 que OpenCV no abra → exportar MP4/AVI). Se ve lo que
+  ve el análisis: zonas, personas con número y, por zona, segundos contra el tiempo de la regla («gondola 32/45s», en
+  rojo al llegar) y «TOMO ALGO». **Alertas de prueba**: quedan en la ventana (no van a empleados, cliente ni
+  entrenamiento); clic = ir al momento; barra para recorrer y ▶. **Probar tiempos** (merodeo, «tomó algo», caja,
+  restringida) recalcula al instante todo lo analizado: se guardan por cuadro los tracks (`Sample`) y solo se vuelven a
+  pasar las reglas (`RuleEngine.progress` da zonas y segundos por persona). En vivo se recuerdan 10 min. «Zonas…» abre
+  el `ZonesEditor` sobre la imagen del ajuste. «Cómo anda la cámara»: tamaño medio de las personas, confianza del
+  detector, apariciones de menos de 2 s, cuadros por segundo, cortes, alertas por hora, y por video qué alertas dio,
+  más avisos (`Tuner.hints`: falta zona Salida/Caja/Góndola, personas chicas < 10 % del alto, detector que duda < 0,5…).
+  «Guardar tiempos» (y pasa a «En ajuste») · «✔ Aprobar y analizar» → `POST /api/cameras/{id}/tuning` (`status`,
+  `notes`, `analyze`) guarda quién y cuándo y la manda a las máquinas. Columnas: `cameras.tuning` (None/en_ajuste/
+  aprobada), `tuned_by`, `tuned_at`, `tuning_notes`; columna «Ajuste» en Clientes; «✔ Analizar» pregunta si hay
+  cámaras sin aprobar. La PC pide la cámara con `POST /api/agent/tune` (PC de un usuario del equipo: config como la de
+  /config + `raw` = zonas y reglas guardadas) y puede dejar su imagen (`/api/agent/cameras/{id}/preview` acepta la PC
+  de un usuario del equipo). El ajuste en vivo usa una transmisión del grabador mientras la ventana esté abierta.
+  Probado con videos sintéticos (detector de movimiento) y con YOLO sobre una imagen real (capturas en 1366x768).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -504,7 +523,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 184 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 189 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
