@@ -354,8 +354,14 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   núcleos → ~2 cámaras de hurto por núcleo físico, **crece en proporción** (una máquina grande de procesador cuesta lo
   mismo por cámara que varias chicas). Lo que no es detector: ~830 cuadros/s por núcleo. Una vCPU de e2/c7i/c6a es
   medio núcleo (hyperthreading). **VM real (e2-standard-4 = Broadwell 2,2 GHz, 2 núcleos con HT):** el servicio usa
-  172 % de procesador con 3 cámaras en horario comercial (≈ 0,57 vCPU por cámara) → ~5 cámaras con margen; RES 3,0 GB
-  a las 11:58 UTC del 27 oct (vigilar si crece). **A demanda, la grande cuesta exactamente 4 veces la chica en las dos
+  172 % de procesador con 3 cámaras en horario comercial; **con 5 se llenó** (350-396 %, cada una bajó a ≈ 3 fps; RES
+  3,6-3,8 GB) → 3-4 cámaras por e2-standard-4. **Medido en VMs Spot de Google (27 oct, otra sesión, `agent.medir
+  --segundos 30`; cuadros/s con 4 vCPU y, entre paréntesis, con 2):** e2-standard-4 (AMD Rome, 2 hilos por núcleo)
+  19,9 (18,9) → 3 cámaras; c2d-standard-4 25,5 (22,8) → 4; n2d-standard-4 24,1 (21,4) → 3; **t2d-standard-4 (1 hilo
+  por núcleo) 41,7 (21,4) → 6**; t2d-standard-8 80,3 → 11. Son **~10-11 cuadros/s por núcleo físico y el
+  hyperthreading casi no suma**: conviene pagar núcleos reales (Google t2d; en AWS, Graviton c7g, sin medir). Por
+  cámara y hora: t2d a demanda ≈ 0,046 (1 año 0,029 prendida 24 h), Spot ≈ 0,016; e2 a demanda ≈ 0,076, Spot ≈ 0,016;
+  c2d Spot ≈ 0,013 (precio de la de 16 dividido por 4). **A demanda, la grande cuesta exactamente 4 veces la chica en las dos
   nubes** (mismo costo por cámara). En Spot no: AWS c6a.4xlarge 0,1133/h (≈ 83/mes, contra 4 × c6a.xlarge = 154) y
   c7g.4xlarge (ARM) 0,0889/h (≈ 65/mes) salen mucho más baratas por vCPU; Google c2d-standard-16 Spot 0,18384/h
   (≈ 134/mes, núcleos AMD rápidos). Otros precios 27 oct: Google t2d-standard-4 0,2682 (Spot 0,0929), n2d-standard-4
