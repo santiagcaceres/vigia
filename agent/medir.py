@@ -75,7 +75,11 @@ def measure(model: str, seconds: float = 15.0, cores: int | None = None) -> dict
     if cores and hasattr(os, "sched_setaffinity"):
         os.sched_setaffinity(0, set(sorted(os.sched_getaffinity(0))[:cores]))
     ncpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
-    os.environ["VIGIA_HILOS"] = str(ncpu)  # como en las máquinas sin placa: una sesión de 1 hilo por núcleo
+    import onnxruntime as ort
+
+    nvidia = any(p in ort.get_available_providers() for p in ("CUDAExecutionProvider", "TensorrtExecutionProvider"))
+    if not nvidia:  # como en las máquinas sin placa: una sesión de 1 hilo por núcleo (con placa: lotes en la placa)
+        os.environ["VIGIA_HILOS"] = str(ncpu)
     cv2.setNumThreads(1)
     from core.analyzer import Analyzer
     from core.detectors import build_detector
