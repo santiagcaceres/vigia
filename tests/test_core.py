@@ -180,6 +180,9 @@ def test_worker_aplica_zonas_nuevas_sin_reconectar():
     assert CameraWorker.analysis_of(base) != CameraWorker.analysis_of(otra)
     veh = {**base, "analysis": {**base["analysis"], "vehicles": True}}  # vehículos cambia el detector: reconecta
     assert CameraWorker.fingerprint_of(base) != CameraWorker.fingerprint_of(veh)
+    nuevo = {**base, "name": "Caja 1", "client_name": "Minas"}  # renombrar no corta el video
+    assert CameraWorker.fingerprint_of(base) == CameraWorker.fingerprint_of(nuevo)
+    assert CameraWorker.display_name(nuevo) == "Minas · Caja 1"
 
 
 def test_misma_persona_perdida_unos_segundos_conserva_el_numero():

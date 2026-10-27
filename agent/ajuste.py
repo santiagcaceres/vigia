@@ -27,6 +27,7 @@ import numpy as np
 from core.analyzer import annotate
 from core.detectors import Detector
 from core.rules import MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
+from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
 
 from .cameras import build_camera
@@ -67,6 +68,8 @@ class TestAlert:
     type: str
     description: str
     track_id: int
+    score: float | None = None  # puntaje del modelo entrenado del cliente (si tiene)
+    kept: bool = True  # False = el modelo la descartaría (no llegaría a los empleados)
 
 
 class Tuner:
@@ -79,6 +82,8 @@ class Tuner:
         self.id: int = cfg["id"]
         self.name = f"{cfg['client_name']} · {cfg['name']}" if cfg.get("client_name") else cfg["name"]
         self.detector = detector
+        # el modelo entrenado con las etiquetas del cliente (si hay): dice qué alertas descartaría, como en las máquinas
+        self.scorer = Scorer.maybe(cfg.get("filter_model"))
         self.videos = [str(v) for v in videos or []]
         self.live = not self.videos
         self.process_fps = float(cfg.get("process_fps") or 5.0)
@@ -146,7 +151,12 @@ class Tuner:
     def _feed(self, engine: RuleEngine, s: Sample, index: int, marks: list[dict]) -> list[TestAlert]:
         evs = engine.update(s.tracks, s.ts, s.size, s.wall)
         marks.append(engine.progress(s.ts))
-        return [TestAlert(index, s.seg, s.ts, s.wall, e.type, e.description, e.track_id) for e in evs]
+        out = []
+        for e in evs:
+            score = self.scorer.score(e.type, e.features) if self.scorer else None
+            out.append(TestAlert(index, s.seg, s.ts, s.wall, e.type, e.description, e.track_id, score,
+                                 self.scorer.is_alert(score) if self.scorer else True))
+        return out
 
     # ---------- análisis ----------
     def start(self) -> None:
@@ -349,6 +359,7 @@ class Tuner:
             n, det = self._n, self._det_n
             span = self.samples[-1].ts - self.samples[0].ts if len(self.samples) > 1 else 0.0
             alerts = len(self.alerts)
+            dropped = sum(1 for a in self.alerts if not a.kept)
             persons = len(self._spans)
             short = sum(1 for k, (a, b) in self._spans.items() if b - a < SHORT_TRACK_SECONDS and k not in self._visible_now)
         return {"frames": n, "seconds": n / self.process_fps, "people_pct": 100.0 * self._n_people / n if n else 0.0,
@@ -357,6 +368,7 @@ class Tuner:
                 "small_pct": 100.0 * self._det_small / det if det else None,
                 "conf": self._det_conf / det if det else None,
                 "fps": len(self._times) / 10.0 if self.live else None, "cuts": self.cuts, "alerts": alerts,
+                "dropped": dropped,
                 "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None}
 
     def hints(self) -> list[str]:

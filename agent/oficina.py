@@ -6,7 +6,8 @@ corren en hilos aparte (`Bg`) y el resultado se aplica en el hilo de la ventana,
 
 Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «En vivo», para mirar cualquier cámara
 sin analizarla, la arma `Ventana`):
-- Clientes: alta/edición/borrado de clientes y cámaras, qué cámaras se analizan («✔ Analizar», en las máquinas
+- Clientes: alta/edición/borrado de clientes y cámaras, «Nombres e imágenes…» (renombrar viendo la imagen, con lo que
+  ve la IA: `NamesWindow`), qué cámaras se analizan («✔ Analizar», en las máquinas
   de análisis), probar conexión, zonas y reglas, métricas del día. «Ajustar…» pone a punto una cámara analizándola
   en esta PC (en vivo o con videos grabados) antes de aprobarla (`TuneWindow`, motor en agent/ajuste.py).
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
@@ -484,6 +485,7 @@ class Oficina:
         ttk.Button(b3, text="✘ No analizar", command=lambda: self.set_analyze(False)).pack(side="left", padx=4)
         ttk.Button(b3, text="Elegir todas", command=lambda: self.cam_tree.selection_set(
             self.cam_tree.get_children())).pack(side="left")
+        ttk.Button(b3, text="Nombres e imágenes…", command=self.names_dialog).pack(side="left", padx=4)
         ttk.Button(b3, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
         ttk.Button(b3, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
         self.cam_info = tk.Text(right, height=10, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
@@ -1205,6 +1207,16 @@ class Oficina:
         if self.agent_of is None or self.agent_of() is None:
             return self.mb.showinfo("Vigía", "La app todavía está arrancando el analizador. Probá en unos segundos.")
         TuneWindow(self, cam)
+
+    def names_dialog(self) -> None:
+        c = self._sel_client()
+        if not c:
+            return self.mb.showinfo("Vigía", "Elegí un cliente.")
+        if not any(x["client_id"] == c["id"] for x in self.cameras):
+            return self.mb.showinfo("Vigía", f"{c['name']} no tiene cámaras.")
+        if self.agent_of is None or self.agent_of() is None:
+            return self.mb.showinfo("Vigía", "La app todavía está arrancando. Probá en unos segundos.")
+        NamesWindow(self, c)
 
     # ---------- métricas ----------
     def metrics_dialog(self) -> None:
@@ -1963,6 +1975,11 @@ class TuneWindow:
                 return
             self.info, self.detector = res
             self.analysis = self.info["camera"].get("analysis") or {}
+            dev = getattr(self.detector, "device", None)
+            self.detector_text = (f"Detector de personas: YOLO en {dev}." if dev else
+                                  "Detector: movimiento (solo para pruebas; cambialo a YOLO en «Editar»).")
+            if self.info["camera"].get("filter_model"):
+                self.detector_text += " Con el modelo entrenado del cliente: cada alerta muestra su puntaje."
             self._fill_times()
             if self.tuner is None:
                 self.start_live()
@@ -1984,7 +2001,8 @@ class TuneWindow:
                                                      ("salida_sin_pago", "merodeo", "zona_restringida", "fuera_de_horario"))]
             prof = PROFILE_NAMES.get(self.analysis.get("profile") or "general", "").split(" (")[0]
             txt = f"Reglas de esta cámara (tipo {prof}): {', '.join(names).lower() or 'ninguna'}."
-        self.rules_lbl.configure(text=txt + " El tipo de cámara se cambia en «Editar».")
+        self.rules_lbl.configure(text=txt + " El tipo de cámara se cambia en «Editar» o en «Nombres e imágenes». "
+                                 + getattr(self, "detector_text", ""))
 
     def _times(self) -> dict[str, float] | None:
         try:
@@ -2247,7 +2265,8 @@ class TuneWindow:
         self._alert_rows = list(alerts)
         self.alist.delete(0, "end")
         for a in self._alert_rows:
-            self.alist.insert("end", f"{t.clock_text(a)}   {TYPE_NAMES.get(a.type, a.type)} · {a.description}")
+            model = "" if a.score is None else f" · modelo {a.score:.2f}" + ("" if a.kept else " (la descartaría)")
+            self.alist.insert("end", f"{t.clock_text(a)}   {TYPE_NAMES.get(a.type, a.type)}{model} · {a.description}")
         if not self._alert_rows:
             self.alist.insert("end", "Todavía ninguna." if t.state not in ("listo",) else "Ninguna con estas zonas y tiempos.")
             self._alert_rows = []
@@ -2262,7 +2281,8 @@ class TuneWindow:
                 lines.append(f"Tamaño medio de las personas: {st['height_pct']:.0f} % del alto de la imagen · confianza "
                              f"del detector: {st['conf']:.2f} de 1")
             per_hour = f" (≈ {st['per_hour']:.1f} por hora)" if st.get("per_hour") is not None else ""
-            lines.append(f"Alertas de prueba: {st['alerts']}{per_hour}")
+            dropped = f" · el modelo entrenado descartaría {st['dropped']}" if st.get("dropped") else ""
+            lines.append(f"Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
         if not t.live:
             for seg in t.segments():
                 if seg["error"]:
@@ -2280,3 +2300,251 @@ class TuneWindow:
         self.stats_txt.delete("1.0", "end")
         self.stats_txt.insert("1.0", "\n".join(lines) or "Esperando los primeros cuadros…")
         self.stats_txt.configure(state="disabled")
+
+
+class NamesWindow:
+    """«Nombres e imágenes»: todas las cámaras de un cliente con su imagen, para reconocerlas y ponerles un nombre que
+    diga qué muestran (las de Hik-Connect vienen como «camera 3@E02380030»). YOLO dice qué se ve en cada una y sugiere
+    tipo y nombre (core/escena.py): es una pista, no una clasificación. «Traer imágenes nuevas» abre de a una las
+    cámaras que no analiza una máquina, toma un cuadro y lo deja como imagen de la cámara; las que analiza una máquina
+    usan la imagen que ella sube (no se le pide otra transmisión al grabador)."""
+
+    TW, TH = 288, 162
+    COLS = 4
+
+    def __init__(self, app: Oficina, client: dict):
+        self.app, self.client = app, client
+        tk, ttk = app.tk, app.ttk
+        self.agent = app.agent_of() if app.agent_of else None
+        self.cams = sorted((c for c in app.cameras if c["client_id"] == client["id"]),
+                           key=lambda c: (c.get("hpp_serial") or c.get("host") or "", c.get("channel") or 0, c["name"]))
+        self.closed = False
+        self.busy = False
+        self.cards: dict[int, dict] = {}
+        self.top, frm = app._dialog(f"Nombres e imágenes · {client['name']}")
+        self.top.resizable(True, True)
+        self.top.protocol("WM_DELETE_WINDOW", self.close)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(2, weight=1)
+        ttk.Label(frm, wraplength=self.COLS * (self.TW + 24), justify="left", text=(
+            "Mirá la imagen y ponele a cada cámara un nombre que diga qué muestra (por ejemplo «Caja 1», «Heladeras», "
+            "«Puerta»). Debajo, lo que ve la IA y un tipo sugerido: es una pista, puede equivocarse. El nombre se cambia "
+            "en Vigía (no en el grabador) y las alertas viejas pasan a mostrar el nombre nuevo.")).grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        bar = ttk.Frame(frm)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 4))
+        self.fetch_btn = ttk.Button(bar, text="Traer imágenes nuevas", command=self.fetch_all)
+        self.fetch_btn.pack(side="left")
+        self.status = ttk.Label(bar, text="", foreground="#666")
+        self.status.pack(side="left", padx=8)
+        ttk.Button(bar, text="Cerrar", command=self.close).pack(side="right")
+        ttk.Button(bar, text="Guardar nombres", command=self.save).pack(side="right", padx=4)
+        outer = ttk.Frame(frm)
+        outer.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        self.canvas = tk.Canvas(outer, width=self.COLS * (self.TW + 24), height=540, highlightthickness=0)
+        sb = ttk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = ttk.Frame(self.canvas)
+        self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.top.bind_all(seq, self._wheel, add="+")
+        for i, cam in enumerate(self.cams):
+            self._card(i, cam)
+        self._run([(c, "preview") for c in self.cams if c.get("has_preview")])
+        missing = sum(1 for c in self.cams if not c.get("has_preview"))
+        if missing:
+            self.status.configure(text=f"{missing} cámara(s) sin imagen: «Traer imágenes nuevas» las abre de a una.")
+
+    def _wheel(self, ev) -> None:
+        if self.closed or not str(ev.widget).startswith(str(self.top)):
+            return
+        step = -1 if getattr(ev, "num", 0) == 4 or getattr(ev, "delta", 0) > 0 else 1
+        self.canvas.yview_scroll(step * 2, "units")
+
+    def _card(self, i: int, cam: dict) -> None:
+        tk, ttk = self.app.tk, self.app.ttk
+        f = ttk.Frame(self.inner, padding=6, relief="groove")
+        f.grid(row=i // self.COLS, column=i % self.COLS, padx=4, pady=4, sticky="n")
+        cv = tk.Canvas(f, width=self.TW, height=self.TH, bg="#111", highlightthickness=0)
+        cv.pack()
+        cv.create_text(self.TW // 2, self.TH // 2, text="Sin imagen", fill="#888")
+        where = (f"Grabador {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}" if cam.get("brand") == "hikconnect"
+                 else f"{cam.get('host') or '—'} · canal {cam.get('channel')}")
+        ttk.Label(f, text=where, foreground="#666").pack(anchor="w", pady=(4, 0))
+        name = tk.StringVar(value=cam["name"])
+        ttk.Entry(f, textvariable=name, width=38).pack(fill="x")
+        prof = tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general", PROFILE_NAMES["general"]))
+        ttk.Combobox(f, textvariable=prof, values=list(PROFILE_NAMES.values()), state="readonly",
+                     width=36).pack(fill="x", pady=(2, 0))
+        ia = ttk.Label(f, text="", foreground="#666", wraplength=self.TW, justify="left")
+        ia.pack(anchor="w", pady=(2, 0))
+        sug_row = ttk.Frame(f)
+        sug_row.pack(fill="x")
+        sug = ttk.Label(sug_row, text="", foreground="#0a7d3a", wraplength=self.TW - 60, justify="left")
+        sug.pack(side="left")
+        btn = ttk.Button(sug_row, text="Usar", width=6, command=lambda cid=cam["id"]: self.use(cid))
+        self.cards[cam["id"]] = {"canvas": cv, "name": name, "prof": prof, "ia": ia, "sug": sug, "btn": btn,
+                                 "photo": None, "suggestion": None, "orig": (cam["name"], prof.get())}
+
+    # ---------- imágenes e IA (en otro hilo, de a una cámara) ----------
+    def _post(self, fn, arg=None) -> None:
+        self.app.bg.q.put((fn, arg))
+
+    def _run(self, items: list) -> None:
+        if not items or self.agent is None:
+            self.busy = False
+            self.fetch_btn.configure(state="normal")
+            return
+        self.busy = True
+        self.fetch_btn.configure(state="disabled")
+        threading.Thread(target=self._work, args=(items,), daemon=True).start()
+
+    def _work(self, items: list) -> None:
+        from core.escena import describe, scene_detector
+
+        from .nombres import grab_frame
+        try:
+            det = scene_detector(self.agent.model_path)
+        except Exception as exc:  # noqa: BLE001 - sin modelo: se muestran las imágenes sin lo que ve la IA
+            log.warning("Nombres e imágenes: sin detector (%s)", exc)
+            det = None
+        plans = tuple(self.client.get("plans") or ())
+        ok = 0
+        for n, (cam, how) in enumerate(items, 1):
+            if self.closed:
+                return
+            try:
+                if how == "preview":
+                    data = self.app.api.download(f"/api/cameras/{cam['id']}/preview")
+                    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+                    if img is None:
+                        raise RuntimeError("la imagen guardada no se pudo leer")
+                else:
+                    self._post(lambda t: self.status.configure(text=t),
+                               f"Imagen {n} de {len(items)}: abriendo «{cam['name']}»…")
+                    img = grab_frame(how)
+                    okj, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if okj:
+                        self.agent.client.preview(cam["id"], jpg.tobytes())
+                info = describe(img, det, plans) if det is not None else None
+                self._post(self._show, (cam["id"], img, info))
+                ok += 1
+            except Exception as exc:  # noqa: BLE001 - se muestra en la tarjeta de esa cámara
+                self._post(self._fail, (cam["id"], str(exc)))
+        self._post(self._finished, (ok, len(items)))
+
+    def _show(self, arg) -> None:
+        cid, img, info = arg
+        card = self.cards.get(cid)
+        if self.closed or card is None:
+            return
+        from core.escena import summary
+        card["photo"] = ppm_photo(self.app.tk, img, self.TW, self.TH)
+        cv = card["canvas"]
+        cv.delete("all")
+        cv.create_image(self.TW // 2, self.TH // 2, image=card["photo"])
+        if info is None:
+            return
+        card["ia"].configure(text="La IA ve: " + summary(info))
+        sg = info.get("suggestion")
+        card["suggestion"] = sg
+        if sg:
+            card["sug"].configure(text=f"Sugerencia: «{sg['name']}», tipo {PROFILE_NAMES[sg['profile']].split(' (')[0]} "
+                                       f"({sg['why']})")
+            card["btn"].pack(side="right")
+
+    def _fail(self, arg) -> None:
+        cid, msg = arg
+        card = self.cards.get(cid)
+        if self.closed or card is None:
+            return
+        card["ia"].configure(text=f"Sin imagen: {msg[:160]}")
+
+    def _finished(self, arg) -> None:
+        ok, total = arg
+        self.busy = False
+        if self.closed:
+            return
+        self.fetch_btn.configure(state="normal")
+        self.status.configure(text=f"Listo: {ok} de {total} imágenes." + ("" if ok == total else
+                                                                           " Las que faltan dicen por qué."))
+
+    def fetch_all(self) -> None:
+        """Imagen nueva de cada cámara: las que analiza una máquina, la última que subió; las demás, se abren de a una."""
+        if self.busy or self.agent is None:
+            return
+        self.busy = True
+        self.fetch_btn.configure(state="disabled")
+        self.status.configure(text="Preparando…")
+        cams = list(self.cams)
+
+        def plan():
+            views = {v["id"]: v for v in self.agent.client.view([c["id"] for c in cams])}
+            items = []
+            for c in cams:
+                v = views.get(c["id"])
+                if v is None:  # deshabilitada: la imagen que tenga
+                    if c.get("has_preview"):
+                        items.append((c, "preview"))
+                elif v.get("analyzed") and c.get("has_preview"):
+                    items.append((c, "preview"))  # la sube la máquina cada 5 minutos
+                else:
+                    items.append((c, v["connection"]))
+            return items
+
+        def fail(exc):
+            self.busy = False
+            self.fetch_btn.configure(state="normal")
+            self.status.configure(text=f"No se pudo: {exc}")
+        self.app.bg.run(plan, lambda items: (setattr(self, "busy", False), self._run(items)), fail)
+
+    def use(self, cid: int) -> None:
+        card = self.cards[cid]
+        sg = card.get("suggestion")
+        if sg:
+            card["name"].set(sg["name"])
+            card["prof"].set(PROFILE_NAMES[sg["profile"]])
+
+    # ---------- guardar y cerrar ----------
+    def _changes(self) -> list[dict] | None:
+        rows = []
+        for cid, card in self.cards.items():
+            name, prof = card["name"].get().strip(), card["prof"].get()
+            if not name:
+                self.app.mb.showwarning("Vigía", "Hay una cámara sin nombre.", parent=self.top)
+                return None
+            if (name, prof) != card["orig"]:
+                key = next((k for k, t in PROFILE_NAMES.items() if t == prof), None)
+                rows.append({"id": cid, "name": name, "profile": key if prof != card["orig"][1] else None})
+        return rows
+
+    def save(self) -> None:
+        rows = self._changes()
+        if rows is None:
+            return
+        if not rows:
+            return self.app.mb.showinfo("Vigía", "No cambiaste ningún nombre ni tipo.", parent=self.top)
+
+        def done(res):
+            for r in rows:
+                card = self.cards[r["id"]]
+                card["orig"] = (card["name"].get().strip(), card["prof"].get())
+            self.app.config_saved()
+            self.app.mb.showinfo("Vigía", f"Guardado: {res['renamed']} nombre(s) y {res['retyped']} tipo(s).",
+                                 parent=self.top)
+        self.app.bg.run(lambda: self.app.api.post("/api/cameras/names", {"cameras": rows}), done,
+                        lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+
+    def close(self) -> None:
+        rows = self._changes()
+        if rows and not self.app.mb.askyesno("Vigía", f"Hay {len(rows)} cambio(s) sin guardar. ¿Cerrar igual?",
+                                             parent=self.top):
+            return
+        self.closed = True
+        try:
+            self.top.destroy()
+        except Exception:  # noqa: BLE001
+            pass

@@ -133,3 +133,21 @@ def test_ajuste_en_vivo_reconecta_y_recuerda_lo_ultimo(tmp_path):
     first, end = t.bounds()
     assert end > first and t.sample_at(end - 1).wall is not None  # en vivo cada cuadro tiene la hora real
     assert t.render() is not None and t.stats()["fps"] is not None
+
+
+def test_el_ajuste_muestra_que_alertas_descartaria_el_modelo_entrenado(tmp_path):
+    from agent.ajuste import Tuner
+    from core.scorer import VECTOR_NAMES
+
+    n = len(VECTOR_NAMES)
+    spec = {"vector_names": list(VECTOR_NAMES), "mean": [0.0] * n, "scale": [1.0] * n, "coef": [0.0] * n,
+            "intercept": -5.0, "threshold": 0.5, "id": 3}  # un modelo que descarta todo
+    video = synthetic.write_video(synthetic.render("hurto"), tmp_path / "hurto.mp4")
+    cfg = {"id": 7, "name": "Góndola", "process_fps": synthetic.FPS, "connection": {}, "filter_model": spec,
+           "analysis": {"zones": synthetic.STORE_ZONES, "rules": {}}}
+    t = Tuner(cfg, MotionDetector(), [str(video)])
+    t.run()
+    assert [a.type for a in t.alerts] == ["salida_sin_pago"]
+    a = t.alerts[0]
+    assert a.score is not None and a.score < 0.01 and not a.kept
+    assert t.stats()["dropped"] == 1

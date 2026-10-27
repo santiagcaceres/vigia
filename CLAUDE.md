@@ -317,6 +317,21 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   /config + `raw` = zonas y reglas guardadas) y puede dejar su imagen (`/api/agent/cameras/{id}/preview` acepta la PC
   de un usuario del equipo). El ajuste en vivo usa una transmisión del grabador mientras la ventana esté abierta.
   Probado con videos sintéticos (detector de movimiento) y con YOLO sobre una imagen real (capturas en 1366x768).
+  **App 1.21.0:** la ventana dice con qué detector corre («YOLO en GPU (Dml)» / «en procesador») y, si el cliente
+  tiene modelo entrenado (`filter_model`, ahora viaja en `/api/agent/tune`), cada alerta de prueba muestra su puntaje
+  y si el modelo la descartaría (`TestAlert.score/kept`, `stats.dropped`).
+- **«Nombres e imágenes…» (27 oct, pedido del dueño; app 1.21.0):** en Clientes (botón en la segunda fila), todas las
+  cámaras del cliente en tarjetas con su imagen, el grabador y canal, el nombre editable y el tipo (`NamesWindow` en
+  agent/oficina.py). **YOLO con todas las clases** (`core/escena.py`: `scene_detector` con `COCO_ES`, solo clases que
+  tienen sentido en un comercio; objetos con confianza ≥ 0,45) dice qué se ve («4 personas · ómnibus · 810×1040»,
+  «de noche (infrarrojo)», «imagen oscura») y **sugiere tipo y nombre** (vehículos → Calle/Surtidores, frutas →
+  Verdulería, heladera → Heladeras, botellas → Bebidas, pantalla/teclado → ¿Caja?) con botón «Usar»: es una pista
+  (COCO no conoce góndolas ni cajas). «Traer imágenes nuevas»: las cámaras que analiza una máquina usan la imagen que
+  ella sube; las demás se abren **de a una** desde la PC (`agent/nombres.py`, `grab_frame`, ~12 cuadros) y la imagen
+  queda como la de la cámara. «Guardar nombres» → `POST /api/cameras/names` (staff; `{cameras: [{id, name,
+  profile?}]}`; sube `config_rev`). **Renombrar no corta el video**: `CameraWorker.fingerprint_of` ya no incluye
+  `name`/`client_name` y `apply_config` llama a `rename` (las máquinas lo toman después de actualizarse con
+  `git pull`, es decir al reiniciar). El nombre cambia en Vigía, no en el grabador.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -523,7 +538,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 189 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # 194 tests (unos 40 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

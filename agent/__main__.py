@@ -219,9 +219,13 @@ class Agent:
                 else:  # con ventana no se espera: si el video estaba abriendo, la ventana quedaba sin responder
                     self._stopping.append(w)
                 del self.workers[cid]
-            elif w.analysis_fp != CameraWorker.analysis_of(wanted[cid]):  # solo cambiaron zonas o reglas
-                w.analysis_fp = CameraWorker.analysis_of(wanted[cid])
-                w.update_analysis(wanted[cid].get("analysis") or {})
+            else:
+                if w.name != CameraWorker.display_name(wanted[cid]):  # la renombraron: sin cortar el video
+                    log.info("Cámara %s ahora se llama %s", w.name, CameraWorker.display_name(wanted[cid]))
+                    w.rename(wanted[cid])
+                if w.analysis_fp != CameraWorker.analysis_of(wanted[cid]):  # solo cambiaron zonas o reglas
+                    w.analysis_fp = CameraWorker.analysis_of(wanted[cid])
+                    w.update_analysis(wanted[cid].get("analysis") or {})
         for cid, lw in self.live_workers.items():  # vivo de cámaras en modo alarmas: zonas nuevas en el dibujo
             if cid in self._cams_cfg:
                 try:

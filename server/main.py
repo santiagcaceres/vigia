@@ -214,6 +214,19 @@ class TuneIn(BaseModel):
     camera_id: int
 
 
+CameraProfile = Literal["general", "gondola", "caja", "entrada", "deposito", "exterior", "surtidor", "metricas"]
+
+
+class CameraNameIn(BaseModel):
+    id: int
+    name: str = Field(min_length=1, max_length=120)
+    profile: CameraProfile | None = None  # None = no cambia
+
+
+class CameraNamesIn(BaseModel):
+    cameras: list[CameraNameIn] = Field(min_length=1, max_length=500)
+
+
 class CamerasDeleteIn(BaseModel):
     camera_ids: list[int] = Field(min_length=1, max_length=2000)
     con_alertas: bool = False  # borrar también sus alertas, clips y videos subidos
@@ -299,7 +312,7 @@ class CameraIn(BaseModel):
     mode: Literal["vivo", "alarmas", "alarmas_equipo"] = "vivo"
     hpp_serial: str | None = Field(None, max_length=64)  # la larga de Hik-Connect se acorta al validar
     hc_resource_id: str | None = Field(None, max_length=64)
-    profile: Literal["general", "gondola", "caja", "entrada", "deposito", "exterior", "surtidor", "metricas"] = "general"
+    profile: CameraProfile = "general"
     # con el local cerrado (según el horario del cliente). None = no cambia (al crear: apagada)
     off_hours: Literal["apagada", "alarmas", "vivo"] | None = None
     # dónde se analiza: general (lo que diga su cliente) | pcs | servidores. None = no cambia
@@ -1490,6 +1503,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_analyzed(s, cams, body.analyze)
         return {"changed": len(cams), "analyze": body.analyze}
 
+    @app.post("/api/cameras/names")
+    def cameras_names(body: CameraNamesIn, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """«Nombres e imágenes» de la app: renombrar varias cámaras a la vez (las de Hik-Connect vienen como «camera 3@
+        E02380030») y, si se eligió, cambiarles el tipo. Las alertas y métricas ya guardadas muestran el nombre nuevo."""
+        cams = {c.id: c for c in s.query(Camera).filter(Camera.id.in_({x.id for x in body.cameras}))}
+        renamed = retyped = 0
+        for x in body.cameras:
+            c = cams.get(x.id)
+            if c is None:
+                continue
+            name = x.name.strip()
+            if name and name != c.name:
+                c.name = name
+                renamed += 1
+            if x.profile and x.profile != (c.profile or "general"):
+                c.profile = x.profile
+                retyped += 1
+        if renamed or retyped:
+            bump_rev(s)
+        s.commit()
+        if retyped:  # el tipo cambia qué reglas se usan y cuánto pesa la cámara en las máquinas
+            rebalance(s, force=True)
+        log.info("Cámaras renombradas por %s: %d nombres, %d tipos", user.username, renamed, retyped)
+        return {"renamed": renamed, "retyped": retyped}
+
     @app.post("/api/cameras/{cam_id}/tuning")
     def camera_tuning(cam_id: int, body: TuningIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         """Estado de la puesta a punto («Ajustar» en la app): quién la aprobó, cuándo y con qué notas. Aprobar con
@@ -1688,7 +1726,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         watcher(s, ag)
         c = get_or_404(s, Camera, body.camera_id, "Cámara")
         client = s.get(Client, c.client_id)
-        return {"camera": agent_camera_cfg(c, client), "raw": {"zones": c.zones or [], "rules": c.rules or {}},
+        return {"camera": {**agent_camera_cfg(c, client), "filter_model": model_spec(s, c.client_id)},
+                "raw": {"zones": c.zones or [], "rules": c.rules or {}},
                 "tuning": c.tuning or "sin_ajustar", "tuning_notes": c.tuning_notes,
                 "analyzed": locations(s).get(c.id) == "servidores"}
 

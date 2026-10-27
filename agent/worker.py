@@ -103,8 +103,7 @@ class CameraWorker:
                  metrics_queue: MetricsQueue | None = None):
         self.id: int = cam_cfg["id"]
         # en modo central conviven cámaras de varios clientes: el log las distingue por cliente
-        self.name: str = (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
-                          else cam_cfg["name"])
+        self.name: str = self.display_name(cam_cfg)
         self.fingerprint = self.fingerprint_of(cam_cfg)
         self.hik = build_camera(cam_cfg["connection"])
         # solo métricas (contar gente, tiempos): menos cuadros y sin clips; para hurto, mínimo 5 fps
@@ -142,10 +141,19 @@ class CameraWorker:
         self.display = None  # np.ndarray | None
 
     @staticmethod
+    def display_name(cam_cfg: dict) -> str:
+        return f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name") else cam_cfg["name"]
+
+    def rename(self, cam_cfg: dict) -> None:
+        """Le cambiaron el nombre a la cámara (o al cliente): sin cortar el video."""
+        self.name = self.live.name = self.display_name(cam_cfg)
+
+    @staticmethod
     def fingerprint_of(cam_cfg: dict) -> str:
         """Lo que obliga a reconectar: conexión, modo, detector… Las zonas y reglas NO (se aplican en
-        caliente con `update_analysis`); solo cuenta si hay que detectar vehículos (cambia el detector)."""
-        base = {k: v for k, v in cam_cfg.items() if k != "analysis"}
+        caliente con `update_analysis`); solo cuenta si hay que detectar vehículos (cambia el detector).
+        El nombre tampoco (`rename`)."""
+        base = {k: v for k, v in cam_cfg.items() if k not in ("analysis", "name", "client_name")}
         base["vehicles"] = bool((cam_cfg.get("analysis") or {}).get("vehicles"))
         return json.dumps(base, sort_keys=True, default=str)
 
