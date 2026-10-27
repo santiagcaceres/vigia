@@ -341,7 +341,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   el cifrado). De noche la IA no vio nada (infrarrojo). **Ninguna cámara de Minas tiene zonas**: la máquina analiza
   (3, 5 y 6) pero no puede dar alertas hasta que se dibujen. La 6 (Portón calle) va a 12-15 fps y deja la máquina en
   4,6/4. En «Ajustar…», si la cámara ya se analiza, la ventana avisa y pide confirmación antes de guardar zonas o
-  tiempos (rigen enseguida en la máquina).
+  tiempos (rigen enseguida en la máquina). **Ese día se bajó la 6 (id 38) a 5 fps** por SQL (el UPDATE por el
+  conector de Supabase anduvo) y se subió `config_rev`; quedan en 15 fps (sin analizar) Depósito galpón, Oficina,
+  Entrada, Pasillo bebidas y Depósito cajas: bajarlas a 5 antes de analizarlas (15 fps = 3 veces el costo).
+- **Costos estimados (27 oct, precios de terceros, verificar):** máquina de 4 vCPU ≈ 6 cámaras de hurto a 5 fps
+  (conservador; banco: 8). GCP e2-standard-4 São Paulo: US$ 0,213/h a demanda (≈ 155/mes 24 h), 0,134 con compromiso
+  1 año, Spot 0,034 (≈ 25/mes). AWS c7i.xlarge sa-east-1: 0,275/h (≈ 201/mes), Spot ≈ 0,05-0,06. AWS g4dn.xlarge
+  (T4) sa-east-1: 0,894/h, Spot ≈ 0,09-0,12; estimado 40 cámaras por máquina (sin probar). Hetzner AX42 (8 núcleos):
+  ≈ € 46-50/mes + alta (subiendo en 2026). Fijos: Vercel Pro US$ 20 + Supabase Pro US$ 25 por mes. Prender las
+  máquinas solo en horario necesita el encendedor (hoy solo para AWS: `agent/escalador.py`).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
