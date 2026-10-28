@@ -21,7 +21,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from core.metrics import empty_bucket, merge_bucket
-from core.rules import EVENT_TYPES, SEVERITY, parse_config
+from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, SEVERITY, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
@@ -332,7 +332,7 @@ class StreamUrlIn(BaseModel):
 
 class ZoneIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff"]
+    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle"]
     polygon: list[tuple[float, float]] = Field(min_length=3)
     # solo entrance: hacia dónde se mueve en la imagen quien ENTRA (cuenta ingresos y egresos por separado)
     direction: Literal["abajo", "arriba", "derecha", "izquierda"] | None = None
@@ -1694,12 +1694,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metrics_only = (client is not None and "hurto" not in plans) or rules.get("enabled_rules") == []
         if metrics_only:
             rules["enabled_rules"] = []
-        # zonas de personal aparte: un agente viejo no conoce el tipo y dejaría de usar todas las zonas de la cámara
-        staff = [z for z in zones if (z or {}).get("type") == "staff"]
-        out = {"zones": [z for z in zones if (z or {}).get("type") != "staff"], "rules": rules, "vehicles": vehicles,
-               "plans": plans, "profile": c.profile or "general", "metrics_only": metrics_only}
-        if staff:
-            out["staff_zones"] = staff
+        # zonas de tipos nuevos (personal, pasillo) aparte: un agente viejo no conoce el tipo y dejaría de usar todas
+        # las zonas de la cámara
+        extra = [z for z in zones if (z or {}).get("type") in NEW_ZONE_TYPES]
+        out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES], "rules": rules,
+               "vehicles": vehicles, "plans": plans, "profile": c.profile or "general", "metrics_only": metrics_only}
+        if extra:
+            out["extra_zones"] = extra
+            staff = [z for z in extra if z.get("type") == "staff"]
+            if staff:
+                out["staff_zones"] = staff  # la 1.24 solo lee esta lista (y no conoce «pasillo»)
         if client is not None and client.hours:
             out["schedule"] = client.hours  # para la regla «fuera de horario»
         return out

@@ -283,7 +283,7 @@ def test_puerta_sin_sentido_sigue_como_antes_y_las_zonas_de_personal_van_aparte(
         cfg = c.post("/api/agent/tune", json={"camera_id": cam},
                      headers={"X-Agent-Token": tok}).json()["camera"]
         an = cfg["analysis"]
-        assert [z["type"] for z in an["zones"]] == ["entrance"] and an["staff_zones"][0]["name"] == "mostrador"
+        assert [z["type"] for z in an["zones"]] == ["entrance"] and an["extra_zones"][0]["name"] == "mostrador"
         assert cfg["process_fps"] == 5
         zones_ok, _ = parse_config(an)
         assert {z.type for z in zones_ok} == {"entrance", "staff"}

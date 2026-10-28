@@ -70,9 +70,9 @@ TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador"}
 LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falso positivo"}
 LABEL_KEYS = {"1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo"}
-ZONE_NAMES = {"shelf": "Góndola", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
+ZONE_NAMES = {"shelf": "Góndola", "aisle": "Pasillo", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
               "entrance": "Entrada (conteo)", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal (empleados)"}
-ZONE_COLORS = {"shelf": "#ffc800", "checkout": "#00c800", "exit": "#0096ff", "restricted": "#ff3030",
+ZONE_COLORS = {"shelf": "#ffc800", "aisle": "#78ffff", "checkout": "#00c800", "exit": "#0096ff", "restricted": "#ff3030",
                "entrance": "#c800ff", "pump": "#ff7800", "shop": "#00c8c8", "staff": "#8a8a8a"}
 # zona Entrada: hacia dónde se mueve en la imagen quien ENTRA al local (así se cuentan aparte los que salen)
 DOOR_NAMES = {"abajo": "Entran hacia abajo ↓", "arriba": "Entran hacia arriba ↑", "derecha": "Entran hacia la derecha →",
@@ -1807,22 +1807,75 @@ class Oficina:
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
 
-class ZonesEditor:
-    """Editor de zonas: clics sobre la imagen de la cámara para marcar vértices, doble clic para cerrar."""
+# dónde va cada tipo de zona (las zonas van sobre el PISO: se mira dónde pisa cada persona)
+ZONE_HELP = {"shelf": "Góndola: el piso frente al estante, donde la gente se para a elegir (no el estante).",
+             "aisle": "Pasillo: por donde camina la gente (solo para saber a dónde va; no da alertas).",
+             "checkout": "Caja: el piso donde el cliente paga, de su lado del mostrador.",
+             "exit": "Salida: el piso junto a la puerta, del lado de adentro.",
+             "restricted": "Restringida: donde un cliente no debería entrar (da alerta).",
+             "entrance": "Entrada: la puerta; marcá hacia dónde caminan en la imagen los que entran.",
+             "pump": "Surtidor: el lugar donde para el vehículo a cargar.",
+             "shop": "Tienda: el piso de la tienda de la estación.",
+             "staff": "Personal: detrás del mostrador o depósito: quien lo pisa se toma como empleado."}
 
-    W, H = 720, 405
+
+def nearest_vertex(zones: list[dict], nx: float, ny: float, w: int, h: int, radius: float) -> tuple[int, int] | None:
+    """(zona, punto) más cercano a (nx, ny) (coordenadas 0-1) si está a menos de `radius` píxeles en un lienzo de
+    `w` x `h`. Si hay varios, el de la zona dibujada más arriba (la última)."""
+    best, dist = None, radius
+    for zi in range(len(zones) - 1, -1, -1):
+        for vi, (x, y) in enumerate(zones[zi].get("polygon") or []):
+            d = ((x - nx) * w) ** 2 + ((y - ny) * h) ** 2
+            if d ** 0.5 <= dist:
+                best, dist = (zi, vi), d ** 0.5
+    return best
+
+
+def zone_at(zones: list[dict], nx: float, ny: float) -> int | None:
+    """La zona (la de más arriba) que contiene el punto, o None."""
+    from core.geometry import point_in_polygon
+    for zi in range(len(zones) - 1, -1, -1):
+        if point_in_polygon(nx, ny, [tuple(p) for p in zones[zi].get("polygon") or []]):
+            return zi
+    return None
+
+
+def moved_polygon(poly: list[list[float]], dx: float, dy: float) -> list[list[float]]:
+    """La zona movida entera, sin salirse de la imagen."""
+    xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+    dx = min(max(dx, -min(xs)), 1.0 - max(xs))
+    dy = min(max(dy, -min(ys)), 1.0 - max(ys))
+    return [[round(x + dx, 4), round(y + dy, 4)] for x, y in poly]
+
+
+class ZonesEditor:
+    """Editor de zonas sobre la imagen de la cámara.
+    - Zona nueva: «＋ Zona nueva» (o clic afuera de las zonas) y clics en el piso; doble clic para cerrarla.
+    - Corregir: clic en una zona para elegirla; arrastrar sus puntos o la zona entera; clic derecho en un punto lo
+      borra. Nombre, tipo y sentido se cambian con «Aplicar a la elegida».
+    - Desde «Ajustar…» llega el mapa de pisadas (`footmap`, core/pisadas.py): se ve encima de la imagen (celeste =
+      caminan, rojo = se paran) y «Sugerir zonas» propone zonas a partir de él (punteadas hasta guardar)."""
+
+    W, H = 880, 495
+    HANDLE = 9  # radio en píxeles para agarrar un punto
 
     def __init__(self, app: Oficina, cam: dict, image: np.ndarray | None = None,
-                 on_saved: Callable[[dict], None] | None = None, confirm: str | None = None):
+                 on_saved: Callable[[dict], None] | None = None, confirm: str | None = None, footmap=None):
         """`image`: dibujar sobre esa imagen (la del ajuste) en vez de bajar la última de la cámara. `on_saved`
-        recibe lo guardado (zonas y reglas). `confirm`: pregunta antes de guardar (cámara que ya se analiza)."""
+        recibe lo guardado (zonas y reglas). `confirm`: pregunta antes de guardar (cámara que ya se analiza).
+        `footmap`: el mapa de pisadas de lo analizado en «Ajustar…»."""
         self.app, self.cam = app, cam
         self.on_saved = on_saved
         self.confirm = confirm
+        self.footmap = footmap
         tk, ttk = app.tk, app.ttk
         self.zones = [dict(z) for z in cam.get("zones") or []]
         self.rules = dict(cam.get("rules") or {})
         self.draft: list[tuple[float, float]] = []
+        self.drawing = False
+        self.sel: int | None = None
+        self.drag: tuple | None = None
+        self.base: np.ndarray | None = None  # la imagen sin el mapa
         self.top, frm = app._dialog(f"Zonas y reglas · {cam['name']}", 300)
         self.top.resizable(True, True)
         left = ttk.Frame(frm)
@@ -1830,35 +1883,56 @@ class ZonesEditor:
         self.canvas = tk.Canvas(left, width=self.W, height=self.H, bg="#111", highlightthickness=0, cursor="crosshair")
         self.canvas.pack()
         self.info = ttk.Label(left, text="Cargando la imagen de la cámara…", foreground="#666")
-        self.info.pack(anchor="w", pady=4)
-        ttk.Label(left, text="Clic: agregar punto · Doble clic: cerrar la zona · Las zonas van sobre el PISO (se mira dónde pisa cada persona).",
-                  foreground="#666").pack(anchor="w")
+        self.info.pack(anchor="w", pady=(4, 0))
+        ttk.Label(left, text="Zona nueva: «＋ Zona nueva» y clics en el piso, doble clic para cerrarla. Corregir: clic en "
+                             "una zona, arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",
+                  foreground="#666", wraplength=self.W, justify="left").pack(anchor="w")
         right = ttk.Frame(frm, padding=(12, 0, 0, 0))
         right.grid(row=0, column=1, sticky="n")
         self.zname = tk.StringVar()
         self.ztype = tk.StringVar(value=ZONE_NAMES["shelf"])
-        ttk.Label(right, text="Nueva zona", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        ttk.Label(right, text="Nombre").pack(anchor="w")
-        ttk.Entry(right, textvariable=self.zname, width=28).pack(anchor="w")
-        ttk.Label(right, text="Tipo").pack(anchor="w", pady=(4, 0))
-        ttk.Combobox(right, textvariable=self.ztype, values=list(ZONE_NAMES.values()), state="readonly", width=26).pack(anchor="w")
-        ttk.Label(right, text="Sentido (solo zona Entrada)").pack(anchor="w", pady=(4, 0))
         self.zdir = tk.StringVar(value=DOOR_NAMES["abajo"])
-        dr = ttk.Frame(right)
-        dr.pack(anchor="w")
-        ttk.Combobox(dr, textvariable=self.zdir, values=list(DOOR_NAMES.values()), state="readonly", width=26).pack(side="left")
-        ttk.Button(dr, text="Aplicar", width=7, command=self.set_direction).pack(side="left", padx=(4, 0))
-        ttk.Label(right, text="Marcá la puerta (sobre el piso) y hacia dónde\ncamina en la imagen quien entra al local.",
-                  foreground="#666").pack(anchor="w")
+        ttk.Label(right, text="Zona", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        row = ttk.Frame(right)
+        row.pack(anchor="w", fill="x")
+        ttk.Label(row, text="Nombre", width=8).pack(side="left")
+        ttk.Entry(row, textvariable=self.zname, width=24).pack(side="left")
+        row = ttk.Frame(right)
+        row.pack(anchor="w", fill="x", pady=(2, 0))
+        ttk.Label(row, text="Tipo", width=8).pack(side="left")
+        tbox = ttk.Combobox(row, textvariable=self.ztype, values=list(ZONE_NAMES.values()), state="readonly", width=22)
+        tbox.pack(side="left")
+        tbox.bind("<<ComboboxSelected>>", lambda _e: self._show_help())
+        row = ttk.Frame(right)
+        row.pack(anchor="w", fill="x", pady=(2, 0))
+        ttk.Label(row, text="Sentido", width=8).pack(side="left")
+        self.dirbox = ttk.Combobox(row, textvariable=self.zdir, values=list(DOOR_NAMES.values()), state="readonly",
+                                   width=22)
+        self.dirbox.pack(side="left")
+        self.help = ttk.Label(right, text="", foreground="#666", wraplength=300, justify="left")
+        self.help.pack(anchor="w", pady=(2, 0))
         bz = ttk.Frame(right)
-        bz.pack(anchor="w", pady=4)
-        ttk.Button(bz, text="Cerrar zona", command=self.close_zone).pack(side="left")
-        ttk.Button(bz, text="Deshacer punto", command=self.undo).pack(side="left", padx=4)
-        ttk.Label(right, text="Zonas", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8, 0))
-        self.zlist = tk.Listbox(right, height=8, width=34)
+        bz.pack(anchor="w", pady=(4, 0))
+        ttk.Button(bz, text="＋ Zona nueva", command=self.new_zone).pack(side="left")
+        ttk.Button(bz, text="Cerrar zona", command=self.close_zone).pack(side="left", padx=4)
+        ttk.Button(bz, text="Deshacer punto", command=self.undo).pack(side="left")
+        ttk.Button(right, text="Aplicar nombre, tipo y sentido a la elegida", command=self.apply_selected).pack(
+            anchor="w", pady=(4, 0))
+        ttk.Label(right, text="Zonas", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 0))
+        self.zlist = tk.Listbox(right, height=6, width=42, exportselection=False)
         self.zlist.pack(anchor="w")
-        ttk.Button(right, text="Borrar zona elegida", command=self.delete_zone).pack(anchor="w", pady=4)
-        ttk.Label(right, text="Reglas (segundos)", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8, 0))
+        self.zlist.bind("<<ListboxSelect>>", lambda _e: self.select(self.zlist.curselection()[0]
+                                                                     if self.zlist.curselection() else None))
+        ttk.Button(right, text="Borrar zona elegida", command=self.delete_zone).pack(anchor="w", pady=(4, 0))
+        self.show_feet = tk.BooleanVar(value=footmap is not None and footmap.persons > 0)
+        if footmap is not None:
+            fr = ttk.Frame(right)
+            fr.pack(anchor="w", pady=(6, 0), fill="x")
+            ttk.Checkbutton(fr, text="Mapa de pisadas", variable=self.show_feet, command=self.draw).pack(side="left")
+            ttk.Button(fr, text="Sugerir zonas", command=self.suggest_zones).pack(side="left", padx=6)
+            ttk.Label(right, text=f"{footmap.persons} personas en {fmt_dur(footmap.seconds)} de video · celeste: "
+                                  "caminan · rojo: se paran", foreground="#666").pack(anchor="w")
+        ttk.Label(right, text="Reglas (segundos)", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 0))
         self.rv = {}
         for key, lab, default in (("loiter_seconds", "Merodeo: tiempo en góndola", 45),
                                   ("shelf_dwell_seconds", "En góndola para «tomó algo»", 3),
@@ -1871,21 +1945,26 @@ class ZonesEditor:
             ttk.Entry(row, textvariable=var, width=6).pack(side="left")
             self.rv[key] = var
         bb = ttk.Frame(right)
-        bb.pack(anchor="e", pady=(14, 0), fill="x")
+        bb.pack(anchor="e", pady=(10, 0), fill="x")
         ttk.Button(bb, text="Cancelar", command=self.top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", command=self.save).pack(side="right", padx=6)
         self.photo = None
-        self.canvas.bind("<Button-1>", self.click)
+        self.canvas.bind("<ButtonPress-1>", self.press)
+        self.canvas.bind("<B1-Motion>", self.motion)
+        self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "drag", None))
         self.canvas.bind("<Double-Button-1>", lambda e: self.close_zone())
+        self.canvas.bind("<Button-3>", self.right_click)
+        self._show_help()
         self.refresh_list()
-        self.draw()
         if image is not None:
-            self.photo = ppm_photo(tk, cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA), self.W, self.H)
+            self.base = cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA)
             self.info.configure(text="Imagen del ajuste (lo que se está analizando)")
             self.draw()
         else:
+            self.draw()
             self.load_image()
 
+    # ---------- imagen ----------
     def load_image(self) -> None:
         if not self.cam.get("has_preview"):
             self.info.configure(text="Todavía no hay imagen: la PC central la manda al conectarse a la cámara. "
@@ -1896,16 +1975,75 @@ class ZonesEditor:
             img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
             if img is None:
                 return
-            img = cv2.resize(img, (self.W, self.H), interpolation=cv2.INTER_AREA)
-            self.photo = ppm_photo(self.app.tk, img, self.W, self.H)
+            self.base = cv2.resize(img, (self.W, self.H), interpolation=cv2.INTER_AREA)
             self.info.configure(text=f"Imagen de {fmt_date(self.cam.get('preview_at'))}")
             self.draw()
         self.app.bg.run(lambda: self.app.api.download(f"/api/cameras/{self.cam['id']}/preview"), done,
                         lambda e: self.info.configure(text=f"No se pudo bajar la imagen: {e}"))
 
-    def click(self, ev) -> None:
-        self.draft.append((min(max(ev.x / self.W, 0.0), 1.0), min(max(ev.y / self.H, 0.0), 1.0)))
+    # ---------- mouse ----------
+    def _pos(self, ev) -> tuple[float, float]:
+        return min(max(ev.x / self.W, 0.0), 1.0), min(max(ev.y / self.H, 0.0), 1.0)
+
+    def press(self, ev) -> None:
+        nx, ny = self._pos(ev)
+        if self.drawing:
+            self.draft.append((nx, ny))
+            return self.draw()
+        hit = nearest_vertex(self.zones, nx, ny, self.W, self.H, self.HANDLE)
+        if hit is not None:
+            self.select(hit[0])
+            self.drag = ("punto", hit[0], hit[1])
+            return
+        zi = zone_at(self.zones, nx, ny)
+        if zi is not None:
+            self.select(zi)
+            self.drag = ("zona", zi, nx, ny, [list(p) for p in self.zones[zi]["polygon"]])
+            return
+        self.select(None)  # afuera de las zonas: empieza una zona nueva
+        self.drawing, self.draft = True, [(nx, ny)]
         self.draw()
+
+    def motion(self, ev) -> None:
+        if self.drag is None:
+            return
+        nx, ny = self._pos(ev)
+        if self.drag[0] == "punto":
+            _, zi, vi = self.drag
+            self.zones[zi]["polygon"][vi] = [round(nx, 4), round(ny, 4)]
+        else:
+            _, zi, x0, y0, poly = self.drag
+            self.zones[zi]["polygon"] = moved_polygon(poly, nx - x0, ny - y0)
+        self.draw()
+
+    def right_click(self, ev) -> None:
+        nx, ny = self._pos(ev)
+        hit = nearest_vertex(self.zones, nx, ny, self.W, self.H, self.HANDLE)
+        if hit is None:
+            return
+        zi, vi = hit
+        if len(self.zones[zi]["polygon"]) <= 3:
+            return self.app.mb.showinfo(NOMBRE, "Una zona necesita al menos 3 puntos (para sacarla: «Borrar zona "
+                                                "elegida»).", parent=self.top)
+        del self.zones[zi]["polygon"][vi]
+        self.select(zi)
+
+    # ---------- zonas ----------
+    def _type(self) -> str:
+        return next((k for k, t in ZONE_NAMES.items() if t == self.ztype.get()), "shelf")
+
+    def _direction(self) -> str:
+        return next((k for k, t in DOOR_NAMES.items() if t == self.zdir.get()), "")
+
+    def _show_help(self) -> None:
+        """Ayuda del tipo elegido; el sentido solo se elige para la Entrada."""
+        self.help.configure(text=ZONE_HELP.get(self._type(), ""))
+        self.dirbox.configure(state="readonly" if self._type() == "entrance" else "disabled")
+
+    def new_zone(self) -> None:
+        self.select(None)
+        self.drawing, self.draft = True, []
+        self.info.configure(text="Zona nueva: clics en el piso para marcar los puntos; doble clic para cerrarla.")
 
     def undo(self) -> None:
         if self.draft:
@@ -1915,8 +2053,10 @@ class ZonesEditor:
     def close_zone(self) -> None:
         pts = list(dict.fromkeys(self.draft))
         if len(pts) < 3:
-            return self.app.mb.showinfo(NOMBRE, "Una zona necesita al menos 3 puntos.", parent=self.top)
-        ztype = next((k for k, t in ZONE_NAMES.items() if t == self.ztype.get()), "shelf")
+            if self.drawing:
+                self.app.mb.showinfo(NOMBRE, "Una zona necesita al menos 3 puntos.", parent=self.top)
+            return
+        ztype = self._type()
         name = self.zname.get().strip() or f"{ZONE_NAMES[ztype].split()[0].lower()}_{len(self.zones) + 1}"
         if any(z["name"] == name for z in self.zones):
             return self.app.mb.showinfo(NOMBRE, "Ya hay una zona con ese nombre.", parent=self.top)
@@ -1924,49 +2064,96 @@ class ZonesEditor:
         if ztype == "entrance" and self._direction():
             zone["direction"] = self._direction()
         self.zones.append(zone)
-        self.draft = []
+        self.drawing, self.draft = False, []
         self.zname.set("")
+        self.select(len(self.zones) - 1)
+
+    def select(self, zi: int | None) -> None:
+        self.sel = zi
         self.refresh_list()
+        if zi is not None:
+            z = self.zones[zi]
+            self.zname.set(z["name"])
+            self.ztype.set(ZONE_NAMES.get(z["type"], z["type"]))
+            self.zdir.set(DOOR_NAMES[z.get("direction") if z.get("direction") in DOOR_ARROWS else ""])
+            self._show_help()
         self.draw()
 
-    def _direction(self) -> str:
-        return next((k for k, t in DOOR_NAMES.items() if t == self.zdir.get()), "")
-
-    def set_direction(self) -> None:
-        """Cambia el sentido de la zona Entrada elegida en la lista."""
-        sel = self.zlist.curselection()
-        z = self.zones[sel[0]] if sel else None
-        if z is None or z["type"] != "entrance":
-            return self.app.mb.showinfo(NOMBRE, "Elegí en la lista una zona de tipo Entrada.", parent=self.top)
-        if self._direction():
+    def apply_selected(self) -> None:
+        """Nombre, tipo y sentido de los campos de arriba a la zona elegida (por ejemplo, a una sugerida)."""
+        if self.sel is None:
+            return self.app.mb.showinfo(NOMBRE, "Elegí una zona: clic sobre ella o en la lista.", parent=self.top)
+        z = self.zones[self.sel]
+        name = self.zname.get().strip() or z["name"]
+        if any(o["name"] == name for i, o in enumerate(self.zones) if i != self.sel):
+            return self.app.mb.showinfo(NOMBRE, "Ya hay otra zona con ese nombre.", parent=self.top)
+        z["name"], z["type"] = name, self._type()
+        if z["type"] == "entrance" and self._direction():
             z["direction"] = self._direction()
         else:
             z.pop("direction", None)
-        self.refresh_list()
-        self.draw()
+        z.pop("sugerida", None)
+        self.select(self.sel)
+
+    def set_direction(self) -> None:  # (lo usa el código viejo: ahora va con «Aplicar a la elegida»)
+        self.apply_selected()
 
     def delete_zone(self) -> None:
         sel = self.zlist.curselection()
-        if sel:
-            del self.zones[sel[0]]
-            self.refresh_list()
-            self.draw()
+        zi = sel[0] if sel else self.sel
+        if zi is not None:
+            del self.zones[zi]
+            self.select(None)
+
+    def suggest_zones(self) -> None:
+        from core.pisadas import suggest
+        if self.footmap is None or self.footmap.persons == 0:
+            return self.app.mb.showinfo(NOMBRE, "No hay pisadas: analizá primero en «Ajustar…» un rato de video con "
+                                                "gente (mejor 15 a 30 minutos).", parent=self.top)
+        new = suggest(self.footmap, existing=self.zones)
+        if not new:
+            return self.app.mb.showinfo(NOMBRE, "No encontré zonas nuevas para sugerir con lo analizado (o ya están "
+                                                "marcadas). Con más video hay más datos.", parent=self.top)
+        names = {z["name"] for z in self.zones}
+        for z in new:
+            base, k = z["name"], 2
+            while z["name"] in names:
+                z["name"], k = f"{base} ({k})", k + 1
+            names.add(z["name"])
+            self.zones.append({**{k2: v for k2, v in z.items() if k2 != "why"}, "sugerida": True})
+        self.show_feet.set(True)
+        self.select(None)
+        self.app.mb.showinfo(NOMBRE, "Agregué estas zonas (punteadas):\n\n" + "\n".join(
+            f"• {z['name']}: {z['why']}" for z in new) + "\n\nElegí cada una para ponerle nombre y tipo (por ejemplo "
+            "«Parada» → Góndola o Caja) con «Aplicar…», corregí los puntos y borrá las que no sirvan. Nada se guarda "
+            "hasta «Guardar».", parent=self.top)
 
     def refresh_list(self) -> None:
         self.zlist.delete(0, "end")
         for z in self.zones:
             door = f"  {DOOR_NAMES[z['direction']][-1]}" if z.get("direction") in DOOR_ARROWS else ""
-            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}{door}")
+            sug = "  (sugerida)" if z.get("sugerida") else ""
+            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}{door}{sug}")
+        if self.sel is not None and self.sel < len(self.zones):
+            self.zlist.selection_set(self.sel)
 
+    # ---------- dibujo ----------
     def draw(self) -> None:
         c = self.canvas
         c.delete("all")
-        if self.photo is not None:
+        if self.base is not None:
+            img = self.base
+            if self.footmap is not None and self.show_feet.get() and self.footmap.persons:
+                from core.pisadas import overlay
+                img = overlay(img, self.footmap)
+            self.photo = ppm_photo(self.app.tk, img, self.W, self.H)
             c.create_image(0, 0, image=self.photo, anchor="nw")
-        for z in self.zones:
+        for zi, z in enumerate(self.zones):
             col = ZONE_COLORS.get(z["type"], "#fff")
             pts = [v for x, y in z["polygon"] for v in (x * self.W, y * self.H)]
-            c.create_polygon(*pts, outline=col, fill=col, stipple="gray25", width=2)
+            chosen = zi == self.sel
+            c.create_polygon(*pts, outline=col, fill=col, stipple="gray12" if z.get("sugerida") else "gray25",
+                             width=3 if chosen else 2, dash=(6, 4) if z.get("sugerida") else None)
             c.create_text(pts[0] + 4, pts[1] + 4, text=z["name"], fill=col, anchor="nw", font=("Segoe UI", 10, "bold"))
             if z.get("direction") in DOOR_ARROWS:  # flecha: hacia dónde entran
                 cx = sum(x for x, _ in z["polygon"]) / len(z["polygon"]) * self.W
@@ -1974,8 +2161,12 @@ class ZonesEditor:
                 dx, dy = DOOR_ARROWS[z["direction"]]
                 c.create_line(cx - dx * 30, cy - dy * 30, cx + dx * 30, cy + dy * 30, fill="#fff", width=4, arrow="last",
                               arrowshape=(14, 16, 6))
+            if chosen:  # puntos para arrastrar
+                for x, y in z["polygon"]:
+                    c.create_rectangle(x * self.W - 5, y * self.H - 5, x * self.W + 5, y * self.H + 5, fill="#fff",
+                                       outline=col, width=2)
         if self.draft:
-            col = ZONE_COLORS.get(next((k for k, t in ZONE_NAMES.items() if t == self.ztype.get()), "shelf"), "#fff")
+            col = ZONE_COLORS.get(self._type(), "#fff")
             pts = [v for x, y in self.draft for v in (x * self.W, y * self.H)]
             if len(self.draft) > 1:
                 c.create_line(*pts, fill=col, width=2)
@@ -1987,9 +2178,13 @@ class ZonesEditor:
             rules = {**self.rules, **{k: float(v.get()) for k, v in self.rv.items()}}
         except ValueError:
             return self.app.mb.showwarning(NOMBRE, "Las reglas tienen que ser números.", parent=self.top)
+        if self.drawing and len(self.draft) >= 3 and not self.app.mb.askyesno(
+                NOMBRE, "Hay una zona sin cerrar: se descarta. ¿Guardar igual?", parent=self.top):
+            return
         if self.confirm and not self.app.mb.askyesno(NOMBRE, self.confirm, parent=self.top):
             return
-        body = {"zones": self.zones, "rules": rules}
+        zones = [{k: v for k, v in z.items() if k != "sugerida"} for z in self.zones]
+        body = {"zones": zones, "rules": rules}
 
         def done(_):
             self.top.destroy()
@@ -2061,6 +2256,9 @@ class TuneWindow:
         ttk.Button(nav, text="Último ▸▸", command=self.follow).pack(side="left")
         self.show_objects = tk.BooleanVar(value=True)
         ttk.Checkbutton(nav, text="Objetos", variable=self.show_objects, command=self._redraw).pack(side="left", padx=(6, 0))
+        # mapa de pisadas encima (celeste: caminan, rojo: se paran): para ver dónde van de verdad las zonas
+        self.show_feet = tk.BooleanVar(value=False)
+        ttk.Checkbutton(nav, text="Pisadas", variable=self.show_feet, command=self._redraw).pack(side="left", padx=(4, 0))
         # otro detector para comparar con los mismos videos, zonas y tiempos (las máquinas siguen con YOLO11n)
         self.det_var = tk.StringVar(value="YOLO11n")
         det_box = ttk.Combobox(nav, textvariable=self.det_var, values=("YOLO11n", "D-FINE-N (prueba)"), width=16,
@@ -2580,9 +2778,10 @@ class TuneWindow:
             return
         times = self._times() or {}
         img = self.tuner.image(self.index) if self.tuner is not None else None
+        feet = self.tuner.footmap() if self.tuner is not None else None
         cam = {**self.cam, "zones": self.info["raw"].get("zones") or [],
                "rules": {**(self.info["raw"].get("rules") or {}), **times}}
-        ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved, confirm=self._confirm_live())
+        ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved, confirm=self._confirm_live(), footmap=feet)
 
     def zones_saved(self, _body: dict) -> None:
         """Se guardaron zonas (y tiempos) en el editor: traer la configuración nueva y recalcular."""
@@ -2712,9 +2911,13 @@ class TuneWindow:
                     self.playing = False
                     self.play_btn.configure(text="▶")
             idx = end - 1 if self.index is None else min(max(self.index, first), end - 1)
-            key = (id(t), idx, id(t.alerts), id(t.marks), self.show_objects.get())
+            feet = t.footmap() if self.show_feet.get() else None
+            key = (id(t), idx, id(t.alerts), id(t.marks), self.show_objects.get(), id(feet))
             if key != self._shown:
                 img = t.render(idx, objects=self.show_objects.get())
+                if img is not None and feet is not None:
+                    from core.pisadas import overlay
+                    img = overlay(img, feet, alpha=0.45)
                 if img is not None:
                     self.photo = ppm_photo(self.app.tk, img, self.W, self.H)
                     self.canvas.delete("all")

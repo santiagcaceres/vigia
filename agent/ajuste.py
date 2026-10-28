@@ -33,6 +33,7 @@ from core.analyzer import annotate
 from core.detectors import Detector
 from core.escena import COCO_ES, OBJECT_CONF, light
 from core.metrics import door_counts
+from core.pisadas import FootMap
 from core.rules import MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
@@ -50,7 +51,8 @@ SHORT_TRACK_SECONDS = 2.0
 SMALL_PERSON = 0.10  # persona de menos del 10 % del alto de la imagen: el detector falla más
 BANNER_SECONDS = 2.0  # cuánto se ve el cartel de una alerta de prueba
 ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restricted": "restringida",
-             "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal"}
+             "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal",
+             "aisle": "pasillo"}
 ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO", "zona_restringida": "ZONA RESTRINGIDA",
               "fuera_de_horario": "FUERA DE HORARIO"}
 
@@ -400,6 +402,22 @@ class Tuner:
                 "dropped": dropped,
                 "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None,
                 "door": self.door()}
+
+    def footmap(self) -> FootMap:
+        """Mapa de pisadas de lo analizado (cada video por separado): dónde camina y dónde se para la gente, para
+        dibujar las zonas sobre datos (core/pisadas.py). En vivo se recalcula como mucho cada 2 s."""
+        with self._lock:
+            key = (len(self.samples), self.base)
+            old = getattr(self, "_fm_key", None)
+            if key == old or (old and time.monotonic() - self._fm_at < 2.0):
+                return self._fm
+            samples = list(self.samples)
+        fm = FootMap.empty()
+        for seg in sorted({s.seg for s in samples}):
+            fm = fm.merge(FootMap.build([(s.ts, s.size, s.tracks) for s in samples if s.seg == seg]))
+        with self._lock:
+            self._fm_key, self._fm, self._fm_at = key, fm, time.monotonic()
+        return fm
 
     def door(self) -> dict | None:
         """Puerta (zona Entrada): cuántos entraron, salieron y cuántos se tomaron como personal en lo analizado, para

@@ -24,7 +24,10 @@ from .tracker import Track
 # shelf/checkout/exit/restricted: reglas de hurto. entrance: conteo de ingresos (comercios); con `direction`,
 # cuenta por separado los que entran y los que salen. pump/shop: estaciones de servicio (surtidor y tienda).
 # staff: lugar de empleados (detrás del mostrador, depósito): quien lo pisa no cuenta como cliente en las métricas.
-ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff")
+# aisle: pasillo (por donde se camina): solo métricas («a dónde van»); las reglas de hurto no lo miran.
+ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle")
+# tipos que un agente viejo no conoce: viajan aparte (`extra_zones`) para que no deje de usar las demás zonas
+NEW_ZONE_TYPES = ("staff", "aisle")
 # hacia dónde se mueve en la imagen una persona que ENTRA al local (zona entrance)
 DIRECTIONS = {"abajo": (0.0, 1.0), "arriba": (0.0, -1.0), "derecha": (1.0, 0.0), "izquierda": (-1.0, 0.0)}
 VEHICLE_LABEL = "vehiculo"
@@ -137,8 +140,9 @@ def parse_config(config: dict | None) -> tuple[list[Zone], RuleConfig]:
     cfg = RuleConfig.from_dict(config.get("rules"))
     # el horario del local viaja aparte de las reglas (un agente viejo lo ignora en vez de fallar)
     cfg.schedule = parse_hours(config.get("schedule")) or None
-    # las zonas de personal viajan aparte (un agente viejo no conoce el tipo y rechazaría todas las zonas)
-    return parse_zones(list(config.get("zones") or []) + list(config.get("staff_zones") or [])), cfg
+    # las zonas de tipos nuevos viajan aparte (un agente viejo no conoce el tipo y rechazaría todas las zonas)
+    extra = list(config.get("extra_zones") or config.get("staff_zones") or [])
+    return parse_zones(list(config.get("zones") or []) + extra), cfg
 
 
 @dataclass

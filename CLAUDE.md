@@ -454,6 +454,23 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     con `core.metrics.door_counts`). Las máquinas cuentan así recién al reiniciar (`git pull`).
   - **Siguiente (estaciones):** uniforme por color (clic en 3-4 pisteros en «Ajustar…»; el tracker ya tiene el histograma
     HSV) para la espera hasta el pistero real, «se bajó del vehículo» y «se bajó y fue a la tienda». Sin hacer.
+- **Zonas sobre datos: mapa de pisadas, sugerencias y editor nuevo (28 oct, pedido del dueño: «no están bien marcados
+  los pasillos y góndolas»; app 1.25.0):**
+  - **Mapa de pisadas** (`core/pisadas.py`, `FootMap.build` sobre los recuadros guardados del `Tuner`, cada video por
+    separado; `Tuner.footmap()`): en una grilla de 96x54, segundos caminando (celeste) y parado (rojo, < 3 % de la imagen
+    por segundo medido contra 1 s antes), personas distintas por celda y dónde aparecen/desaparecen. En «Ajustar…»,
+    casilla «Pisadas» sobre la imagen.
+  - **«Sugerir zonas»** (en «Zonas…» abierto desde «Ajustar…»; `suggest`): «Parada N» (donde se paran: góndola o caja,
+    tipo shelf), «Pasillo N» (por donde pasan más personas) y «Puerta <lado>» (entrada, con el sentido según hacia dónde
+    caminan los que aparecen ahí). Quedan punteadas («sugerida») hasta «Aplicar…» o «Guardar»; no pisan zonas que ya
+    estén. Con la Minas cámara 1 (1 clip corto): 2 paradas a los pies de las señoras. Mejor con 15-30 min de video.
+  - **Editor de zonas** (`ZonesEditor`, 880x495): clic en una zona la elige; se arrastran sus puntos o la zona entera;
+    clic derecho borra un punto; «＋ Zona nueva» / clic afuera y doble clic para cerrar; «Aplicar nombre, tipo y sentido a
+    la elegida»; ayuda por tipo (`ZONE_HELP`: góndola = el piso frente al estante, no el estante). «Sentido» solo se
+    elige en Entrada.
+  - **Tipo «Pasillo» (`aisle`)**: solo para saber a dónde va la gente (métricas por zona); no da alertas. Los tipos
+    nuevos (`NEW_ZONE_TYPES` = staff, aisle) viajan en `analysis.extra_zones` (un agente viejo rechaza tipos que no
+    conoce); `staff_zones` se sigue mandando para la app 1.24.
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),

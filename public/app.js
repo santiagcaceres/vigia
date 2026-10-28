@@ -8,8 +8,8 @@ const ALARM_STATUS = { pendiente: ["", "Esperando"], procesando: ["", "Analizand
 const alarmTypeName = (t) => String(t || "").split("+").map((x) => ALARM_TYPES[x] || x).join(" + ");
 const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal", falso_positivo: "Falso positivo" };
 const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo" };
-const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)" };
-const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8", staff: "#8a8a8a" };
+const ZONE_NAMES = { shelf: "Góndola", aisle: "Pasillo", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)" };
+const ZONE_COLORS = { shelf: "#ffc800", aisle: "#78ffff", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8", staff: "#8a8a8a" };
 const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio" };
 const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
 const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida", fuera_de_horario: "Local cerrado" };
