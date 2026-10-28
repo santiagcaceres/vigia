@@ -22,7 +22,7 @@ import time
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +32,7 @@ import numpy as np
 from core.analyzer import annotate
 from core.detectors import Detector
 from core.escena import COCO_ES, OBJECT_CONF, light
+from core.metrics import door_counts
 from core.rules import MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
@@ -49,7 +50,7 @@ SHORT_TRACK_SECONDS = 2.0
 SMALL_PERSON = 0.10  # persona de menos del 10 % del alto de la imagen: el detector falla más
 BANNER_SECONDS = 2.0  # cuánto se ve el cartel de una alerta de prueba
 ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restricted": "restringida",
-             "entrance": "entrada", "pump": "surtidor", "shop": "tienda"}
+             "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal"}
 ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO", "zona_restringida": "ZONA RESTRINGIDA",
               "fuera_de_horario": "FUERA DE HORARIO"}
 
@@ -397,7 +398,30 @@ class Tuner:
                 "conf": self._det_conf / det if det else None,
                 "fps": len(self._times) / 10.0 if self.live else None, "cuts": self.cuts, "alerts": alerts,
                 "dropped": dropped,
-                "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None}
+                "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None,
+                "door": self.door()}
+
+    def door(self) -> dict | None:
+        """Puerta (zona Entrada): cuántos entraron, salieron y cuántos se tomaron como personal en lo analizado, para
+        compararlo con un conteo a mano. Se recalcula con las zonas de ahora sobre los recuadros guardados (cada
+        video por separado). None si no hay zona Entrada."""
+        if not any(z.type == "entrance" for z in self.zones):
+            return None
+        with self._lock:
+            key = (len(self.samples), self.base, id(self.zones), id(self.rule_cfg))
+            old = getattr(self, "_door_key", None)
+            if key == old or (old and key[2:] == old[2:] and time.monotonic() - self._door_at < 2.0):
+                return self._door  # (en vivo crece a cada cuadro: como mucho cada 2 s)
+            samples = list(self.samples)
+        origin = datetime(2000, 1, 1, 12)  # videos sin hora real: el horario del local no se aplica
+        out = {"entries": 0, "exits": 0, "staff": 0, "staff_entries": 0, "door": 0, "people": 0}
+        for seg in sorted({s.seg for s in samples}):
+            frames = [(s.tracks, s.ts, s.size, s.wall or origin + timedelta(seconds=s.ts)) for s in samples if s.seg == seg]
+            got = door_counts(frames, self.zones, self.rule_cfg.schedule if self.live else None)
+            out = {k: max(out[k], got[k]) if k == "door" else out[k] + got[k] for k in out}
+        with self._lock:
+            self._door_key, self._door, self._door_at = key, out, time.monotonic()
+        return out
 
     def hints(self) -> list[str]:
         """Avisos para decidir si la cámara está lista. Dicen qué mirar; no reemplazan mirar las alertas."""
@@ -405,6 +429,9 @@ class Tuner:
         types = {z.type for z in self.zones}
         rules = set(self.rule_cfg.enabled_rules)
         out: list[str] = []
+        if any(z.type == "entrance" and not z.direction for z in self.zones):
+            out.append("La zona Entrada no tiene sentido: cuenta igual a los que entran y a los que salen. Marcá hacia "
+                       "dónde caminan los que entran en «Zonas…» → «Sentido».")
         if self.metrics_only or not rules:
             out.append("Esta cámara no da alertas: es «solo métricas» (el cliente no tiene el plan de hurto o el tipo de "
                        "cámara no usa reglas).")

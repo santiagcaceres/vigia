@@ -8,8 +8,8 @@ const ALARM_STATUS = { pendiente: ["", "Esperando"], procesando: ["", "Analizand
 const alarmTypeName = (t) => String(t || "").split("+").map((x) => ALARM_TYPES[x] || x).join(" + ");
 const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal", falso_positivo: "Falso positivo" };
 const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo" };
-const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda" };
-const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8" };
+const ZONE_NAMES = { shelf: "Góndola", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)" };
+const ZONE_COLORS = { shelf: "#ffc800", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8", staff: "#8a8a8a" };
 const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio" };
 const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
 const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida", fuera_de_horario: "Local cerrado" };
@@ -1083,12 +1083,14 @@ async function metricsView(v, clientId) {
     ${plans.includes("comercio") || (!plans.includes("estacion") && t.people) ? `
       <h2>Gente</h2>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
-        ${tile(t.entries || t.people, t.entries ? "Ingresos (zona Entrada)" : "Personas vistas", t.entries ? `${t.people} personas en cámara` : "sin zona Entrada: cuenta apariciones")}
+        ${t.door ? tile(t.entries, "Entraron", `${t.exits} salieron${t.staff ? ` · ${t.staff} de personal descontados` : ""}`)
+          : t.entries ? tile(t.entries, "Pasaron por la entrada", "entrando o saliendo: falta marcar el sentido de entrada")
+          : tile(t.people_max, "Máximo al mismo tiempo", "")}
         ${tile(fmtDur(avg(t.people_dwell_s, t.people)), "Tiempo promedio en cámara", "")}
-        ${tile(t.people_max, "Máximo al mismo tiempo", "")}
+        ${t.door || t.entries ? tile(t.people_max, "Máximo al mismo tiempo", "") : tile(t.people, "Apariciones en cámaras", "suma de todas las cámaras: la misma persona cuenta en cada una (para contar clientes, zona Entrada)")}
         ${zones.length ? tile(esc(zones[0][0]), "Zona más visitada", `${zones[0][1].visits} visitas`) : ""}
       </div>
-      <div class="panel" style="margin-top:12px"><b>${days === 1 ? "Personas por hora" : "Personas por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "people", "personas")}</div>
+      <div class="panel" style="margin-top:12px"><b>${t.door ? (days === 1 ? "Entraron por hora" : "Entraron por día") : (days === 1 ? "Apariciones por hora" : "Apariciones por día")}</b>${barChart(days === 1 ? m.by_hour : m.by_day, t.door ? "entries" : "people", t.door ? "ingresos" : "apariciones")}</div>
       ${zones.length ? `<div class="panel" style="margin-top:12px"><b>A dónde van</b><div class="table-wrap"><table><thead><tr><th>Zona</th><th>Tipo</th><th>Visitas</th><th>Tiempo promedio</th><th></th></tr></thead>
         <tbody>${zones.map(([name, z]) => `<tr><td>${esc(name)}</td><td>${esc(ZONE_NAMES[z.type] || z.type)}</td><td>${z.visits}</td><td>${fmtDur(avg(z.dwell_s, z.visits))}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * z.visits / Math.max(1, zones[0][1].visits))}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}` : ""}
     ${plans.includes("estacion") ? `
@@ -1112,9 +1114,9 @@ async function metricsView(v, clientId) {
         ${tile(stats.by_label.sin_etiqueta || 0, "Sin revisar todavía", "")}
       </div>
       <p><a class="btn" href="#/alertas?client_id=${clientId}">Ver las alertas</a></p>` : ""}
-    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Personas</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
+    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Apariciones</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
       <tbody>${m.by_camera.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.people}</td><td>${fmtDur(avg(c.people_dwell_s, c.people))}</td>${plans.includes("estacion") ? `<td>${c.vehicles}</td>` : ""}<td>${c.people_max}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
-    <p class="muted small" style="margin-top:18px">Cómo se mide: cada persona o vehículo que la IA sigue en cámara cuenta una vez desde que aparece hasta que se va. No reconoce caras ni distingue empleados de clientes; si alguien sale del cuadro y vuelve, cuenta de nuevo. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
+    <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). En las demás cámaras, cada persona o vehículo que la IA sigue cuenta una vez desde que aparece hasta que se va; si sale del cuadro y vuelve, cuenta de nuevo. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
 }
 
 // ------------------------------------------------------------------ clientes (administradores y empleados)

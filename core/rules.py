@@ -21,9 +21,12 @@ from .geometry import BBox, Point, bbox_foot, point_in_polygon
 from .schedule import is_open, parse_hours
 from .tracker import Track
 
-# shelf/checkout/exit/restricted: reglas de hurto. entrance: conteo de ingresos (comercios).
-# pump/shop: estaciones de servicio (surtidor y tienda); vehicle_lane: llegada de vehículos.
-ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop")
+# shelf/checkout/exit/restricted: reglas de hurto. entrance: conteo de ingresos (comercios); con `direction`,
+# cuenta por separado los que entran y los que salen. pump/shop: estaciones de servicio (surtidor y tienda).
+# staff: lugar de empleados (detrás del mostrador, depósito): quien lo pisa no cuenta como cliente en las métricas.
+ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff")
+# hacia dónde se mueve en la imagen una persona que ENTRA al local (zona entrance)
+DIRECTIONS = {"abajo": (0.0, 1.0), "arriba": (0.0, -1.0), "derecha": (1.0, 0.0), "izquierda": (-1.0, 0.0)}
 VEHICLE_LABEL = "vehiculo"
 
 SALIDA_SIN_PAGO = "salida_sin_pago"
@@ -48,6 +51,7 @@ class Zone:
     name: str
     type: str
     polygon: tuple[Point, ...]
+    direction: str | None = None  # solo entrance: hacia dónde se entra (DIRECTIONS)
 
     def contains(self, nx: float, ny: float) -> bool:
         return point_in_polygon(nx, ny, self.polygon)
@@ -119,8 +123,12 @@ def parse_zones(items: list[dict] | None) -> list[Zone]:
             raise ValueError(f"La zona {name!r} necesita al menos 3 puntos")
         if any(not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0) for x, y in poly):
             raise ValueError(f"La zona {name!r} debe usar coordenadas normalizadas entre 0 y 1")
+        direction = z.get("direction") or None
+        if direction is not None and (ztype != "entrance" or direction not in DIRECTIONS):
+            raise ValueError(f"La zona {name!r}: el sentido de entrada va solo en zonas de entrada "
+                             f"({', '.join(DIRECTIONS)})")
         names.add(name)
-        zones.append(Zone(name, ztype, poly))
+        zones.append(Zone(name, ztype, poly, direction))
     return zones
 
 
@@ -129,7 +137,8 @@ def parse_config(config: dict | None) -> tuple[list[Zone], RuleConfig]:
     cfg = RuleConfig.from_dict(config.get("rules"))
     # el horario del local viaja aparte de las reglas (un agente viejo lo ignora en vez de fallar)
     cfg.schedule = parse_hours(config.get("schedule")) or None
-    return parse_zones(config.get("zones")), cfg
+    # las zonas de personal viajan aparte (un agente viejo no conoce el tipo y rechazaría todas las zonas)
+    return parse_zones(list(config.get("zones") or []) + list(config.get("staff_zones") or [])), cfg
 
 
 @dataclass

@@ -71,9 +71,13 @@ TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_
 LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falso positivo"}
 LABEL_KEYS = {"1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo"}
 ZONE_NAMES = {"shelf": "Góndola", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
-              "entrance": "Entrada (conteo)", "pump": "Surtidor", "shop": "Tienda"}
+              "entrance": "Entrada (conteo)", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal (empleados)"}
 ZONE_COLORS = {"shelf": "#ffc800", "checkout": "#00c800", "exit": "#0096ff", "restricted": "#ff3030",
-               "entrance": "#c800ff", "pump": "#ff7800", "shop": "#00c8c8"}
+               "entrance": "#c800ff", "pump": "#ff7800", "shop": "#00c8c8", "staff": "#8a8a8a"}
+# zona Entrada: hacia dónde se mueve en la imagen quien ENTRA al local (así se cuentan aparte los que salen)
+DOOR_NAMES = {"abajo": "Entran hacia abajo ↓", "arriba": "Entran hacia arriba ↑", "derecha": "Entran hacia la derecha →",
+              "izquierda": "Entran hacia la izquierda ←", "": "Sin sentido (cuenta a todos)"}
+DOOR_ARROWS = {"abajo": (0, 1), "arriba": (0, -1), "derecha": (1, 0), "izquierda": (-1, 0)}
 ALARM_TYPES = {"VMD": "Movimiento", "fielddetection": "Intrusión", "linedetection": "Cruce de línea",
                "regionEntrance": "Entrada a zona", "regionExiting": "Salida de zona"}
 TUNING_NAMES = {"sin_ajustar": "—", "en_ajuste": "En ajuste", "aprobada": "✔ Aprobada"}
@@ -1838,6 +1842,14 @@ class ZonesEditor:
         ttk.Entry(right, textvariable=self.zname, width=28).pack(anchor="w")
         ttk.Label(right, text="Tipo").pack(anchor="w", pady=(4, 0))
         ttk.Combobox(right, textvariable=self.ztype, values=list(ZONE_NAMES.values()), state="readonly", width=26).pack(anchor="w")
+        ttk.Label(right, text="Sentido (solo zona Entrada)").pack(anchor="w", pady=(4, 0))
+        self.zdir = tk.StringVar(value=DOOR_NAMES["abajo"])
+        dr = ttk.Frame(right)
+        dr.pack(anchor="w")
+        ttk.Combobox(dr, textvariable=self.zdir, values=list(DOOR_NAMES.values()), state="readonly", width=26).pack(side="left")
+        ttk.Button(dr, text="Aplicar", width=7, command=self.set_direction).pack(side="left", padx=(4, 0))
+        ttk.Label(right, text="Marcá la puerta (sobre el piso) y hacia dónde\ncamina en la imagen quien entra al local.",
+                  foreground="#666").pack(anchor="w")
         bz = ttk.Frame(right)
         bz.pack(anchor="w", pady=4)
         ttk.Button(bz, text="Cerrar zona", command=self.close_zone).pack(side="left")
@@ -1908,9 +1920,28 @@ class ZonesEditor:
         name = self.zname.get().strip() or f"{ZONE_NAMES[ztype].split()[0].lower()}_{len(self.zones) + 1}"
         if any(z["name"] == name for z in self.zones):
             return self.app.mb.showinfo(NOMBRE, "Ya hay una zona con ese nombre.", parent=self.top)
-        self.zones.append({"name": name, "type": ztype, "polygon": [list(p) for p in pts]})
+        zone = {"name": name, "type": ztype, "polygon": [list(p) for p in pts]}
+        if ztype == "entrance" and self._direction():
+            zone["direction"] = self._direction()
+        self.zones.append(zone)
         self.draft = []
         self.zname.set("")
+        self.refresh_list()
+        self.draw()
+
+    def _direction(self) -> str:
+        return next((k for k, t in DOOR_NAMES.items() if t == self.zdir.get()), "")
+
+    def set_direction(self) -> None:
+        """Cambia el sentido de la zona Entrada elegida en la lista."""
+        sel = self.zlist.curselection()
+        z = self.zones[sel[0]] if sel else None
+        if z is None or z["type"] != "entrance":
+            return self.app.mb.showinfo(NOMBRE, "Elegí en la lista una zona de tipo Entrada.", parent=self.top)
+        if self._direction():
+            z["direction"] = self._direction()
+        else:
+            z.pop("direction", None)
         self.refresh_list()
         self.draw()
 
@@ -1924,7 +1955,8 @@ class ZonesEditor:
     def refresh_list(self) -> None:
         self.zlist.delete(0, "end")
         for z in self.zones:
-            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}")
+            door = f"  {DOOR_NAMES[z['direction']][-1]}" if z.get("direction") in DOOR_ARROWS else ""
+            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}{door}")
 
     def draw(self) -> None:
         c = self.canvas
@@ -1936,6 +1968,12 @@ class ZonesEditor:
             pts = [v for x, y in z["polygon"] for v in (x * self.W, y * self.H)]
             c.create_polygon(*pts, outline=col, fill=col, stipple="gray25", width=2)
             c.create_text(pts[0] + 4, pts[1] + 4, text=z["name"], fill=col, anchor="nw", font=("Segoe UI", 10, "bold"))
+            if z.get("direction") in DOOR_ARROWS:  # flecha: hacia dónde entran
+                cx = sum(x for x, _ in z["polygon"]) / len(z["polygon"]) * self.W
+                cy = sum(y for _, y in z["polygon"]) / len(z["polygon"]) * self.H
+                dx, dy = DOOR_ARROWS[z["direction"]]
+                c.create_line(cx - dx * 30, cy - dy * 30, cx + dx * 30, cy + dy * 30, fill="#fff", width=4, arrow="last",
+                              arrowshape=(14, 16, 6))
         if self.draft:
             col = ZONE_COLORS.get(next((k for k, t in ZONE_NAMES.items() if t == self.ztype.get()), "shelf"), "#fff")
             pts = [v for x, y in self.draft for v in (x * self.W, y * self.H)]
@@ -2760,6 +2798,11 @@ class TuneWindow:
                 name = "D-FINE" if getattr(self.detector, "name", "").startswith("D-FINE") else "YOLO"
                 lines.append(f"{name} también ve (% de los cuadros): " + ", ".join(f"{k} {v:.0f} %"
                                                                                   for k, v in st["objects"][:6]))
+            door = st.get("door")
+            if door:
+                lines.append((f"Puerta: entraron {door['entries']} · salieron {door['exits']}" if door["door"] else
+                              f"Puerta: pasaron {door['entries']} (sin sentido: marcalo en «Zonas…»)")
+                             + (f" · personal {door['staff']}" if door["staff"] else "") + " → comparalo con tu conteo")
             if st.get("night_pct", 0) > 50:
                 lines.append(f"Imagen de noche (infrarrojo) en el {st['night_pct']:.0f} % de los cuadros")
         if not t.live and not self.run_videos:

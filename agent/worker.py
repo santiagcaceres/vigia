@@ -137,7 +137,7 @@ class CameraWorker:
         # vista en vivo: sube cuadros con recuadros mientras alguien mira la cámara en el panel
         self.live = LiveStreamer(self.id, self.name, client, self.analyzer.zones)
         # métricas del local (personas, tiempos, destinos, vehículos): mismos tracks, sin costo extra
-        self.metrics = MetricsCollector(self.analyzer.zones)
+        self.metrics = MetricsCollector(self.analyzer.zones, self.analyzer.engine.cfg.schedule)
         self._metrics_pending: list[dict] = []
         self.analysis_fp = self.analysis_of(cam_cfg)
         self._pending_analysis: dict | None = None
@@ -338,7 +338,7 @@ class CameraWorker:
         self.analyzer.zones = zones
         self.analyzer.engine = RuleEngine(zones, rule_cfg)
         self._send_metrics(self.metrics.close())  # lo medido hasta ahora queda con las zonas viejas
-        self.metrics = MetricsCollector(zones)
+        self.metrics = MetricsCollector(zones, rule_cfg.schedule)
         self.live.zones = zones
         log.info("[%s] zonas y reglas actualizadas (%d zonas)", self.name, len(zones))
 

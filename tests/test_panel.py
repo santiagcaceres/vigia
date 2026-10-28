@@ -99,7 +99,8 @@ def test_alertas_por_cliente_y_camara_y_exportar_metricas(app):
     assert "metricas_Kiosco_Centro_2026-10-19_a_2026-10-21.csv" in r.headers["content-disposition"]
     lines = r.content.decode("utf-8-sig").strip().split("\r\n")
     assert lines[0].startswith("Fecha;Cliente;Cámara;Personas;")
-    assert lines[1].split(";")[:8] == ["20/10/2026", "Kiosco Centro", "Caja", "15", "1,7", "3", "7", "0"]
+    # (egresos vacío: sin puerta con sentido; después empleados y vehículos)
+    assert lines[1].split(";")[:10] == ["20/10/2026", "Kiosco Centro", "Caja", "15", "1,7", "3", "7", "", "0", "0"]
     assert "Góndola: 4 · 5,0" in lines[1]
     por_hora = a.get("/api/metrics/export", params={"client_id": cl["id"], "desde": "2026-10-20",
                                                     "hasta": "2026-10-20", "agrupar": "hora"}).content.decode("utf-8-sig")

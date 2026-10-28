@@ -332,8 +332,10 @@ class StreamUrlIn(BaseModel):
 
 class ZoneIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop"]
+    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff"]
     polygon: list[tuple[float, float]] = Field(min_length=3)
+    # solo entrance: hacia dónde se mueve en la imagen quien ENTRA (cuenta ingresos y egresos por separado)
+    direction: Literal["abajo", "arriba", "derecha", "izquierda"] | None = None
 
 
 class AnalysisIn(BaseModel):
@@ -1458,7 +1460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/cameras/{cam_id}/analysis")
     def update_analysis(cam_id: int, body: AnalysisIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
-        cfg = {"zones": [z.model_dump() for z in body.zones], "rules": body.rules}
+        cfg = {"zones": [z.model_dump(exclude_none=True) for z in body.zones], "rules": body.rules}
         try:
             parse_config(cfg)
         except ValueError as exc:
@@ -1692,15 +1694,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metrics_only = (client is not None and "hurto" not in plans) or rules.get("enabled_rules") == []
         if metrics_only:
             rules["enabled_rules"] = []
-        out = {"zones": zones, "rules": rules, "vehicles": vehicles, "plans": plans, "profile": c.profile or "general",
-               "metrics_only": metrics_only}
+        # zonas de personal aparte: un agente viejo no conoce el tipo y dejaría de usar todas las zonas de la cámara
+        staff = [z for z in zones if (z or {}).get("type") == "staff"]
+        out = {"zones": [z for z in zones if (z or {}).get("type") != "staff"], "rules": rules, "vehicles": vehicles,
+               "plans": plans, "profile": c.profile or "general", "metrics_only": metrics_only}
+        if staff:
+            out["staff_zones"] = staff
         if client is not None and client.hours:
             out["schedule"] = client.hours  # para la regla «fuera de horario»
         return out
 
     def camera_fps(c: Camera, analysis: dict) -> float:
         if analysis.get("metrics_only"):
-            counting = any((z or {}).get("type") in ("entrance", "pump") for z in analysis.get("zones") or [])
+            zones = analysis.get("zones") or []
+            if any((z or {}).get("type") == "entrance" and (z or {}).get("direction") for z in zones):
+                return MIN_FPS  # puerta con sentido: a menos cuadros, quien cruza rápido pasa entre dos y no se cuenta
+            counting = any((z or {}).get("type") in ("entrance", "pump") for z in zones)
             return METRICS_COUNT_FPS if counting else METRICS_FPS
         return max(MIN_FPS, c.process_fps or MIN_FPS)
 
@@ -2692,7 +2701,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         head = ["Fecha"] + (["Hora"] if agrupar == "hora" else []) + [
             "Cliente", "Cámara", "Personas", "Tiempo promedio en escena (min)", "Máximo a la vez", "Ingresos",
-            "Vehículos", "Vehículos en surtidor", "Espera promedio en surtidor (min)", "Surtidor sin atender",
+            "Egresos", "Empleados", "Vehículos", "Vehículos en surtidor", "Espera promedio en surtidor (min)", "Surtidor sin atender",
             "Visitas a la tienda", "Zonas (visitas · minutos)"]
         lines = [";".join(head)]
         for (when, cl_id, cam_id), b in sorted(groups.items(), key=lambda kv: (kv[0][0], cls.get(kv[0][1], ""),
@@ -2702,7 +2711,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cells = [when.strftime("%d/%m/%Y")] + ([when.strftime("%H:00")] if agrupar == "hora" else []) + [
                 cls.get(cl_id, str(cl_id)), cams.get(cam_id, f"Cámara {cam_id}"), str(b["people"]),
                 num(b["people_dwell_s"] / b["people"] / 60) if b["people"] else "", str(b["people_max"]),
-                str(b["entries"]), str(b["vehicles"]), str(b["pump_vehicles"]),
+                str(b["entries"]), str(b["exits"]) if b.get("door") else "", str(b["staff"]), str(b["vehicles"]),
+                str(b["pump_vehicles"]),
                 num(b["pump_wait_s"] / b["pump_wait_n"] / 60) if b["pump_wait_n"] else "", str(b["pump_unattended"]),
                 str(b["shop_visits"]), zones]
             lines.append(";".join(c.replace(";", ",") for c in cells))

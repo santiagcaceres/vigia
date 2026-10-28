@@ -196,3 +196,123 @@ def test_cliente_con_usuario_y_clave_para_la_web(app):
                                                         "web_password": "clave-sin-1"}).json()["web_username"] == "sinacceso"
         # nombre de cliente repetido al editar
         assert c.put(f"/api/clients/{sin['id']}", json={"name": "Otro"}).status_code == 409
+
+
+# ---------------------------------------------------------------- puerta con sentido y empleados
+DOOR = parse_zones([
+    {"name": "puerta", "type": "entrance", "direction": "abajo", "polygon": [[0, 0.3], [1, 0.3], [1, 0.5], [0, 0.5]]},
+    {"name": "mostrador", "type": "staff", "polygon": [[0, 0.8], [0.3, 0.8], [0.3, 1], [0, 1]]},
+    {"name": "gondola", "type": "shelf", "polygon": [[0.5, 0.6], [1, 0.6], [1, 0.9], [0.5, 0.9]]},
+])
+
+
+def walk(m, tid, points, t0, wall0, fps=5):
+    """Una persona que va por `points` (pies, en píxeles) a `fps` cuadros por segundo; después desaparece."""
+    ts = t0
+    for x, y in points:
+        m.update([person(tid, x, y, t0, ts)], ts, (W, H), wall0 + timedelta(seconds=ts))
+        ts += 1 / fps
+    m.update([], ts, (W, H), wall0 + timedelta(seconds=ts))
+    return ts
+
+
+def test_puerta_con_sentido_cuenta_entradas_y_salidas_aparte_y_no_a_los_empleados():
+    wall0 = datetime(2026, 10, 28, 10, 0, 0)
+    m = MetricsCollector(DOOR)
+    down = [(500, y) for y in range(150, 701, 50)]  # de afuera (arriba) hacia adentro (abajo): entra
+    t = walk(m, 1, down, 0.0, wall0)
+    t = walk(m, 2, list(reversed(down)), t + 1, wall0)  # sale
+    t = walk(m, 3, [(500, 200), (500, 350), (500, 420), (500, 300), (500, 200)], t + 1, wall0)  # se asoma y vuelve
+    # cruza rápido (1 s, en 4 cuadros): igual cuenta aunque la visita sea corta
+    t = walk(m, 4, [(500, 200), (500, 350), (500, 450), (500, 650)], t + 1, wall0)
+    # empleado: entra y se queda detrás del mostrador 4 s
+    t = walk(m, 5, down + [(100, 900)] * 20, t + 1, wall0)
+    # cliente que pasa por el mostrador un instante (1 s): sigue siendo cliente
+    t = walk(m, 6, down + [(100, 900)] * 5 + [(700, 700)] * 5, t + 1, wall0)
+    d = m.close()[0]["data"]
+    assert d["door"] == 1
+    assert d["entries"] == 3 and d["exits"] == 1  # 1, 4 y 6 entraron; 2 salió; 3 no cruzó
+    assert d["staff"] == 1 and d["staff_entries"] == 1
+    assert d["people"] == 4  # el empleado no cuenta como cliente (y el que se asomó 1 s sin cruzar es ruido)
+    assert "mostrador" in d["zones"] and d["zones"]["mostrador"]["visits"] == 1  # (solo el cliente)
+
+
+def test_con_el_local_cerrado_quien_aparece_es_personal():
+    from core.schedule import parse_hours
+    m = MetricsCollector(DOOR, parse_hours({"mie": "09:00-18:00"}))
+    down = [(500, y) for y in range(150, 701, 50)]
+    walk(m, 1, down, 0.0, datetime(2026, 10, 28, 8, 40))  # miércoles 8:40: llega antes de abrir
+    walk(m, 2, down, 0.0, datetime(2026, 10, 28, 9, 30))
+    out = {b["bucket_start"]: b["data"] for b in m.close()}
+    assert out["2026-10-28T08:00:00"]["staff"] == 1 and out["2026-10-28T08:00:00"]["entries"] == 0
+    assert out["2026-10-28T09:00:00"]["entries"] == 1
+
+
+def test_puerta_sin_sentido_sigue_como_antes_y_las_zonas_de_personal_van_aparte(app):
+    from core.metrics import door_counts
+    from core.rules import parse_config
+    m = MetricsCollector(ZONES)  # zona entrada sin sentido: cuenta a todos los que la pisan
+    down = [(500, y) for y in range(50, 300, 50)] + [(500, 300)] * 10  # (más de 2 s: si no, es ruido)
+    walk(m, 1, down, 0.0, datetime(2026, 10, 28, 10))
+    d = m.close()[0]["data"]
+    assert d["entries"] == 1 and d["door"] == 0
+    with pytest.raises(ValueError):
+        parse_zones([{"name": "x", "type": "shelf", "direction": "abajo", "polygon": [[0, 0], [1, 0], [1, 1]]}])
+    # recalcular la puerta sobre cuadros ya analizados («Ajustar…»)
+    frames = []
+    for i, y in enumerate(range(150, 701, 50)):
+        frames.append(([person(1, 500, y, 0.0, i / 5)], i / 5, (W, H), datetime(2026, 10, 28, 10)))
+    assert door_counts(frames, DOOR)["entries"] == 1
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Kiosco", "plans": ["comercio"]}).json()["id"]
+        cam = c.post("/api/cameras", json={"client_id": cid, "name": "Puerta", "brand": "ip", "host": "dvr",
+                                           "password": "x"}).json()["id"]
+        zones = [{"name": "puerta", "type": "entrance", "direction": "abajo",
+                  "polygon": [[0, 0.3], [1, 0.3], [1, 0.5], [0, 0.5]]},
+                 {"name": "mostrador", "type": "staff", "polygon": [[0, 0.8], [0.3, 0.8], [0.3, 1], [0, 1]]}]
+        r = c.put(f"/api/cameras/{cam}/analysis", json={"zones": zones, "rules": {}})
+        assert r.status_code == 200, r.text
+        saved = r.json()["zones"]
+        assert saved[0]["direction"] == "abajo" and "direction" not in saved[1]
+        bad = c.put(f"/api/cameras/{cam}/analysis", json={"zones": [{**zones[0], "direction": "adentro"}], "rules": {}})
+        assert bad.status_code == 422
+        # a las máquinas: la de personal va aparte (un agente viejo no la conoce) y la puerta pide 5 cuadros/s
+        tok = c.post("/api/agent/session").json()["token"]
+        c.put("/api/agent/watch", json={"camera_ids": [cam]}, headers={"X-Agent-Token": tok})  # (la PC la mide)
+        cfg = c.post("/api/agent/tune", json={"camera_id": cam},
+                     headers={"X-Agent-Token": tok}).json()["camera"]
+        an = cfg["analysis"]
+        assert [z["type"] for z in an["zones"]] == ["entrance"] and an["staff_zones"][0]["name"] == "mostrador"
+        assert cfg["process_fps"] == 5
+        zones_ok, _ = parse_config(an)
+        assert {z.type for z in zones_ok} == {"entrance", "staff"}
+        # las métricas nuevas llegan, se suman y salen en el CSV
+        r = c.post("/api/agent/metrics", headers={"X-Agent-Token": tok},
+                   json={"buckets": [{"camera_id": cam, "bucket_start": "2026-10-28T10:00:00",
+                                      "data": {**empty_bucket(), "people": 9, "entries": 7, "exits": 5, "door": 1,
+                                               "staff": 2, "staff_entries": 2, "frames": 10}}]})
+        assert r.status_code == 200, r.text
+        m = c.get(f"/api/metrics?client_id={cid}&days=30").json()
+        assert (m["total"]["entries"], m["total"]["exits"], m["total"]["door"], m["total"]["staff"]) == (7, 5, 1, 2)
+        csv = c.get(f"/api/metrics/export?client_id={cid}&desde=2026-10-28&hasta=2026-10-28").text
+        assert "Egresos;Empleados" in csv and ";7;5;2;" in csv
+
+
+def test_ajustar_cuenta_la_puerta_del_video_para_compararla_con_un_conteo_a_mano(tmp_path):
+    """En «Ajustar…», con videos: cuántos entraron y salieron (para comparar con lo que contó una persona)."""
+    from agent.ajuste import Tuner
+    from core import synthetic
+    from core.detectors import MotionDetector
+
+    video = synthetic.write_video(synthetic.render("hurto"), tmp_path / "h.mp4")  # al final camina hacia la derecha
+    door = {"name": "puerta", "type": "entrance", "polygon": [[0.62, 0.3], [0.8, 0.3], [0.8, 0.8], [0.62, 0.8]]}
+    for direction, want in (("derecha", (1, 0)), ("izquierda", (0, 1))):
+        cfg = {"id": 1, "name": "Puerta", "process_fps": synthetic.FPS, "connection": {},
+               "analysis": {"zones": synthetic.STORE_ZONES + [{**door, "direction": direction}], "rules": {}}}
+        t = Tuner(cfg, MotionDetector(), [str(video)])
+        t.run()
+        d = t.stats()["door"]
+        assert (d["entries"], d["exits"], d["door"]) == (*want, 1)
+    t.set_analysis({"zones": synthetic.STORE_ZONES, "rules": {}})  # sin zona Entrada: no hay conteo de puerta
+    assert t.stats()["door"] is None

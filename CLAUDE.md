@@ -436,6 +436,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **App 1.22.3 (28 oct):** «Cómo anda la cámara» más corto y con barra (la línea «YOLO también ve…» quedaba cortada);
     los videos «lite» que **no declaran** los píxeles 2:1 se reconocen por el tamaño (`LITE_SIZES`: 960x1080, 640x720,
     1280x1440) y se estiran a 16:9 (el de Góndolas ventana de Minas se veía angosto).
+- **Conteo con sentido y empleados (28 oct, pedido del dueño para clientes «solo métricas»; app 1.24.0):**
+  - **Antes** la zona Entrada contaba a todos los que la pisaban (entrando **y** saliendo) y la web sumaba las
+    «personas» de todas las cámaras (Minas a las 10: «894», con el depósito y la misma persona en varias cámaras).
+  - **Puerta con sentido** (`Zone.direction`: abajo/arriba/derecha/izquierda = hacia dónde camina en la imagen quien
+    ENTRA; `core.rules.DIRECTIONS`): `MetricsCollector` guarda dónde estaba la persona al pisar la puerta y dónde al
+    dejarla (`crossing`: moverse ≥ 40 % del ancho de la puerta en ese sentido) → `entries` / `exits`, `door`=1. Un
+    cruce cuenta aunque la visita dure < 2 s. Sin sentido (zonas viejas) sigue como antes. Cámara con puerta con sentido
+    y solo métricas → 5 fps (`camera_fps`).
+  - **Empleados**: zona `staff` («Personal (empleados)»: mostrador por dentro, depósito) → quien la pisa ≥ 2 s no cuenta
+    como cliente (`staff`, `staff_entries`); con horario del cliente, quien aparece con el local cerrado (sin margen)
+    también. Las zonas `staff` viajan aparte (`analysis.staff_zones`) porque un agente viejo rechaza tipos que no conoce.
+  - Web del cliente: «Entraron N · M salieron · K de personal descontados» y «Entraron por hora»; sin puerta con sentido
+    ya no muestra una suma como número principal («Apariciones en cámaras», con la explicación). CSV con «Egresos» y
+    «Empleados». App: en «Zonas…», «Sentido (solo zona Entrada)» + «Aplicar» y flecha sobre la puerta; en «Ajustar…»,
+    «Puerta: entraron N · salieron M → comparalo con tu conteo» (`Tuner.door`, recalcula sobre los recuadros guardados
+    con `core.metrics.door_counts`). Las máquinas cuentan así recién al reiniciar (`git pull`).
+  - **Siguiente (estaciones):** uniforme por color (clic en 3-4 pisteros en «Ajustar…»; el tracker ya tiene el histograma
+    HSV) para la espera hasta el pistero real, «se bajó del vehículo» y «se bajó y fue a la tienda». Sin hacer.
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),

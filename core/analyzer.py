@@ -19,7 +19,7 @@ from .scorer import Scorer
 from .tracker import CentroidTracker, Track
 
 ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 150, 0), "restricted": (0, 0, 255),
-               "entrance": (255, 0, 200), "pump": (0, 120, 255), "shop": (200, 200, 0)}
+               "entrance": (255, 0, 200), "pump": (0, 120, 255), "shop": (200, 200, 0), "staff": (140, 140, 140)}
 ASCII_LABELS = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO",
                 "zona_restringida": "ZONA RESTRINGIDA", "fuera_de_horario": "FUERA DE HORARIO"}
 
