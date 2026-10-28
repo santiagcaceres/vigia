@@ -82,3 +82,15 @@ def test_editor_agarra_puntos_y_mueve_zonas():
     assert zone_at(zones, 0.2, 0.2) == 0 and zone_at(zones, 0.9, 0.9) is None
     moved = moved_polygon(zones[1]["polygon"], 0.6, -0.1)  # no se sale de la imagen
     assert max(x for x, _ in moved) == 1.0 and min(y for _, y in moved) == 0.2
+
+
+def test_una_zona_casi_hasta_el_borde_llega_al_borde():
+    """Pasillo bebidas (Minas, 28 oct): la zona llegaba al 98 % del alto y la señora, con los pies cortados por el
+    borde de abajo, pisaba en el 99 %: nunca «estaba» en la zona."""
+    from core.rules import parse_zones
+    z = parse_zones([{"name": "Pasillo", "type": "shelf",
+                      "polygon": [[0.4, 0.5], [0.66, 0.5], [0.8, 0.98], [0.3, 0.98]]}])[0]
+    assert z.polygon[2] == (0.8, 1.0) and z.polygon[0] == (0.4, 0.5)
+    assert z.contains(0.53, 0.99)
+    assert parse_zones([{"name": "a", "type": "shelf", "polygon": [[0.02, 0.1], [0.5, 0.1], [0.5, 0.5]]}])[0].polygon[0] \
+        == (0.0, 0.1)

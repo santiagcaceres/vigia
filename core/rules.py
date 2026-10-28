@@ -31,6 +31,10 @@ NEW_ZONE_TYPES = ("staff", "aisle")
 # hacia dónde se mueve en la imagen una persona que ENTRA al local (zona entrance)
 DIRECTIONS = {"abajo": (0.0, 1.0), "arriba": (0.0, -1.0), "derecha": (1.0, 0.0), "izquierda": (-1.0, 0.0)}
 VEHICLE_LABEL = "vehiculo"
+# una zona dibujada casi hasta el borde de la imagen va hasta el borde: a quien le quedan los pies cortados por el
+# borde, el punto de los pies cae pegado al borde (Pasillo bebidas de Minas, 28 oct: la zona llegaba al 98 % del alto,
+# la señora pisaba en el 99 % y nunca «estuvo» en la zona)
+EDGE_SNAP = 0.03
 
 SALIDA_SIN_PAGO = "salida_sin_pago"
 MERODEO = "merodeo"
@@ -110,6 +114,11 @@ def _hhmm(s: str) -> time:
         raise ValueError(f"Hora inválida {s!r}, usar 'HH:MM'") from exc
 
 
+def snap_edge(v: float) -> float:
+    """Una coordenada (0-1) a menos de `EDGE_SNAP` de un borde de la imagen, pegada al borde."""
+    return 0.0 if v < EDGE_SNAP else 1.0 if v > 1.0 - EDGE_SNAP else v
+
+
 def parse_zones(items: list[dict] | None) -> list[Zone]:
     zones: list[Zone] = []
     names: set[str] = set()
@@ -126,6 +135,7 @@ def parse_zones(items: list[dict] | None) -> list[Zone]:
             raise ValueError(f"La zona {name!r} necesita al menos 3 puntos")
         if any(not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0) for x, y in poly):
             raise ValueError(f"La zona {name!r} debe usar coordenadas normalizadas entre 0 y 1")
+        poly = tuple((snap_edge(x), snap_edge(y)) for x, y in poly)
         direction = z.get("direction") or None
         if direction is not None and (ztype != "entrance" or direction not in DIRECTIONS):
             raise ValueError(f"La zona {name!r}: el sentido de entrada va solo en zonas de entrada "

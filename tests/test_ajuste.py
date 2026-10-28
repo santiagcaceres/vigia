@@ -151,3 +151,37 @@ def test_el_ajuste_muestra_que_alertas_descartaria_el_modelo_entrenado(tmp_path)
     a = t.alerts[0]
     assert a.score is not None and a.score < 0.01 and not a.kept
     assert t.stats()["dropped"] == 1
+
+
+def test_probar_clip_explica_por_que_no_dio_alerta(tmp_path):
+    """«Probar clip»: además de si dio alerta, qué midió de cada persona contra lo que pide cada regla."""
+    from agent.ajuste import Tuner
+
+    video = synthetic.write_video(synthetic.render("hurto"), tmp_path / "hurto.mp4")
+    zones = [z for z in synthetic.STORE_ZONES if z["type"] != "exit"]
+    t = Tuner({"id": 7, "name": "Góndola 1", "process_fps": synthetic.FPS, "connection": {},
+               "analysis": {"zones": zones, "rules": {}}}, MotionDetector(), [str(video)])
+    t.run()
+    assert t.alerts == []
+    why = t.explain(0)
+    assert why[0].startswith("Persona #") and "«tomó algo»" in why[0] and "merodeo pide 45 s" in why[0]
+    assert any("no tiene Salida" in x for x in why) and any("Para «merodeo»" in x for x in why)
+    # con la salida: da la alerta y ya no dice que falta
+    t.set_analysis({"zones": synthetic.STORE_ZONES, "rules": {}})
+    assert [a.type for a in t.alerts] == ["salida_sin_pago"]
+    assert not any("Salida" in x for x in t.explain(0))
+
+
+def test_aprobar_dice_en_que_maquina_quedo(app):
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cl = a.post("/api/clients", json={"name": "Minas"}).json()
+        cam = a.post("/api/cameras", json={"client_id": cl["id"], "name": "Pasillo bebidas", "host": "10.0.0.1"}).json()
+        body = {"status": "aprobada", "analyze": True}
+        res = a.post(f"/api/cameras/{cam['id']}/tuning", json=body).json()
+        assert res["analyzed"] and res["analyzer_name"] is None  # ninguna máquina en línea todavía
+        key = a.post("/api/analysis/pool-key").json()["key"]
+        tok = TestClient(app).post("/api/agent/enroll", json={"key": key, "name": "vm-1", "instance_id": "i-1"}).json()
+        TestClient(app, headers={"X-Agent-Token": tok["token"]}).post("/api/agent/status", json={"cameras": []})
+        res = a.post(f"/api/cameras/{cam['id']}/tuning", json=body).json()
+        assert res["analyzer_name"] == "vm-1"

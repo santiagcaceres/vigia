@@ -340,7 +340,7 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   **App 1.21.0:** la ventana dice con qué detector corre («YOLO en GPU (Dml)» / «en procesador») y, si el cliente
   tiene modelo entrenado (`filter_model`, ahora viaja en `/api/agent/tune`), cada alerta de prueba muestra su puntaje
   y si el modelo la descartaría (`TestAlert.score/kept`, `stats.dropped`).
-- **«Nombres e imágenes…» (27 oct, pedido del dueño; app 1.21.0):** en Clientes (botón en la segunda fila), todas las
+- **«Nombres e imágenes…» (27 oct, pedido del dueño; app 1.21.0):** en Clientes (botón en la tercera fila), todas las
   cámaras del cliente en tarjetas con su imagen, el grabador y canal, el nombre editable y el tipo (`NamesWindow` en
   agent/oficina.py). **YOLO con todas las clases** (`core/escena.py`: `scene_detector` con `COCO_ES`, solo clases que
   tienen sentido en un comercio; objetos con confianza ≥ 0,45) dice qué se ve («4 personas · ómnibus · 810×1040»,
@@ -471,6 +471,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **Tipo «Pasillo» (`aisle`)**: solo para saber a dónde va la gente (métricas por zona); no da alertas. Los tipos
     nuevos (`NEW_ZONE_TYPES` = staff, aisle) viajan en `analysis.extra_zones` (un agente viejo rechaza tipos que no
     conoce); `staff_zones` se sigue mandando para la app 1.24.
+- **«Probar clip…» y aprobar → máquina de análisis (28 oct, pedido del dueño: «configurar la cámara en la PC física y
+  al guardar que se asigne a una virtual»; app 1.26.0):**
+  - Botones de la cámara en Clientes, en tres filas: cámara (Agregar, Editar, Zonas y reglas, Probar conexión, Eliminar)
+    · puesta a punto (Ajustar…, **Probar clip…**, ✔ Analizar, ✘ No analizar) · resto.
+  - **Probar clip** (`Oficina.clip_dialog`): se eligen uno o varios videos de esa cámara → «¿Qué se ve?» (Un hurto /
+    Nada raro / No sé) → quedan en los videos de prueba de la cámara con eso marcado → `TuneWindow(clips=…)` los analiza
+    enseguida (no arranca en vivo) con **toda la configuración guardada** de la cámara (la de `/api/agent/tune`: zonas,
+    tiempos, tipo, cuadros por segundo, modelo del cliente; el mismo YOLO que las máquinas) → al terminar, un mensaje
+    con el resultado (`evaluate`) y **por qué** (`Tuner.explain`: por persona, segundos a la vista y en cada zona
+    contra lo que pide la regla, «tomó algo», pies cortados por el borde; falta de Salida; merodeo no alcanzado).
+  - «✔ Aprobar y mandar a las máquinas» (antes «Aprobar y analizar»): igual que antes (`/tuning` con `analyze`) y dice
+    en qué máquina quedó (`analyzer_name`, el reparto corre en el mismo pedido) o que no hay ninguna en línea.
+  - **Zonas pegadas al borde** (`core.rules.EDGE_SNAP` = 0,03, `snap_edge` en `parse_zones` y en el editor): un punto
+    a menos del 3 % de un borde va al borde. Con el hurto de Pasillo bebidas (Minas, id 44, «camera 8» 14:37, 14 s)
+    la zona llegaba al 98 % del alto y la señora (pies cortados abajo) pisaba en el 99 %: nunca «estuvo» en la zona.
+    Ahora: 10 s en «Pasillo» y «tomó algo», pero **sin alerta** (merodeo pide 45 s y la cámara no tiene Salida); con
+    merodeo en 8 s salta. Es el límite de zonas y tiempos: tomar y guardar en segundos necesita el detector de
+    gestos (punto 6). Las máquinas toman el arreglo del borde al reiniciar (`git pull`).
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),

@@ -441,6 +441,72 @@ class Tuner:
             self._door_key, self._door, self._door_at = key, out, time.monotonic()
         return out
 
+    def explain(self, seg: int, top: int = 3) -> list[str]:
+        """Por qué un video dio (o no) alertas con la configuración de ahora: qué midió de cada persona (segundos a la
+        vista, en cada zona y si «tomó algo») contra lo que pide cada regla. Para «Probar clip»."""
+        with self._lock:
+            rows = [(s, m) for s, m in zip(self.samples, self.marks) if s.seg == seg]
+            alerts = [a for a in self.alerts if a.seg == seg]
+            zones, cfg = list(self.zones), self.rule_cfg
+        seen: dict[int, list[float]] = {}  # id -> [primer, último] momento a la vista
+        in_zone: dict[int, dict[str, float]] = {}  # id -> zona -> segundos seguidos (máximo)
+        took: set[int] = set()
+        edge: Counter[int] = Counter()  # cuadros con los pies cortados por el borde de abajo
+        frames: Counter[int] = Counter()
+        for s, m in rows:
+            for t in s.tracks:
+                if not t.visible or t.label == VEHICLE_LABEL:
+                    continue
+                span = seen.setdefault(t.id, [s.ts, s.ts])
+                span[1] = s.ts
+                frames[t.id] += 1
+                edge[t.id] += t.bbox[3] >= 0.97 * s.size[1]
+                info = m.get(t.id) or {}
+                for name, _typ, secs in info.get("zones") or []:
+                    z = in_zone.setdefault(t.id, {})
+                    z[name] = max(z.get(name, 0.0), secs)
+                if info.get("took"):
+                    took.add(t.id)
+        people = sorted((tid for tid, (a, b) in seen.items() if b - a >= SHORT_TRACK_SECONDS),
+                        key=lambda tid: seen[tid][0] - seen[tid][1])[:top]
+        types = {z.name: z.type for z in zones}
+        rules = set(cfg.enabled_rules)
+        out: list[str] = []
+        if not people:
+            return ["No se vio a nadie más de 2 s: no hay nada que medir."]
+        if not zones:
+            out.append("La cámara no tiene zonas: ninguna regla puede saltar. Dibujalas en «Zonas…».")
+        for tid in people:
+            secs = seen[tid][1] - seen[tid][0]
+            text = f"Persona #{tid}: {secs:.0f} s a la vista"
+            if in_zone.get(tid):
+                parts = []
+                for name, v in sorted(in_zone[tid].items(), key=lambda kv: -kv[1]):
+                    typ = types.get(name, "")
+                    need = cfg.loiter_seconds if typ == "shelf" and MERODEO in rules else None
+                    parts.append(f"{v:.0f} s seguidos en «{name}»" + (f" (merodeo pide {need:g} s)" if need else ""))
+                text += "; " + ", ".join(parts)
+                if tid in took:
+                    text += "; «tomó algo»"
+            elif zones:
+                text += " y nunca pisó una zona (cuenta el punto de los pies)"
+                if edge[tid] >= 0.5 * frames[tid]:
+                    text += ". Tiene los pies cortados por el borde de abajo: la zona tiene que llegar hasta el borde"
+            out.append(text + ".")
+        if not alerts and zones:
+            if took and SALIDA_SIN_PAGO in rules:
+                if not any(t == "exit" for t in types.values()):
+                    out.append("«Tomó algo» solo da alerta («salida sin pago») si después pisa una zona Salida sin pasar "
+                               "por Caja, y esta cámara no tiene Salida.")
+                else:
+                    out.append("«Tomó algo» da alerta si después pisa la Salida sin pasar por Caja: no llegó a la Salida "
+                               "en este video.")
+            shelf = [v for tid in people for name, v in (in_zone.get(tid) or {}).items() if types.get(name) == "shelf"]
+            if shelf and MERODEO in rules and max(shelf) < cfg.loiter_seconds:
+                out.append(f"Para «merodeo» tiene que quedarse {cfg.loiter_seconds:g} s en una góndola; el que más "
+                           f"estuvo: {max(shelf):.0f} s.")
+        return out
+
     def hints(self) -> list[str]:
         """Avisos para decidir si la cámara está lista. Dicen qué mirar; no reemplazan mirar las alertas."""
         st = self.stats()
