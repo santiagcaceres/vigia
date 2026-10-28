@@ -448,16 +448,24 @@ class Tuner:
         return out
 
 
+# resoluciones «lite» de los grabadores (Hikvision «1080P Lite», Dahua «1080N», etc.): la mitad del ancho, con píxeles
+# el doble de anchos. Muchos videos exportados no lo declaran (el de Góndolas ventana de Minas, 27 oct).
+LITE_SIZES = {(960, 1080), (640, 720), (1280, 1440)}
+
+
 def pixel_aspect(cap: cv2.VideoCapture) -> float | None:
-    """Forma de los píxeles que declara el video (ancho/alto) si no son cuadrados. Los grabadores graban «1080p lite»
-    como 960x1080 con píxeles el doble de anchos: OpenCV lo ignora y las personas quedan flacas (el detector falla
-    más y las zonas no coinciden con el vivo)."""
+    """Forma de los píxeles del video (ancho/alto) si no son cuadrados. Los grabadores graban «1080p lite» como
+    960x1080 con píxeles el doble de anchos: OpenCV lo ignora y las personas quedan flacas (el detector falla más y
+    la imagen no se parece a la del vivo). Si el archivo no lo declara, se reconoce por el tamaño."""
     try:
         num, den = cap.get(cv2.CAP_PROP_SAR_NUM), cap.get(cv2.CAP_PROP_SAR_DEN)
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     except Exception:  # noqa: BLE001 - backends sin ese dato
         return None
     if num > 0 and den > 0 and abs(num / den - 1) > 0.05:
         return num / den
+    if size in LITE_SIZES:
+        return 2.0
     return None
 
 

@@ -1656,8 +1656,8 @@ class Oficina:
         for m in a.get("machines") or []:
             name = m["names"][0] if len(m["names"]) == 1 else (
                 m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
-            estado = "Vaciando para apagar" if m["online"] and m["draining"] else (
-                "En línea" if m["online"] else "Apagada")
+            estado = "Se va (la nube la reclamó)" if m.get("leaving") else (
+                "Vaciando para apagar" if m["online"] and m["draining"] else ("En línea" if m["online"] else "Apagada"))
             groups.append((m["key"], name, estado, f"{m['load']} / {m['capacity']:.0f}", m.get("instance_id") or "—",
                            set(m["agent_ids"])))
             used |= set(m["agent_ids"])
@@ -2109,6 +2109,9 @@ class TuneWindow:
         sf = ttk.LabelFrame(right, text="Cómo anda la cámara", padding=4)
         sf.pack(fill="x", pady=(6, 0))
         self.stats_txt = tk.Text(sf, height=5, width=50, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 9))
+        ssb = ttk.Scrollbar(sf, orient="vertical", command=self.stats_txt.yview)
+        self.stats_txt.configure(yscrollcommand=ssb.set)
+        ssb.pack(side="right", fill="y")
         self.stats_txt.pack(fill="x")
         self._fill_library()
         self.load()
@@ -2699,17 +2702,17 @@ class TuneWindow:
     def _show_stats(self, t) -> None:
         st = t.stats()
         lines = []
-        if st["frames"]:
+        if st["frames"]:  # corto: el recuadro tiene 5 renglones (con barra para ver el resto)
             lines.append(f"Analizado: {fmt_dur(st['seconds'])} · personas distintas: {st['persons']} · con gente en el "
                          f"{st['people_pct']:.0f} % de los cuadros")
-            if st["detections"]:
-                lines.append(f"Tamaño medio de las personas: {st['height_pct']:.0f} % del alto de la imagen · confianza "
-                             f"del detector: {st['conf']:.2f} de 1")
             per_hour = f" (≈ {st['per_hour']:.1f} por hora)" if st.get("per_hour") is not None else ""
             dropped = f" · el modelo entrenado descartaría {st['dropped']}" if st.get("dropped") else ""
-            lines.append(f"Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
+            people = (f"Personas: {st['height_pct']:.0f} % del alto · confianza {st['conf']:.2f} · "
+                      if st["detections"] else "")
+            lines.append(f"{people}Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
             if st.get("objects"):
-                lines.append("YOLO también ve: " + ", ".join(f"{k} ({v:.0f} % de los cuadros)" for k, v in st["objects"]))
+                lines.append("YOLO también ve (% de los cuadros): " + ", ".join(f"{k} {v:.0f} %"
+                                                                                 for k, v in st["objects"][:6]))
             if st.get("night_pct", 0) > 50:
                 lines.append(f"Imagen de noche (infrarrojo) en el {st['night_pct']:.0f} % de los cuadros")
         if not t.live and not self.run_videos:
@@ -2725,10 +2728,12 @@ class TuneWindow:
         hints = t.hints()
         if hints:
             lines += [""] + [f"→ {h}" for h in hints]
+        top = self.stats_txt.yview()[0]  # si bajó con la barra, que no vuelva arriba en cada actualización
         self.stats_txt.configure(state="normal")
         self.stats_txt.delete("1.0", "end")
         self.stats_txt.insert("1.0", "\n".join(lines) or "Esperando los primeros cuadros…")
         self.stats_txt.configure(state="disabled")
+        self.stats_txt.yview_moveto(top)
 
 
 class NamesWindow:

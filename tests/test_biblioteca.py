@@ -181,3 +181,8 @@ def test_videos_del_grabador_con_pixeles_anchos_se_ven_como_en_el_grabador(tmp_p
     assert ok and pixel_aspect(cap) == 2.0
     assert square_pixels(frame, 2.0).shape[:2] == (108, 192)
     assert pixel_aspect(cv2.VideoCapture(str(synthetic.write_video(synthetic.render("hurto"), tmp_path / "h.mp4")))) is None
+    # el de Góndolas ventana (Minas) no declara la forma de los píxeles: se reconoce por el tamaño «1080p lite»
+    sin_dato = tmp_path / "lite-sin-dato.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=960x1080:rate=5", "-t",
+                    "0.4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(sin_dato)], check=True)
+    assert pixel_aspect(cv2.VideoCapture(str(sin_dato))) == 2.0
