@@ -436,6 +436,25 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **App 1.22.3 (28 oct):** «Cómo anda la cámara» más corto y con barra (la línea «YOLO también ve…» quedaba cortada);
     los videos «lite» que **no declaran** los píxeles 2:1 se reconocen por el tamaño (`LITE_SIZES`: 960x1080, 640x720,
     1280x1440) y se estiran a 16:9 (el de Góndolas ventana de Minas se veía angosto).
+- **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
+  - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
+    vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),
+    datasets de Roboflow (persona entera, no gestos, origen dudoso), RTMW/DWPose y STG-NF (no comerciales). PoseLift
+    (TeCSAR, 153 videos de pose de una tienda) solo para validar, con permiso escrito. Pose para gestos: RTMPose con
+    pesos solo COCO (`rtmlib`), sin probar (download.openmmlab.com y Hugging Face bloqueados desde la sesión cloud).
+  - **Medido** (`models/LICENCIAS.md`; 128 imágenes de COCO, 1 hilo): YOLO11n AP50 0,763, 72-87 ms; **D-FINE-N**
+    (Apache-2.0) 0,809, 124-145 ms (con la misma precisión ve 4-7 puntos más de personas; `agent.medir`: 1 cámara
+    contra 3 en 2 núcleos); D-FINE-N a 480 sin reentrenar 0,699 (no); YOLOX nano/tiny/s 0,624/0,709/0,779 con 16/60/228
+    ms (no). RF-DETR-Nano bajado pero sin exportar (el control de permisos frenó instalar `rfdetr`).
+  - **Decisión: las máquinas siguen con YOLO11n** (mejor por peso de procesador). D-FINE-N quedó como **opción de
+    prueba en «Ajustar…»** (selector junto a «Objetos»: vuelve a analizar lo mismo con el otro detector; la «Última
+    prueba» dice «· D-FINE-N»). `core/detectors.py` `OnnxDfineDetector` (`build_detector("dfine")`, modelo
+    `models/dfine_n.onnx` al lado del de YOLO, también en el .exe; umbral 0,55 ≈ 0,35 de YOLO). Exportado con
+    `tools/deployment/export_onnx.py` de D-FINE (PyTorch en un venv aparte, sin variables de entorno). Con placa de
+    video la diferencia de velocidad casi no importa: candidato para máquinas con GPU si en video real ve más.
+  - Licencias: el dueño dijo que no se pierda potencia por licencias. Se acordó no usar nada «solo no comercial» en el
+    producto; YOLO11n (AGPL) se puede cobrar publicando el código bajo AGPL (el repo ya es público) o con licencia
+    Enterprise de Ultralytics.
 - **AWS para Tigo (28 oct, pedido del dueño: «desarrollá todo pensando en ellos»; Tigo trabaja con AWS):**
   - **`deploy/aws/vigia-analisis.yaml`** (CloudFormation, pasa `cfn-lint`, **sin crear todavía en una cuenta real**):
     grupo de seguridad sin entrada, roles (las máquinas solo leen la clave; el encendedor solo maneja su grupo),

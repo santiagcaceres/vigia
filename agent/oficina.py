@@ -2023,6 +2023,12 @@ class TuneWindow:
         ttk.Button(nav, text="Último ▸▸", command=self.follow).pack(side="left")
         self.show_objects = tk.BooleanVar(value=True)
         ttk.Checkbutton(nav, text="Objetos", variable=self.show_objects, command=self._redraw).pack(side="left", padx=(6, 0))
+        # otro detector para comparar con los mismos videos, zonas y tiempos (las máquinas siguen con YOLO11n)
+        self.det_var = tk.StringVar(value="YOLO11n")
+        det_box = ttk.Combobox(nav, textvariable=self.det_var, values=("YOLO11n", "D-FINE-N (prueba)"), width=16,
+                               state="readonly")
+        det_box.pack(side="left", padx=(6, 0))
+        det_box.bind("<<ComboboxSelected>>", self.change_detector)
         self.pos = ttk.Label(left, text="", foreground="#666")
         self.pos.pack(anchor="w")
         self.state_lbl = ttk.Label(left, text="Preparando el detector…", font=("Segoe UI", 10, "bold"))
@@ -2126,11 +2132,7 @@ class TuneWindow:
                 return
             self.info, self.detector = res
             self.analysis = self.info["camera"].get("analysis") or {}
-            dev = getattr(self.detector, "device", None)
-            self.detector_text = (f"Detector de personas: YOLO en {dev}." if dev else
-                                  "Detector: movimiento (solo para pruebas; cambialo a YOLO en «Editar»).")
-            if self.info["camera"].get("filter_model"):
-                self.detector_text += " Con el modelo entrenado del cliente: cada alerta muestra su puntaje."
+            self._set_detector_text()
             if self.info.get("analyzed"):
                 self.live_warn.configure(text="⚠ Esta cámara ya se analiza en las máquinas: las zonas y tiempos que "
                                               "guardes empiezan a regir ahí enseguida (alertas reales). Probar tiempos "
@@ -2145,6 +2147,49 @@ class TuneWindow:
         def fail(exc):
             self.state_lbl.configure(text=f"No se pudo preparar el ajuste: {exc}")
         self.app.bg.run(lambda: self.agent.tune_setup(self.cam["id"]), done, fail)
+
+    def _set_detector_text(self) -> None:
+        dev = getattr(self.detector, "device", None)
+        name = getattr(self.detector, "name", "YOLO11n")
+        self.detector_text = (f"Detector de personas: {name} en {dev}." if dev else
+                              "Detector: movimiento (solo para pruebas; cambialo a YOLO en «Editar»).")
+        if name != "YOLO11n" and dev:
+            self.detector_text += " Es una prueba: las máquinas siguen con YOLO11n."
+        if self.info and self.info["camera"].get("filter_model"):
+            self.detector_text += " Con el modelo entrenado del cliente: cada alerta muestra su puntaje."
+
+    def change_detector(self, _e=None) -> None:
+        """Probar otro detector con las mismas zonas, tiempos y videos: se vuelve a analizar lo que se estaba viendo.
+        No cambia nada en las máquinas ni en la cámara."""
+        if self.info is None or self.agent is None:
+            return
+        choice = self.det_var.get()
+        name = "dfine" if choice.startswith("D-FINE") else "yolo"
+        if getattr(self.detector, "name", "YOLO11n") == choice.split(" ")[0]:
+            return
+        self.state_lbl.configure(text=f"Preparando {choice}…")
+
+        def done(det):
+            if self.closed:
+                return
+            self.detector = det
+            self._set_detector_text()
+            self._fill_times()
+            t = self.tuner
+            if t is None:
+                return
+            if self.run_videos is not None:
+                self._start(library=self.run_videos)
+            elif t.live:
+                self._start()
+            else:
+                self._start(videos=list(t.videos))
+
+        def fail(exc):
+            self.state_lbl.configure(text=f"No se pudo preparar {choice}: {exc}")
+            self.det_var.set(getattr(self.detector, "name", "YOLO11n"))
+        cam = self.info["camera"]
+        self.app.bg.run(lambda: self.agent._detector(name, cam), done, fail)
 
     def _fill_times(self) -> None:
         rules = self.analysis.get("rules") or {}
@@ -2356,8 +2401,9 @@ class TuneWindow:
                 continue
             res = evaluate(v, [a for a in t.alerts if a.seg == i], TYPE_NAMES)
             self._results[i] = res
-            text = f"{res['text']} ({stamp})"
-            if v.last.split(" (")[0] != res["text"]:
+            name = getattr(self.detector, "name", "YOLO11n")
+            text = f"{res['text']}{'' if name == 'YOLO11n' else ' · ' + name} ({stamp})"
+            if v.last.rsplit(" (", 1)[0] != text.rsplit(" (", 1)[0]:  # (la fecha va al final, entre paréntesis)
                 v.last, v.last_at = text, datetime.now().isoformat(timespec="seconds")
                 self.lib.update(self.cam["id"], v)
                 changed = True
@@ -2711,8 +2757,9 @@ class TuneWindow:
                       if st["detections"] else "")
             lines.append(f"{people}Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
             if st.get("objects"):
-                lines.append("YOLO también ve (% de los cuadros): " + ", ".join(f"{k} {v:.0f} %"
-                                                                                 for k, v in st["objects"][:6]))
+                name = "D-FINE" if getattr(self.detector, "name", "").startswith("D-FINE") else "YOLO"
+                lines.append(f"{name} también ve (% de los cuadros): " + ", ".join(f"{k} {v:.0f} %"
+                                                                                  for k, v in st["objects"][:6]))
             if st.get("night_pct", 0) > 50:
                 lines.append(f"Imagen de noche (infrarrojo) en el {st['night_pct']:.0f} % de los cuadros")
         if not t.live and not self.run_videos:

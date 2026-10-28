@@ -229,6 +229,8 @@ class OnnxYoloDetector:
     Salida esperada: (1, 4+num_clases, N). `classes`: índice COCO → etiqueta. Varias instancias (por ejemplo,
     con y sin vehículos) pueden compartir la misma `OnnxSession`."""
 
+    name = "YOLO11n"
+
     def __init__(self, model_path: str | Path | None = None, conf: float = 0.35, iou: float = 0.5,
                  person_class: int = 0, threads: int = 2, classes: dict[int, str] | None = None,
                  session: OnnxSession | None = None, max_batch: int | None = 1):
@@ -300,6 +302,84 @@ class OnnxYoloDetector:
         return dets
 
 
+DFINE_FILE = "dfine_n.onnx"
+DFINE_CONF = 0.55  # D-FINE da puntajes más bajos que YOLO: 0,55 acá ≈ 0,35 de YOLO (misma precisión, 28 oct)
+
+
+class OnnxDfineDetector:
+    """Personas con D-FINE-N (Apache-2.0: libre para vender; github.com/Peterande/D-FINE, pesos COCO, exportado a
+    ONNX con su script). Medido el 28 oct en 128 imágenes de COCO: con la misma precisión ve 4 a 7 puntos más de
+    personas que YOLO11n, pero tarda casi el doble por cuadro en procesador. Por ahora es una opción de «Ajustar…»
+    para compararlo con video real; las máquinas siguen con YOLO.
+    El modelo recibe 640x640 RGB de 0 a 1 (estirado, sin bordes) y el tamaño original, y devuelve 300 candidatos
+    (clase COCO 0-79, caja en píxeles de la imagen original, puntaje): no hace falta decodificar."""
+
+    name = "D-FINE-N"
+
+    def __init__(self, model_path: str | Path | None, conf: float = DFINE_CONF, iou: float = 0.5, threads: int = 2,
+                 classes: dict[int, str] | None = None, session=None):
+        if session is None:
+            import onnxruntime as ort
+
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = threads
+            providers = _providers(ort)
+            if "DmlExecutionProvider" in providers:
+                opts.enable_mem_pattern = False
+                opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            try:
+                session = ort.InferenceSession(str(model_path), opts, providers=providers)
+            except Exception:  # noqa: BLE001 - placa sin soporte: seguir con el procesador
+                session = ort.InferenceSession(str(model_path), opts, providers=["CPUExecutionProvider"])
+        self.session = session
+        used = self.session.get_providers()
+        self.on_gpu = bool(used and used[0] != "CPUExecutionProvider")
+        self.device = "GPU (" + used[0].replace("ExecutionProvider", "") + ")" if self.on_gpu else "procesador"
+        shape = self.session.get_inputs()[0].shape
+        self.size = (int(shape[3]), int(shape[2])) if isinstance(shape[2], int) else (640, 640)
+        self.inputs = [i.name for i in self.session.get_inputs()]
+        self.conf, self.iou = conf, iou
+        self.classes = dict(classes) if classes else dict(PERSON_CLASSES)
+        self._lock = threading.Lock()
+
+    def _infer(self, frame: np.ndarray) -> tuple:
+        h, w = frame.shape[:2]
+        img = cv2.resize(frame, self.size, interpolation=cv2.INTER_LINEAR)
+        x = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+        feeds = {self.inputs[0]: x}
+        if len(self.inputs) > 1:
+            feeds[self.inputs[1]] = np.array([[w, h]], dtype=np.int64)
+        with self._lock:
+            labels, boxes, scores = self.session.run(None, feeds)
+        return labels[0], boxes[0], scores[0], w, h
+
+    def _decode(self, res: tuple, classes: dict[int, str], conf: float) -> list[Detection]:
+        labels, boxes, scores, w, h = res
+        dets: list[Detection] = []
+        for name in sorted(set(classes.values())):  # NMS por etiqueta (vehículos: auto, moto, ómnibus y camión juntos)
+            sel = np.flatnonzero(np.isin(labels, [c for c, n in classes.items() if n == name]) & (scores >= conf))
+            if not len(sel):
+                continue
+            b = boxes[sel]
+            rects = [[float(x1), float(y1), float(x2 - x1), float(y2 - y1)] for x1, y1, x2, y2 in b]
+            for j in np.array(cv2.dnn.NMSBoxes(rects, scores[sel].astype(float).tolist(), conf, self.iou)).flatten():
+                x1, y1, x2, y2 = (float(v) for v in b[j])
+                dets.append(Detection((max(0.0, x1), max(0.0, y1), min(float(w), x2), min(float(h), y2)), name,
+                                      float(scores[sel[j]])))
+        return dets
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        return self._decode(self._infer(frame), self.classes, self.conf)
+
+    def detect_also(self, frame: np.ndarray, classes: dict[int, str], conf: float) -> tuple[list[Detection],
+                                                                                            list[Detection]]:
+        """Como en YOLO: las detecciones de siempre y, aparte, objetos (con el puntaje corrido como el de personas)."""
+        res = self._infer(frame)
+        extra = {c: n for c, n in classes.items() if c not in self.classes}
+        shift = self.conf - 0.35
+        return self._decode(res, self.classes, self.conf), (self._decode(res, extra, conf + shift) if extra else [])
+
+
 def _providers(ort) -> list[str]:
     available = ort.get_available_providers()
     preferred = ["CUDAExecutionProvider", "DmlExecutionProvider", "OpenVINOExecutionProvider", "CPUExecutionProvider"]
@@ -365,4 +445,16 @@ def build_detector(name: str, model_path: str | Path | None = None, vehicles: bo
                          f" (lotes de hasta {sess.max_batch} cuadros)" if sess.max_batch > 1 else
                          f" ({len(sess.pool)} cuadros a la vez)" if isinstance(sess, SessionPool) else "")
             return det
-    raise ValueError(f"Detector desconocido: {name!r} (usar 'yolo' o 'motion')")
+    if name == "dfine":  # al lado del modelo de YOLO (models/ en el repo y adentro del .exe)
+        path = Path(model_path).with_name(DFINE_FILE) if model_path else Path(__file__).resolve().parent.parent / \
+            "models" / DFINE_FILE
+        if not path.exists():
+            raise RuntimeError(f"No se encontró el modelo D-FINE: {path}")
+        classes = {**PERSON_CLASSES, **(VEHICLE_CLASSES if vehicles else {})}
+        key = (str(path), vehicles)
+        with _shared_lock:
+            if key not in _shared:
+                _shared[key] = OnnxDfineDetector(path, classes=classes)  # type: ignore[assignment]
+                log.info("Detector de personas D-FINE-N en %s", _shared[key].device)
+            return _shared[key]
+    raise ValueError(f"Detector desconocido: {name!r} (usar 'yolo', 'dfine' o 'motion')")
