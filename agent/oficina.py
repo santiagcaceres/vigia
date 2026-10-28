@@ -511,6 +511,7 @@ class Oficina:
         ttk.Button(b4, text="Elegir todas", command=lambda: self.cam_tree.selection_set(
             self.cam_tree.get_children())).pack(side="left")
         ttk.Button(b4, text="Nombres e imágenes…", command=self.names_dialog).pack(side="left", padx=4)
+        ttk.Button(b4, text="Bajar grabación…", command=self.recording_dialog).pack(side="left")
         ttk.Button(b4, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
         ttk.Button(b4, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
         self.cam_info = tk.Text(right, height=8, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
@@ -1381,6 +1382,16 @@ class Oficina:
         if self.agent_of is None or self.agent_of() is None:
             return self.mb.showinfo(NOMBRE, "La app todavía está arrancando. Probá en unos segundos.")
         NamesWindow(self, c)
+
+    def recording_dialog(self) -> None:
+        sel = set(self.cam_tree.selection())
+        names = {c["id"]: c["name"] for c in self.clients}
+        cams = [{**c, "client_name": names.get(c["client_id"], "")} for c in self.cameras if str(c["id"]) in sel]
+        if not cams:
+            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
+        if self.agent_of is None or self.agent_of() is None:
+            return self.mb.showinfo(NOMBRE, "La app todavía está arrancando. Probá en unos segundos.")
+        RecordingWindow(self, cams)
 
     # ---------- métricas ----------
     def metrics_dialog(self) -> None:
@@ -3384,6 +3395,182 @@ class NamesWindow:
         if rows and not self.app.mb.askyesno(NOMBRE, f"Hay {len(rows)} cambio(s) sin guardar. ¿Cerrar igual?",
                                              parent=self.top):
             return
+        self.closed = True
+        try:
+            self.top.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class RecordingWindow:
+    """«Bajar grabación…»: tramos de la grabación de las cámaras elegidas (del disco del grabador, por Hik-Connect o por
+    IP y puertos) a archivos MP4 en esta PC, de a uno, sin ffmpeg (agent/grabacion.py). Quedan en Descargas\\VIGIA y,
+    si se elige, en los videos de prueba de cada cámara (para «Probar clip» o «Ajustar…»)."""
+
+    def __init__(self, app: Oficina, cams: list[dict]):
+        from .biblioteca import default_folder
+        from .grabacion import CHUNK_MINUTES
+        self.app, self.cams = app, cams
+        tk, ttk = app.tk, app.ttk
+        self.agent = app.agent_of() if app.agent_of else None
+        self.pieces: list = []
+        self.stop = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.closed = False
+        self._add_lib = True
+        self._shown: list[tuple] = []
+        names = ", ".join(c["name"] for c in cams[:4]) + (f" y {len(cams) - 4} más" if len(cams) > 4 else "")
+        self.top, frm = app._dialog("Bajar grabación", width=640)
+        self.top.protocol("WM_DELETE_WINDOW", self.close)
+        ttk.Label(frm, text=f"Cámaras: {names}", font=("Segoe UI", 10, "bold"), wraplength=600, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(frm, foreground="#666", wraplength=600, justify="left", text=(
+            "Baja la grabación del grabador (no cambia nada en el grabador ni en Hik-Connect). Va de a un tramo: por "
+            "Hik-Connect puede tardar lo mismo que dura el video.")).grid(row=1, column=0, columnspan=2, sticky="w",
+                                                                         pady=(2, 8))
+        today = datetime.now()
+        self.day = tk.StringVar(value=today.strftime("%d/%m/%Y"))
+        self.t1 = tk.StringVar(value="08:00")
+        self.t2 = tk.StringVar(value="09:30")
+        self.chunk = tk.StringVar(value=str(CHUNK_MINUTES))
+        self.folder = tk.StringVar(value=str(default_folder()))
+        self.add_lib = tk.BooleanVar(value=True)
+        app._row(frm, 2, "Día (dd/mm/aaaa)", ttk.Entry(frm, textvariable=self.day, width=12))
+        app._row(frm, 3, "Desde (hh:mm)", ttk.Entry(frm, textvariable=self.t1, width=8))
+        app._row(frm, 4, "Hasta (hh:mm)", ttk.Entry(frm, textvariable=self.t2, width=8))
+        app._row(frm, 5, "Tramos de (minutos)", ttk.Entry(frm, textvariable=self.chunk, width=8))
+        ff = ttk.Frame(frm)
+        ttk.Entry(ff, textvariable=self.folder, width=46).pack(side="left", fill="x", expand=True)
+        ttk.Button(ff, text="Cambiar…", command=self.pick_folder).pack(side="left", padx=(4, 0))
+        app._row(frm, 6, "Carpeta", ff)
+        ttk.Checkbutton(frm, text="Sumarlos a los videos de prueba de cada cámara («Probar clip», «Ajustar…»)",
+                        variable=self.add_lib).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.tree = ttk.Treeview(frm, columns=("estado",), show="tree headings", height=8)
+        self.tree.heading("#0", text="Tramo", anchor="w")
+        self.tree.heading("estado", text="Estado", anchor="w")
+        self.tree.column("#0", width=230)
+        self.tree.column("estado", width=360)
+        self.tree.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        self.status = ttk.Label(frm, text="", foreground="#666", wraplength=600, justify="left")
+        self.status.grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        bb = ttk.Frame(frm)
+        bb.grid(row=10, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        self.go_btn = ttk.Button(bb, text="Bajar", command=self.start)
+        self.go_btn.pack(side="left")
+        self.stop_btn = ttk.Button(bb, text="Detener", command=self.stop.set, state="disabled")
+        self.stop_btn.pack(side="left", padx=4)
+        ttk.Button(bb, text="Abrir carpeta", command=lambda: open_file(self.folder.get())).pack(side="left")
+        ttk.Button(bb, text="Cerrar", command=self.close).pack(side="left", padx=(4, 0))
+        self.top.after(300, self.tick)
+
+    def pick_folder(self) -> None:
+        from tkinter import filedialog
+        d = filedialog.askdirectory(parent=self.top, initialdir=self.folder.get(), title="Dónde guardar la grabación")
+        if d:
+            self.folder.set(d)
+
+    def _range(self) -> tuple[datetime, datetime, int] | None:
+        try:
+            day = datetime.strptime(self.day.get().strip(), "%d/%m/%Y")
+            h1 = datetime.strptime(self.t1.get().strip(), "%H:%M")
+            h2 = datetime.strptime(self.t2.get().strip(), "%H:%M")
+            minutes = int(self.chunk.get().strip())
+        except ValueError:
+            self.app.mb.showwarning(NOMBRE, "Revisá el día (dd/mm/aaaa), las horas (hh:mm) y los minutos.",
+                                    parent=self.top)
+            return None
+        start = day.replace(hour=h1.hour, minute=h1.minute)
+        end = day.replace(hour=h2.hour, minute=h2.minute)
+        if end <= start:
+            end += timedelta(days=1)  # p. ej. de 22:00 a 02:00
+        if start > datetime.now():
+            self.app.mb.showwarning(NOMBRE, "Ese horario todavía no pasó.", parent=self.top)
+            return None
+        return start, min(end, datetime.now()), minutes
+
+    def start(self) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            return
+        rng = self._range()
+        if rng is None:
+            return
+        from .grabacion import plan
+        try:
+            self.pieces = plan(self.cams, rng[0], rng[1], Path(self.folder.get()), rng[2])
+        except ValueError as exc:
+            return self.app.mb.showwarning(NOMBRE, str(exc), parent=self.top)
+        self.stop.clear()
+        self._add_lib = self.add_lib.get()  # (el hilo de la descarga no toca variables de Tk)
+        self.go_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        self.status.configure(text="Pidiendo la conexión de las cámaras…")
+        self.thread = threading.Thread(target=self._work, name="bajar-grabacion", daemon=True)
+        self.thread.start()
+
+    def _work(self) -> None:
+        """En otro hilo: de a un tramo. La ventana se entera mirando `self.pieces` (tick)."""
+        from .cameras import build_camera
+        from .grabacion import download
+        try:
+            views = {v["id"]: v for v in self.agent.client.view([c["id"] for c in self.cams])}
+        except Exception as exc:  # noqa: BLE001
+            for p in self.pieces:
+                p.state, p.detail = "error", f"No se pudo pedir la conexión: {exc}"
+            return
+        cams = {}
+        for p in self.pieces:
+            if self.stop.is_set():
+                if p.state == "pendiente":
+                    p.state = "detenido"
+                continue
+            v = views.get(p.camera_id)
+            if v is None:
+                p.state, p.detail = "error", "La cámara está deshabilitada"
+                continue
+            try:
+                cam = cams.get(p.camera_id) or build_camera(v["connection"])
+                cams[p.camera_id] = cam
+            except Exception as exc:  # noqa: BLE001
+                p.state, p.detail = "error", str(exc)
+                continue
+            download(cam, p, self.stop)
+            if p.state in ("listo", "incompleto") and self._add_lib:
+                self.app.library().add(p.camera_id, [str(p.path)])
+
+    def tick(self) -> None:
+        if self.closed:
+            return
+        from .grabacion import fmt_minutes
+        rows = [(str(i), p.label, p.state, round(p.progress, 2), p.detail) for i, p in enumerate(self.pieces)]
+        if rows != self._shown:
+            self._shown = rows
+            self.tree.delete(*self.tree.get_children())
+            for i, p in enumerate(self.pieces):
+                text = {"pendiente": "en espera", "bajando": f"bajando… {p.progress * 100:.0f} % "
+                                                             f"({fmt_minutes(p.seconds)})",
+                        "listo": f"✔ {p.path.name}", "incompleto": f"⚠ {p.detail}",
+                        "error": f"✘ {p.detail}", "detenido": "detenido"}.get(p.state, p.state)
+                self.tree.insert("", "end", iid=str(i), text=p.label, values=(text,))
+        running = self.thread is not None and self.thread.is_alive()
+        if self.pieces:
+            done = sum(1 for p in self.pieces if p.state in ("listo", "incompleto"))
+            bad = sum(1 for p in self.pieces if p.state == "error")
+            txt = f"{done} de {len(self.pieces)} tramos bajados" + (f" · {bad} con error" if bad else "")
+            if not running and done:
+                txt += f". Están en {self.folder.get()}"
+                txt += " y en los videos de prueba de cada cámara." if self._add_lib else "."
+            self.status.configure(text=txt)
+        if not running:
+            self.go_btn.configure(state="normal")
+            self.stop_btn.configure(state="disabled")
+        self.top.after(500, self.tick)
+
+    def close(self) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            if not self.app.mb.askyesno(NOMBRE, "Se está bajando la grabación. ¿Detener y cerrar? (el tramo a medio "
+                                                "bajar se descarta)", parent=self.top):
+                return
+            self.stop.set()
         self.closed = True
         try:
             self.top.destroy()

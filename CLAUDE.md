@@ -489,6 +489,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     Ahora: 10 s en «Pasillo» y «tomó algo», pero **sin alerta** (merodeo pide 45 s y la cámara no tiene Salida); con
     merodeo en 8 s salta. Es el límite de zonas y tiempos: tomar y guardar en segundos necesita el detector de
     gestos (punto 6). Las máquinas toman el arreglo del borde al reiniciar (`git pull`).
+- **«Bajar grabación…» (28 oct, lo pidió la sesión de la Dell para bajar Minas 08:00-09:30; app 1.27.0):** en Clientes
+  (tercera fila), con una o varias cámaras elegidas: día, desde/hasta, tramos (30 min) y carpeta (Descargas\VIGIA) →
+  `RecordingWindow` (agent/oficina.py) + `agent/grabacion.py`: de a un tramo, en otro hilo, pide la conexión con
+  `/api/agent/view` y abre `playback_url` (Hik-Connect: link HLS `type` 3 del servidor, calidad principal y si no abre
+  la secundaria; IP y puertos: RTSP de reproducción) con **OpenCV, sin ffmpeg** (la Dell no tiene). Escribe MP4 H.264
+  si se puede (Media Foundation en Windows) o MPEG-4, a lo sumo 15 cuadros/s, con la resolución del grabador. Nombre
+  «Minas - Pasillo bebidas - 2026-10-28 08.00-08.30.mp4»; estados listo / incompleto (< 90 % del tramo) / error /
+  detenido; casilla «Sumarlos a los videos de prueba» (para «Probar clip» y «Ajustar…»). **La reproducción por
+  Hik-Connect (`type` 3) no se probó nunca con el grabador real:** primera prueba en la Dell. Cuánto tarda (¿a
+  velocidad real?) y si el H.264 de Windows abre bien, también sin probar. No cambia nada en el grabador.
+  Pendiente de decidir con el dueño: que la app arranque con Windows (la Dell se reinició el 28 a las 08:05 y la
+  app quedó cerrada hasta las 20:43).
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),
