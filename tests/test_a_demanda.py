@@ -278,3 +278,65 @@ def test_la_ventana_sigue_respondiendo_mientras_el_servidor_tarda(tmp_path):
     assert ag._catalog and ag._rev == "1"  # y las respuestas llegaron y se aplicaron
     ag.stop()
     t.join(5)
+
+
+def test_el_aviso_de_sin_conexion_se_borra_al_volver_el_servidor(tmp_path):
+    """28 oct: tras un corte de DNS el encabezado de la app seguía diciendo «sin conexión con el servidor» aunque
+    los pedidos ya andaban (en la app solo se reescribía al cambiar la cantidad de cámaras que se miran)."""
+    import threading
+
+    import httpx
+
+    from agent.__main__ import Agent
+
+    class Cortado(FakeClient):
+        down = False
+
+        def config(self):
+            if self.down:
+                raise httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+            return {"cameras": [], "rev": "1"}
+
+        def status(self, payload):
+            return {"rev": "1", "cameras": []}
+
+    class Ventanita(FakeWindow):
+        def __init__(self):
+            super().__init__()
+            self.shown: list[tuple[str, bool]] = []
+
+        def set_cameras(self, cams):
+            pass
+
+        def refresh(self, tiles, note=""):
+            pass
+
+        def set_status(self, text, ok=True):
+            self.shown.append((text, ok))
+
+        def pump(self, ms=40):
+            time.sleep(ms / 1000)
+            return True
+
+    ag = Agent("http://127.0.0.1:9", "token", tmp_path, None)
+    ag.window, ag.on_demand, ag.client = Ventanita(), True, Cortado()
+    ag.outbox.start = lambda: None
+    t = threading.Thread(target=ag.run, daemon=True)
+    t.start()
+
+    def wait(cond):
+        for _ in range(100):
+            if ag.window.shown and cond(ag.window.shown[-1]):
+                return
+            time.sleep(0.05)
+
+    wait(lambda s: "mirando 0" in s[0])  # anda: «mirando 0 cámaras»
+    ag.client.down, ag._force_config = True, True  # se corta el DNS
+    wait(lambda s: not s[1])
+    assert "sin conexión" in ag.window.shown[-1][0]
+    ag.client.down, ag._force_config = False, True  # el servidor volvió (en la app se reintenta a los 15 s)
+    wait(lambda s: s[1])
+    ag.stop()
+    t.join(5)
+    text, ok = ag.window.shown[-1]
+    assert ok and "mirando 0 cámaras" in text

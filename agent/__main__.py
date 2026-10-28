@@ -294,7 +294,9 @@ class Agent:
                 if ok:
                     self.apply_config(val)
                     last_cfg = now
-                    if self.window is not None and not self.on_demand:
+                    if self.window is not None and self.on_demand:
+                        self._viewing_shown = -1  # vuelve a escribir «mirando N» (borra «sin conexión»)
+                    elif self.window is not None:
                         n = len(self._cams_cfg)
                         if not n and self.analysis_mode == "servidores":
                             self.window.set_status(f"{self.pc_name} · solo revisa: las cámaras las analizan "
