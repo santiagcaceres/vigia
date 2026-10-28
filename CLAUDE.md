@@ -270,6 +270,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   405 con HTML («’») al PUT de AWS y `instance_id()` lo usaba como token (UnicodeEncodeError, que no es
   httpx.HTTPError). Ahora mira el código, prueba `computeMetadata/v1/instance/name` (`Metadata-Flavor: Google`) y
   atrapa `UnicodeError`. Los «[tls] IO error: End of file» de ffmpeg con el HLS de Hik-Connect son normales (reabre).
+  **Pérdida de memoria arreglada (28 oct):** la VM llegó a 13,7 GB de 16 con 5 cámaras (de 3,8 GB a las 12:40 UTC a
+  13,7 a las 23:51). Causa: en cada reconexión el reloj del análisis (`ts` del `CameraWorker`) volvía a cero, y el
+  buffer de clips (que descarta lo de más de `clip_max`), los clips abiertos y el seguimiento esperaban a que el reloj
+  nuevo alcanzara al viejo: el buffer guardaba todo y, peor, **las reglas dejaban de disparar** (el enfriamiento y los
+  tiempos quedaban negativos). Ahora el reloj sigue entre conexiones (`_last_ts` + lo que duró el corte) y el
+  `Analyzer` vacía el buffer y cierra los clips si el reloj vuelve atrás. Prueba: `tests/test_memoria.py`. Las
+  máquinas lo toman al reiniciar el servicio (`vigia-actualizar` hace `git pull`).
   **Una sola app por PC** (`single_instance`: traba `vigia.lock` en la carpeta de datos, msvcrt en Windows y flock en
   Linux; espera 8 s por si la anterior se está cerrando; `restart_app` la suelta): con dos copias abiertas cada una
   pedía el token de la PC del usuario y la otra quedaba con 401 y se cerraba la sesión. En Administración los

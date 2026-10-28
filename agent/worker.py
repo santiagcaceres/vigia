@@ -122,6 +122,11 @@ class CameraWorker:
         self.client = client
         self.clip_pool = clip_pool
         self._findings: dict[str, Finding] = {}
+        # reloj del análisis: sigue corriendo entre reconexiones. Si volviera a cero, el buffer de clips, los clips
+        # abiertos y el seguimiento esperarían a que alcanzara al viejo, guardando cuadros mientras tanto (27 oct:
+        # la máquina de Google llegó a 13,7 GB con 5 cámaras de Hik-Connect, que se reconectan seguido)
+        self._last_ts: float | None = None
+        self._last_ts_at = 0.0
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name=f"cam-{self.id}", daemon=True)
         self.state = "iniciando"
@@ -223,6 +228,8 @@ class CameraWorker:
 
     def _read_loop(self, cap: cv2.VideoCapture) -> None:
         t0 = time.monotonic()
+        # sigue desde donde quedó la conexión anterior, más lo que duró el corte
+        base = 0.0 if self._last_ts is None else self._last_ts + max(t0 - self._last_ts_at, 0.1)
         # Hik-Connect (HLS) manda el video en ráfagas de 1-4 s: con el reloj de la PC se analizaría un solo
         # cuadro por ráfaga. Ahí se usa el reloj del video (marca de tiempo de cada cuadro).
         clock = MediaClock(cap) if self.hik.brand == "hikconnect" else None
@@ -247,7 +254,8 @@ class CameraWorker:
                 continue
             fails = 0
             now = time.monotonic()
-            ts = clock.tick() if clock else now - t0  # segundos del video (o de la PC)
+            ts = base + (clock.tick() if clock else now - t0)  # segundos del video (o de la PC)
+            self._last_ts, self._last_ts_at = ts, now
             self.last_frame_at = time.time()
             analyze = ts - last_proc >= 1.0 / self.process_fps - 1e-3
             show = self.show_window and now - last_show >= DISPLAY_INTERVAL

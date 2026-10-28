@@ -151,9 +151,10 @@ class Analyzer:
         visible_ids = {t.id for t in tracks if t.visible}
         still = []
         for p in self._pending:
-            if p.track_id in visible_ids and ts + self.clip_post <= p.max_end_ts:
+            back = bool(p.frames) and ts < p.frames[-1][0]  # el reloj volvió atrás: el clip se cierra como está
+            if not back and p.track_id in visible_ids and ts + self.clip_post <= p.max_end_ts:
                 p.end_ts = ts + self.clip_post  # la persona sigue ahí: el clip sigue
-            if ts <= p.end_ts:
+            if not back and ts <= p.end_ts:
                 p.frames.append((ts, jpg_small))
                 still.append(p)
             else:
@@ -190,6 +191,8 @@ class Analyzer:
         self._remember(ts, self._small_jpg(frame))
 
     def _remember(self, ts: float, jpg: bytes) -> None:
+        if self._buffer and ts < self._buffer[-1][0]:  # el reloj volvió atrás: lo guardado ya no se puede recortar
+            self._buffer.clear()
         self._buffer.append((ts, jpg))
         while self._buffer and ts - self._buffer[0][0] > self.clip_max:
             self._buffer.popleft()
