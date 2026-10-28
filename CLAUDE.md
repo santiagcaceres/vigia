@@ -428,7 +428,36 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     caja ni salida. Zonas probadas por la sesión de escritorio con el `Tuner` (sin guardar; tipo «shelf», piso):
     Góndolas ventana «Góndola fondo» [[0.60,0.50],[0.87,0.50],[0.89,0.75],[0.62,0.77]] (persona #1 10,8 s seguidos);
     Pasillo bebidas «Pasillo» [[0.40,0.50],[0.66,0.50],[0.80,0.98],[0.30,0.98]] (12,8 s). Merodeo 45 s y 15 s: sin
-    alertas; 10 s: una alerta en cada una. **Pendiente que el dueño las cargue** (o lo autorice) desde «Ajustar…».
+    alertas; 10 s: una alerta en cada una. **Cargadas el 28 oct** por SQL (cámaras 7 y 44, tipo «shelf», merodeo
+    sigue en 45 s, `tuning = en_ajuste` con nota; `config_rev` 36): la máquina ya las usa. Falta revisarlas y aprobar.
+    La sesión de escritorio (28 oct, app 1.22.2) sumó los dos videos a la biblioteca; Pasillo bebidas marcado «hurto
+    a los 0:16» (la señora mete un producto en una bolsa) → «✘ no vio el hurto» (con 28 s no llega a merodeo y la
+    cámara no tiene zona de salida). Góndolas ventana sin clasificar.
+  - **App 1.22.3 (28 oct):** «Cómo anda la cámara» más corto y con barra (la línea «YOLO también ve…» quedaba cortada);
+    los videos «lite» que **no declaran** los píxeles 2:1 se reconocen por el tamaño (`LITE_SIZES`: 960x1080, 640x720,
+    1280x1440) y se estiran a 16:9 (el de Góndolas ventana de Minas se veía angosto).
+- **AWS para Tigo (28 oct, pedido del dueño: «desarrollá todo pensando en ellos»; Tigo trabaja con AWS):**
+  - **`deploy/aws/vigia-analisis.yaml`** (CloudFormation, pasa `cfn-lint`, **sin crear todavía en una cuenta real**):
+    grupo de seguridad sin entrada, roles (las máquinas solo leen la clave; el encendedor solo maneja su grupo),
+    plantilla de lanzamiento (Ubuntu 24.04 ARM por parámetro público de Canonical, IMDSv2, disco cifrado, datos de
+    usuario que corren `instalar.sh`), **grupo de Auto Scaling** con Spot de varios tipos (c7g/c8g/c6g.xlarge,
+    `price-capacity-optimized`, `CapacityRebalance`, `NewInstancesProtectedFromScaleIn`, `BaseADemanda`,
+    `PorcentajeADemanda`, `MaxMaquinas` 2) y el encendedor en un grupo de 1 t4g.nano. La clave de máquinas va en el
+    Parameter Store (`/vigia/clave-maquinas`, SecureString, a mano). Guía: `deploy/aws/README.md`.
+  - **Encendedor** (`agent/escalador.py`): nube `aws-asg` (`AsgPool`, `decide_asg`: sube la cantidad deseada; para
+    bajar termina de a una las vaciadas con `ShouldDecrementDesiredCapacity`; si pidió más de las que AWS pudo
+    prender y ya no hacen falta, baja) y `aws` mejorado (`AwsPool`: Spot con `VIGIA_SPOT`, varios `VIGIA_TIPOS`,
+    respaldo a demanda `VIGIA_RESPALDO`; al sobrar, termina las Spot y detiene las de a demanda).
+  - **Aviso de Spot** (`agent/maquina.py` `Interruptions`, `watch_interruptions` en `run_machine`): cada 5 s mira
+    `spot/instance-action` y `autoscaling/target-lifecycle-state` (AWS) o `instance/preempted` (Google). Si avisan:
+    `POST /api/agent/leaving` (draining + `last_status.leaving`; reparte ya; el plan no la cuenta y la lista en
+    `leaving_instances`, así el encendedor pide otra), cierra las cámaras, manda la cola hasta 60 s y **no sale**
+    (systemd la volvería a abrir). Un proceso que arranca de nuevo manda `fresh` y el servidor olvida el «me voy».
+    En la app: «Se va (la nube la reclamó)».
+  - **`instalar.sh`**: sin placa **mide** la capacidad con `python -m agent.medir --numero` (antes 1 por vCPU), lee la
+    clave de SSM con `VIGIA_POOL_KEY_SSM` (boto3 + región por IMDS), espera el candado de apt (`DPkg::Lock::Timeout`)
+    y sirve en ARM. El cron diario borra las máquinas que no se ven hace 3 días (`MACHINE_FORGET`).
+  - Tipos en sa-east-1 (datos de cfn-lint): sí c6g/c7g/**c8g**/m7g/c6a/c5a/c7i/g4dn/g6/t4g; **no** c7a, t2d, g5g.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

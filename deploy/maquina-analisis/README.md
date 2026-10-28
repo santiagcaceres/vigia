@@ -141,11 +141,21 @@ Oracle puede recuperar una máquina gratis que pase una semana casi sin usar el 
 - En la máquina, `top`: si el procesador está al 100 % y los fps bajan de 5, sacale cámaras o usá una más grande.
 - Una alerta de punta a punta: foto, clip dentro de la app, etiqueta y «Avisar al cliente».
 
-## Tigo u otra nube
+## AWS (Tigo) u otra nube
 
-`instalar.sh` sirve en cualquier Ubuntu con placa NVIDIA. Si la nube no se puede manejar por programa,
-instalá el encendedor con `VIGIA_NUBE=ninguna`: no toca nada y solo registra cuántas máquinas harían falta
-(las prendés a mano, o las dejás siempre prendidas).
+**En AWS, lo armado es `deploy/aws/`**: una plantilla de CloudFormation crea el grupo de máquinas Spot Graviton, el
+encendedor y los permisos, sin puertos de entrada (ver `deploy/aws/README.md`). Lo de arriba (máquinas a mano con
+placa de video) queda para cuando se pruebe GPU.
+
+`instalar.sh` sirve en cualquier Ubuntu 22.04/24.04, x86 o ARM, con o sin placa NVIDIA. Sin placa **mide** cuántas
+cámaras aguanta la máquina al instalarse (`python -m agent.medir`) y usa ese número como capacidad (antes: 1 por
+vCPU). Si la nube no se puede manejar por programa, instalá el encendedor con `VIGIA_NUBE=ninguna`: no toca nada y
+solo registra cuántas máquinas harían falta (las prendés a mano, o las dejás siempre prendidas).
+
+**Máquinas Spot (AWS o Google):** la máquina mira cada 5 segundos si la nube avisó que se la lleva (AWS avisa 2
+minutos antes; Google, 30 s). Si avisó, se lo dice al servidor (sus cámaras pasan a las otras en el momento),
+suelta las transmisiones de Hik-Connect y manda lo que tenga en la cola. En la app figura «Se va (la nube la
+reclamó)».
 
 ## Seguridad
 

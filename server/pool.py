@@ -71,6 +71,7 @@ class Machine:
     capacity: float
     load: float  # peso de las cámaras que tiene ahora
     names: list[str] = field(default_factory=list)
+    leaving: bool = False  # la nube avisó que se la lleva (Spot): no cuenta como prendida
 
 
 @dataclass

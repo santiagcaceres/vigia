@@ -135,6 +135,9 @@ class Agent:
         self.scorer: Scorer | None = None
         self._scorer_id = None
         self._stop = threading.Event()
+        self.left: str | None = None  # máquina de análisis que la nube va a sacar (Spot): el motivo
+        self._drain_until = 0.0
+        self._fresh = True  # el primer estado avisa que el proceso arrancó (el servidor olvida un «me voy» viejo)
         # app de escritorio: la lista de «En vivo» son todas las cámaras y las que se eligen se miran en esta PC,
         # sin analizarlas (lo que se analiza se elige en «Clientes» y lo hacen las máquinas de análisis)
         self.on_demand = on_demand and self.window is not None
@@ -486,8 +489,23 @@ class Agent:
         frames, batch = session_stats()
         now = time.monotonic()
         secs, self._stats_at = max(now - self._stats_at, 1e-3), now
+        fresh, self._fresh = self._fresh, False
         return {"capacity": self.machine.get("capacity"), "instance_id": self.machine.get("instance_id"),
-                "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2)}
+                "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2),
+                **({"fresh": True} if fresh else {})}
+
+    def leave(self, reason: str, drain_s: float = 60.0) -> None:
+        """La nube va a sacar esta máquina: el servidor pasa sus cámaras a las otras ya (sin esperar los 90 s que
+        tarda en darla por caída), se sueltan las transmisiones y se manda lo que quede en la cola mientras dé el
+        tiempo (`drain_s`; AWS avisa 2 minutos antes)."""
+        self.left = reason
+        try:
+            self.client.leaving(reason)
+            log.warning("%s: el servidor ya pasó sus cámaras a otras máquinas", reason)
+        except httpx.HTTPError as exc:
+            log.warning("%s; no se pudo avisar al servidor (%s): sus cámaras pasan a otras en 90 s", reason, exc)
+        self._drain_until = time.monotonic() + drain_s
+        self.stop()
 
     def _request_logout(self) -> None:
         self._logout_requested = True
@@ -633,6 +651,9 @@ class Agent:
             w.thread.join(15)
         self.metrics_queue.flush()  # lo último medido
         self.clip_pool.shutdown(wait=True)
+        while time.monotonic() < self._drain_until and self.outbox.pending():  # Spot: mandar lo que se pueda
+            self.outbox._wake.set()
+            time.sleep(1.0)
         self.outbox.stop()
 
 
@@ -804,10 +825,34 @@ def run_machine(a, data_dir: Path, verify: bool | str) -> None:
     agent = Agent(a.server, token, data_dir, a.model, verify=verify, process_imports=not a.no_imports,
                   alarm_workers=max(1, a.alarm_workers), window=False, relogin=enroll, pc_name=name,
                   machine={"capacity": a.capacidad, "instance_id": instance})
-    signal.signal(signal.SIGTERM, lambda *_: agent.stop())
-    signal.signal(signal.SIGINT, lambda *_: agent.stop())
+    bye = threading.Event()
+
+    def on_signal(*_) -> None:
+        bye.set()
+        agent.stop()
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
     log.info("Máquina de análisis %s (instancia %s, capacidad %s)", name, instance or "—", a.capacidad or "por defecto")
+    threading.Thread(target=watch_interruptions, args=(agent, maquina.Interruptions()), daemon=True,
+                     name="aviso-nube").start()
     agent.run()
+    if agent.left and not bye.is_set():
+        # no salir: systemd la volvería a abrir y el servidor le daría cámaras a una máquina que se va
+        log.info("Máquina vaciada; queda esperando que la nube la apague")
+        bye.wait()
+
+
+def watch_interruptions(agent: Agent, clouds, every: float = 5.0) -> None:
+    """Mira cada `every` segundos si la nube avisó que se lleva la máquina (Spot) y, si avisó, la vacía."""
+    if clouds.cloud is None:
+        return
+    log.info("Atento a los avisos de %s (máquinas Spot)", {"aws": "AWS", "gcp": "Google Cloud"}[clouds.cloud])
+    while not agent._stop.wait(every):
+        reason = clouds.check()
+        if reason:
+            agent.leave(reason, drain_s=60.0 if clouds.cloud == "aws" else 20.0)
+            return
 
 
 _instance_lock = None  # archivo abierto y trabado mientras corre la app (una sola por PC)

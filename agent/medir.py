@@ -1,4 +1,5 @@
-"""Cuántas cámaras aguanta esta máquina: `python -m agent.medir` (`--segundos 20`, `--nucleos 2` para usar menos).
+"""Cuántas cámaras aguanta esta máquina: `python -m agent.medir` (`--segundos 20`, `--nucleos 2` para usar menos;
+`--numero` solo escribe la cantidad: así la instalación de una máquina de análisis le pone su capacidad medida).
 
 Mide por separado lo que gasta cada cámara, con el mismo código que usan las máquinas de análisis:
 - **analizar** los cuadros (detector de personas + seguimiento + reglas + guardar el cuadro para el clip): 5 por
@@ -122,8 +123,13 @@ def main() -> None:
     p.add_argument("--modelo", default=str(Path(__file__).resolve().parent.parent / "models" / "personas.onnx"))
     p.add_argument("--segundos", type=float, default=15.0)
     p.add_argument("--nucleos", type=int, default=None, help="usar solo estos núcleos (para comparar tamaños)")
+    p.add_argument("--numero", action="store_true",
+                   help="solo el número de cámaras (lo usa deploy/maquina-analisis/instalar.sh)")
     a = p.parse_args()
     r = measure(a.modelo, a.segundos, a.nucleos)
+    if a.numero:
+        print(max(1, int(r["cameras"])))
+        return
     print(f"Núcleos: {r['cores']} · detector en {r['device']}")
     print(f"Análisis completo (detector + seguimiento + reglas + clip): {r['analyzed_fps']:.1f} cuadros por segundo")
     print(f"Decodificar video 640x360: {r['decoded_fps']:.0f} cuadros por segundo")

@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Analítica Crítica - máquinas de análisis en AWS: grupo de Auto Scaling con máquinas Spot (Graviton por defecto)
+  que se dan de alta solas en el servidor, y el encendedor que las prende y apaga según el horario de los locales.
+  Sin puertos de entrada. Ver deploy/aws/README.md.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Analítica Crítica"}
+        Parameters: [ClaveMaquinasParametro, ServidorVigia, Repositorio]
+      - Label: {default: "Máquinas de análisis"}
+        Parameters: [Arquitectura, Tipo1, Tipo2, Tipo3, MaxMaquinas, BaseADemanda, PorcentajeADemanda, DiscoGB]
+      - Label: {default: "Red"}
+        Parameters: [VpcId, Subredes]
+      - Label: {default: "Encendedor"}
+        Parameters: [TipoEncendedor]
+    ParameterLabels:
+      ClaveMaquinasParametro: {default: "Parámetro (SecureString) con la clave de máquinas"}
+      Arquitectura: {default: "Procesador"}
+      Tipo1: {default: "Tipo de máquina preferido"}
+      Tipo2: {default: "Otro tipo (si no hay Spot del primero)"}
+      Tipo3: {default: "Otro tipo más"}
+      MaxMaquinas: {default: "Tope de máquinas prendidas"}
+      BaseADemanda: {default: "Máquinas siempre a demanda (no Spot)"}
+      PorcentajeADemanda: {default: "% a demanda de las demás (0 = todas Spot)"}
+
+Parameters:
+  ClaveMaquinasParametro:
+    Type: String
+    Default: /vigia/clave-maquinas
+    AllowedPattern: "^/[A-Za-z0-9_.\\-/]+$"
+    Description: >-
+      Nombre del parámetro de Systems Manager (Parameter Store, tipo SecureString) donde se guardó la clave de
+      máquinas que da la app (Administración → Clave para máquinas nuevas). Se crea a mano antes de la pila.
+  ServidorVigia:
+    Type: String
+    Default: https://vigia-three-ashy.vercel.app
+  Repositorio:
+    Type: String
+    Default: https://github.com/santiagcaceres/vigia.git
+  Arquitectura:
+    Type: String
+    Default: arm64
+    AllowedValues: [arm64, x86_64]
+    Description: >-
+      arm64 = Graviton (cada vCPU es un núcleo real: rinde más por peso). x86_64 = Intel/AMD (cambiar los tipos).
+  Tipo1:
+    Type: String
+    Default: c7g.xlarge
+    Description: >-
+      arm64 (en São Paulo): c7g, c8g (Graviton4, más rápida), c6g (Graviton2), m7g... en .xlarge (4 núcleos) o
+      .2xlarge (8). x86_64: c6a.xlarge, c5a.xlarge, c7i.xlarge (en esas, 1 vCPU = medio núcleo).
+  Tipo2:
+    Type: String
+    Default: c8g.xlarge
+    Description: Vacío para no usarlo. Tiene que ser de la misma arquitectura.
+  Tipo3:
+    Type: String
+    Default: c6g.xlarge
+    Description: Vacío para no usarlo. Tiene que ser de la misma arquitectura.
+  MaxMaquinas:
+    Type: Number
+    Default: 2
+    MinValue: 0
+    MaxValue: 50
+    Description: Nunca se prenden más que esto (protege la factura). El encendedor y el grupo lo respetan.
+  BaseADemanda:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 50
+    Description: >-
+      Las primeras N máquinas prendidas son a demanda (nunca las reclama AWS). 1 = siempre hay una que no se va;
+      0 = todas Spot (lo más barato).
+  PorcentajeADemanda:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 100
+    Description: >-
+      0 = todas Spot (hasta 70-90 % más baratas; AWS las puede reclamar con 2 minutos de aviso y sus cámaras pasan
+      solas a otra máquina). 100 = todas a demanda.
+  DiscoGB:
+    Type: Number
+    Default: 20
+    MinValue: 12
+    MaxValue: 200
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: La VPC (sirve la «default» de la región).
+  Subredes:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Subredes públicas (con salida a internet) en dos o más zonas: más zonas = más lugar para las Spot. En la VPC
+      «default» son todas públicas.
+  TipoEncendedor:
+    Type: String
+    Default: t4g.nano
+    AllowedValues: [t4g.nano, t4g.micro, t4g.small]
+  UbuntuArm:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+    Description: Imagen de Ubuntu 24.04 ARM (la publica Canonical; se resuelve sola).
+  UbuntuX86:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Imagen de Ubuntu 24.04 x86 (la publica Canonical; se resuelve sola).
+
+Conditions:
+  EsArm: !Equals [!Ref Arquitectura, arm64]
+  HayTipo2: !Not [!Equals [!Ref Tipo2, ""]]
+  HayTipo3: !Not [!Equals [!Ref Tipo3, ""]]
+
+Resources:
+  SinEntrada:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Analitica Critica - sin puertos de entrada (solo salen a Hik-Connect y al servidor)
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - {IpProtocol: "-1", CidrIp: 0.0.0.0/0, Description: "Salida a internet"}
+      Tags:
+        - {Key: Name, Value: vigia-sin-entrada}
+
+  RolMaquinas:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: sts:AssumeRole}
+      ManagedPolicyArns:
+        # para entrar sin SSH: Systems Manager → Session Manager
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: leer-clave-de-maquinas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ClaveMaquinasParametro}
+
+  PerfilMaquinas:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref RolMaquinas]
+
+  PlantillaMaquinas:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !If [EsArm, !Ref UbuntuArm, !Ref UbuntuX86]
+        InstanceType: !Ref Tipo1
+        IamInstanceProfile: {Arn: !GetAtt PerfilMaquinas.Arn}
+        MetadataOptions: {HttpTokens: required, HttpEndpoint: enabled, HttpPutResponseHopLimit: 1}
+        NetworkInterfaces:
+          - {DeviceIndex: 0, AssociatePublicIpAddress: true, Groups: [!Ref SinEntrada], DeleteOnTermination: true}
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs: {VolumeSize: !Ref DiscoGB, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - {Key: vigia-grupo, Value: analisis}
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # Primera vez que prende: instala Vigía, mide cuántas cámaras aguanta y se da de alta sola.
+            set -eu
+            exec > /var/log/vigia-instalar.log 2>&1
+            curl -fsSL --retry 5 https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh -o /root/instalar.sh
+            VIGIA_POOL_KEY_SSM='${ClaveMaquinasParametro}' VIGIA_SERVER='${ServidorVigia}' VIGIA_REPO='${Repositorio}' \
+              AWS_REGION='${AWS::Region}' bash /root/instalar.sh
+
+  GrupoMaquinas:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: "0"
+      MaxSize: !Ref MaxMaquinas
+      # sin DesiredCapacity: la maneja el encendedor (empieza en 0)
+      VPCZoneIdentifier: !Ref Subredes
+      CapacityRebalance: true
+      # AWS no termina por su cuenta una máquina con cámaras: el encendedor termina solo las que el servidor vació
+      NewInstancesProtectedFromScaleIn: true
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 900
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandBaseCapacity: !Ref BaseADemanda
+          OnDemandPercentageAboveBaseCapacity: !Ref PorcentajeADemanda
+          SpotAllocationStrategy: price-capacity-optimized
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref PlantillaMaquinas
+            Version: !GetAtt PlantillaMaquinas.LatestVersionNumber
+          Overrides:
+            - InstanceType: !Ref Tipo1
+            - !If [HayTipo2, {InstanceType: !Ref Tipo2}, !Ref AWS::NoValue]
+            - !If [HayTipo3, {InstanceType: !Ref Tipo3}, !Ref AWS::NoValue]
+      Tags:
+        - {Key: Name, Value: vigia-analisis, PropagateAtLaunch: true}
+        - {Key: vigia-grupo, Value: analisis, PropagateAtLaunch: true}
+
+  RolEncendedor:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: sts:AssumeRole}
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: prender-y-apagar-maquinas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [autoscaling:DescribeAutoScalingGroups, ec2:DescribeInstances]
+                Resource: "*"
+              - Effect: Allow
+                Action: [autoscaling:SetDesiredCapacity, autoscaling:TerminateInstanceInAutoScalingGroup]
+                Resource: !Sub arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${GrupoMaquinas}
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ClaveMaquinasParametro}
+
+  PerfilEncendedor:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref RolEncendedor]
+
+  PlantillaEncendedor:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref UbuntuArm
+        InstanceType: !Ref TipoEncendedor
+        IamInstanceProfile: {Arn: !GetAtt PerfilEncendedor.Arn}
+        MetadataOptions: {HttpTokens: required, HttpEndpoint: enabled, HttpPutResponseHopLimit: 1}
+        NetworkInterfaces:
+          - {DeviceIndex: 0, AssociatePublicIpAddress: true, Groups: [!Ref SinEntrada], DeleteOnTermination: true}
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs: {VolumeSize: 8, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -eu
+            exec > /var/log/vigia-instalar.log 2>&1
+            curl -fsSL --retry 5 https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh -o /root/instalar.sh
+            MODO=escalador VIGIA_POOL_KEY_SSM='${ClaveMaquinasParametro}' VIGIA_SERVER='${ServidorVigia}' \
+              VIGIA_REPO='${Repositorio}' AWS_REGION='${AWS::Region}' VIGIA_NUBE=aws-asg VIGIA_ASG='${GrupoMaquinas}' \
+              VIGIA_MAX_MAQUINAS='${MaxMaquinas}' bash /root/instalar.sh
+
+  # el encendedor es un grupo de 1: si su máquina se cae, AWS pone otra sola
+  GrupoEncendedor:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier: !Ref Subredes
+      LaunchTemplate:
+        LaunchTemplateId: !Ref PlantillaEncendedor
+        Version: !GetAtt PlantillaEncendedor.LatestVersionNumber
+      Tags:
+        - {Key: Name, Value: vigia-encendedor, PropagateAtLaunch: true}
+
+Outputs:
+  GrupoDeMaquinas:
+    Description: Grupo de Auto Scaling de las máquinas de análisis (lo maneja el encendedor)
+    Value: !Ref GrupoMaquinas
+  GrupoDelEncendedor:
+    Description: Grupo de 1 máquina con el encendedor (registro en Session Manager - journalctl -u vigia-escalador -f)
+    Value: !Ref GrupoEncendedor
+  Registro:
+    Description: Dónde mirar si algo no anda
+    Value: >-
+      En cada máquina - /var/log/vigia-instalar.log (instalación) y journalctl -u 'vigia-maquina@*' -f
+      (entrar con Systems Manager → Session Manager, sin SSH)

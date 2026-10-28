@@ -268,6 +268,7 @@ class AlarmCfgIn(BaseModel):
 
 
 MIN_FPS = 5.0  # cuadros por segundo analizados, como mínimo, en las cámaras que buscan hurtos
+MACHINE_FORGET = timedelta(days=3)  # máquina de análisis sin noticias en este tiempo: se borra (cron diario)
 # Cámaras solo de métricas (cliente sin plan «hurto» o tipo «Solo métricas»): contar gente y medir tiempos
 # no necesita 5 fps ni guardar clips. Con zona de entrada o surtidor un poco más, para no perder a quien cruza.
 METRICS_FPS = 2.0
@@ -672,9 +673,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             m.names.append(a.name)
             m.online = m.online or is_online(a, now)
             m.draining = m.draining and bool(a.draining)
+            m.leaving = m.leaving or is_leaving(a)
             m.capacity += a.capacity or cap
             m.load += load.get(a.id, 0.0)
+        for m in groups.values():
+            m.online = m.online and not m.leaving  # se va: el plan pide otra si hace falta
         return list(groups.values())
+
+    def is_leaving(a: Agent) -> bool:
+        return bool((a.last_status or {}).get("leaving"))
 
     def try_lock(s) -> bool:
         """Un solo reparto a la vez (Vercel puede atender dos pedidos juntos)."""
@@ -757,8 +764,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
                 "cameras": len(cams), "cameras_active": open_now,
                 "online_instances": [m.instance_id for m in ms if m.online and m.instance_id],
+                "leaving_instances": [m.instance_id for m in ms if m.leaving and m.instance_id],
                 "machines": [{"key": m.key, "instance_id": m.instance_id, "names": m.names, "agent_ids": m.agent_ids,
-                              "online": m.online, "draining": m.draining, "capacity": m.capacity,
+                              "online": m.online, "draining": m.draining, "leaving": m.leaving,
+                              "capacity": m.capacity,
                               "load": round(m.load, 2), "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
                              for m in ms]}
 
@@ -1247,6 +1256,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.info("Máquina de análisis %r dada de alta (instancia %s)", name, a.instance_id)
         rebalance(s, force=True)  # que reciba cámaras ya, en su primer pedido de configuración
         return {**agent_dict(a), "token": token}
+
+    @app.post("/api/agent/leaving")
+    def agent_leaving(body: dict, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+        """Una máquina de análisis avisa que la nube se la lleva (Spot reclamada, o el grupo de Auto Scaling la
+        termina): sus cámaras pasan ya a las otras máquinas y el plan deja de contarla, así el encendedor pide otra."""
+        a = s.get(Agent, ag.id)
+        if (a.kind or "pc") != "servidor":
+            raise HTTPException(422, "Solo las máquinas de análisis avisan que se van")
+        a.draining = True
+        a.last_status = {**(a.last_status or {}), "leaving": iso(utcnow()),
+                         "leaving_reason": str(body.get("reason") or "")[:200]}
+        s.commit()
+        log.warning("Máquina %r se va: %s", a.name, a.last_status["leaving_reason"] or "sin motivo")
+        rebalance(s, force=True)
+        left = s.query(Camera).filter(Camera.agent_id == a.id).count()
+        return {"ok": True, "cameras_left": left}
 
     @app.get("/api/agent/scale")
     def agent_scale(x_pool_key: str = Header(...), s=Depends(db)) -> dict:
@@ -1855,6 +1880,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/agent/status")
     def agent_status(payload: dict, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         a = s.get(Agent, ag.id)
+        prev = a.last_status
         a.last_status = {"cameras": payload.get("cameras", [])[:200],
                          "live": [int(x) for x in (payload.get("live") or [])[:200] if isinstance(x, int)],
                          "outbox_pending": payload.get("outbox_pending"), "version": payload.get("version"),
@@ -1863,6 +1889,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             if isinstance(payload.get(k), int)}}
         a.last_seen = utcnow()
         if (a.kind or "pc") == "servidor":  # máquina de análisis: capacidad e instancia, y repartir si hace falta
+            gone = (prev or {}).get("leaving")
+            if gone and payload.get("fresh") is not True:  # se sigue yendo hasta que el proceso arranque de nuevo
+                a.last_status = {**a.last_status, "leaving": gone, "leaving_reason": prev.get("leaving_reason")}
+            elif gone:
+                a.draining = False  # volvió (una Spot detenida que se prendió de nuevo): vuelve a recibir cámaras
             if isinstance(payload.get("capacity"), (int, float)) and 0 < payload["capacity"] <= 1000:
                 a.capacity = float(payload["capacity"])
             if isinstance(payload.get("instance_id"), str) and payload["instance_id"]:
@@ -2977,8 +3008,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.query(Alarm).filter(Alarm.event_id.is_(None), Alarm.status != "procesando",
                               Alarm.received_at < utcnow() - timedelta(days=14)).delete(synchronize_session=False)
         s.query(SessionToken).filter(SessionToken.expires_at < utcnow()).delete()
+        # máquinas de análisis que no se ven hace días: en la nube se terminan (Spot) y cada máquina nueva se da
+        # de alta con otro nombre. Si alguna vuelve, se da de alta sola de nuevo.
+        gone = [a for a in server_agents(s) if not a.last_seen or utcnow() - a.last_seen > MACHINE_FORGET]
+        for a in gone:
+            s.query(Camera).filter_by(agent_id=a.id).update({"agent_id": None})
+            s.query(VideoImport).filter_by(claimed_by=a.id).update({"claimed_by": None})
+            s.delete(a)
+        if gone:
+            bump_rev(s)
         s.commit()
-        return {"deleted": len(unlabeled), "media_removed": len(labeled), "retention_days": st.retention_days}
+        if gone:
+            rebalance(s, force=True)
+        return {"deleted": len(unlabeled), "media_removed": len(labeled), "retention_days": st.retention_days,
+                "machines_removed": len(gone)}
 
     if not st.serve_public:
         @app.get("/", include_in_schema=False)

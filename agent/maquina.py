@@ -3,6 +3,11 @@
 Cada máquina arranca con la misma configuración (servidor + clave de máquinas, ver
 deploy/maquina-analisis/). La primera vez se da de alta sola (`POST /api/agent/enroll`) y guarda su
 token en la carpeta de datos; si después el servidor la rechaza (la borraron), se vuelve a dar de alta.
+
+Máquinas Spot (AWS y Google las venden mucho más baratas, pero las pueden reclamar): `Interruptions` mira cada
+pocos segundos si la nube avisó que se la lleva (AWS avisa 2 minutos antes; Google, 30 s). Entonces la máquina
+le avisa al servidor (`POST /api/agent/leaving`), que pasa sus cámaras a las otras en el momento, y suelta las
+transmisiones (Hik-Connect da pocas por grabador: la máquina que las recibe tiene que poder abrirlas).
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import time
 from pathlib import Path
 
 import httpx
@@ -41,6 +47,74 @@ def instance_id() -> str | None:
     except (httpx.HTTPError, UnicodeError):
         pass
     return None
+
+
+class Interruptions:
+    """¿La nube avisó que va a sacar esta máquina? `check()` devuelve el motivo, o None.
+    - AWS: `spot/instance-action` (Spot reclamada) y `autoscaling/target-lifecycle-state` = Terminated (el grupo
+      de Auto Scaling la va a terminar: la vació el encendedor o la reemplaza por otra).
+    - Google Cloud: `instance/preempted` = TRUE (Spot reclamada).
+    En otra nube o en una PC, `cloud` queda en None y no se mira nada."""
+
+    def __init__(self, timeout: float = 1.0):
+        self.timeout = timeout
+        self._token: str | None = None
+        self._token_at = 0.0
+        self.cloud = self._detect()
+
+    def _aws_token(self, force: bool = False) -> str | None:
+        if self._token and not force and time.monotonic() - self._token_at < 240:
+            return self._token
+        t = httpx.put(f"{METADATA}/latest/api/token", timeout=self.timeout,
+                      headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"})
+        if t.status_code == 200 and t.text.isascii() and t.text.strip():
+            self._token, self._token_at = t.text.strip(), time.monotonic()
+            return self._token
+        return None
+
+    def _detect(self) -> str | None:
+        try:
+            if self._aws_token(force=True):
+                return "aws"
+        except (httpx.HTTPError, UnicodeError):
+            pass
+        try:
+            r = httpx.get(f"{METADATA}/computeMetadata/v1/instance/id", timeout=self.timeout,
+                          headers={"Metadata-Flavor": "Google"})
+            if r.status_code == 200 and r.headers.get("metadata-flavor", "").lower() == "google":
+                return "gcp"
+        except (httpx.HTTPError, UnicodeError):
+            pass
+        return None
+
+    def check(self) -> str | None:
+        try:
+            if self.cloud == "aws":
+                token = self._aws_token()
+                if not token:
+                    return None
+                h = {"X-aws-ec2-metadata-token": token}
+                r = httpx.get(f"{METADATA}/latest/meta-data/spot/instance-action", headers=h, timeout=self.timeout)
+                if r.status_code == 200 and r.text.strip():
+                    try:
+                        d = r.json()
+                    except ValueError:
+                        d = {}
+                    what = {"terminate": "terminar", "stop": "detener", "hibernate": "hibernar"}.get(
+                        str(d.get("action")), "sacar")
+                    return f"AWS va a {what} esta máquina Spot" + (f" ({d['time']})" if d.get("time") else "")
+                r = httpx.get(f"{METADATA}/latest/meta-data/autoscaling/target-lifecycle-state", headers=h,
+                              timeout=self.timeout)
+                if r.status_code == 200 and r.text.strip() == "Terminated":
+                    return "El grupo de Auto Scaling de AWS va a terminar esta máquina"
+            elif self.cloud == "gcp":
+                r = httpx.get(f"{METADATA}/computeMetadata/v1/instance/preempted", timeout=self.timeout,
+                              headers={"Metadata-Flavor": "Google"})
+                if r.status_code == 200 and r.text.strip().upper() == "TRUE":
+                    return "Google Cloud va a sacar esta máquina Spot"
+        except (httpx.HTTPError, UnicodeError):
+            pass
+        return None
 
 
 def machine_name(instance: str | None, proceso: str | None) -> str:

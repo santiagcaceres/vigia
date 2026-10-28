@@ -160,6 +160,12 @@ class ServerClient:
         except ValueError:
             return {}
 
+    def leaving(self, reason: str) -> dict:
+        """Máquina de análisis: la nube la va a sacar (Spot). El servidor pasa sus cámaras a otras ya."""
+        r = self.http.post("/api/agent/leaving", json={"reason": reason}, timeout=10.0)
+        r.raise_for_status()
+        return r.json()
+
     # ---- cámaras a demanda (app de escritorio) ----
     def catalog(self) -> list[dict]:
         """Todas las cámaras, para elegir cuáles abrir en «En vivo»."""
