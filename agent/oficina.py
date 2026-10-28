@@ -2003,6 +2003,11 @@ class TuneWindow:
         self.top, frm = app._dialog(f"Ajustar cámara · {cam['name']}")
         self.top.resizable(True, True)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
+        # en Windows hubo clics que no hacían nada en esta ventana: queda en el registro qué clic llega y a dónde
+        self.top.bind("<ButtonRelease-1>", self._log_click, add="+")
+        self._scale_state: tuple | None = None
+        self._state_text = ""
+        self._live_stats: dict | None = None
 
         left = ttk.Frame(frm)
         left.grid(row=0, column=0, sticky="nw")
@@ -2588,6 +2593,14 @@ class TuneWindow:
     def _redraw(self) -> None:
         self._shown, self._alerts_key = None, None
 
+    def _log_click(self, ev) -> None:
+        try:
+            if ev.widget.winfo_class() not in ("TButton", "TMenubutton", "TCheckbutton"):
+                return
+            log.info("Ajustar: clic en «%s» (%d, %d)", ev.widget.cget("text"), ev.x_root, ev.y_root)
+        except Exception:  # noqa: BLE001 - es solo diagnóstico
+            pass
+
     def tick(self) -> None:
         if self.closed:
             return
@@ -2624,24 +2637,27 @@ class TuneWindow:
                 if s is not None:
                     self.pos.configure(text=f"{t.clock_text(s)} · cuadro {idx - first + 1} de {end - first}"
                                             + ("" if self.index is not None else " · mostrando el último"))
-            self._setting_scale = True
-            self.scale.configure(from_=first, to=max(first, end - 1))
-            self.scale.set(idx)
-            self._setting_scale = False
+            if (first, end, idx) != self._scale_state:  # sin tocar la barra si no cambió (cada 100 ms)
+                self._scale_state = (first, end, idx)
+                self._setting_scale = True
+                self.scale.configure(from_=first, to=max(first, end - 1))
+                self.scale.set(idx)
+                self._setting_scale = False
             if t.live and not self.preview_sent:  # la cámara queda con imagen (para dibujar zonas y en la lista)
                 self.preview_sent = True
                 jpg = t.sample_at(end - 1).jpg
                 self.app.bg.run(lambda: self.agent.client.preview(self.cam["id"], jpg), None, lambda e: None)
+        if now - self._stats_at > 1.0:  # los números se calculan una vez por segundo, no en cada vuelta
+            self._stats_at = now
+            self._live_stats = t.stats() if t.live else None
+            self._show_stats(t)
         self._show_state(t)
         self._library_results(t)
         self._show_alerts(t)
-        if now - self._stats_at > 1.0:
-            self._stats_at = now
-            self._show_stats(t)
 
     def _show_state(self, t) -> None:
         if t.live:
-            st = t.stats()
+            st = self._live_stats or {"fps": 0}
             txt = {"iniciando": "Conectando…", "conectando": "Conectando con la cámara…",
                    "en_linea": f"En vivo · se analizan {st['fps'] or 0:.1f} cuadros por segundo en esta PC",
                    "sin_conexion": f"Sin conexión: {t.error}", "error": f"Error: {t.error}",
@@ -2658,7 +2674,9 @@ class TuneWindow:
             else:
                 txt = "Preparando…"
             self.bar["value"] = t.progress * 100
-        self.state_lbl.configure(text=txt)
+        if txt != self._state_text:
+            self._state_text = txt
+            self.state_lbl.configure(text=txt)
 
     def _show_alerts(self, t) -> None:
         alerts = t.alerts
