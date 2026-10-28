@@ -291,6 +291,10 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   y un clic que llegaba en ese rato se procesaba tarde, con el puntero ya en otro lado, y el botón no se disparaba
   (lo vio la sesión «Prueba Vigía app»: «Guardar nombres» y «Buscar actualización» no respondían al mouse; con
   Tab + espacio sí). Prueba: `test_la_ventana_sigue_respondiendo_mientras_el_servidor_tarda`.
+  **App 1.21.2 (28 oct):** tras un corte de DNS el encabezado quedaba en rojo («sin conexión con el servidor») aunque
+  los pedidos ya andaban: en la app solo se reescribía al cambiar la cantidad de cámaras que se miran. Ahora, con la
+  configuración recibida, vuelve a «mirando N» (`test_el_aviso_de_sin_conexion_se_borra_al_volver_el_servidor`).
+  Instalada en la Dell con «Buscar actualización» (primer clic, se relanzó sola).
 - **«En vivo» solo para mirar; qué se analiza se elige en «Clientes» (26 oct, decisión del dueño; app 1.19.0).**
   Reemplaza a «cámaras a demanda» (1.18): **la app ya no analiza nada** (`apply_config` con `on_demand` deja las
   cámaras vacías; al entrar avisa `watch([])` para soltar lo que tuviera). Pestañas: **En vivo** (lista «Cámaras» con
