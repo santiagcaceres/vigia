@@ -754,7 +754,10 @@ def main() -> None:
         a.ventana = env.get("VIGIA_VENTANA", "1" if getattr(sys, "frozen", False) else "0") not in ("0", "no", "false")
     data_dir = Path(a.data)
     setup_logging(data_dir, a.verbose)
-    actualizar.adopt_name()  # VigiaAgente.exe → «Analítica Crítica.exe» (una sola vez)
+    renamed = actualizar.adopt_name()  # VigiaAgente.exe → «Analítica Crítica.exe» (una sola vez)
+    if renamed is not None:
+        restart_app(renamed)  # se abre la copia con el nombre nuevo (que borra este archivo) y este proceso termina
+        return
     threading.Thread(target=actualizar.cleanup_old, daemon=True).start()
     a.server = a.server or SERVIDOR_POR_DEFECTO
     verify = not a.insecure
@@ -846,14 +849,14 @@ def release_instance() -> None:
         _instance_lock = None
 
 
-def restart_app() -> None:
-    """Vuelve a abrir el programa (para cerrar sesión y entrar con otro usuario)."""
+def restart_app(exe: Path | None = None) -> None:
+    """Vuelve a abrir el programa (para cerrar sesión y entrar con otro usuario), o abre `exe`."""
     import subprocess
 
     release_instance()  # la copia nueva tiene que poder trabar el archivo
 
     if getattr(sys, "frozen", False):
-        cmd = [str(actualizar.current_exe())] + sys.argv[1:]  # con el nombre de ahora (puede haber cambiado)
+        cmd = [str(exe or actualizar.current_exe())] + sys.argv[1:]
     else:
         cmd = [sys.executable, "-m", "agent"] + sys.argv[1:]
     # el .exe (PyInstaller de un solo archivo) nuevo tiene que desempaquetarse de cero y no usar la
@@ -861,7 +864,7 @@ def restart_app() -> None:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("_MEI", "_PYI")) and k not in ("TCL_LIBRARY", "TK_LIBRARY")}
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    subprocess.Popen(cmd, close_fds=True, env=env, cwd=str(actualizar.current_exe().parent)
+    subprocess.Popen(cmd, close_fds=True, env=env, cwd=str((exe or actualizar.current_exe()).parent)
                      if getattr(sys, "frozen", False) else None)
 
 

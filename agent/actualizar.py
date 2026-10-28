@@ -9,8 +9,10 @@
 `agente.env` (sesión, token de la PC) no se toca: el programa nuevo arranca ya con la sesión.
 
 Nombre del programa: hasta la 1.21 se llamó `VigiaAgente.exe`. Desde la 1.22 (marca Analítica Crítica) se llama
-«Analítica Crítica.exe»: al arrancar, si se llama como antes, se renombra solo (`adopt_name`). El .zip sigue
-trayendo `VigiaAgente.exe` porque las versiones viejas solo saben sacar ese nombre al actualizarse.
+«Analítica Crítica.exe»: al arrancar, si se llama como antes, se copia con el nombre nuevo, abre la copia y se cierra
+(`adopt_name`); la copia borra el viejo. No se renombra en el lugar: el .exe de PyInstaller (un solo archivo) lee sus
+módulos de su propio archivo mientras corre, y renombrarlo lo hacía caer en el próximo import (pasó en la 1.22.0). El
+.zip sigue trayendo `VigiaAgente.exe` porque las versiones viejas solo saben sacar ese nombre al actualizarse.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 import zipfile
@@ -31,7 +34,6 @@ from .version import VERSION
 log = logging.getLogger("vigia.actualizar")
 EXE_NAME = "Analítica Crítica.exe"
 LEGACY_EXE = "VigiaAgente.exe"  # nombre hasta la 1.21 (y el que trae el .zip, para las versiones viejas)
-_exe: Path | None = None  # el .exe después de renombrarlo (sys.executable sigue diciendo el nombre viejo)
 
 
 def parse_version(v: str | None) -> tuple[int, ...] | None:
@@ -54,7 +56,7 @@ def can_self_update() -> bool:
 
 
 def current_exe() -> Path:
-    return _exe or Path(sys.executable).resolve()
+    return Path(sys.executable).resolve()
 
 
 def old_exe(exe: Path) -> Path:
@@ -63,10 +65,9 @@ def old_exe(exe: Path) -> Path:
 
 
 def adopt_name() -> Path | None:
-    """Si el programa todavía se llama VigiaAgente.exe, pasa a llamarse «Analítica Crítica.exe» (Windows deja
-    renombrar un .exe abierto). Así el escritorio muestra el nombre y el ícono nuevos. Si ya hay un archivo con el
-    nombre nuevo en la carpeta, no se toca nada."""
-    global _exe
+    """Si el programa todavía se llama VigiaAgente.exe, deja una copia llamada «Analítica Crítica.exe» y la devuelve:
+    hay que abrirla y cerrar este proceso (al arrancar, la copia borra el viejo). Así el escritorio muestra el nombre y
+    el ícono nuevos. Si ya hay un archivo con el nombre nuevo en la carpeta, no se toca nada (None)."""
     if not can_self_update():
         return None
     exe = current_exe()
@@ -75,13 +76,18 @@ def adopt_name() -> Path | None:
     new = exe.with_name(EXE_NAME)
     if new.exists():
         return None
+    tmp = new.with_name(new.stem + ".copiando.exe")
     try:
-        os.replace(exe, new)
+        shutil.copyfile(exe, tmp)
+        os.replace(tmp, new)
     except OSError as exc:
-        log.warning("No se pudo renombrar %s a «%s»: %s", exe.name, EXE_NAME, exc)
+        log.warning("No se pudo copiar %s como «%s»: %s", exe.name, EXE_NAME, exc)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
         return None
-    _exe = new
-    log.info("El programa ahora se llama «%s»", EXE_NAME)
+    log.info("El programa ahora se llama «%s»: se abre con ese nombre", EXE_NAME)
     return new
 
 
@@ -91,6 +97,8 @@ def cleanup_old() -> None:
         return
     exe = current_exe()
     olds = {old_exe(exe), exe.with_name("VigiaAgente.viejo.exe")}
+    if exe.name.lower() != LEGACY_EXE.lower():  # ya se llama con el nombre nuevo: el viejo sobra
+        olds.add(exe.with_name(LEGACY_EXE))
     for _ in range(30):  # el proceso anterior puede tardar unos segundos en cerrarse
         olds = {o for o in olds if o.exists()}
         if not olds:

@@ -390,10 +390,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **Marca en la app** (`agent/marca.py`): título, logo en la entrada y el encabezado, ícono de la ventana y de la barra de
     tareas (`iconbitmap(default=.ico)` + AppUserModelID) y del .exe (`agente_pc.spec`: `icon=`, datos de versión que
     muestra Windows). El .zip se llama `AnaliticaCritica-windows.zip` pero **trae `VigiaAgente.exe`** (las versiones
-    viejas solo saben actualizarse con ese nombre); al arrancar, `actualizar.adopt_name()` lo renombra a «Analítica
-    Crítica.exe» (Windows deja renombrar un .exe abierto; así el escritorio muestra el nombre y el ícono nuevos).
-    `current_exe()` sigue el nombre nuevo; `extract_exe` acepta los dos. Un acceso directo o tarea programada al nombre
-    viejo deja de andar: rehacerlos.
+    viejas solo saben actualizarse con ese nombre); al arrancar, `actualizar.adopt_name()` deja una **copia** «Analítica
+    Crítica.exe», la abre y se cierra; la copia borra `VigiaAgente.exe` (`cleanup_old`). **No renombrar el .exe que
+    corre:** el .exe de PyInstaller de un solo archivo lee sus módulos de su propio archivo mientras corre; en la 1.22.0
+    se renombraba en el lugar y, al actualizar desde la 1.21.2, el proceso nuevo se caía en el próximo import (en la
+    Dell no se reabrió sola; abierto a mano anduvo). Arreglado en la 1.22.2. `extract_exe` acepta los dos nombres. Un
+    acceso directo o tarea programada al nombre viejo deja de andar: rehacerlos. El permiso de «control de pantalla»
+    de la sesión de escritorio está atado al nombre del programa: con el nombre nuevo hay que darlo de nuevo.
   - **Videos de prueba por cámara** (`agent/biblioteca.py`, en «Ajustar…»): la lista va en `<datos>/videos_prueba.json`
     (los videos no se suben; se eligen de Descargas\VIGIA). «Agregar…» los guarda y los analiza; «▶ Videos de prueba»
     vuelve a analizar todos; «Marcar ▾»: hurto en el momento que se ve / video normal / sin clasificar. `evaluate` cruza
@@ -422,7 +425,10 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **Primeros videos de Minas (27 oct, exportados del grabador, 960x1080 «1080p lite»):** Góndolas ventana (24 s, 2
     personas, 47 % del alto, confianza 0,75) y Pasillo bebidas (28 s, 1 persona que mete algo en una bolsa, 64 % del
     alto, confianza 0,78). El detector anda bien; con clips de menos de 45 s no salta «merodeo» y esas cámaras no ven
-    caja ni salida.
+    caja ni salida. Zonas probadas por la sesión de escritorio con el `Tuner` (sin guardar; tipo «shelf», piso):
+    Góndolas ventana «Góndola fondo» [[0.60,0.50],[0.87,0.50],[0.89,0.75],[0.62,0.77]] (persona #1 10,8 s seguidos);
+    Pasillo bebidas «Pasillo» [[0.40,0.50],[0.66,0.50],[0.80,0.98],[0.30,0.98]] (12,8 s). Merodeo 45 s y 15 s: sin
+    alertas; 10 s: una alerta en cada una. **Pendiente que el dueño las cargue** (o lo autorice) desde «Ajustar…».
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

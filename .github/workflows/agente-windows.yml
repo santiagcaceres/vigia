@@ -47,7 +47,7 @@ jobs:
           if ($p.ExitCode -ne 0) { exit 1 }
       - name: Armar carpeta
         # el .exe va como VigiaAgente.exe: las versiones viejas (hasta la 1.21) solo saben actualizarse con ese
-        # nombre; al arrancar, el programa se renombra solo a «Analítica Crítica.exe»
+        # nombre; al arrancar, el programa deja una copia «Analítica Crítica.exe» y la abre
         run: |
           New-Item -ItemType Directory -Force dist\AnaliticaCritica | Out-Null
           Copy-Item dist\VigiaAgente.exe dist\AnaliticaCritica\
@@ -66,4 +66,4 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
           name: Agente ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
           make_latest: true
-          body: "App de escritorio de Analítica Crítica para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe (se renombra solo a «Analítica Crítica.exe»). Para actualizar: botón «Buscar actualización» dentro de la app; agente.env se conserva."
+          body: "App de escritorio de Analítica Crítica para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe (queda como «Analítica Crítica.exe»). Para actualizar: botón «Buscar actualización» dentro de la app; agente.env se conserva."

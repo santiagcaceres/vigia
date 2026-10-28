@@ -2,7 +2,7 @@
 # PyInstaller: genera dist/VigiaAgente.exe (la app de Analítica Crítica) con el modelo ONNX, el logo y el ícono adentro.
 #   pip install pyinstaller && pyinstaller agente_pc.spec
 # Se sigue llamando VigiaAgente.exe adentro del .zip para que las versiones viejas (hasta la 1.21) puedan
-# actualizarse; al arrancar, el programa se renombra solo a «Analítica Crítica.exe» (agent/actualizar.py).
+# actualizarse; al arrancar, el programa deja una copia «Analítica Crítica.exe» y la abre (agent/actualizar.py).
 import re
 from pathlib import Path
 

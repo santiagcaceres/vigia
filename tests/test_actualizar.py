@@ -52,36 +52,38 @@ def test_sacar_y_reemplazar_exe(tmp_path):
 
 
 def test_el_programa_pasa_a_llamarse_analitica_critica(tmp_path, monkeypatch):
-    """1.22: VigiaAgente.exe se renombra solo a «Analítica Crítica.exe» al arrancar; las actualizaciones siguientes
-    reemplazan ese archivo, vengan con el nombre viejo o el nuevo adentro del .zip."""
+    """1.22: VigiaAgente.exe deja una copia «Analítica Crítica.exe» y la abre; la copia borra el viejo. No se renombra
+    en el lugar: el .exe de un solo archivo lee sus módulos de su propio archivo mientras corre (en la 1.22.0 se caía).
+    Las actualizaciones siguientes reemplazan el archivo nuevo, vengan con el nombre viejo o el nuevo en el .zip."""
     exe = tmp_path / "VigiaAgente.exe"
     exe.write_bytes(b"MZ actual")
     (tmp_path / "VigiaAgente.viejo.exe").write_bytes(b"de la actualizacion anterior")
     monkeypatch.setattr(actualizar.sys, "executable", str(exe))
     monkeypatch.setattr(actualizar, "can_self_update", lambda: True)
-    monkeypatch.setattr(actualizar, "_exe", None)
     monkeypatch.setattr(actualizar.sys, "frozen", True, raising=False)
     monkeypatch.setattr(actualizar.time, "sleep", lambda s: None)
     new = actualizar.adopt_name()
-    assert new == tmp_path / "Analítica Crítica.exe" and new.read_bytes() == b"MZ actual" and not exe.exists()
-    assert actualizar.current_exe() == new
-    assert actualizar.adopt_name() is None  # una sola vez
-    actualizar.cleanup_old()  # el .exe viejo que dejó la actualización anterior se borra
-    assert not (tmp_path / "VigiaAgente.viejo.exe").exists()
+    assert new == tmp_path / "Analítica Crítica.exe" and new.read_bytes() == b"MZ actual"
+    assert exe.exists()  # el que corre sigue en su lugar hasta cerrarse
+    assert not (tmp_path / "Analítica Crítica.copiando.exe").exists()
+    # se abre la copia: con el nombre nuevo no se copia otra vez y borra el viejo y lo de la actualización anterior
+    monkeypatch.setattr(actualizar.sys, "executable", str(new))
+    assert actualizar.adopt_name() is None
+    actualizar.cleanup_old()
+    assert not exe.exists() and not (tmp_path / "VigiaAgente.viejo.exe").exists() and new.exists()
     # actualización siguiente: el .zip trae VigiaAgente.exe (para las versiones viejas) y queda con el nombre nuevo
     zp = tmp_path / "a.zip"
     zp.write_bytes(_zip_with_exe())
     nuevo = actualizar.extract_exe(zp, new.with_name(new.stem + ".nuevo.exe"))
     actualizar.swap_exe(nuevo, new)
     assert new.read_bytes().startswith(b"MZ\0") and (tmp_path / "Analítica Crítica.viejo.exe").read_bytes() == b"MZ actual"
-    # si ya había un archivo con el nombre nuevo, no se renombra nada
+    # si ya había un archivo con el nombre nuevo, no se copia nada
     other = tmp_path / "otra"
     other.mkdir()
     (other / "VigiaAgente.exe").write_bytes(b"MZ")
-    (other / "Analítica Crítica.exe").write_bytes(b"MZ")
-    monkeypatch.setattr(actualizar, "_exe", None)
+    (other / "Analítica Crítica.exe").write_bytes(b"MZ otro")
     monkeypatch.setattr(actualizar.sys, "executable", str(other / "VigiaAgente.exe"))
-    assert actualizar.adopt_name() is None and (other / "VigiaAgente.exe").exists()
+    assert actualizar.adopt_name() is None and (other / "Analítica Crítica.exe").read_bytes() == b"MZ otro"
 
 
 @pytest.fixture
