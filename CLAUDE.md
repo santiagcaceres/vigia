@@ -414,6 +414,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - Arreglado: «Nombres e imágenes» pide la lista de cámaras de nuevo al abrir (antes una cámara con imagen recién traída
     salía «Sin imagen»).
   - Guías del cliente y del técnico (`docs/*.html` + PDF) con el nombre nuevo; la del técnico, con la app de ahora.
+  - **App 1.22.1:** en la 1.21.2, en la Dell (Windows), los botones de «Ajustar cámara» no respondían al mouse con el
+    vivo corriendo (los de la ventana principal sí). En Linux con clics reales (xdotool) andan: no se pudo reproducir.
+    La ventana ahora no recalcula estadísticas ni toca la barra/estado cada 100 ms si no cambiaron, y cada clic que
+    llega a un botón queda en `vigia.log` («Ajustar: clic en «En vivo» (x, y)») para saber si Windows lo entrega.
+    Si sigue: probar Tab + Espacio y mirar la escala de pantalla de Windows. Pendiente de confirmar.
+  - **Primeros videos de Minas (27 oct, exportados del grabador, 960x1080 «1080p lite»):** Góndolas ventana (24 s, 2
+    personas, 47 % del alto, confianza 0,75) y Pasillo bebidas (28 s, 1 persona que mete algo en una bolsa, 64 % del
+    alto, confianza 0,78). El detector anda bien; con clips de menos de 45 s no salta «merodeo» y esas cámaras no ven
+    caja ni salida.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
