@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>Vigía · Guía del técnico: instalación de un local</title>
+<title>Analítica Crítica · Guía del técnico: instalación de un local</title>
 <style>
   @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
   :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#e5484d; --ok:#2f8f46; --warn:#b7791f; --bg:#f4f6f8; }
@@ -42,21 +42,21 @@
 <body>
 
 <div class="cover">
-  <h1>Vigía · Guía del técnico</h1>
-  <div class="sub">Instalación de un local: del grabador (DVR) a ver las cámaras en la app de Vigía</div>
+  <h1>Analítica Crítica · Guía del técnico</h1>
+  <div class="sub">Instalación de un local: del grabador (DVR) a ver las cámaras en la app de Analítica Crítica</div>
   <p class="muted small">Versión del 23 de octubre de 2026 · Para routers de Antel (ZTE F6600 y similares) y grabadores Hikvision o Dahua ·
   Tiempo: 1 a 2 horas en el local</p>
 </div>
 
 <div class="box ok">
-  <b>Qué tiene que quedar funcionando.</b> La PC central de Vigía (en nuestra oficina) entra por internet al grabador del local y lee el video.
+  <b>Qué tiene que quedar funcionando.</b> La PC central de Analítica Crítica (en nuestra oficina) entra por internet al grabador del local y lee el video.
   Para eso: (1) el grabador con un usuario propio y <b>IP fija dentro del local</b>; (2) el router con <b>dos puertos</b> redirigidos al grabador;
   (3) un <b>nombre DDNS</b> (ej. <code>vigia-minas.ddns.net</code>) que siempre apunta a la IP pública del local, aunque Antel la cambie.
   En el local <b>no se instala nada</b>: ni PC ni aparatos.
 </div>
 
 <table class="small" style="text-align:center">
-  <tr><th>En el local</th><th></th><th>Router del local</th><th></th><th>Oficina de Vigía</th></tr>
+  <tr><th>En el local</th><th></th><th>Router del local</th><th></th><th>Oficina de Analítica Crítica</th></tr>
   <tr><td>Cámaras → <b>DVR</b><br><code>192.168.1.X</code> (IP fija)<br>puertos 554 y 80</td><td>→</td>
       <td><b>Router Antel</b><br>38554 → DVR:554<br>38080 → DVR:80</td><td>→ internet →</td>
       <td><b>PC central</b><br>entra a<br><code>vigia-minas.ddns.net:38554</code></td></tr>
@@ -75,7 +75,7 @@
   <li>El router de Antel: reserva de IP y dos puertos</li>
   <li>IP pública que cambia: DDNS o IP fija de Antel</li>
   <li>Prueba desde afuera y prueba de reinicio (no irse sin esto)</li>
-  <li>Cargar las cámaras en la app de Vigía</li>
+  <li>Cargar las cámaras en la app de Analítica Crítica</li>
   <li>Acceso web del dueño del local</li>
   <li>Checklist final «funciona siempre»</li>
   <li>Si algo falla</li>
@@ -95,17 +95,17 @@
   Ver la sección 4 para la otra opción (IP fija de Antel).
 </div>
 
-<h3>1.2 En la app de Vigía</h3>
+<h3>1.2 En la app de Analítica Crítica</h3>
 <ul>
   <li>El <b>cliente creado</b> (Clientes y cámaras → Nuevo cliente) con sus planes y su <b>acceso web</b> (usuario y clave del dueño).</li>
   <li>Un <b>usuario de empleado</b> para el técnico (Administración → Nuevo usuario → rol Empleado), si va a cargar las cámaras él mismo.</li>
-  <li>La <b>PC central encendida</b>, con la app abierta y «Esta PC analiza las cámaras» tildado. Sin ella, nadie mira las cámaras.</li>
+  <li>Al menos una <b>máquina de análisis</b> en línea (en la nube): es la que mira las cámaras aprobadas. Se ve en la app, en Administración.</li>
 </ul>
 
 <h3>1.3 Qué lleva el técnico</h3>
 <ul class="check">
   <li>Celular con <b>datos móviles</b> y <b>VLC</b> instalado (gratis en la tienda de apps).</li>
-  <li>Notebook con <b>VLC</b> y, si va a cargar las cámaras, la <b>app de Vigía</b> (se baja entrando a la web de Vigía con su usuario de empleado → «Descargar la app»).</li>
+  <li>Notebook con <b>VLC</b> y, si va a cargar las cámaras, la <b>app de Analítica Crítica</b> (se baja entrando a la web de Analítica Crítica con su usuario de empleado → «Descargar la app»).</li>
   <li><b>Monitor HDMI y mouse</b> por si el grabador no tiene pantalla, y un <b>cable de red</b>.</li>
   <li>Usuario y clave de <b>administrador del grabador</b> (los da el cliente o quien lo instaló).</li>
   <li>Usuario y clave del <b>router</b>: en Antel están en la etiqueta de abajo del equipo (usuario <code>admin</code>).</li>
@@ -157,7 +157,7 @@ Los menús de abajo son los de la página web (en el monitor los nombres son par
       <td>Sistema → Cuenta → <b>Agregar usuario</b>.<br>Usuario <code>vigia</code>, grupo <b>user</b>, la clave larga.<br>
       Permisos: solo <b>Monitor</b> (vista en vivo) y <b>Reproducción</b>, en todos los canales.</td></tr>
 </table>
-<p class="small muted">La clave de <code>admin</code> del cliente no se carga nunca en Vigía. Si al guardar el grabador pide «Pregunta de seguridad» o «Mail de recuperación», completarlo con datos del cliente.</p>
+<p class="small muted">La clave de <code>admin</code> del cliente no se carga nunca en Analítica Crítica. Si al guardar el grabador pide «Pregunta de seguridad» o «Mail de recuperación», completarlo con datos del cliente.</p>
 
 <h3>2.6 Que el grabador acepte la conexión</h3>
 <ul>
@@ -266,7 +266,7 @@ Si muestra otra o <code>0.0.0.0</code>, revisar el DNS del grabador (2.3) y los 
   <tr><td><b>IP fija de Antel</b></td><td>La IP pública no cambia nunca. Se carga directo en la cámara y no hace falta DDNS.</td>
       <td>Antel la da en los <b>planes de empresa</b>, con costo mensual. Consultar en un local comercial de Antel o en atención a empresas.</td></tr>
 </table>
-<p>Con DDNS, cuando Antel cambia la IP el grabador actualiza el nombre en pocos minutos y Vigía se reconecta sola. Durante esos minutos la cámara figura «Reconectando».</p>
+<p>Con DDNS, cuando Antel cambia la IP el grabador actualiza el nombre en pocos minutos y Analítica Crítica se reconecta sola. Durante esos minutos la cámara figura «Reconectando».</p>
 
 <h2>5. Prueba desde afuera <span class="who">(no irse del local sin esto)</span></h2>
 <p>Con el celular en <b>datos móviles y el wifi apagado</b>:</p>
@@ -279,29 +279,34 @@ Si muestra otra o <code>0.0.0.0</code>, revisar el DNS del grabador (2.3) y los 
   <li>Medir la <b>subida</b> del local en <code>fast.com</code> → «Más información». Cada cámara analizada en vivo usa de 0,25 a 0,5 Mbps de subida, las 24 horas.</li>
 </ol>
 
-<h2>6. Cargar las cámaras en la app de Vigía</h2>
-<p>Lo hace el técnico con su usuario de empleado, o la oficina por teléfono mientras el técnico sigue en el local.</p>
+<h2>6. Cargar las cámaras en la app de Analítica Crítica</h2>
+<p>Lo hace el técnico con su usuario de empleado, o la oficina por teléfono mientras el técnico sigue en el local. La app
+no analiza las cámaras: solo se cargan, se ponen a punto y se eligen las que se analizan (lo hacen las máquinas de
+análisis en la nube).</p>
 <ol class="steps">
-  <li>Abrir la app de Vigía y entrar con el usuario. En una notebook de técnico, <b>destildar</b> «Esta PC analiza las cámaras» (solo la PC central analiza).</li>
-  <li><b>Clientes y cámaras</b> → elegir el cliente a la izquierda → <b>Agregar cámara</b>, una por canal:</li>
+  <li>Abrir la app de Analítica Crítica y entrar con el usuario.</li>
+  <li><b>Clientes</b> → elegir el cliente a la izquierda → <b>Agregar cámara</b>, una por canal:</li>
 </ol>
 <table>
   <tr><th>Campo</th><th>Qué poner</th></tr>
   <tr><td class="k">Nombre</td><td>Lo que mira: «Caja», «Góndola bebidas», «Puerta».</td></tr>
-  <tr><td class="k">Marca</td><td>Hikvision o Dahua</td></tr>
-  <tr><td class="k">Modo</td><td><b>En vivo 24 h</b> para las 2 a 4 cámaras más importantes (es lo que aguanta una PC central). Las demás, <b>Alarmas del propio grabador</b> (necesitan disco y la detección del 2.9).</td></tr>
+  <tr><td class="k">Conexión</td><td><b>Por IP y puertos</b> (Hikvision o Dahua: la marca se detecta sola). Si el cliente
+    tiene la clave de Hik-Connect cargada, <b>Hikvision por Hik-Connect</b> (sin abrir puertos).</td></tr>
   <tr><td class="k">IP o DDNS del grabador</td><td><code>vigia-minas.ddns.net</code> (nunca la 192.168…)</td></tr>
   <tr><td class="k">Puerto RTSP / Puerto HTTP</td><td><code>38554</code> / <code>38080</code></td></tr>
   <tr><td class="k">Canal</td><td>El número de la cámara en el grabador (1, 2, 3…)</td></tr>
   <tr><td class="k">Usuario / Clave del grabador</td><td><code>vigia</code> y su clave</td></tr>
-  <tr><td class="k">PC central que la analiza</td><td>La PC central de la oficina</td></tr>
+  <tr><td class="k">Tipo de cámara</td><td>Góndola, caja, entrada, depósito, exterior… (decide qué reglas se usan)</td></tr>
   <tr><td class="k">Cuadros por segundo</td><td>5 (dejar el valor que viene)</td></tr>
 </table>
 <ol class="steps" start="3">
   <li><b>Guardar</b> y tocar <b>Probar conexión</b>: tiene que mostrar el modelo del grabador y sus canales. Si falla, ver la sección 9.</li>
-  <li>En menos de un minuto la cámara pasa a <b>«En línea»</b> en la lista y aparece la imagen en el detalle. En la PC central se ve en la pestaña <b>En vivo</b>, con los recuadros de la IA.</li>
-  <li><b>Zonas y reglas</b>: sobre la imagen, dibujar en el <b>piso</b> la góndola, la caja, la salida (y la entrada si el plan incluye conteo de gente). Guardar: se aplica al instante.</li>
-  <li>Pasar caminando frente a una cámara y mirar que el recuadro siga a la persona.</li>
+  <li><b>Nombres e imágenes…</b>: trae una imagen de cada cámara para reconocerla y ponerle un nombre que diga qué muestra.</li>
+  <li><b>Ajustar…</b> (de a una cámara): se analiza en esa PC, en vivo o con <b>videos de prueba</b> (hurtos reales y ratos
+    normales de esa cámara, que quedan guardados). Ahí se dibujan las <b>zonas</b> en el piso (góndola, caja, salida y, si el
+    plan incluye conteo de gente, la entrada), se prueban los tiempos y se mira si las alertas de prueba saltan donde
+    tienen que saltar. Cuando anda bien: <b>✔ Aprobar y analizar</b>.</li>
+  <li>Pasar caminando frente a una cámara y mirar que el recuadro siga a la persona (en «Ajustar…», en vivo).</li>
 </ol>
 
 <h2>7. Acceso web del dueño del local</h2>
@@ -335,14 +340,14 @@ Si muestra otra o <code>0.0.0.0</code>, revisar el DNS del grabador (2.3) y los 
 <table>
   <tr><th style="width:40%">Síntoma</th><th>Causa probable y qué hacer</th></tr>
   <tr><td>En VLC dentro del local no se ve</td><td>Clave mal, el usuario <code>vigia</code> sin permiso de vista remota, o RTSP sin autenticación digest (2.6). Probar el mismo enlace con <code>admin</code> para descartar.</td></tr>
-  <tr><td>VLC: «401» o pide clave de nuevo</td><td>Usuario o clave del <b>grabador</b> mal (no la de Vigía ni la del router). Revisar símbolos raros en la clave.</td></tr>
+  <tr><td>VLC: «401» o pide clave de nuevo</td><td>Usuario o clave del <b>grabador</b> mal (no la de Analítica Crítica ni la del router). Revisar símbolos raros en la clave.</td></tr>
   <tr><td>Adentro anda, desde datos no</td><td>Regla de puertos mal (IP de LAN Host, puerto 554, protocolo TCP, «Encendido»), IP WAN Host distinta de 0, o CG-NAT (3.1).</td></tr>
   <tr><td>Con la IP pública anda, con el nombre no</td><td>DDNS sin actualizar: DNS del grabador, datos de No-IP, o nombre sin confirmar.</td></tr>
   <tr><td>El navegador abre <code>:38080</code> pero VLC no anda en <code>:38554</code></td><td>Falta o está mal la regla del 38554 (es otra regla, distinta de la de 38080).</td></tr>
   <tr><td>«Probar conexión» en la app falla, pero VLC desde datos anda</td><td>Revisar en la cámara que el puerto HTTP sea <code>38080</code> y la marca correcta.</td></tr>
   <tr><td>La cámara queda «Sin conexión» o «Reconectando»</td><td>La PC central apagada o sin internet, la IP del local cambió y el DDNS no se actualizó, o poca subida en el local.</td></tr>
   <tr><td>Se ve pero se corta o va lento</td><td>Flujo secundario pesado o en H.265: bajarlo como en 2.7.</td></tr>
-  <tr><td>En el panel web del grabador no se ve video</td><td>Normal: el navegador pide un complemento. No afecta a Vigía.</td></tr>
+  <tr><td>En el panel web del grabador no se ve video</td><td>Normal: el navegador pide un complemento. No afecta a Analítica Crítica.</td></tr>
 </table>
 <p>Si no sale, mandar a la oficina capturas de la pantalla de reenvío de puertos, de Internet → Estado del router y del error.</p>
 
@@ -375,6 +380,6 @@ Si muestra otra o <code>0.0.0.0</code>, revisar el DNS del grabador (2.3) y los 
   <tr><td>8</td><td></td><td></td><td></td></tr>
 </table>
 
-<p class="muted small" style="margin-top:20px">Vigía · guía interna para técnicos. Las claves se comparten solo por privado.</p>
+<p class="muted small" style="margin-top:20px">Analítica Crítica · guía interna para técnicos. Las claves se comparten solo por privado.</p>
 </body>
 </html>

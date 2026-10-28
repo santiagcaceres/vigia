@@ -9,6 +9,9 @@ a las máquinas de análisis. Sirve en vivo o con videos grabados (por ejemplo, 
   que salió de cada cuadro y solo se vuelven a pasar las reglas.
 - `stats` y `hints`: números y avisos para decidir si la cámara sirve (tamaño de las personas, confianza del
   detector, apariciones breves, cuadros por segundo, cortes, zonas que faltan).
+- YOLO completo: en la misma pasada del modelo se ven también los objetos (mochilas, carteras, botellas…). Se
+  dibujan y se cuentan, pero no entran al seguimiento ni a las reglas: las personas son las mismas que en las
+  máquinas (`OnnxYoloDetector.detect_also`).
 """
 
 from __future__ import annotations
@@ -16,7 +19,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass, replace
+import unicodedata
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +31,7 @@ import numpy as np
 
 from core.analyzer import annotate
 from core.detectors import Detector
+from core.escena import COCO_ES, OBJECT_CONF, light
 from core.rules import MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
@@ -57,6 +63,7 @@ class Sample:
     jpg: bytes
     size: tuple[int, int]  # tamaño del cuadro original: los recuadros están en esa escala
     tracks: list[Track]  # copia de las personas de ese cuadro (sin el histograma de color)
+    objects: list[tuple[str, float, tuple]] = field(default_factory=list)  # (qué, confianza, recuadro): solo se muestran
 
 
 @dataclass
@@ -70,6 +77,8 @@ class TestAlert:
     track_id: int
     score: float | None = None  # puntaje del modelo entrenado del cliente (si tiene)
     kept: bool = True  # False = el modelo la descartaría (no llegaría a los empleados)
+    features: dict[str, float] = field(default_factory=dict)  # lo que usa el modelo (para mandar a entrenar)
+    bbox: tuple | None = None
 
 
 class Tuner:
@@ -97,6 +106,10 @@ class Tuner:
         self._engine_seg = -1
         self.set_analysis(cfg.get("analysis") or {})
         self.tracker = CentroidTracker()
+        # YOLO completo: qué más ve el modelo en la misma pasada (solo para mostrar; no toca las reglas)
+        self.extra = dict(COCO_ES) if hasattr(detector, "detect_also") else None
+        self._objects: Counter[str] = Counter()  # en cuántos cuadros se vio cada objeto
+        self._dark = self._night = 0
         # iniciando | conectando | en_linea | sin_conexion | analizando | listo | error | detenido
         self.state = "iniciando"
         self.error: str | None = None
@@ -155,7 +168,7 @@ class Tuner:
         for e in evs:
             score = self.scorer.score(e.type, e.features) if self.scorer else None
             out.append(TestAlert(index, s.seg, s.ts, s.wall, e.type, e.description, e.track_id, score,
-                                 self.scorer.is_alert(score) if self.scorer else True))
+                                 self.scorer.is_alert(score) if self.scorer else True, dict(e.features), e.bbox))
         return out
 
     # ---------- análisis ----------
@@ -190,6 +203,7 @@ class Tuner:
             try:
                 frames, fps = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0, cap.get(cv2.CAP_PROP_FPS) or 0
                 dur = frames / fps if frames > 0 and 1 <= fps <= 120 else None
+                sar = pixel_aspect(cap)
                 clock, last = MediaClock(cap), -1e9
                 while not self._stop.is_set():
                     if not cap.grab():
@@ -203,6 +217,8 @@ class Tuner:
                     ok, frame = cap.retrieve()
                     if not ok or frame is None:
                         continue
+                    if sar:
+                        frame = square_pixels(frame, sar)
                     last = ts
                     self._analyze(frame, ts, None, seg)
                     self.seg_seconds[seg] = ts
@@ -265,13 +281,21 @@ class Tuner:
         self.state = "detenido"
 
     def _analyze(self, frame: np.ndarray, ts: float, wall: datetime | None, seg: int) -> None:
-        dets = self.detector.detect(frame)
+        if self.extra:
+            dets, objs = self.detector.detect_also(frame, self.extra, OBJECT_CONF)
+        else:
+            dets, objs = self.detector.detect(frame), []
         tracks = self.tracker.update(dets, ts, frame)
         h, w = frame.shape[:2]
         small = frame if w <= WIDTH else cv2.resize(frame, (WIDTH, int(h * WIDTH / w)), interpolation=cv2.INTER_AREA)
         ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        sample = Sample(seg, ts, wall, jpg.tobytes() if ok else b"", (w, h), [replace(t, hist=None) for t in tracks])
+        sample = Sample(seg, ts, wall, jpg.tobytes() if ok else b"", (w, h), [replace(t, hist=None) for t in tracks],
+                        [(o.label, o.conf, o.bbox) for o in objs])
+        dark, night = light(small)
         with self._lock:
+            self._dark += dark
+            self._night += night
+            self._objects.update({o[0] for o in sample.objects})
             self._measure(dets, sample, h)
             if seg != self._engine_seg or self.engine is None:
                 self.engine, self._engine_seg = RuleEngine(self.zones, self.rule_cfg), seg
@@ -328,8 +352,9 @@ class Tuner:
             s = self.samples[-1] if index is None else self.sample_at(index)
         return cv2.imdecode(np.frombuffer(s.jpg, np.uint8), cv2.IMREAD_COLOR) if s else None
 
-    def render(self, index: int | None = None) -> np.ndarray | None:
-        """El cuadro `index` (o el último) con zonas, personas, segundos por zona y el cartel de la alerta."""
+    def render(self, index: int | None = None, objects: bool = True) -> np.ndarray | None:
+        """El cuadro `index` (o el último) con zonas, personas, segundos por zona y el cartel de la alerta; con
+        `objects`, también lo demás que ve YOLO."""
         with self._lock:
             if not self.samples:
                 return None
@@ -337,7 +362,7 @@ class Tuner:
             s, mark, zones, cfg = self.samples[i], self.marks[i], self.zones, self.rule_cfg
             hot = [a for a in self.alerts if a.seg == s.seg and 0 <= s.ts - a.ts <= BANNER_SECONDS]
         img = cv2.imdecode(np.frombuffer(s.jpg, np.uint8), cv2.IMREAD_COLOR)
-        return None if img is None else draw(img, s, mark, zones, cfg, hot, self.clock_text(s))
+        return None if img is None else draw(img, s, mark, zones, cfg, hot, self.clock_text(s), objects)
 
     def clock_text(self, s: Sample | TestAlert) -> str:
         if s.wall is not None:
@@ -362,8 +387,11 @@ class Tuner:
             dropped = sum(1 for a in self.alerts if not a.kept)
             persons = len(self._spans)
             short = sum(1 for k, (a, b) in self._spans.items() if b - a < SHORT_TRACK_SECONDS and k not in self._visible_now)
+            objects = [(k, 100.0 * v / n) for k, v in self._objects.most_common(6)] if n else []
+            dark_pct, night_pct = (100.0 * self._dark / n, 100.0 * self._night / n) if n else (0.0, 0.0)
         return {"frames": n, "seconds": n / self.process_fps, "people_pct": 100.0 * self._n_people / n if n else 0.0,
-                "persons": persons, "short": short, "detections": det,
+                "persons": persons, "short": short, "detections": det, "objects": objects,
+                "dark_pct": dark_pct, "night_pct": night_pct,
                 "height_pct": 100.0 * self._det_h / det if det else None,
                 "small_pct": 100.0 * self._det_small / det if det else None,
                 "conf": self._det_conf / det if det else None,
@@ -398,6 +426,11 @@ class Tuner:
             if st["conf"] < 0.5:
                 out.append(f"El detector duda (confianza media {st['conf']:.2f} de 1): poca luz, contraluz, reflejos o "
                            "cámara muy de arriba. Probala también de noche.")
+        if st["frames"] >= 20 and st["night_pct"] > 50:
+            out.append("La imagen está en blanco y negro (infrarrojo, de noche): el detector ve bastante menos. Probala "
+                       "también de día antes de aprobar.")
+        elif st["frames"] >= 20 and st["dark_pct"] > 50:
+            out.append("La imagen está oscura: el detector ve menos. Si se puede, más luz o subir el brillo en el grabador.")
         if st["persons"] >= 5 and st["short"] / st["persons"] > 0.3:
             out.append(f"{st['short']} de {st['persons']} personas se vieron menos de 2 s: detecciones falsas (reflejos, "
                        "maniquíes, carteles) o alguien que cambia de número. Mirá el video: si una persona cambia de "
@@ -415,13 +448,48 @@ class Tuner:
         return out
 
 
+def pixel_aspect(cap: cv2.VideoCapture) -> float | None:
+    """Forma de los píxeles que declara el video (ancho/alto) si no son cuadrados. Los grabadores graban «1080p lite»
+    como 960x1080 con píxeles el doble de anchos: OpenCV lo ignora y las personas quedan flacas (el detector falla
+    más y las zonas no coinciden con el vivo)."""
+    try:
+        num, den = cap.get(cv2.CAP_PROP_SAR_NUM), cap.get(cv2.CAP_PROP_SAR_DEN)
+    except Exception:  # noqa: BLE001 - backends sin ese dato
+        return None
+    if num > 0 and den > 0 and abs(num / den - 1) > 0.05:
+        return num / den
+    return None
+
+
+def square_pixels(frame: np.ndarray, sar: float) -> np.ndarray:
+    """Estira el cuadro para que se vea como en el grabador (960x1080 con píxeles 2:1 → 1920x1080)."""
+    h, w = frame.shape[:2]
+    if sar > 1:
+        return cv2.resize(frame, (int(round(w * sar)), h), interpolation=cv2.INTER_LINEAR)
+    return cv2.resize(frame, (w, int(round(h / sar))), interpolation=cv2.INTER_LINEAR)
+
+
+OBJECT_COLOR = (230, 80, 230)  # violeta: lo que ve YOLO además de las personas
+
+
+def ascii_text(text: str) -> str:
+    """OpenCV no dibuja tildes: «ómnibus» → «omnibus»."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+
+
 def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleConfig, hot: list[TestAlert],
-         clock: str) -> np.ndarray:
+         clock: str, objects: bool = True) -> np.ndarray:
     h, w = img.shape[:2]
     k = w / s.size[0] if s.size[0] else 1.0
     tracks = [replace(t, bbox=tuple(v * k for v in t.bbox)) for t in s.tracks]
     ev = SimpleNamespace(track_id=hot[-1].track_id, type=hot[-1].type) if hot else None
     out = annotate(img, zones, tracks, ev)  # zonas, recuadros, #número y el cartel de la alerta
+    for label, conf, box in (s.objects if objects else []):
+        x1, y1, x2, y2 = (int(v * k) for v in box)
+        cv2.rectangle(out, (x1, y1), (x2, y2), OBJECT_COLOR, 1)
+        text = f"{ascii_text(label)} {conf * 100:.0f}%"
+        cv2.putText(out, text, (x1 + 2, max(10, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(out, text, (x1 + 2, max(10, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, OBJECT_COLOR, 1, cv2.LINE_AA)
     limits = {"shelf": cfg.loiter_seconds if MERODEO in cfg.enabled_rules else None,
               "checkout": cfg.checkout_min_seconds, "restricted": cfg.restricted_min_seconds}
     bar = 22

@@ -39,6 +39,7 @@ from .alarms import AlarmRunner
 from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
 from .live import LiveWorker
+from .marca import NOMBRE
 from .outbox import Outbox, ServerClient, login_pc
 from .ventana import ESTADOS, Ventana, default_pc_name
 from .vista import RemoteView, ViewWorker
@@ -365,7 +366,7 @@ class Agent:
                     note = "Esta PC no tiene cámaras para analizar."
                 self.window.refresh(self.window_tiles(self.window.selected_ids()), note or " ")
                 if not self.window.pump(40):
-                    log.info("Ventana cerrada: Vigía se detiene")
+                    log.info("Ventana cerrada: %s se detiene", NOMBRE)
                     self.window = None
                     self.stop()
             else:
@@ -671,7 +672,7 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
-    lines = ["# Configuración del agente Vigía. Borrá este archivo para volver a pedir los datos."]
+    lines = [f"# Configuración de {NOMBRE}. Borrá este archivo para volver a pedir los datos."]
     lines += [f"{k}={v}" for k, v in values.items()]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -684,7 +685,7 @@ def pedir_datos_interactivo(cfg_path: Path, server: str | None, token: str | Non
         return server or "", token or ""
     import getpass
 
-    print("Vigía · PC central: configuración inicial (se guarda en %s)" % cfg_path)
+    print(f"{NOMBRE} · PC central: configuración inicial (se guarda en {cfg_path})")
     if not server:
         server = input(f"Servidor [{SERVIDOR_POR_DEFECTO}]: ").strip() or SERVIDOR_POR_DEFECTO
     pc_name = default_pc_name()
@@ -729,7 +730,7 @@ def main() -> None:
     cfg_path = Path(os.getenv("VIGIA_AGENT_CONFIG", base / ARCHIVO_CONFIG))
     env = {**read_env_file(cfg_path), **{k: v for k, v in os.environ.items() if k.startswith("VIGIA_")}}
     modelo_defecto = env.get("VIGIA_PERSON_MODEL") or str(bundled_model() or base / "models" / "personas.onnx")
-    p = argparse.ArgumentParser(description="Agente Vigía para cámaras Hikvision y Dahua")
+    p = argparse.ArgumentParser(description=f"{NOMBRE}: análisis de cámaras Hikvision y Dahua")
     p.add_argument("--server", default=env.get("VIGIA_SERVER"), help="URL del servidor central")
     p.add_argument("--token", default=env.get("VIGIA_AGENT_TOKEN"), help="Token del agente (del panel)")
     p.add_argument("--data", default=env.get("VIGIA_AGENT_DATA", str(base / "agent_data")))
@@ -753,6 +754,7 @@ def main() -> None:
         a.ventana = env.get("VIGIA_VENTANA", "1" if getattr(sys, "frozen", False) else "0") not in ("0", "no", "false")
     data_dir = Path(a.data)
     setup_logging(data_dir, a.verbose)
+    actualizar.adopt_name()  # VigiaAgente.exe → «Analítica Crítica.exe» (una sola vez)
     threading.Thread(target=actualizar.cleanup_old, daemon=True).start()
     a.server = a.server or SERVIDOR_POR_DEFECTO
     verify = not a.insecure
@@ -851,7 +853,7 @@ def restart_app() -> None:
     release_instance()  # la copia nueva tiene que poder trabar el archivo
 
     if getattr(sys, "frozen", False):
-        cmd = [sys.executable] + sys.argv[1:]
+        cmd = [str(actualizar.current_exe())] + sys.argv[1:]  # con el nombre de ahora (puede haber cambiado)
     else:
         cmd = [sys.executable, "-m", "agent"] + sys.argv[1:]
     # el .exe (PyInstaller de un solo archivo) nuevo tiene que desempaquetarse de cero y no usar la
@@ -859,7 +861,7 @@ def restart_app() -> None:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("_MEI", "_PYI")) and k not in ("TCL_LIBRARY", "TK_LIBRARY")}
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    subprocess.Popen(cmd, close_fds=True, env=env, cwd=str(Path(sys.executable).parent)
+    subprocess.Popen(cmd, close_fds=True, env=env, cwd=str(actualizar.current_exe().parent)
                      if getattr(sys, "frozen", False) else None)
 
 
@@ -872,8 +874,8 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     global _instance_lock
     _instance_lock = single_instance(data_dir)
     if _instance_lock is None:
-        ventana.messagebox.showinfo("Vigía", "Vigía ya está abierto en esta PC. Usá esa ventana (fijate en la barra "
-                                             "de tareas): con dos abiertos, uno le cierra la sesión al otro.")
+        ventana.messagebox.showinfo(NOMBRE, f"{NOMBRE} ya está abierto en esta PC. Usá esa ventana (fijate en la barra "
+                                            "de tareas): con dos abiertos, uno le cierra la sesión al otro.")
         ventana.close()
         return
     saved = dict(read_env_file(cfg_path))
@@ -920,7 +922,7 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     try:
         session = api.post("/api/agent/session")
     except ApiError as exc:
-        ventana.messagebox.showerror("Vigía", f"No se pudo preparar el análisis de cámaras: {exc}")
+        ventana.messagebox.showerror(NOMBRE, f"No se pudo preparar el análisis de cámaras: {exc}")
         return
     user = api.user or {}
     title = f"{user.get('username')} ({'administrador' if user.get('role') == 'admin' else 'empleado'})"
@@ -942,8 +944,8 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
 
     def relogin(_error: str | None) -> str | None:
         """El servidor rechazó el token de esta PC (el mismo usuario entró en otra PC): volver a entrar."""
-        ventana.messagebox.showwarning("Vigía", "Tu usuario entró en otra PC, así que esta dejó de analizar "
-                                                "las cámaras. Entrá de nuevo para retomarlas acá.")
+        ventana.messagebox.showwarning(NOMBRE, "Tu usuario entró en otra PC, así que esta dejó de analizar "
+                                               "las cámaras. Entrá de nuevo para retomarlas acá.")
         logout()
         return None
 
@@ -960,8 +962,8 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
         log.exception("El agente se detuvo por un error")
         if ventana.open:
             try:
-                ventana.messagebox.showerror("Vigía", f"Vigía se detuvo por un error:\n{exc}\n\n"
-                                                      f"Detalle en {data_dir / 'vigia.log'}")
+                ventana.messagebox.showerror(NOMBRE, f"{NOMBRE} se detuvo por un error:\n{exc}\n\n"
+                                                     f"Detalle en {data_dir / 'vigia.log'}")
             except Exception:
                 pass
         raise

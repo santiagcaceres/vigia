@@ -3,10 +3,14 @@
 1. El servidor dice cuál es la última versión publicada (`GET /api/app/update`) y, cuando se pide,
    da un link de descarga que vence en minutos (si el repositorio fuera privado, el token de GitHub
    queda en el servidor).
-2. Se baja el .zip, se saca `VigiaAgente.exe` como `VigiaAgente.nuevo.exe` y se verifica.
+2. Se baja el .zip, se saca el .exe como `<nombre>.nuevo.exe` y se verifica.
 3. Windows no deja borrar un .exe que está corriendo pero sí renombrarlo: el actual pasa a
-   `VigiaAgente.viejo.exe`, el nuevo toma su nombre y se abre. El viejo se borra en el próximo inicio.
+   `<nombre>.viejo.exe`, el nuevo toma su nombre y se abre. El viejo se borra en el próximo inicio.
 `agente.env` (sesión, token de la PC) no se toca: el programa nuevo arranca ya con la sesión.
+
+Nombre del programa: hasta la 1.21 se llamó `VigiaAgente.exe`. Desde la 1.22 (marca Analítica Crítica) se llama
+«Analítica Crítica.exe»: al arrancar, si se llama como antes, se renombra solo (`adopt_name`). El .zip sigue
+trayendo `VigiaAgente.exe` porque las versiones viejas solo saben sacar ese nombre al actualizarse.
 """
 
 from __future__ import annotations
@@ -25,7 +29,9 @@ import httpx
 from .version import VERSION
 
 log = logging.getLogger("vigia.actualizar")
-EXE_NAME = "VigiaAgente.exe"
+EXE_NAME = "Analítica Crítica.exe"
+LEGACY_EXE = "VigiaAgente.exe"  # nombre hasta la 1.21 (y el que trae el .zip, para las versiones viejas)
+_exe: Path | None = None  # el .exe después de renombrarlo (sys.executable sigue diciendo el nombre viejo)
 
 
 def parse_version(v: str | None) -> tuple[int, ...] | None:
@@ -48,23 +54,54 @@ def can_self_update() -> bool:
 
 
 def current_exe() -> Path:
-    return Path(sys.executable).resolve()
+    return _exe or Path(sys.executable).resolve()
+
+
+def old_exe(exe: Path) -> Path:
+    """Dónde queda el .exe anterior durante una actualización: «X.exe» → «X.viejo.exe»."""
+    return exe.with_name(exe.stem + ".viejo.exe")
+
+
+def adopt_name() -> Path | None:
+    """Si el programa todavía se llama VigiaAgente.exe, pasa a llamarse «Analítica Crítica.exe» (Windows deja
+    renombrar un .exe abierto). Así el escritorio muestra el nombre y el ícono nuevos. Si ya hay un archivo con el
+    nombre nuevo en la carpeta, no se toca nada."""
+    global _exe
+    if not can_self_update():
+        return None
+    exe = current_exe()
+    if exe.name.lower() != LEGACY_EXE.lower():
+        return None
+    new = exe.with_name(EXE_NAME)
+    if new.exists():
+        return None
+    try:
+        os.replace(exe, new)
+    except OSError as exc:
+        log.warning("No se pudo renombrar %s a «%s»: %s", exe.name, EXE_NAME, exc)
+        return None
+    _exe = new
+    log.info("El programa ahora se llama «%s»", EXE_NAME)
+    return new
 
 
 def cleanup_old() -> None:
     """Borra el .exe viejo que dejó una actualización anterior (si ya no está corriendo)."""
     if not getattr(sys, "frozen", False):
         return
-    old = current_exe().with_name("VigiaAgente.viejo.exe")
+    exe = current_exe()
+    olds = {old_exe(exe), exe.with_name("VigiaAgente.viejo.exe")}
     for _ in range(30):  # el proceso anterior puede tardar unos segundos en cerrarse
-        if not old.exists():
+        olds = {o for o in olds if o.exists()}
+        if not olds:
             return
-        try:
-            old.unlink()
-            log.info("Actualización terminada: versión %s", VERSION)
-            return
-        except OSError:
-            time.sleep(2)
+        for old in list(olds):
+            try:
+                old.unlink()
+                log.info("Actualización terminada: versión %s", VERSION)
+            except OSError:
+                pass
+        time.sleep(2)
 
 
 def download(url: str, dest: Path, progress: Callable[[int, int], None] | None = None,
@@ -86,27 +123,29 @@ def download(url: str, dest: Path, progress: Callable[[int, int], None] | None =
 
 
 def extract_exe(zip_path: Path, dest: Path) -> Path:
-    """Saca VigiaAgente.exe del .zip (esté en la raíz o en una carpeta) y lo guarda como `dest`."""
+    """Saca el programa del .zip (con el nombre nuevo o el viejo, en la raíz o en una carpeta) y lo guarda como
+    `dest`."""
+    wanted = {EXE_NAME.lower(), LEGACY_EXE.lower()}
     with zipfile.ZipFile(zip_path) as z:
-        name = next((n for n in z.namelist() if n.replace("\\", "/").split("/")[-1].lower() == EXE_NAME.lower()), None)
+        name = next((n for n in z.namelist() if n.replace("\\", "/").split("/")[-1].lower() in wanted), None)
         if not name:
-            raise ValueError("El .zip descargado no trae VigiaAgente.exe")
+            raise ValueError("El .zip descargado no trae el programa")
         with z.open(name) as src, open(dest, "wb") as out:
             while chunk := src.read(1 << 20):
                 out.write(chunk)
     if dest.stat().st_size < 1_000_000:
-        raise ValueError("El VigiaAgente.exe descargado está incompleto")
+        raise ValueError("El programa descargado está incompleto")
     return dest
 
 
 def swap_exe(new_exe: Path, exe: Path) -> None:
     """Pone el .exe nuevo en el lugar del actual (que está corriendo: se renombra, no se borra)."""
-    old = exe.with_name("VigiaAgente.viejo.exe")
+    old = old_exe(exe)
     try:
         if old.exists():
             old.unlink()
     except OSError as exc:
-        raise RuntimeError("Quedó abierta una versión anterior de Vigía; cerrala y probá de nuevo") from exc
+        raise RuntimeError("Quedó abierta una versión anterior del programa; cerrala y probá de nuevo") from exc
     os.replace(exe, old)
     try:
         os.replace(new_exe, exe)
@@ -119,8 +158,8 @@ def install(url: str, progress: Callable[[int, int], None] | None = None, verify
     """Baja e instala la versión nueva junto al .exe actual. Después hay que reabrir el programa."""
     exe = current_exe()
     folder = exe.parent
-    zip_path = folder / "VigiaAgente-actualizacion.zip"
-    new_exe = folder / "VigiaAgente.nuevo.exe"
+    zip_path = folder / "actualizacion.zip"
+    new_exe = exe.with_name(exe.stem + ".nuevo.exe")
     try:
         download(url, zip_path, progress, verify)
         extract_exe(zip_path, new_exe)

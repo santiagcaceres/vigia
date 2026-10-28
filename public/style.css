@@ -3,12 +3,13 @@
   --accent: #e5484d; --accent-2: #ff6b6f; --ok: #3fb950; --warn: #d29922; --info: #4c9aff;
   --hurto: #e5484d; --sospechoso: #d29922; --normal: #3fb950; --falso_positivo: #8b98a8;
   --radius: 10px; --shadow: 0 8px 30px rgba(0,0,0,.35);
+  --logo: url("/img/logo-blanco.png");
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --line: #dde1e6; --text: #1b1f24; --muted: #5f6b7a;
-    --shadow: 0 8px 30px rgba(0,0,0,.08); color-scheme: light;
+    --shadow: 0 8px 30px rgba(0,0,0,.08); color-scheme: light; --logo: url("/img/logo.png");
   }
 }
 * { box-sizing: border-box; }
@@ -42,6 +43,8 @@ label.inline input { width: auto; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .3px; }
 .brand.big { font-size: 24px; }
 .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(229,72,77,.25); }
+.mark { width: 26px; height: 26px; flex: none; background: var(--logo) center / contain no-repeat; }
+.brand.big .mark { width: 40px; height: 40px; }
 
 .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 16px; padding: 10px 16px;
   background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }

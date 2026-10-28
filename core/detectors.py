@@ -244,6 +244,20 @@ class OnnxYoloDetector:
         self._labels = [self.classes[i] for i in self._idx]
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
+        return self._decode(self._infer(frame), self._cols, self._labels, self.conf)
+
+    def detect_also(self, frame: np.ndarray, classes: dict[int, str], conf: float) -> tuple[list[Detection],
+                                                                                            list[Detection]]:
+        """Una sola pasada del modelo: las detecciones de siempre (`self.classes`, idénticas a `detect`) y, aparte,
+        las de `classes` (por ejemplo mochilas o botellas, para mostrar qué más ve YOLO sin tocar el seguimiento ni
+        las reglas)."""
+        res = self._infer(frame)
+        idx = [c for c in sorted(classes) if c in self.runner.col_of and c not in self.classes]
+        extra = (self._decode(res, np.array([self.runner.col_of[c] for c in idx]), [classes[c] for c in idx], conf)
+                 if idx else [])
+        return self._decode(res, self._cols, self._labels, self.conf), extra
+
+    def _infer(self, frame: np.ndarray) -> tuple:
         h, w = frame.shape[:2]
         tw, th = self.size
         r = min(tw / w, th / h)
@@ -256,10 +270,14 @@ class OnnxYoloDetector:
         out = self.runner.run(canvas)  # (4+C, N)
         if out.shape[0] < out.shape[1]:
             out = out.T  # (N, 4+C)
-        cls_scores = out[:, self._cols]  # (N, clases elegidas)
+        return out, w, h, r, px, py
+
+    def _decode(self, res: tuple, cols: np.ndarray, labels: list[str], conf: float) -> list[Detection]:
+        out, w, h, r, px, py = res
+        cls_scores = out[:, cols]  # (N, clases elegidas)
         best = cls_scores.argmax(axis=1)
         scores = cls_scores[np.arange(len(best)), best]
-        keep = scores >= self.conf
+        keep = scores >= conf
         if not np.any(keep):
             return []
         boxes, scores, best = out[keep, :4], scores[keep], best[keep]
@@ -269,12 +287,12 @@ class OnnxYoloDetector:
         x2 = (cx + bw / 2 - px) / r
         y2 = (cy + bh / 2 - py) / r
         dets: list[Detection] = []
-        for k, label in enumerate(self._labels):  # NMS por etiqueta
+        for k, label in enumerate(labels):  # NMS por etiqueta
             sel = np.flatnonzero(best == k)
             if not len(sel):
                 continue
             rects = [[float(x1[i]), float(y1[i]), float(x2[i] - x1[i]), float(y2[i] - y1[i])] for i in sel]
-            idx = cv2.dnn.NMSBoxes(rects, scores[sel].astype(float).tolist(), self.conf, self.iou)
+            idx = cv2.dnn.NMSBoxes(rects, scores[sel].astype(float).tolist(), conf, self.iou)
             for j in np.array(idx).flatten():
                 i = sel[j]
                 dets.append(Detection((max(0.0, float(x1[i])), max(0.0, float(y1[i])),

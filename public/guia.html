@@ -3,19 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vigía · Guía de conexión</title>
+<title>Analítica Crítica · Guía de conexión</title>
 <meta name="robots" content="noindex,nofollow">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23e5484d'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
+<link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
 <style>
-  :root { --bg:#0e1116; --panel:#161b22; --line:#2a333f; --text:#e6edf3; --muted:#8b98a8; --accent:#e5484d; --warn:#e3a008; --ok:#2fb344; }
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a333f; --text:#e6edf3; --muted:#8b98a8; --accent:#e5484d; --warn:#e3a008; --ok:#2fb344;
+    --logo:url("/img/logo-blanco.png"); }
   @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --bg:#f5f6f8; --panel:#fff; --line:#dde1e6; --text:#1b1f24; --muted:#5f6b7a; }
+    :root:not([data-theme="dark"]) { --bg:#f5f6f8; --panel:#fff; --line:#dde1e6; --text:#1b1f24; --muted:#5f6b7a;
+      --logo:url("/img/logo.png"); }
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
   .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:20px; }
-  .dot { width:14px; height:14px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 5px rgba(229,72,77,.22); }
+  .mark { width:28px; height:28px; flex:none; background:var(--logo) center / contain no-repeat; }
   h1 { font-size:26px; margin:18px 0 6px; }
   h2 { font-size:20px; margin:36px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
   h3 { font-size:16px; margin:18px 0 6px; }
@@ -38,9 +42,9 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="brand"><span class="dot"></span>Vigía <span class="muted" style="font-weight:400">· Guía de conexión</span>
+  <div class="brand"><span class="mark"></span>Analítica Crítica <span class="muted" style="font-weight:400">· Guía de conexión</span>
     <a class="print" href="javascript:print()">Imprimir</a></div>
-  <h1>Conectar el grabador de un cliente a Vigía</h1>
+  <h1>Conectar el grabador de un cliente a Analítica Crítica</h1>
   <p class="muted">Cómo llegar al DVR/NVR del cliente a través de su router, qué pedirle y cómo cargarlo en el panel.
     Vale para Hikvision y Dahua. Tiempo estimado: 30 a 45 minutos por local la primera vez.</p>
 
@@ -79,7 +83,7 @@
   <p class="muted">Conviene hacer todo esto en una llamada o visita con alguien que esté frente al DVR y al router.</p>
 
   <h2 id="usuario">2. Crear el usuario <code>vigia</code> en el grabador</h2>
-  <p>Nunca usar la clave de <code>admin</code> del cliente en Vigía. Se crea un usuario propio, con permisos mínimos.</p>
+  <p>Nunca usar la clave de <code>admin</code> del cliente en Analítica Crítica. Se crea un usuario propio, con permisos mínimos.</p>
   <div class="card">
     <h3>Hikvision</h3>
     <ol>
@@ -167,7 +171,7 @@ Dahua:     rtsp://vigia:CLAVE@IP-o-DDNS:38554/cam/realmonitor?channel=1&amp;subt
   </ol>
 
   <h2 id="agente">7. La PC central</h2>
-  <p>Una sola PC en la oficina corre el agente para todos los clientes. No hace falta instalar Python: en GitHub, <b>Actions → "Agente para Windows"</b> (o <b>Releases</b>) se descarga <code>VigiaAgente-windows.zip</code>. Descomprimir, abrir <code>VigiaAgente.exe</code>, Enter para el servidor y pegar el token: queda guardado en <code>agente.env</code> al lado del programa. Si Windows Defender lo frena, "Más información → Ejecutar de todas formas".</p>
+  <p>Una sola PC en la oficina corre el agente para todos los clientes. No hace falta instalar Python: en GitHub, <b>Actions → "Agente para Windows"</b> (o <b>Releases</b>) se descarga el .zip de la app. Descomprimir, abrir el programa (la primera vez se renombra solo a <code>Analítica Crítica.exe</code>), Enter para el servidor y pegar el token: queda guardado en <code>agente.env</code> al lado del programa. Si Windows Defender lo frena, "Más información → Ejecutar de todas formas".</p>
   <p>Con Python instalado, lo mismo desde el código: <code>agent\iniciar_windows.bat</code> o</p>
   <pre>python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN-DEL-AGENTE-CENTRAL</pre>
   <p>El token se genera en <b>Administración → Agentes</b>. En <b>Cámaras</b> cada cámara muestra "Escuchando alarmas" cuando la PC central llegó al grabador, o el error en caso contrario.</p>
@@ -201,7 +205,7 @@ Dahua:     rtsp://vigia:CLAVE@IP-o-DDNS:38554/cam/realmonitor?channel=1&amp;subt
     <tr><td>Llegan alarmas pero siempre "Sin personas"</td><td>Sensibilidad del grabador muy alta (luces, insectos). Bajar sensibilidad o usar intrusión en vez de movimiento. Es lo esperado: esas se descartan solas.</td></tr>
     <tr><td>No llega ninguna alarma</td><td>La detección no está activada en ese canal del grabador, o el canal cargado no coincide (en Dahua probar canal ± 1).</td></tr>
   </table>
-  <p class="muted" style="margin-top:28px">Vigía · guía interna para administradores y empleados.</p>
+  <p class="muted" style="margin-top:28px">Analítica Crítica · guía interna para administradores y empleados.</p>
 </div>
 </body>
 </html>

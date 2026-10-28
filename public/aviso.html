@@ -3,20 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vigía · Aviso</title>
+<title>Analítica Crítica · Aviso</title>
 <meta name="robots" content="noindex,nofollow">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23e5484d'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
+<link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
 <style>
-  :root { --bg:#0e1116; --panel:#161b22; --line:#2a333f; --text:#e6edf3; --muted:#8b98a8; --accent:#e5484d; }
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a333f; --text:#e6edf3; --muted:#8b98a8; --accent:#e5484d;
+    --logo:url("/img/logo-blanco.png"); }
   @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --bg:#f5f6f8; --panel:#fff; --line:#dde1e6; --text:#1b1f24; --muted:#5f6b7a; }
+    :root:not([data-theme="dark"]) { --bg:#f5f6f8; --panel:#fff; --line:#dde1e6; --text:#1b1f24; --muted:#5f6b7a;
+      --logo:url("/img/logo.png"); }
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
     font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   .wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
   .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:20px; margin-bottom:20px; }
-  .dot { width:14px; height:14px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 5px rgba(229,72,77,.22); }
+  .mark { width:30px; height:30px; flex:none; background:var(--logo) center / contain no-repeat; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
   .card .pad { padding:18px; }
   .tag { display:inline-block; background:var(--accent); color:#fff; font-weight:600; font-size:13px;
@@ -34,7 +38,7 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="brand"><span class="dot"></span>Vigía</div>
+  <div class="brand"><span class="mark"></span>Analítica Crítica</div>
   <div id="content"><div class="state muted">Cargando…</div></div>
   <div class="foot">Enviado por el servicio de monitoreo. Este enlace es privado y vence con el tiempo.</div>
 </div>

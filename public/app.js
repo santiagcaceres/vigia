@@ -99,9 +99,9 @@ async function boot() {
     $("#nav").innerHTML = "";
     $("#view").innerHTML = `<div class="panel" style="max-width:640px;margin:40px auto">
       <h1>Usá la app de escritorio</h1>
-      <p>La gestión de clientes, cámaras, zonas, alertas y usuarios se hace desde la <b>app de escritorio de Vigía</b>. La web quedó para que los clientes vean su local.</p>
-      <p><a class="btn primary" href="/api/app/download">Descargar la app (VigiaAgente-windows.zip)</a></p>
-      <p class="muted">Descomprimila, abrí <span class="mono">VigiaAgente.exe</span> y entrá con este mismo usuario. Si esta PC además tiene que analizar las cámaras, dejá tildado «Esta PC analiza las cámaras».</p>
+      <p>La gestión de clientes, cámaras, zonas, alertas, entrenamiento y usuarios se hace desde la <b>app de escritorio de Analítica Crítica</b>. La web quedó para que los clientes vean su local.</p>
+      <p><a class="btn primary" href="/api/app/download">Descargar la app para Windows</a></p>
+      <p class="muted">Descomprimila y abrí el programa (la primera vez se renombra solo a «Analítica Crítica.exe»). Entrá con este mismo usuario. Después se actualiza sola con «Buscar actualización».</p>
       <p class="muted" style="margin-top:24px"><a href="#" id="web-emergencia">Entrar igual a la versión web (solo si la app no anda)</a></p>
     </div>`;
     $("#web-emergencia").addEventListener("click", (e) => { e.preventDefault(); try { sessionStorage.setItem("vigia_web_staff", "1"); } catch (_) {} location.reload(); });
@@ -1182,10 +1182,10 @@ async function adminView(v) {
     <p class="muted">El <b>agente</b> es el programa que corre en la PC central: llega a los grabadores de todos los clientes por internet (puertos abiertos en el router de cada uno), baja el tramo de cada alarma y lo analiza. Con una PC alcanza; si se suma otra, se reparten las cámaras.</p>
     <div class="panel" style="margin-bottom:12px"><b>Instalar el programa en una PC central (Windows)</b>
       <ol style="margin:6px 0 0 18px;padding:0">
-        <li>Descargar <a href="/api/app/download">VigiaAgente-windows.zip</a>. Después se actualiza sola con el botón «Actualizar» de la app.</li>
-        <li>Descomprimirlo en una carpeta, por ejemplo <span class="mono">C:\\Vigia</span>, y abrir <span class="mono">VigiaAgente.exe</span>. Si Windows lo frena: "Más información → Ejecutar de todas formas".</li>
+        <li>Descargar <a href="/api/app/download">la app para Windows</a>. Después se actualiza sola con el botón «Buscar actualización» de la app.</li>
+        <li>Descomprimirlo en una carpeta y abrir el programa (la primera vez se renombra solo a <span class="mono">Analítica Crítica.exe</span>). Si Windows lo frena: "Más información → Ejecutar de todas formas".</li>
         <li>Enter para el servidor y pegar el <b>token</b> del agente (botón "Nuevo token" acá abajo; se muestra una sola vez). Queda guardado en <span class="mono">agente.env</span> al lado del programa.</li>
-        <li>Dejar la ventana abierta. Para que arranque con Windows: Programador de tareas → "Al iniciar sesión" → VigiaAgente.exe.</li>
+        <li>Dejar la ventana abierta. Para que arranque con Windows: Programador de tareas → "Al iniciar sesión" → Analítica Crítica.exe.</li>
       </ol></div>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
       <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? "Todos" : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>

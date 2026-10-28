@@ -449,7 +449,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception:
                 s.rollback()  # otra instancia lo creó al mismo tiempo
 
-    app = FastAPI(title="Vigía API", version="2.0.0")
+    app = FastAPI(title="Analítica Crítica API", version="2.0.0")
     app.state.Session = Session
     app.state.storage = storage
     app.state.settings = st
@@ -509,7 +509,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return obj
 
     def event_visible(user: User, ev: Event) -> None:
-        if user.role == "cliente" and ev.client_id != user.client_id:
+        # los ejemplos de entrenamiento de «Ajustar…» (source «ajuste») no son alertas: el cliente no los ve
+        if user.role == "cliente" and (ev.client_id != user.client_id or ev.source == "ajuste"):
             raise HTTPException(404, "Evento no encontrado")
 
     def redirect_to(path: str | None) -> RedirectResponse:
@@ -2343,7 +2344,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------ eventos
     @app.get("/api/events")
     def list_events(client_id: int | None = None, camera_id: int | None = None, type: str | None = None,
-                    label: str | None = None, source: Literal["vivo", "importado", "alarma", "prueba"] | None = None,
+                    label: str | None = None,
+                    source: Literal["vivo", "importado", "alarma", "prueba", "ajuste"] | None = None,
                     alert: bool | None = None, since: datetime | None = None, until: datetime | None = None,
                     import_id: int | None = None, order: Literal["reciente", "antiguo"] = "reciente",
                     limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
@@ -2362,8 +2364,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conds.append(Event.label.is_(None))
         elif label:
             conds.append(Event.label == label)
-        if source:
+        if source and not (source == "ajuste" and user.role == "cliente"):
             conds.append(Event.source == source)
+        else:  # los ejemplos de entrenamiento de «Ajustar…» no son alertas: solo se listan si se piden
+            conds.append(Event.source != "ajuste")
         if alert is not None:
             conds.append(Event.alert == alert)
         if since:
@@ -2831,15 +2835,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------ entrenamiento
     @app.get("/api/training/summary")
     def training_summary(_: User = Depends(staff), s=Depends(db)) -> dict:
-        rows = s.execute(select(Event.client_id, Event.label, func.count()).group_by(Event.client_id, Event.label)).all()
+        rows = s.execute(select(Event.client_id, Event.label, Event.source, func.count())
+                         .group_by(Event.client_id, Event.label, Event.source)).all()
         names = {c.id: c.name for c in s.query(Client).all()}
         per: dict[int, dict] = {}
-        for cid, label, n in rows:
-            d = per.setdefault(cid, {"client_id": cid, "client_name": names.get(cid), "labels": {}, "total": 0})
-            d["labels"][label or "sin_etiqueta"] = n
+        for cid, label, source, n in rows:
+            d = per.setdefault(cid, {"client_id": cid, "client_name": names.get(cid), "labels": {}, "total": 0,
+                                     "from_tuning": 0})
+            d["labels"][label or "sin_etiqueta"] = d["labels"].get(label or "sin_etiqueta", 0) + n
             d["total"] += n
+            if source == "ajuste":
+                d["from_tuning"] += n
         return {"clients": list(per.values()), "min_total": training.MIN_TOTAL,
                 "min_per_class": training.MIN_PER_CLASS}
+
+    @app.post("/api/training/samples", status_code=201)
+    def training_sample(meta: str = Form(...), snapshot: UploadFile = File(...), user: User = Depends(staff),
+                        s=Depends(db)) -> dict:
+        """Ejemplo para entrenar sacado de «Ajustar…» en la app: una alerta de prueba (de un video guardado o del vivo)
+        que una persona etiquetó. Queda como evento `source="ajuste"` con `alert=False`: no es una alerta, no le llega
+        a nadie ni se ve en la web del cliente; solo cuenta para entrenar el modelo del cliente. El mismo `uuid` otra
+        vez actualiza la etiqueta (no se repite)."""
+        try:
+            m = json.loads(meta)
+            cam = get_or_404(s, Camera, int(m["camera_id"]), "Cámara")
+            uid = str(m["uuid"])
+            if m["type"] not in EVENT_TYPES:
+                raise ValueError(f"tipo desconocido {m['type']}")
+            if m["label"] not in LABELS:
+                raise ValueError(f"etiqueta desconocida {m['label']}")
+            if not uid.isalnum() or len(uid) > 40:
+                raise ValueError("uuid inválido")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(422, f"Datos inválidos: {exc}") from exc
+        features = {k: float(v) for k, v in (m.get("features") or {}).items() if k in FEATURE_NAMES}
+        existing = s.query(Event).filter_by(uuid=uid).first()
+        if existing:
+            if existing.source != "ajuste" or existing.camera_id != cam.id:
+                raise HTTPException(409, "Ese identificador ya es de otro evento")
+            existing.label, existing.labeled_by, existing.labeled_at = m["label"], user.id, utcnow()
+            existing.features = features or existing.features
+            s.commit()
+            return {"id": existing.id, "updated": True}
+        data = snapshot.file.read(5 * 1024 * 1024 + 1)
+        if len(data) > 5 * 1024 * 1024:
+            raise HTTPException(413, "Imagen demasiado grande")
+        snap_path = f"c{cam.client_id}/cam{cam.id}/ajuste/{uid}.jpg"
+        try:
+            storage.put(snap_path, data, "image/jpeg")
+        except StorageError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        ev = Event(uuid=uid, client_id=cam.client_id, camera_id=cam.id, source="ajuste", type=m["type"],
+                   severity=SEVERITY[m["type"]], zone=(m.get("zone") or None),
+                   description=str(m.get("description") or "")[:500], track_id=int(m.get("track_id") or 0),
+                   video_ts=float(m.get("video_ts") or 0), occurred_at=parse_occurred_at(m.get("occurred_at")),
+                   features=features,
+                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size"),
+                         "video": str(m.get("video") or "")[:200] or None, "ajuste": True},
+                   score=m.get("score"), alert=False, snapshot_path=snap_path, label=m["label"],
+                   labeled_by=user.id, labeled_at=utcnow())
+        s.add(ev)
+        s.commit()
+        return {"id": ev.id}
 
     def model_dict(m: FilterModel, names: dict) -> dict:
         return {"id": m.id, "client_id": m.client_id, "client_name": names.get(m.client_id) if m.client_id else None,
@@ -2934,7 +2993,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _misconfigured_app(missing: list[str]) -> FastAPI:
-    app = FastAPI(title="Vigía (falta configuración)")
+    app = FastAPI(title="Analítica Crítica (falta configuración)")
     msg = ("Falta configurar en Vercel (Settings > Environment Variables) y volver a desplegar: "
            + ", ".join(missing))
     log.error(msg)

@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,7 @@ import numpy as np
 from core.schedule import DAY_NAMES, DAYS, open_hours_per_week
 
 from . import actualizar
+from .marca import NOMBRE
 from .version import VERSION
 
 log = logging.getLogger("vigia.oficina")
@@ -266,7 +268,7 @@ class Oficina:
 
     # ---------- utilidades ----------
     def err(self, exc: Exception) -> None:
-        self.mb.showerror("Vigía", str(exc))
+        self.mb.showerror(NOMBRE, str(exc))
 
     def client_name(self, cid: int | None) -> str:
         return next((c["name"] for c in self.clients if c["id"] == cid), "—")
@@ -320,14 +322,14 @@ class Oficina:
         def fail(exc: Exception) -> None:
             finish()
             log.warning("No se pudo buscar la actualización: %s", exc)
-            self.mb.showerror("Vigía", f"No se pudo buscar la actualización: {exc}")
+            self.mb.showerror(NOMBRE, f"No se pudo buscar la actualización: {exc}")
 
         def timeout() -> None:
             if self._checking_update:
                 finish()
                 log.warning("Buscar actualización: el servidor no contestó en 30 s")
-                self.mb.showwarning("Vigía", "El servidor no contestó en 30 segundos. Probá de nuevo en un rato, o bajá "
-                                             "VigiaAgente-windows.zip de GitHub (Releases) y reemplazá el .exe a mano.")
+                self.mb.showwarning(NOMBRE, "El servidor no contestó en 30 segundos. Probá de nuevo en un rato, o bajá "
+                                             "el .zip de la app desde la web (botón «Descargar la app») y reemplazá el .exe a mano.")
         self.v.root.after(30000, timeout)
 
         def done(info):
@@ -337,14 +339,14 @@ class Oficina:
             finish(new if newer else None)
             log.info("Última versión publicada: %s (esta es %s)", new or "?", VERSION)
             if not newer:
-                return self.mb.showinfo("Vigía", f"Ya tenés la última versión ({VERSION}).")
+                return self.mb.showinfo(NOMBRE, f"Ya tenés la última versión ({VERSION}).")
             if not actualizar.can_self_update():
-                return self.mb.showinfo("Vigía", f"Hay una versión nueva ({new}). Esta copia corre con Python: "
+                return self.mb.showinfo(NOMBRE, f"Hay una versión nueva ({new}). Esta copia corre con Python: "
                                                  "actualizá con «git pull» y volvé a abrir.")
             size = f" ({info['size'] / 1e6:.0f} MB)" if info.get("size") else ""
             extra = ("\n\nLas cámaras dejan de analizarse unos segundos mientras se reabre."
                      if getattr(self.v, "analyze", False) else "")
-            if self.mb.askyesno("Actualizar Vigía", f"Versión instalada: {VERSION}\nVersión nueva: {new}{size}\n\n"
+            if self.mb.askyesno(f"Actualizar {NOMBRE}", f"Versión instalada: {VERSION}\nVersión nueva: {new}{size}\n\n"
                                 "Se descarga, se reemplaza el programa y se vuelve a abrir solo, con la misma sesión."
                                 + extra + "\n\n¿Actualizar ahora?"):
                 self._install_update(new)
@@ -352,7 +354,7 @@ class Oficina:
 
     def _install_update(self, new: str) -> None:
         tk, ttk = self.tk, self.ttk
-        top, frm = self._dialog("Actualizando Vigía", width=420)
+        top, frm = self._dialog(f"Actualizando {NOMBRE}", width=420)
         top.protocol("WM_DELETE_WINDOW", lambda: None)  # no se cierra a mitad de camino
         msg = ttk.Label(frm, text=f"Descargando la versión {new}…")
         msg.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -376,8 +378,8 @@ class Oficina:
 
         def fail(exc):
             top.destroy()
-            self.mb.showerror("Vigía", f"No se pudo actualizar: {exc}\n\nEl programa sigue igual. También podés bajar "
-                                       "VigiaAgente-windows.zip de GitHub (Releases) y reemplazar el .exe a mano.")
+            self.mb.showerror(NOMBRE, f"No se pudo actualizar: {exc}\n\nEl programa sigue igual. También podés bajar "
+                                       "el .zip de la app desde la web (botón «Descargar la app») y reemplazar el .exe a mano.")
         self.bg.run(work, done, fail)
 
     def _auto_refresh(self) -> None:
@@ -400,6 +402,16 @@ class Oficina:
         self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents"),
                              self.api.get("/api/stats/alerts")), done, lambda e: None)
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
+
+    def library(self):
+        """Videos de prueba guardados de cada cámara (un solo archivo para toda la app: varias ventanas de «Ajustar»
+        lo comparten)."""
+        if getattr(self, "_library", None) is None:
+            from .biblioteca import Library
+            agent = self.agent_of() if self.agent_of else None
+            base = Path(agent.data_dir) if agent is not None else Path.home() / "AnaliticaCritica"
+            self._library = Library(base / "videos_prueba.json")
+        return self._library
 
     def config_saved(self) -> None:
         """Se guardó una cámara, zonas o reglas: refrescar la lista y avisarle a la PC central."""
@@ -424,7 +436,7 @@ class Oficina:
 
     def _net_fail(self, exc: Exception) -> None:
         if isinstance(exc, ApiError) and exc.status == 401:
-            self.mb.showwarning("Vigía", "La sesión venció. Entrá de nuevo.")
+            self.mb.showwarning(NOMBRE, "La sesión venció. Entrá de nuevo.")
             if self.on_logout:
                 self.on_logout()
             return
@@ -454,6 +466,9 @@ class Oficina:
         if self.is_admin:
             ttk.Button(b, text="Eliminar", command=self.delete_client).pack(side="left")
         ttk.Button(b, text="Actualizar", command=self.refresh_all).pack(side="right")
+        bt = ttk.Frame(left)
+        bt.pack(fill="x")
+        ttk.Button(bt, text="Entrenamiento del modelo…", command=self.training_dialog).pack(side="left")
 
         right = ttk.Frame(f, padding=(12, 0, 0, 0))
         right.pack(side="left", fill="both", expand=True)
@@ -744,22 +759,22 @@ class Oficina:
             try:
                 open_hours_per_week(body["hours"])
             except ValueError as exc:
-                return self.mb.showwarning("Vigía", f"Horario: {exc}", parent=top)
+                return self.mb.showwarning(NOMBRE, f"Horario: {exc}", parent=top)
             if not body["name"]:
-                return self.mb.showwarning("Vigía", "Falta el nombre", parent=top)
+                return self.mb.showwarning(NOMBRE, "Falta el nombre", parent=top)
             user, pwd = web_user.get().strip(), web_pass.get().strip()
             if user and not had_user and not pwd:
-                return self.mb.showwarning("Vigía", "Falta la clave para la web (o tocá «Generar»).", parent=top)
+                return self.mb.showwarning(NOMBRE, "Falta la clave para la web (o tocá «Generar»).", parent=top)
             if pwd and len(pwd) < 8:
-                return self.mb.showwarning("Vigía", "La clave necesita al menos 8 caracteres.", parent=top)
+                return self.mb.showwarning(NOMBRE, "La clave necesita al menos 8 caracteres.", parent=top)
             if had_user and not user:
-                return self.mb.showwarning("Vigía", "El usuario para la web no puede quedar vacío.", parent=top)
+                return self.mb.showwarning(NOMBRE, "El usuario para la web no puede quedar vacío.", parent=top)
             body["web_username"], body["web_password"] = user or None, pwd or None
             body["hc_app_key"], body["hc_api_url"] = hc_key.get().strip() or None, hc_url.get().strip() or None
             if hc_secret.get().strip():
                 body["hc_secret"] = hc_secret.get().strip()
             elif body["hc_app_key"] and not c.get("hc_has_secret"):
-                return self.mb.showwarning("Vigía", "Falta el SecretKey de Hik-Connect.", parent=top)
+                return self.mb.showwarning(NOMBRE, "Falta el SecretKey de Hik-Connect.", parent=top)
 
             def done(res):
                 top.destroy()
@@ -767,7 +782,7 @@ class Oficina:
                 if pwd:  # se creó el acceso o se cambió la clave: mostrar los datos para pasárselos
                     self.web_access_dialog(res.get("name") or body["name"], user, pwd)
             self.bg.run(lambda: (self.api.put(f"/api/clients/{c['id']}", body) if c.get("id")
-                                 else self.api.post("/api/clients", body)), done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+                                 else self.api.post("/api/clients", body)), done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=15, column=0, columnspan=3, sticky="e")
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
@@ -798,7 +813,7 @@ class Oficina:
                 a = datetime.strptime(d1.get().strip(), "%d/%m/%Y").date()
                 b = datetime.strptime(d2.get().strip(), "%d/%m/%Y").date()
             except ValueError:
-                return self.mb.showwarning("Vigía", "Fechas con formato dd/mm/aaaa (por ejemplo 01/11/2026).", parent=top)
+                return self.mb.showwarning(NOMBRE, "Fechas con formato dd/mm/aaaa (por ejemplo 01/11/2026).", parent=top)
             cl = next((x for x in self.clients if x["name"] == who.get()), None)
             from tkinter import filedialog
 
@@ -815,7 +830,7 @@ class Oficina:
             def done(data):
                 Path(path).write_bytes(data if isinstance(data, bytes) else str(data).encode("utf-8"))
                 top.destroy()
-                if self.mb.askyesno("Vigía", f"Listo: {path}\n\n¿Abrirlo ahora?"):
+                if self.mb.askyesno(NOMBRE, f"Listo: {path}\n\n¿Abrirlo ahora?"):
                     try:
                         if sys.platform.startswith("win"):
                             os.startfile(path)  # type: ignore[attr-defined]
@@ -823,7 +838,7 @@ class Oficina:
                             subprocess.Popen(["xdg-open", path])
                     except Exception:  # noqa: BLE001
                         pass
-            self.bg.run(work, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+            self.bg.run(work, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
@@ -834,7 +849,7 @@ class Oficina:
         """Lista las cámaras que ve la API de Hik-Connect del cliente. Con `pick`, se eligen (una o varias)."""
         tk, ttk = self.tk, self.ttk
         if not client or not client.get("hc_app_key"):
-            return self.mb.showwarning("Vigía", "Primero cargá la clave de Hik-Connect en el cliente "
+            return self.mb.showwarning(NOMBRE, "Primero cargá la clave de Hik-Connect en el cliente "
                                                 "(Editar cliente → recuadro Hik-Connect).", parent=parent)
 
         def done(res):
@@ -862,13 +877,13 @@ class Oficina:
                 if multi:
                     ttk.Button(bb, text="Todas", command=lambda: lb.select_set(0, "end")).pack(side="right")
         self.bg.run(lambda: self.api.get(f"/api/clients/{client['id']}/hikconnect/cameras"), done,
-                    lambda e: self.mb.showerror("Vigía", f"Hik-Connect: {e}", parent=parent))
+                    lambda e: self.mb.showerror(NOMBRE, f"Hik-Connect: {e}", parent=parent))
 
     def web_access_dialog(self, name: str, user: str, pwd: str) -> None:
         """Datos de acceso a la web para pasarle al cliente, con botón para copiarlos."""
         ttk = self.ttk
         url = self.api.server
-        text = (f"Hola, estos son tus datos para ver tu comercio en Vigía:\n\nPágina: {url}\n"
+        text = (f"Hola, estos son tus datos para ver tu comercio en {NOMBRE}:\n\nPágina: {url}\n"
                 f"Usuario: {user}\nClave: {pwd}\n\nAhí vas a ver tus alertas, los hurtos revisados y el resumen del día.")
         top, frm = self._dialog(f"Acceso web de {name}", width=480)
         ttk.Label(frm, text="Pasale estos datos al cliente por privado (WhatsApp o en persona):").grid(
@@ -898,7 +913,7 @@ class Oficina:
         if typed is None:
             return
         if typed.strip() != c["name"]:
-            return self.mb.showwarning("Vigía", "El nombre no coincide: no se borró nada.")
+            return self.mb.showwarning(NOMBRE, "El nombre no coincide: no se borró nada.")
         self.bg.run(lambda: self.api.delete(f"/api/clients/{c['id']}"), lambda _: self.refresh_all(), self.err)
 
     # ---------- diálogos de cámara ----------
@@ -908,7 +923,7 @@ class Oficina:
         tk, ttk = self.tk, self.ttk
         client = self._sel_client()
         if cam is None and client is None:
-            return self.mb.showinfo("Vigía", "Elegí primero un cliente a la izquierda.")
+            return self.mb.showinfo(NOMBRE, "Elegí primero un cliente a la izquierda.")
         cam = cam or {}
         top, frm = self._dialog("Editar cámara" if cam.get("id") else f"Nueva cámara · {client['name']}", 600)
         owner = next((x for x in self.clients if x["id"] == (cam.get("client_id") or (client or {}).get("id"))), client)
@@ -1050,17 +1065,17 @@ class Oficina:
                                   password=v["password"].get() or None, nvr_clips=nvr.get(),
                                   hpp_serial=cam.get("hpp_serial"))
             except ValueError:
-                return self.mb.showwarning("Vigía", "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
+                return self.mb.showwarning(NOMBRE, "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
-                    return self.mb.showwarning("Vigía", "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
+                    return self.mb.showwarning(NOMBRE, "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
                 bodies = [{**common, "mode": "vivo", "host": "", "username": "", "password": None, "nvr_clips": False,
                            "name": (v["name"].get().strip() if len(hc_sel) == 1 else "") or x.get("name") or "Cámara",
                            "hpp_serial": x["serial"], "channel": int(x.get("channel") or 1),
                            "hc_resource_id": x.get("id")} for x in hc_sel]
             else:
                 if not v["name"].get().strip() or not common["host"]:
-                    return self.mb.showwarning("Vigía", "Faltan el nombre o la IP del grabador.", parent=top)
+                    return self.mb.showwarning(NOMBRE, "Faltan el nombre o la IP del grabador.", parent=top)
                 bodies = [{**common, "name": v["name"].get().strip()}]
 
             analyze = v["analyze"].get()
@@ -1087,11 +1102,11 @@ class Oficina:
                 top.destroy()
                 self.config_saved()
                 if repeated:
-                    self.mb.showinfo("Vigía", f"Se agregaron {len(added)} cámara(s). {len(repeated)} ya estaban cargadas "
+                    self.mb.showinfo(NOMBRE, f"Se agregaron {len(added)} cámara(s). {len(repeated)} ya estaban cargadas "
                                               f"y no se repitieron: {', '.join(repeated[:6])}{'…' if len(repeated) > 6 else ''}.")
                 elif len(added) > 1:
-                    self.mb.showinfo("Vigía", f"Se agregaron {len(added)} cámaras.")
-            self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+                    self.mb.showinfo(NOMBRE, f"Se agregaron {len(added)} cámaras.")
+            self.bg.run(send, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=22, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
@@ -1102,14 +1117,14 @@ class Oficina:
         en «En vivo»."""
         ids = [int(i) for i in self.cam_tree.selection()]
         if not ids:
-            return self.mb.showinfo("Vigía", "Elegí una o varias cámaras (Ctrl o Shift para varias).")
+            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Shift para varias).")
         if not analyze and not self.mb.askyesno(
-                "Vigía", f"¿Dejar de analizar {len(ids)} cámara(s)?\n\nNo van a generar alertas ni métricas. "
+                NOMBRE, f"¿Dejar de analizar {len(ids)} cámara(s)?\n\nNo van a generar alertas ni métricas. "
                          "Se pueden seguir mirando en «En vivo»."):
             return
         raw = [c["name"] for c in self.cameras if c["id"] in ids and c.get("tuning") != "aprobada" and not c.get("analyzed")]
         if analyze and raw and not self.mb.askyesno(
-                "Vigía", f"{len(raw)} cámara(s) sin aprobar en «Ajustar…» ({', '.join(raw[:4])}"
+                NOMBRE, f"{len(raw)} cámara(s) sin aprobar en «Ajustar…» ({', '.join(raw[:4])}"
                          f"{'…' if len(raw) > 4 else ''}).\n\nSin ajustar pueden dar muchas alertas falsas. "
                          "¿Analizarlas igual?"):
             return
@@ -1121,10 +1136,10 @@ class Oficina:
         ids = [int(i) for i in self.cam_tree.selection()]
         cams = [c for c in self.cameras if c["id"] in ids]
         if not cams:
-            return self.mb.showinfo("Vigía", "Elegí una o varias cámaras (Ctrl o Shift para varias).")
+            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Shift para varias).")
         names = ", ".join(c["name"] for c in cams[:5]) + (f" y {len(cams) - 5} más" if len(cams) > 5 else "")
         what = f"la cámara «{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras ({names})"
-        if not self.mb.askyesno("Vigía", f"¿Eliminar {what}?\n\nSe borran también sus métricas. No se puede deshacer."):
+        if not self.mb.askyesno(NOMBRE, f"¿Eliminar {what}?\n\nSe borran también sus métricas. No se puede deshacer."):
             return
 
         def send(force: bool):
@@ -1132,7 +1147,7 @@ class Oficina:
 
         def fail(exc: Exception) -> None:
             if isinstance(exc, ApiError) and exc.status == 409:
-                if self.mb.askyesno("Vigía", f"{exc}\n\n¿Borrar también sus alertas, fotos y clips? No se puede deshacer."):
+                if self.mb.askyesno(NOMBRE, f"{exc}\n\n¿Borrar también sus alertas, fotos y clips? No se puede deshacer."):
                     self.bg.run(lambda: send(True), lambda _: self.config_saved(), self.err)
                 return
             self.err(exc)
@@ -1140,7 +1155,7 @@ class Oficina:
 
     def probe(self, cam: dict | None) -> None:
         if not cam:
-            return self.mb.showinfo("Vigía", "Elegí una cámara.")
+            return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
         self._info_locked = cam["id"]
         local = self.local_probe is not None and cam.get("agent_id") is not None
         self._set_info(f"Probando {cam['name']}" + (" desde esta PC (página del grabador y video, hasta 20 s)…"
@@ -1196,26 +1211,110 @@ class Oficina:
     # ---------- zonas y ajuste ----------
     def zones_dialog(self, cam: dict | None) -> None:
         if not cam:
-            return self.mb.showinfo("Vigía", "Elegí una cámara.")
+            return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
         ZonesEditor(self, cam)
 
     def tune_dialog(self, cam: dict | None) -> None:
         if not cam:
-            return self.mb.showinfo("Vigía", "Elegí una cámara.")
+            return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
         if len(self.cam_tree.selection()) > 1:
-            return self.mb.showinfo("Vigía", "«Ajustar» es de a una cámara: elegí solo una.")
+            return self.mb.showinfo(NOMBRE, "«Ajustar» es de a una cámara: elegí solo una.")
         if self.agent_of is None or self.agent_of() is None:
-            return self.mb.showinfo("Vigía", "La app todavía está arrancando el analizador. Probá en unos segundos.")
+            return self.mb.showinfo(NOMBRE, "La app todavía está arrancando el analizador. Probá en unos segundos.")
         TuneWindow(self, cam)
+
+    def training_dialog(self) -> None:
+        """Entrenar el modelo de un cliente: cuántos ejemplos etiquetados tiene (alertas revisadas y los que se mandaron
+        desde «Ajustar…»), entrenar y activar. El modelo aprende qué alertas de ese cliente suelen ser hurto y cuáles
+        no; las máquinas lo usan para no molestar a los empleados con las que descartaría."""
+        c = self._sel_client()
+        if not c:
+            return self.mb.showinfo(NOMBRE, "Elegí un cliente.")
+        tk, ttk = self.tk, self.ttk
+        top, frm = self._dialog(f"Entrenamiento · {c['name']}", width=620)
+        frm.columnconfigure(0, weight=1)
+        info = tk.Text(frm, height=9, width=74, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
+        info.grid(row=0, column=0, columnspan=3, sticky="ew")
+        ttk.Label(frm, text="Modelos de este cliente", font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w",
+                                                                                          pady=(10, 2))
+        models = ttk.Treeview(frm, columns=("fecha", "ejemplos", "ve", "saca", "activo"), show="headings", height=4,
+                              selectmode="browse")
+        for col, txt, w in (("fecha", "Fecha", 120), ("ejemplos", "Ejemplos", 80), ("ve", "Hurtos que deja pasar", 150),
+                            ("saca", "Falsas alarmas que saca", 160), ("activo", "En uso", 70)):
+            models.heading(col, text=txt)
+            models.column(col, width=w)
+        models.grid(row=2, column=0, columnspan=3, sticky="ew")
+        state: dict = {"models": []}
+
+        def show(res) -> None:
+            summary, all_models = res
+            row = next((x for x in summary["clients"] if x["client_id"] == c["id"]), None)
+            labels = (row or {}).get("labels", {})
+            pos = labels.get("hurto", 0) + labels.get("sospechoso", 0)
+            neg = labels.get("normal", 0) + labels.get("falso_positivo", 0)
+            need_t, need_c = summary["min_total"], summary["min_per_class"]
+            lines = [f"Ejemplos etiquetados: {pos + neg} (hurto o sospechoso: {pos} · normal o falsa alarma: {neg}).",
+                     f"De «Ajustar…» (videos de prueba): {(row or {}).get('from_tuning', 0)}. Sin revisar: "
+                     f"{labels.get('sin_etiqueta', 0)}.", ""]
+            if pos + neg >= need_t and pos >= need_c and neg >= need_c:
+                lines.append("Alcanza para entrenar. Después de entrenar, mirá cuántos hurtos deja pasar antes de "
+                             "activarlo: tienen que ser casi todos.")
+            else:
+                lines.append(f"Todavía no alcanza: hacen falta al menos {need_t} en total y {need_c} de cada lado. Se "
+                             "suman revisando alertas (teclas 1-4 en «Alertas») o mandando alertas de prueba "
+                             "etiquetadas desde «Ajustar…».")
+            info.configure(state="normal")
+            info.delete("1.0", "end")
+            info.insert("1.0", "\n".join(lines))
+            info.configure(state="disabled")
+            state["models"] = [m for m in all_models if m["client_id"] == c["id"]]
+            models.delete(*models.get_children())
+            for m in state["models"]:
+                met = m.get("metrics") or {}
+                models.insert("", "end", iid=str(m["id"]), values=(
+                    (m.get("created_at") or "")[:16].replace("T", " "), m.get("n_samples"),
+                    f"{met.get('recall', 0) * 100:.0f} %", f"{met.get('falsas_alarmas_eliminadas', 0) * 100:.0f} %",
+                    "sí" if m.get("active") else ""))
+
+        def load() -> None:
+            self.bg.run(lambda: (self.api.get("/api/training/summary"), self.api.get("/api/models")), show,
+                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
+
+        def train() -> None:
+            def done(m):
+                met = m.get("metrics") or {}
+                self.mb.showinfo(NOMBRE, f"Modelo entrenado con {m.get('n_samples')} ejemplos: deja pasar el "
+                                         f"{met.get('recall', 0) * 100:.0f} % de los hurtos y saca el "
+                                         f"{met.get('falsas_alarmas_eliminadas', 0) * 100:.0f} % de las falsas alarmas. "
+                                         "Todavía no está en uso: elegilo y «Activar».", parent=top)
+                load()
+            self.bg.run(lambda: self.api.post("/api/training/run", {"client_id": c["id"]}), done,
+                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
+
+        def toggle() -> None:
+            sel = models.selection()
+            if not sel:
+                return self.mb.showinfo(NOMBRE, "Elegí un modelo de la lista.", parent=top)
+            m = next(x for x in state["models"] if str(x["id"]) == sel[0])
+            action = "deactivate" if m.get("active") else "activate"
+            self.bg.run(lambda: self.api.post(f"/api/models/{m['id']}/{action}"), lambda _: load(),
+                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
+
+        bb = ttk.Frame(frm)
+        bb.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Button(bb, text="Entrenar ahora", command=train).pack(side="left")
+        ttk.Button(bb, text="Activar / desactivar", command=toggle).pack(side="left", padx=4)
+        ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="right")
+        load()
 
     def names_dialog(self) -> None:
         c = self._sel_client()
         if not c:
-            return self.mb.showinfo("Vigía", "Elegí un cliente.")
+            return self.mb.showinfo(NOMBRE, "Elegí un cliente.")
         if not any(x["client_id"] == c["id"] for x in self.cameras):
-            return self.mb.showinfo("Vigía", f"{c['name']} no tiene cámaras.")
+            return self.mb.showinfo(NOMBRE, f"{c['name']} no tiene cámaras.")
         if self.agent_of is None or self.agent_of() is None:
-            return self.mb.showinfo("Vigía", "La app todavía está arrancando. Probá en unos segundos.")
+            return self.mb.showinfo(NOMBRE, "La app todavía está arrancando. Probá en unos segundos.")
         NamesWindow(self, c)
 
     # ---------- métricas ----------
@@ -1349,7 +1448,7 @@ class Oficina:
 
     def _clip_file(self, e: dict, then: Callable[[str], None]) -> None:
         if not e.get("clip_url"):
-            return self.mb.showinfo("Vigía", "Esta alerta todavía no tiene clip.")
+            return self.mb.showinfo(NOMBRE, "Esta alerta todavía no tiene clip.")
         path = Path(tempfile.gettempdir()) / f"vigia_clip_{e['id']}.mp4"
         if path.exists() and path.stat().st_size > 0:
             return then(str(path))
@@ -1369,7 +1468,7 @@ class Oficina:
             self.stop_clip()
             cap = cv2.VideoCapture(path)
             if not cap.isOpened():
-                return self.mb.showwarning("Vigía", "No se pudo abrir el clip acá. Probá «Abrir en el reproductor».")
+                return self.mb.showwarning(NOMBRE, "No se pudo abrir el clip acá. Probá «Abrir en el reproductor».")
             fps = cap.get(cv2.CAP_PROP_FPS) or 10
             self._play.update(cap=cap, path=path)
             self.al_desc.configure(text=f"{fmt_date(e['occurred_at'])} · {e.get('description') or ''}")
@@ -1433,7 +1532,7 @@ class Oficina:
         if not e:
             return
         if not e.get("clip_url"):
-            return self.mb.showinfo("Vigía", "Esta alerta todavía no tiene clip para mandar.")
+            return self.mb.showinfo(NOMBRE, "Esta alerta todavía no tiene clip para mandar.")
         tk, ttk = self.tk, self.ttk
         top, frm = self._dialog(f"Avisar a {e.get('client_name')}", 560)
         ttk.Label(frm, text="Revisá el clip antes de avisar. El mensaje habla de «posible hurto», nunca acusa.",
@@ -1455,7 +1554,7 @@ class Oficina:
                 chans = ", ".join(rep.get("channels") or []) or "portal"
                 out.configure(text=f"Enviado por: {chans}.\nLink privado (copiado al portapapeles, vence en 14 días):\n{link}")
             self.bg.run(lambda: self.api.post(f"/api/events/{e['id']}/report", {"message": msg}), done,
-                        lambda exc: self.mb.showerror("Vigía", str(exc), parent=top))
+                        lambda exc: self.mb.showerror(NOMBRE, str(exc), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="right")
@@ -1589,19 +1688,19 @@ class Oficina:
         try:
             body = {"mode": mode, "capacity": float(self.an_cap.get()), "spare": int(self.an_spare.get())}
         except ValueError:
-            return self.mb.showwarning("Vigía", "Cámaras por máquina y reserva tienen que ser números.")
+            return self.mb.showwarning(NOMBRE, "Cámaras por máquina y reserva tienen que ser números.")
         if mode != (self.analysis.get("mode") or "pcs"):
             msg = ("Las cámaras pasan a analizarse en las máquinas de análisis. Mientras no haya ninguna en línea, "
                    "siguen en la PC de cada usuario.") if mode == "servidores" else (
                    "Las cámaras vuelven a analizarse en la PC de quien las revisa.")
-            if not self.mb.askyesno("Vigía", msg + "\n\n¿Seguir?"):
+            if not self.mb.askyesno(NOMBRE, msg + "\n\n¿Seguir?"):
                 return
         self.bg.run(lambda: self.api.put("/api/analysis", body), lambda _: (self.load_machines(), self.config_saved()),
                     self.err)
 
     def pool_key_dialog(self) -> None:
         if self.analysis.get("has_pool_key") and not self.mb.askyesno(
-                "Vigía", "Ya hay una clave. Si creás otra, las máquinas nuevas tienen que usar la nueva "
+                NOMBRE, "Ya hay una clave. Si creás otra, las máquinas nuevas tienen que usar la nueva "
                          "(las que ya están dadas de alta siguen andando).\n\n¿Crear otra?"):
             return
 
@@ -1632,15 +1731,15 @@ class Oficina:
             key = self.mq_tree.parent(key)
         if key.startswith("pc-"):
             name = self.mq_tree.item(key, "text")
-            if not self.mb.askyesno("Vigía", f"¿Quitar la PC «{name}»? Deja de analizar y las cámaras que tenga abiertas "
+            if not self.mb.askyesno(NOMBRE, f"¿Quitar la PC «{name}»? Deja de analizar y las cámaras que tenga abiertas "
                                              "se cierran. Si alguien vuelve a entrar en esa PC con su usuario, aparece de "
                                              "nuevo (sin cámaras)."):
                 return
             return self.bg.run(lambda: self.api.delete(f"/api/agents/{key[3:]}"), lambda _: self.load_machines(), self.err)
         m = next((x for x in (self.analysis.get("machines") or []) if x["key"] == key), None)
         if not m:
-            return self.mb.showinfo("Vigía", "Elegí una máquina o una PC de la lista.")
-        if not self.mb.askyesno("Vigía", f"¿Quitar «{', '.join(m['names'])}»? Sus cámaras pasan a las otras máquinas. "
+            return self.mb.showinfo(NOMBRE, "Elegí una máquina o una PC de la lista.")
+        if not self.mb.askyesno(NOMBRE, f"¿Quitar «{', '.join(m['names'])}»? Sus cámaras pasan a las otras máquinas. "
                                          "Si la máquina sigue prendida, se vuelve a dar de alta sola."):
             return
         self.bg.run(lambda: [self.api.delete(f"/api/agents/{aid}") for aid in m["agent_ids"]],
@@ -1663,8 +1762,8 @@ class Oficina:
     def delete_user(self) -> None:
         u = self._sel_user()
         if not u:
-            return self.mb.showinfo("Vigía", "Elegí un usuario de la lista.")
-        if not self.mb.askyesno("Vigía", f"¿Eliminar el usuario «{u['username']}»?\n\nYa no va a poder entrar. Lo que hizo "
+            return self.mb.showinfo(NOMBRE, "Elegí un usuario de la lista.")
+        if not self.mb.askyesno(NOMBRE, f"¿Eliminar el usuario «{u['username']}»?\n\nYa no va a poder entrar. Lo que hizo "
                                          "(etiquetas, avisos) queda guardado. No se puede deshacer."):
             return
         self.bg.run(lambda: self.api.delete(f"/api/users/{u['id']}"), lambda _: self.load_users(), self.err)
@@ -1697,7 +1796,7 @@ class Oficina:
             def done(_):
                 top.destroy()
                 self.config_saved()
-            self.bg.run(send, done, lambda e: self.mb.showerror("Vigía", str(e), parent=top))
+            self.bg.run(send, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
@@ -1804,11 +1903,11 @@ class ZonesEditor:
     def close_zone(self) -> None:
         pts = list(dict.fromkeys(self.draft))
         if len(pts) < 3:
-            return self.app.mb.showinfo("Vigía", "Una zona necesita al menos 3 puntos.", parent=self.top)
+            return self.app.mb.showinfo(NOMBRE, "Una zona necesita al menos 3 puntos.", parent=self.top)
         ztype = next((k for k, t in ZONE_NAMES.items() if t == self.ztype.get()), "shelf")
         name = self.zname.get().strip() or f"{ZONE_NAMES[ztype].split()[0].lower()}_{len(self.zones) + 1}"
         if any(z["name"] == name for z in self.zones):
-            return self.app.mb.showinfo("Vigía", "Ya hay una zona con ese nombre.", parent=self.top)
+            return self.app.mb.showinfo(NOMBRE, "Ya hay una zona con ese nombre.", parent=self.top)
         self.zones.append({"name": name, "type": ztype, "polygon": [list(p) for p in pts]})
         self.draft = []
         self.zname.set("")
@@ -1849,8 +1948,8 @@ class ZonesEditor:
         try:
             rules = {**self.rules, **{k: float(v.get()) for k, v in self.rv.items()}}
         except ValueError:
-            return self.app.mb.showwarning("Vigía", "Las reglas tienen que ser números.", parent=self.top)
-        if self.confirm and not self.app.mb.askyesno("Vigía", self.confirm, parent=self.top):
+            return self.app.mb.showwarning(NOMBRE, "Las reglas tienen que ser números.", parent=self.top)
+        if self.confirm and not self.app.mb.askyesno(NOMBRE, self.confirm, parent=self.top):
             return
         body = {"zones": self.zones, "rules": rules}
 
@@ -1862,7 +1961,7 @@ class ZonesEditor:
             self.app.v.log_handler.q.put_nowait(f"{datetime.now():%H:%M:%S}  Zonas de «{self.cam['name']}» guardadas: "
                                                  "la PC central las aplica en segundos")
         self.app.bg.run(lambda: self.app.api.put(f"/api/cameras/{self.cam['id']}/analysis", body), done,
-                        lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+                        lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
 
 class TuneWindow:
@@ -1871,10 +1970,10 @@ class TuneWindow:
     «Aprobar y analizar» la manda a las máquinas de análisis. El motor está en agent/ajuste.py (`Tuner`)."""
 
     W, H = 640, 360  # el tamaño en que se guardan los cuadros: entra en una pantalla de 1366x768
-    TIMES = (("loiter_seconds", "Merodeo: tiempo en góndola", 45),
-             ("shelf_dwell_seconds", "En góndola para «tomó algo»", 3),
-             ("checkout_min_seconds", "En caja para «pagó»", 1),
-             ("restricted_min_seconds", "En zona restringida", 1))
+    TIMES = (("loiter_seconds", "Merodeo (góndola)", 45),
+             ("shelf_dwell_seconds", "Góndola p/ «tomó algo»", 3),
+             ("checkout_min_seconds", "Caja para «pagó»", 1),
+             ("restricted_min_seconds", "Zona restringida", 1))
 
     def __init__(self, app: Oficina, cam: dict):
         self.app, self.cam = app, cam
@@ -1896,6 +1995,11 @@ class TuneWindow:
         self.dirty = False  # tiempos probados sin guardar
         self.closed = False
         self.preview_sent = False
+        self.lib = app.library()  # videos de prueba guardados de cada cámara (en esta PC)
+        self.run_videos: list | None = None  # videos de la biblioteca que se están analizando (uno por segmento)
+        self.labels: dict[tuple, str | None] = {}  # etiquetas puestas a mano a las alertas de prueba (para entrenar)
+        self._results: dict[int, dict] = {}  # resultado por video (segmento) de la última prueba
+        self._results_key: tuple | None = None
         self.top, frm = app._dialog(f"Ajustar cámara · {cam['name']}")
         self.top.resizable(True, True)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
@@ -1912,6 +2016,8 @@ class TuneWindow:
         self.scale = ttk.Scale(nav, from_=0, to=1, orient="horizontal", command=self.on_scale)
         self.scale.pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(nav, text="Último ▸▸", command=self.follow).pack(side="left")
+        self.show_objects = tk.BooleanVar(value=True)
+        ttk.Checkbutton(nav, text="Objetos", variable=self.show_objects, command=self._redraw).pack(side="left", padx=(6, 0))
         self.pos = ttk.Label(left, text="", foreground="#666")
         self.pos.pack(anchor="w")
         self.state_lbl = ttk.Label(left, text="Preparando el detector…", font=("Segoe UI", 10, "bold"))
@@ -1919,10 +2025,9 @@ class TuneWindow:
         self.live_warn = ttk.Label(left, text="", foreground="#b45309", wraplength=self.W, justify="left")
         self.live_warn.pack(anchor="w")
         ttk.Label(left, foreground="#666", wraplength=self.W, justify="left", text=(
-            "Se analiza en esta PC igual que en las máquinas. Debajo de cada persona: segundos en cada zona contra el "
-            "tiempo de la regla (en rojo: llegó) y «TOMO ALGO» si estuvo en una góndola y todavía no pasó por caja. "
-            "En vivo se recuerdan los últimos 10 minutos y se usa una transmisión del grabador mientras esta ventana "
-            "esté abierta.")).pack(anchor="w", pady=(2, 0))
+            "Igual que en las máquinas. Debajo de cada persona: segundos en cada zona contra el tiempo de la regla (rojo: "
+            "llegó) y «TOMO ALGO». En violeta, otros objetos que ve YOLO: no cuentan para las reglas.")).pack(
+            anchor="w", pady=(2, 0))
         self.rules_lbl = ttk.Label(left, text="", foreground="#666", wraplength=self.W, justify="left")
         self.rules_lbl.pack(anchor="w", pady=(4, 0))
         nf = ttk.Frame(left)
@@ -1939,35 +2044,68 @@ class TuneWindow:
 
         right = ttk.Frame(frm, padding=(12, 0, 0, 0))
         right.grid(row=0, column=1, sticky="nsew")
-        src = ttk.LabelFrame(right, text="Qué se analiza", padding=6)
+        src = ttk.Frame(right)  # qué se analiza (sin recuadro: la ventana tiene que entrar en 768 de alto)
         src.pack(fill="x")
+        ttk.Label(src, text="Analizar:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
         ttk.Button(src, text="En vivo", command=self.start_live).pack(side="left")
-        ttk.Button(src, text="Probar con videos…", command=self.pick_videos).pack(side="left", padx=4)
-        self.bar = ttk.Progressbar(src, length=110, mode="determinate", maximum=100)
+        ttk.Button(src, text="▶ Videos de prueba", command=self.run_library).pack(side="left", padx=4)
+        ttk.Button(src, text="Otro video…", command=self.pick_videos).pack(side="left")
+        self.bar = ttk.Progressbar(src, length=90, mode="determinate", maximum=100)
         self.bar.pack(side="left", padx=4)
-        tf = ttk.LabelFrame(right, text="Tiempos de las reglas (segundos)", padding=6)
+        lf = ttk.LabelFrame(right, text="Videos de prueba de esta cámara (quedan guardados en esta PC)", padding=4)
+        lf.pack(fill="x", pady=(6, 0))
+        self.vtree = ttk.Treeview(lf, columns=("kind", "res"), show="tree headings", height=3, selectmode="browse")
+        for col, text, width in (("#0", "Video", 165), ("kind", "Qué es", 90), ("res", "Última prueba", 225)):
+            self.vtree.heading(col, text=text, anchor="w")
+            self.vtree.column(col, width=width, stretch=col == "res")
+        self.vtree.pack(fill="x")
+        self.vtree.bind("<<TreeviewSelect>>", self.goto_video)
+        vb = ttk.Frame(lf)
+        vb.pack(fill="x", pady=(4, 0))
+        ttk.Button(vb, text="Agregar…", command=self.add_videos).pack(side="left")
+        mark = ttk.Menubutton(vb, text="Marcar ▾")
+        menu = tk.Menu(mark, tearoff=False)
+        menu.add_command(label="Hurto en el momento que se ve", command=self.mark_theft)
+        menu.add_command(label="Es un video de hurto (sin marcar el momento)", command=lambda: self.set_kind("hurto"))
+        menu.add_command(label="Es un video normal (no tendría que dar alertas)", command=lambda: self.set_kind("normal"))
+        menu.add_command(label="Sin clasificar", command=lambda: self.set_kind(""))
+        menu.add_separator()
+        menu.add_command(label="Borrar los momentos marcados", command=self.clear_marks)
+        mark["menu"] = menu
+        mark.pack(side="left", padx=4)
+        ttk.Button(vb, text="Quitar", command=self.remove_video).pack(side="left")
+        ttk.Button(vb, text="Abrir carpeta", command=self.open_folder).pack(side="left", padx=4)
+        self.vsum = ttk.Label(lf, text="", foreground="#666", wraplength=490, justify="left")
+        self.vsum.pack(anchor="w", pady=(2, 0))
+        tf = ttk.LabelFrame(right, text="Tiempos de las reglas (segundos)", padding=4)
         tf.pack(fill="x", pady=(6, 0))
         self.tv: dict[str, Any] = {}
-        for key, lab, default in self.TIMES:
-            row = ttk.Frame(tf)
-            row.pack(fill="x")
-            ttk.Label(row, text=lab, width=28).pack(side="left")
+        for i, (key, lab, default) in enumerate(self.TIMES):  # en dos columnas: entra en pantallas de 768 de alto
+            ttk.Label(tf, text=lab).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0 if i % 2 == 0 else 12, 4))
             var = tk.StringVar(value=str(default))
-            ttk.Entry(row, textvariable=var, width=6).pack(side="left")
+            ttk.Entry(tf, textvariable=var, width=5).grid(row=i // 2, column=(i % 2) * 2 + 1, sticky="w", pady=1)
             self.tv[key] = var
         bt = ttk.Frame(tf)
-        bt.pack(fill="x", pady=(4, 0))
+        bt.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
         ttk.Button(bt, text="Probar estos tiempos", command=self.apply_times).pack(side="left")
         ttk.Button(bt, text="Zonas…", command=self.edit_zones).pack(side="left", padx=4)
-        af = ttk.LabelFrame(right, text="Alertas de prueba (no le llegan a nadie) · clic = ir al momento", padding=6)
+        af = ttk.LabelFrame(right, text="Alertas de prueba (no le llegan a nadie) · clic = ir al momento", padding=4)
         af.pack(fill="both", expand=True, pady=(6, 0))
-        self.alist = tk.Listbox(af, height=6, width=50)
+        self.alist = tk.Listbox(af, height=4, width=50)
         self.alist.pack(fill="both", expand=True)
         self.alist.bind("<<ListboxSelect>>", self.goto_alert)
-        sf = ttk.LabelFrame(right, text="Cómo anda la cámara", padding=6)
+        for key, label in (("1", "hurto"), ("2", "sospechoso"), ("3", "normal"), ("4", "falso_positivo"), ("0", None)):
+            self.alist.bind(key, lambda _e, lab=label: self.set_label(lab))
+        tb = ttk.Frame(af)
+        tb.pack(fill="x", pady=(4, 0))
+        ttk.Label(tb, text="Etiquetar: 1 hurto · 2 sospechoso · 3 normal · 4 falsa alarma", foreground="#666").pack(side="left")
+        self.train_btn = ttk.Button(tb, text="Mandar al entrenamiento", command=self.send_training)
+        self.train_btn.pack(side="right")
+        sf = ttk.LabelFrame(right, text="Cómo anda la cámara", padding=4)
         sf.pack(fill="x", pady=(6, 0))
-        self.stats_txt = tk.Text(sf, height=10, width=50, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 9))
+        self.stats_txt = tk.Text(sf, height=5, width=50, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 9))
         self.stats_txt.pack(fill="x")
+        self._fill_library()
         self.load()
         self.top.after(150, self.tick)
 
@@ -1991,7 +2129,10 @@ class TuneWindow:
                                               "sin guardar no cambia nada.")
             self._fill_times()
             if self.tuner is None:
-                self.start_live()
+                if any(v.exists() for v in self.lib.videos(self.cam["id"])):  # hay videos guardados: elegir qué ver
+                    self.state_lbl.configure(text="Elegí arriba a la derecha: «En vivo» o «▶ Videos de prueba».")
+                else:
+                    self.start_live()
 
         def fail(exc):
             self.state_lbl.configure(text=f"No se pudo preparar el ajuste: {exc}")
@@ -2017,26 +2158,31 @@ class TuneWindow:
         try:
             times = {k: float(v.get().replace(",", ".")) for k, v in self.tv.items()}
         except ValueError:
-            self.app.mb.showwarning("Vigía", "Los tiempos tienen que ser números.", parent=self.top)
+            self.app.mb.showwarning(NOMBRE, "Los tiempos tienen que ser números.", parent=self.top)
             return None
         if any(v < 0 for v in times.values()):
-            self.app.mb.showwarning("Vigía", "Los tiempos no pueden ser negativos.", parent=self.top)
+            self.app.mb.showwarning(NOMBRE, "Los tiempos no pueden ser negativos.", parent=self.top)
             return None
         return times
 
     # ---------- qué se analiza ----------
-    def _start(self, videos: list[str] | None = None) -> None:
+    def _start(self, videos: list[str] | None = None, library: list | None = None) -> None:
+        """Arranca el análisis: en vivo (sin `videos`), con videos sueltos o con los de la biblioteca (`library`)."""
         if self.info is None:
             return
         from .ajuste import Tuner
         if self.tuner is not None:
             self.tuner.stop()
+        self.run_videos = library
+        self.labels, self._results, self._results_key = {}, {}, None
+        if library is not None:
+            videos = [v.path for v in library]
         cfg = {**self.info["camera"], "analysis": self.analysis}
         try:
             self.tuner = Tuner(cfg, self.detector, videos)
         except ValueError as exc:
             self.tuner = None
-            return self.app.mb.showerror("Vigía", f"Las zonas o reglas de la cámara tienen un error: {exc}", parent=self.top)
+            return self.app.mb.showerror(NOMBRE, f"Las zonas o reglas de la cámara tienen un error: {exc}", parent=self.top)
         self.index, self.playing, self._shown, self._alerts_key = None, False, None, None
         self.play_btn.configure(text="▶")
         self.bar["value"] = 0
@@ -2047,11 +2193,250 @@ class TuneWindow:
 
     def pick_videos(self) -> None:
         from tkinter import filedialog
-        paths = filedialog.askopenfilenames(parent=self.top, title="Videos de esta cámara (se analizan uno tras otro)",
-                                            filetypes=[("Videos", "*.mp4 *.avi *.mkv *.mov *.ts *.dav *.264 *.h264"),
-                                                       ("Todos los archivos", "*.*")])
+        from .biblioteca import VIDEO_TYPES, default_folder
+        paths = filedialog.askopenfilenames(parent=self.top, title="Videos sueltos (no se guardan en la lista)",
+                                            initialdir=str(default_folder()),
+                                            filetypes=[VIDEO_TYPES, ("Todos los archivos", "*.*")])
         if paths:
             self._start(list(paths))
+
+    # ---------- videos de prueba (biblioteca) ----------
+    def _fill_library(self) -> None:
+        from .biblioteca import KINDS, fmt_ts
+        sel = self.vtree.selection()
+        self.vtree.delete(*self.vtree.get_children())
+        videos = self.lib.videos(self.cam["id"])
+        for v in videos:
+            kind = KINDS.get(v.kind, v.kind) + (f" {', '.join(fmt_ts(m) for m in v.marks)}" if v.marks else "")
+            res = v.last if v.exists() else "no está el archivo (¿lo moviste?)"
+            self.vtree.insert("", "end", iid=v.path, text=v.name, values=(kind, res))
+        if sel and self.vtree.exists(sel[0]):
+            self.vtree.selection_set(sel[0])
+        hurtos = [v for v in videos if v.kind == "hurto"]
+        normales = [v for v in videos if v.kind == "normal"]
+        seen = sum(1 for v in hurtos if v.last.startswith("✔"))
+        false = sum(1 for v in normales if v.last.startswith("✘"))
+        if not videos:
+            text = ("Agregá videos de esta cámara (hurtos y ratos normales). Quedan guardados: después de cambiar zonas "
+                    "o tiempos, «▶ Videos de prueba» los vuelve a analizar todos.")
+        else:
+            text = f"{len(videos)} video(s)"
+            if hurtos:
+                text += f" · hurtos vistos: {seen} de {len(hurtos)}"
+            if normales:
+                text += f" · normales con falsas alarmas: {false} de {len(normales)}"
+            if not hurtos and not normales:
+                text += " · decí con «Marcar» si cada uno es hurto o normal"
+        self.vsum.configure(text=text)
+
+    def _selected_video(self):
+        sel = self.vtree.selection()
+        if not sel:
+            self.app.mb.showinfo(NOMBRE, "Elegí un video de la lista.", parent=self.top)
+            return None
+        return next((v for v in self.lib.videos(self.cam["id"]) if v.path == sel[0]), None)
+
+    def add_videos(self) -> None:
+        from tkinter import filedialog
+
+        from .biblioteca import VIDEO_TYPES, default_folder
+        paths = filedialog.askopenfilenames(parent=self.top, title=f"Videos de prueba de {self.cam['name']}",
+                                            initialdir=str(default_folder()),
+                                            filetypes=[VIDEO_TYPES, ("Todos los archivos", "*.*")])
+        if not paths:
+            return
+        new = self.lib.add(self.cam["id"], list(paths))
+        self._fill_library()
+        if new:
+            self.vtree.selection_set(new[0].path)
+            self._start(library=new)  # se analizan enseguida
+
+    def run_library(self) -> None:
+        videos = [v for v in self.lib.videos(self.cam["id"]) if v.exists()]
+        if not videos:
+            return self.app.mb.showinfo(NOMBRE, "Todavía no hay videos de prueba de esta cámara: «Agregar…».",
+                                        parent=self.top)
+        self._start(library=videos)
+
+    def goto_video(self, _ev=None) -> None:
+        """Clic en un video de la lista: ir a su primer cuadro (si es parte de lo que se está analizando)."""
+        sel = self.vtree.selection()
+        t = self.tuner
+        if not sel or t is None or not self.run_videos:
+            return
+        seg = next((i for i, v in enumerate(self.run_videos) if v.path == sel[0]), None)
+        if seg is None:
+            return
+        first, end = t.bounds()
+        idx = next((i for i in range(first, end) if (smp := t.sample_at(i)) is not None and smp.seg == seg), None)
+        if idx is not None:
+            self.index, self.playing = idx, False
+            self.play_btn.configure(text="▶")
+
+    def mark_theft(self) -> None:
+        """El cuadro que se está viendo es el momento del hurto: se anota en ese video."""
+        from .biblioteca import fmt_ts
+        t = self.tuner
+        first, end = t.bounds() if t is not None else (0, 0)
+        idx = (end - 1 if self.index is None else self.index) if end > first else None
+        smp = t.sample_at(idx) if idx is not None else None
+        if smp is None or not self.run_videos or smp.seg >= len(self.run_videos):
+            return self.app.mb.showinfo(NOMBRE, "Primero analizá los videos de prueba («▶ Videos de prueba»), buscá con la "
+                                                "barra el momento del hurto y volvé a «Marcar».", parent=self.top)
+        video = next((v for v in self.lib.videos(self.cam["id"]) if v.path == self.run_videos[smp.seg].path), None)
+        if video is None:
+            return
+        if any(abs(m - smp.ts) < 2 for m in video.marks):
+            return
+        video.kind = "hurto"
+        video.marks = sorted(video.marks + [round(smp.ts, 1)])
+        self.lib.update(self.cam["id"], video)
+        self.run_videos[smp.seg] = video
+        self._results_key = None
+        self._fill_library()
+        self.state_lbl.configure(text=f"Anotado: hurto en {video.name} a los {fmt_ts(smp.ts)}.")
+
+    def set_kind(self, kind: str) -> None:
+        video = self._selected_video()
+        if video is None:
+            return
+        video.kind = kind
+        if kind != "hurto":
+            video.marks = []
+        self._save_video(video)
+
+    def clear_marks(self) -> None:
+        video = self._selected_video()
+        if video is not None:
+            video.marks = []
+            self._save_video(video)
+
+    def _save_video(self, video) -> None:
+        self.lib.update(self.cam["id"], video)
+        if self.run_videos:
+            self.run_videos = [video if v.path == video.path else v for v in self.run_videos]
+        self._results_key = None
+        self._fill_library()
+
+    def remove_video(self) -> None:
+        video = self._selected_video()
+        if video is None:
+            return
+        if self.app.mb.askyesno(NOMBRE, f"¿Sacar «{video.name}» de los videos de prueba de esta cámara?\n\nEl archivo no "
+                                        "se borra de la PC.", parent=self.top):
+            self.lib.remove(self.cam["id"], video.path)
+            self._fill_library()
+
+    def open_folder(self) -> None:
+        from .biblioteca import default_folder
+        open_file(str(default_folder()))
+
+    def _library_results(self, t) -> None:
+        """Cruza las alertas de prueba de cada video con lo marcado (hurto/normal) y lo guarda como «última prueba»."""
+        if not self.run_videos or t is None:
+            return
+        from .biblioteca import evaluate
+        key = (id(t), id(t.alerts), len(t.alerts), t.state, tuple((v.kind, tuple(v.marks)) for v in self.run_videos))
+        if key == self._results_key:
+            return
+        self._results_key = key
+        done = {i for i, seg in enumerate(t.segments()) if seg["done"] and not seg["error"]}
+        stamp = datetime.now().strftime("%d/%m %H:%M")
+        changed = False
+        for i, v in enumerate(self.run_videos):
+            if i not in done:
+                continue
+            res = evaluate(v, [a for a in t.alerts if a.seg == i], TYPE_NAMES)
+            self._results[i] = res
+            text = f"{res['text']} ({stamp})"
+            if v.last.split(" (")[0] != res["text"]:
+                v.last, v.last_at = text, datetime.now().isoformat(timespec="seconds")
+                self.lib.update(self.cam["id"], v)
+                changed = True
+        if changed:
+            self._fill_library()
+
+    # ---------- etiquetas para entrenar ----------
+    @staticmethod
+    def _alert_key(a) -> tuple:
+        return (a.seg, a.type, a.track_id, round(a.ts, 1))
+
+    def label_of(self, a) -> tuple[str | None, bool]:
+        """(etiqueta, puesta a mano). Sin etiqueta a mano, la que surge de lo marcado en el video (hurto/normal)."""
+        key = self._alert_key(a)
+        if key in self.labels:
+            return self.labels[key], True
+        if self.run_videos and a.seg < len(self.run_videos):
+            from .biblioteca import suggested_label
+            return suggested_label(self.run_videos[a.seg], a), False
+        return None, False
+
+    def set_label(self, label: str | None) -> None:
+        sel = self.alist.curselection()
+        if not sel or sel[0] >= len(self._alert_rows):
+            return
+        self.labels[self._alert_key(self._alert_rows[sel[0]])] = label
+        self._alerts_key = None
+        self._show_alerts(self.tuner)
+        self.alist.selection_set(sel[0])
+
+    def send_training(self) -> None:
+        """Manda las alertas de prueba etiquetadas como ejemplos para entrenar el modelo del cliente (no le llegan a
+        nadie). Si una ya se había mandado, se actualiza su etiqueta."""
+        t = self.tuner
+        if t is None:
+            return
+        rows = [(a, self.label_of(a)[0]) for a in list(t.alerts)]
+        rows = [(a, lab) for a, lab in rows if lab]
+        if not rows:
+            return self.app.mb.showinfo(NOMBRE, "No hay alertas etiquetadas. Elegí una alerta de la lista y apretá 1 "
+                                                "(hurto), 2 (sospechoso), 3 (normal) o 4 (falsa alarma). En los videos "
+                                                "marcados como hurto o normal se etiquetan solas.", parent=self.top)
+        counts = ", ".join(f"{n} {LABEL_NAMES.get(k, k).lower()}" for k, n in
+                           sorted(Counter(lab for _a, lab in rows).items()))
+        client = self.info["camera"].get("client_name") if self.info else ""
+        if not self.app.mb.askyesno(NOMBRE, f"¿Mandar {len(rows)} alerta(s) etiquetada(s) al entrenamiento del modelo "
+                                            f"de {client or 'este cliente'}? ({counts})\n\nNo le llegan a nadie y no se "
+                                            "ven en la web del cliente: solo sirven para que el modelo aprenda qué es "
+                                            "hurto y qué no en sus cámaras.", parent=self.top):
+            return
+        cid = self.cam["id"]
+        jobs = []
+        for a, lab in rows:
+            smp = t.sample_at(a.index)
+            img = t.render(a.index, objects=False)
+            if smp is None or img is None:
+                continue  # en vivo, el momento ya se descartó (se recuerdan 10 min)
+            ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            video = self.run_videos[a.seg] if self.run_videos and a.seg < len(self.run_videos) else None
+            jobs.append((a, lab, smp, jpg.tobytes() if ok else b"", video))
+        names = list(t.seg_names)
+
+        def work():
+            import json as _json
+
+            from .biblioteca import live_uuid, sample_uuid
+            sent = 0
+            for a, lab, smp, jpg, video in jobs:
+                uuid = sample_uuid(cid, video, a) if video else live_uuid(cid, a)
+                meta = {"camera_id": cid, "uuid": uuid, "type": a.type, "label": lab, "features": a.features,
+                        "description": a.description, "track_id": a.track_id, "video_ts": a.ts,
+                        "occurred_at": a.wall.isoformat() if a.wall else None,
+                        "bbox": list(a.bbox) if a.bbox else None, "frame_size": list(smp.size), "score": a.score,
+                        "video": video.name if video else (names[a.seg] if a.seg < len(names) else "en vivo")}
+                self.app.api.call("POST", "/api/training/samples", data={"meta": _json.dumps(meta)},
+                                  files={"snapshot": ("alerta.jpg", jpg, "image/jpeg")})
+                sent += 1
+            return sent
+
+        def done(sent):
+            self.app.mb.showinfo(NOMBRE, f"Listo: {sent} ejemplo(s) para entrenar. Cuando haya suficientes (al menos 30, "
+                                         "con 8 hurtos o sospechosos y 8 normales o falsas alarmas), entrená el modelo "
+                                         "desde «Entrenamiento…» en Clientes.", parent=self.top)
+        self.train_btn.configure(text="Mandando…")
+        self.app.bg.run(work, lambda n: (self.train_btn.configure(text="Mandar al entrenamiento"), done(n)),
+                        lambda e: (self.train_btn.configure(text="Mandar al entrenamiento"),
+                                   self.app.mb.showerror(NOMBRE, str(e), parent=self.top)))
 
     # ---------- tiempos y zonas ----------
     def apply_times(self) -> None:
@@ -2064,7 +2449,7 @@ class TuneWindow:
         if self.tuner is not None:
             t = self.tuner
             self.app.bg.run(lambda: t.set_times(times), lambda _: self._redraw(),
-                            lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+                            lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
     def _confirm_live(self) -> str | None:
         if not (self.info or {}).get("analyzed"):
@@ -2077,7 +2462,7 @@ class TuneWindow:
         if times is None or self.info is None:
             return
         warn = self._confirm_live()
-        if then is None and warn and not self.app.mb.askyesno("Vigía", warn, parent=self.top):
+        if then is None and warn and not self.app.mb.askyesno(NOMBRE, warn, parent=self.top):
             return
         raw = self.info["raw"]
         rules = {**(raw.get("rules") or {}), **times}
@@ -2096,7 +2481,7 @@ class TuneWindow:
             self.app.config_saved()
             if then:
                 then()
-        self.app.bg.run(work, done, lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+        self.app.bg.run(work, done, lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
     def edit_zones(self) -> None:
         if self.info is None:
@@ -2120,9 +2505,9 @@ class TuneWindow:
             if self.tuner is not None:
                 t, analysis = self.tuner, self.analysis
                 self.app.bg.run(lambda: t.set_analysis(analysis), lambda _: self._redraw(),
-                                lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+                                lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
         self.app.bg.run(lambda: self.agent.client.tune(self.cam["id"]), done,
-                        lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+                        lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
     # ---------- aprobar y cerrar ----------
     def approve(self) -> None:
@@ -2132,7 +2517,7 @@ class TuneWindow:
                "de verdad (les llegan a los empleados) y métricas.")
         if self.dirty:
             msg += "\n\nLos tiempos que estás probando se guardan."
-        if not self.app.mb.askyesno("Vigía", msg, parent=self.top):
+        if not self.app.mb.askyesno(NOMBRE, msg, parent=self.top):
             return
         cid, notes = self.cam["id"], self.notes.get().strip()
 
@@ -2143,11 +2528,11 @@ class TuneWindow:
 
             def done(_):
                 self.app.config_saved()
-                self.app.mb.showinfo("Vigía", f"«{self.cam['name']}» quedó aprobada. Las máquinas de análisis la toman en "
+                self.app.mb.showinfo(NOMBRE, f"«{self.cam['name']}» quedó aprobada. Las máquinas de análisis la toman en "
                                               "menos de un minuto (si hay alguna en línea: mirá «Analizar» en Clientes).",
                                      parent=self.top)
                 self.close(force=True)
-            self.app.bg.run(work, done, lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+            self.app.bg.run(work, done, lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
         if self.dirty:
             self.save_times(then=send)
         else:
@@ -2155,7 +2540,7 @@ class TuneWindow:
 
     def close(self, force: bool = False) -> None:
         if not force and self.dirty and not self.app.mb.askyesno(
-                "Vigía", "Hay tiempos probados sin guardar. ¿Cerrar igual?", parent=self.top):
+                NOMBRE, "Hay tiempos probados sin guardar. ¿Cerrar igual?", parent=self.top):
             return
         self.closed = True
         if self.tuner is not None:
@@ -2227,13 +2612,13 @@ class TuneWindow:
                     self.playing = False
                     self.play_btn.configure(text="▶")
             idx = end - 1 if self.index is None else min(max(self.index, first), end - 1)
-            key = (id(t), idx, id(t.alerts), id(t.marks))
+            key = (id(t), idx, id(t.alerts), id(t.marks), self.show_objects.get())
             if key != self._shown:
-                img = t.render(idx)
+                img = t.render(idx, objects=self.show_objects.get())
                 if img is not None:
                     self.photo = ppm_photo(self.app.tk, img, self.W, self.H)
                     self.canvas.delete("all")
-                    self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+                    self.canvas.create_image(self.W // 2, self.H // 2, image=self.photo, anchor="center")
                 self._shown = key
                 s = t.sample_at(idx)
                 if s is not None:
@@ -2248,6 +2633,7 @@ class TuneWindow:
                 jpg = t.sample_at(end - 1).jpg
                 self.app.bg.run(lambda: self.agent.client.preview(self.cam["id"], jpg), None, lambda e: None)
         self._show_state(t)
+        self._library_results(t)
         self._show_alerts(t)
         if now - self._stats_at > 1.0:
             self._stats_at = now
@@ -2276,7 +2662,7 @@ class TuneWindow:
 
     def _show_alerts(self, t) -> None:
         alerts = t.alerts
-        key = (id(t), id(alerts), len(alerts))
+        key = (id(t), id(alerts), len(alerts), self._results_key)
         if key == self._alerts_key:
             return
         self._alerts_key = key
@@ -2284,7 +2670,10 @@ class TuneWindow:
         self.alist.delete(0, "end")
         for a in self._alert_rows:
             model = "" if a.score is None else f" · modelo {a.score:.2f}" + ("" if a.kept else " (la descartaría)")
-            self.alist.insert("end", f"{t.clock_text(a)}   {TYPE_NAMES.get(a.type, a.type)}{model} · {a.description}")
+            label, manual = self.label_of(a)
+            tag = f"[{LABEL_NAMES.get(label, label).lower()}{'' if manual else '?'}] " if label else ""
+            self.alist.insert("end", f"{tag}{t.clock_text(a)}   {TYPE_NAMES.get(a.type, a.type)}{model} · "
+                                     f"{a.description}")
         if not self._alert_rows:
             self.alist.insert("end", "Todavía ninguna." if t.state not in ("listo",) else "Ninguna con estas zonas y tiempos.")
             self._alert_rows = []
@@ -2301,7 +2690,11 @@ class TuneWindow:
             per_hour = f" (≈ {st['per_hour']:.1f} por hora)" if st.get("per_hour") is not None else ""
             dropped = f" · el modelo entrenado descartaría {st['dropped']}" if st.get("dropped") else ""
             lines.append(f"Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
-        if not t.live:
+            if st.get("objects"):
+                lines.append("YOLO también ve: " + ", ".join(f"{k} ({v:.0f} % de los cuadros)" for k, v in st["objects"]))
+            if st.get("night_pct", 0) > 50:
+                lines.append(f"Imagen de noche (infrarrojo) en el {st['night_pct']:.0f} % de los cuadros")
+        if not t.live and not self.run_videos:
             for seg in t.segments():
                 if seg["error"]:
                     res = seg["error"]
@@ -2347,7 +2740,7 @@ class NamesWindow:
         ttk.Label(frm, wraplength=self.COLS * (self.TW + 24), justify="left", text=(
             "Mirá la imagen y ponele a cada cámara un nombre que diga qué muestra (por ejemplo «Caja 1», «Heladeras», "
             "«Puerta»). Debajo, lo que ve la IA y un tipo sugerido: es una pista, puede equivocarse. El nombre se cambia "
-            "en Vigía (no en el grabador) y las alertas viejas pasan a mostrar el nombre nuevo.")).grid(
+            f"en {NOMBRE} (no en el grabador) y las alertas viejas pasan a mostrar el nombre nuevo.")).grid(
             row=0, column=0, columnspan=2, sticky="w")
         bar = ttk.Frame(frm)
         bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 4))
@@ -2371,10 +2764,22 @@ class NamesWindow:
             self.top.bind_all(seq, self._wheel, add="+")
         for i, cam in enumerate(self.cams):
             self._card(i, cam)
+        self.status.configure(text="Buscando las imágenes…")
+        # la lista de cámaras de la app puede estar vieja (por ejemplo, imágenes traídas recién): se pide de nuevo
+        self.app.bg.run(lambda: self.app.api.get("/api/cameras"), self._start_previews,
+                        lambda _e: self._start_previews(None))
+
+    def _start_previews(self, fresh: list | None) -> None:
+        if self.closed:
+            return
+        if fresh:
+            by_id = {c["id"]: c for c in fresh}
+            for cam in self.cams:
+                cam["has_preview"] = bool(by_id.get(cam["id"], cam).get("has_preview"))
         self._run([(c, "preview") for c in self.cams if c.get("has_preview")])
         missing = sum(1 for c in self.cams if not c.get("has_preview"))
-        if missing:
-            self.status.configure(text=f"{missing} cámara(s) sin imagen: «Traer imágenes nuevas» las abre de a una.")
+        self.status.configure(text=f"{missing} cámara(s) sin imagen: «Traer imágenes nuevas» las abre de a una."
+                              if missing else "")
 
     def _wheel(self, ev) -> None:
         if self.closed or not str(ev.widget).startswith(str(self.top)):
@@ -2447,6 +2852,7 @@ class NamesWindow:
                     okj, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     if okj:
                         self.agent.client.preview(cam["id"], jpg.tobytes())
+                        cam["has_preview"] = True  # al volver a abrir la ventana, se baja esta imagen
                 info = describe(img, det, plans) if det is not None else None
                 self._post(self._show, (cam["id"], img, info))
                 ok += 1
@@ -2532,7 +2938,7 @@ class NamesWindow:
         for cid, card in self.cards.items():
             name, prof = card["name"].get().strip(), card["prof"].get()
             if not name:
-                self.app.mb.showwarning("Vigía", "Hay una cámara sin nombre.", parent=self.top)
+                self.app.mb.showwarning(NOMBRE, "Hay una cámara sin nombre.", parent=self.top)
                 return None
             if (name, prof) != card["orig"]:
                 key = next((k for k, t in PROFILE_NAMES.items() if t == prof), None)
@@ -2544,21 +2950,21 @@ class NamesWindow:
         if rows is None:
             return
         if not rows:
-            return self.app.mb.showinfo("Vigía", "No cambiaste ningún nombre ni tipo.", parent=self.top)
+            return self.app.mb.showinfo(NOMBRE, "No cambiaste ningún nombre ni tipo.", parent=self.top)
 
         def done(res):
             for r in rows:
                 card = self.cards[r["id"]]
                 card["orig"] = (card["name"].get().strip(), card["prof"].get())
             self.app.config_saved()
-            self.app.mb.showinfo("Vigía", f"Guardado: {res['renamed']} nombre(s) y {res['retyped']} tipo(s).",
+            self.app.mb.showinfo(NOMBRE, f"Guardado: {res['renamed']} nombre(s) y {res['retyped']} tipo(s).",
                                  parent=self.top)
         self.app.bg.run(lambda: self.app.api.post("/api/cameras/names", {"cameras": rows}), done,
-                        lambda e: self.app.mb.showerror("Vigía", str(e), parent=self.top))
+                        lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
     def close(self) -> None:
         rows = self._changes()
-        if rows and not self.app.mb.askyesno("Vigía", f"Hay {len(rows)} cambio(s) sin guardar. ¿Cerrar igual?",
+        if rows and not self.app.mb.askyesno(NOMBRE, f"Hay {len(rows)} cambio(s) sin guardar. ¿Cerrar igual?",
                                              parent=self.top):
             return
         self.closed = True

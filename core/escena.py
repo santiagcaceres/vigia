@@ -53,11 +53,17 @@ def describe(frame: np.ndarray, detector, plans: tuple[str, ...] | list[str] = (
     persons = sum(1 for d in dets if d.label == "persona")
     objects = Counter(d.label for d in dets if d.label != "persona" and d.conf >= OBJECT_CONF)
     h, w = frame.shape[:2]
+    dark, night = light(frame)
+    return {"persons": persons, "objects": dict(objects.most_common()), "size": (w, h),
+            "dark": dark, "night": night, "suggestion": suggest(objects, plans)}
+
+
+def light(frame: np.ndarray) -> tuple[bool, bool]:
+    """(imagen oscura, de noche en blanco y negro por el infrarrojo): con poca luz el detector ve menos."""
     small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
     gray = float(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).mean())
     sat = float(cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[:, :, 1].mean())
-    return {"persons": persons, "objects": dict(objects.most_common()), "size": (w, h),
-            "dark": gray < 50, "night": sat < 12, "suggestion": suggest(objects, plans)}
+    return gray < 50, sat < 12
 
 
 def suggest(objects: dict, plans: tuple[str, ...] | list[str] = ()) -> dict | None:

@@ -140,11 +140,11 @@ class ClientNotifier:
         html = (f"<p>{message}</p>"
                 f'<p><a href="{link}" style="background:#b91c1c;color:#fff;padding:10px 16px;'
                 f'border-radius:8px;text-decoration:none">Ver el clip</a></p>'
-                f'<p style="color:#666;font-size:12px">Vigía · {client_name}</p>')
+                f'<p style="color:#666;font-size:12px">Analítica Crítica · {client_name}</p>')
         r = httpx.post("https://api.resend.com/emails",
                        headers={"Authorization": f"Bearer {self.resend_key}"},
                        json={"from": self.email_from, "to": [to],
-                             "subject": f"Vigía · posible hurto en {client_name}", "html": html},
+                             "subject": f"Analítica Crítica · posible hurto en {client_name}", "html": html},
                        timeout=self.timeout)
         r.raise_for_status()
 

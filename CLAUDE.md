@@ -1,8 +1,13 @@
-# Vigía — contexto del proyecto
+# Analítica Crítica (en el código: Vigía) — contexto del proyecto
 
 Sistema comercial que vigila cámaras **Hikvision y Dahua**, detecta comportamiento sospechoso (posible
 hurto), guarda el clip y lo manda a revisión humana. Multi-cliente. Todo en español:
 código, comentarios, interfaz y trato con el usuario.
+
+**Marca (28 oct, pedido del dueño): «Analítica Crítica»** en todo lo que se ve (app, web, mails, guías). Por dentro
+sigue «vigia» (paquetes, variables `VIGIA_*`, registros, bucket, repo): no renombrar eso. Logo: `docs/marca/` (la imagen
+original dice «Análitica», con la tilde mal: se usa solo el ojo y el nombre se escribe aparte) → `python -m tools.logo`
+genera `agent/recursos/` (íconos de la app y el .ico del .exe) y `public/img/` + `public/favicon.ico`.
 
 ## Estado: EN PRODUCCIÓN
 
@@ -381,6 +386,34 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   confirmar), g6.xlarge (L4) 1,368, g5.xlarge (A10G) 1,71. Con placa de video, el procesador solo decodifica y hace
   el resto: g4dn.xlarge estimado 40-80 cámaras (sin probar). Prender solo en horario necesita el encendedor (hoy solo
   AWS: `agent/escalador.py`).
+- **App 1.22.0 (28 oct): marca, videos de prueba, YOLO completo y entrenamiento desde la app.**
+  - **Marca en la app** (`agent/marca.py`): título, logo en la entrada y el encabezado, ícono de la ventana y de la barra de
+    tareas (`iconbitmap(default=.ico)` + AppUserModelID) y del .exe (`agente_pc.spec`: `icon=`, datos de versión que
+    muestra Windows). El .zip se llama `AnaliticaCritica-windows.zip` pero **trae `VigiaAgente.exe`** (las versiones
+    viejas solo saben actualizarse con ese nombre); al arrancar, `actualizar.adopt_name()` lo renombra a «Analítica
+    Crítica.exe» (Windows deja renombrar un .exe abierto; así el escritorio muestra el nombre y el ícono nuevos).
+    `current_exe()` sigue el nombre nuevo; `extract_exe` acepta los dos. Un acceso directo o tarea programada al nombre
+    viejo deja de andar: rehacerlos.
+  - **Videos de prueba por cámara** (`agent/biblioteca.py`, en «Ajustar…»): la lista va en `<datos>/videos_prueba.json`
+    (los videos no se suben; se eligen de Descargas\VIGIA). «Agregar…» los guarda y los analiza; «▶ Videos de prueba»
+    vuelve a analizar todos; «Marcar ▾»: hurto en el momento que se ve / video normal / sin clasificar. `evaluate` cruza
+    las alertas de prueba con eso (una alerta «ve» el hurto si sale de 20 s antes a 90 s después) → «✔ vio el hurto
+    (merodeo 1:35)», «✘ no vio el hurto de 1:00», «✘ 2 falsas alarmas»; queda como «Última prueba». Videos «1080p
+    lite» (960x1080 con píxeles 2:1): se estiran según lo que declara el archivo (`pixel_aspect`).
+  - **YOLO completo** (`OnnxYoloDetector.detect_also`): en la misma pasada del modelo, además de las personas (idénticas
+    a las de las máquinas), los objetos de `COCO_ES` (mochila, cartera, botella…) con confianza ≥ 0,45: se dibujan en
+    violeta (casilla «Objetos») y se cuentan («YOLO también ve: …»), no entran al seguimiento ni a las reglas. También
+    avisa imagen oscura o infrarrojo.
+  - **Entrenar desde la app:** en las alertas de prueba, teclas 1-4 (sin etiqueta a mano, la sugiere lo marcado: hurto
+    en el momento marcado → «hurto»; video normal → «falso_positivo») y «Mandar al entrenamiento» →
+    `POST /api/training/samples` (staff; foto + `features`): evento `source="ajuste"` (`source` es varchar(12)),
+    `alert=False`, con etiqueta. No es alerta: no cuenta en estadísticas, `/api/events` no lo lista salvo
+    `source=ajuste` y el cliente no lo ve nunca. El mismo `uuid` (hash de cámara, video, momento, tipo, persona) actualiza
+    la etiqueta. Clientes → «Entrenamiento del modelo…»: ejemplos por cliente, «Entrenar ahora» y activar
+    (`/api/training/summary` trae `from_tuning`).
+  - Arreglado: «Nombres e imágenes» pide la lista de cámaras de nuevo al abrir (antes una cámara con imagen recién traída
+    salía «Sin imagen»).
+  - Guías del cliente y del técnico (`docs/*.html` + PDF) con el nombre nuevo; la del técnico, con la app de ahora.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
@@ -587,7 +620,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ## Desarrollo
 
 ```bash
-python -m pytest -q                 # 196 tests (unos 40 se saltean sin Postgres)
+python -m pytest -q                 # ~210 tests (unos 55 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
 python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision

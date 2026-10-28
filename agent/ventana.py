@@ -31,9 +31,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import marca
+
 log = logging.getLogger("vigia.ventana")
 
-TITULO = "Vigia - PC central"
+TITULO = marca.NOMBRE
 TILE_W, TILE_H = 640, 360
 ESTADOS = {"en_linea": "En línea", "sin_conexion": "Sin conexión", "reconectando": "Reconectando",
            "error": "Error", "iniciando": "Conectando", "detenida": "Detenida", "escuchando": "Escuchando alarmas"}
@@ -59,7 +61,7 @@ def tile(frame: np.ndarray | None, name: str, state: str) -> np.ndarray:
 def mosaic(tiles: list[tuple[str, np.ndarray | None, str]]) -> np.ndarray:
     """Arma la grilla: 1 cámara = 1 celda grande; 2 = lado a lado; 3-4 = 2x2; 5-9 = 3x3..."""
     if not tiles:
-        return tile(None, "Vigia", "Elegi a la izquierda las camaras para ver")
+        return tile(None, "Analitica Critica", "Elegi a la izquierda las camaras para ver")
     n = len(tiles)
     cols = math.ceil(math.sqrt(n))
     rows = math.ceil(n / cols)
@@ -135,6 +137,7 @@ class Ventana:
             self.failed = True
             log.warning("No se puede abrir la ventana (%s). El agente sigue sin ella.", exc)
             return
+        marca.set_app_id()
         try:
             self.root = tk.Tk()
         except Exception as exc:  # sin pantalla (servidor)
@@ -143,6 +146,7 @@ class Ventana:
             return
         self.tk, self.ttk, self.messagebox = tk, ttk, messagebox
         self.root.title(TITULO)
+        marca.apply_icon(self.root)
         self.root.geometry("1280x760")
         self.root.minsize(900, 560)
         self.root.protocol("WM_DELETE_WINDOW", self._ask_close)
@@ -155,7 +159,7 @@ class Ventana:
 
     def _ask_close(self) -> None:
         if not self.main_built or not getattr(self, "analyze", False) or self.messagebox.askyesno(
-                TITULO, "¿Cerrar Vigía?\n\nMientras esté cerrado, esta PC deja de analizar las cámaras."):
+                TITULO, f"¿Cerrar {marca.NOMBRE}?\n\nMientras esté cerrado, esta PC deja de analizar las cámaras."):
             self.close()
 
     # ---------------- inicio de sesión ----------------
@@ -168,7 +172,12 @@ class Ventana:
         tk, ttk = self.tk, self.ttk
         frame = ttk.Frame(self.root, padding=30)
         frame.place(relx=0.5, rely=0.45, anchor="center")
-        ttk.Label(frame, text="Vigía", font=("Segoe UI", 26, "bold")).grid(row=0, column=0, columnspan=2, pady=(0, 2))
+        self._login_logo = marca.logo(self.root, 96)
+        head = ttk.Frame(frame)
+        head.grid(row=0, column=0, columnspan=2, pady=(0, 2))
+        if self._login_logo is not None:
+            ttk.Label(head, image=self._login_logo).pack(pady=(0, 6))
+        ttk.Label(head, text=marca.NOMBRE, font=("Segoe UI", 24, "bold"), foreground="#011b5d").pack()
         ttk.Label(frame, text="Gestión de clientes, cámaras y alertas", foreground="#666").grid(row=1, column=0, columnspan=2, pady=(0, 18))
         user, pwd = tk.StringVar(), tk.StringVar()
         for i, (label, var, show) in enumerate((("Usuario", user, ""), ("Clave", pwd, "•")), start=2):
@@ -220,7 +229,10 @@ class Ventana:
         top = ttk.Frame(self.root, padding=(10, 6))
         top.pack(side="top", fill="x")
         self.header = top  # la Oficina suma acá el botón de actualizar
-        ttk.Label(top, text="Vigía", font=("Segoe UI", 14, "bold")).pack(side="left")
+        self._header_logo = marca.logo(self.root, 28)
+        if self._header_logo is not None:
+            ttk.Label(top, image=self._header_logo).pack(side="left", padx=(0, 6))
+        ttk.Label(top, text=marca.NOMBRE, font=("Segoe UI", 14, "bold"), foreground="#011b5d").pack(side="left")
         self.status = ttk.Label(top, text=f"  ·  {title}", foreground="#666")
         self.status.pack(side="left")
         ttk.Button(top, text="Cerrar sesión", command=self._logout).pack(side="right")

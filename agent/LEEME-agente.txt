@@ -1,21 +1,20 @@
-AGENTE VIGÍA PARA WINDOWS
-=========================
+ANALÍTICA CRÍTICA - APP DE ESCRITORIO PARA WINDOWS
+==================================================
 
-1. Descomprimí esta carpeta donde quieras (por ejemplo C:\Vigia).
-2. Abrí VigiaAgente.exe y entrá con tu usuario y clave (administrador o empleado).
-   - Si esta PC tiene que ANALIZAR las cámaras (la PC central), dejá tildado «Esta PC analiza las
-     cámaras» (solo administradores) y poné un nombre para la PC.
-   - Si es un puesto de empleado para revisar alertas, destildalo.
-   La sesión queda guardada (agente.env, al lado del .exe). "Cerrar sesión" para cambiar de usuario.
-   Pestañas: En vivo (solo PC central), Clientes y cámaras, Alertas, Administración (solo admin).
-3. Se abren dos ventanas: la negra (registro) y "Vigia - PC central": a la izquierda la lista
-   de clientes y cámaras con su estado (elegí cuáles ver; un cliente = todas las suyas) y a la
-   derecha el mosaico en vivo con las personas recuadradas. Podés cerrarla; el agente sigue.
-   En el panel, Clientes -> cliente -> cámara, la cámara pasa a "En línea" en menos de un minuto.
+1. Descomprimí esta carpeta donde quieras (por ejemplo en el Escritorio o en C:\AnaliticaCritica).
+2. Abrí VigiaAgente.exe. La primera vez se renombra solo a «Analítica Crítica.exe» (con el logo):
+   de ahí en adelante abrí ese.
+3. Entrá con tu usuario y clave (administrador o empleado). La sesión queda guardada en agente.env,
+   al lado del programa. «Cerrar sesión» para entrar con otro usuario.
 
-Para que arranque solo con Windows: Programador de tareas -> Crear tarea básica ->
-"Al iniciar sesión" -> Iniciar un programa -> VigiaAgente.exe, y marcar "Reiniciar si falla".
+Pestañas:
+- En vivo: todas las cámaras de todos los clientes; clic en una para mirarla.
+- Clientes: clientes y cámaras, qué se analiza, «Ajustar…» (zonas, tiempos y videos de prueba de cada
+  cámara), «Nombres e imágenes…».
+- Alertas: revisar, etiquetar (teclas 1-4) y avisar al cliente.
+- Administración (solo administradores): usuarios, máquinas de análisis.
 
-Opcional: instalar ffmpeg (winget install Gyan.FFmpeg) para que los clips pesen menos.
-Si Windows Defender lo frena ("Windows protegió su PC"): Más información -> Ejecutar de todas
-formas. Es un .exe sin firma digital; se compila desde el código del repositorio.
+Para actualizar: botón «Buscar actualización» arriba a la derecha (no hace falta bajar nada a mano).
+
+Si Windows Defender lo frena («Windows protegió su PC»): Más información -> Ejecutar de todas formas.
+Es un .exe sin firma digital; se compila desde el código del repositorio.

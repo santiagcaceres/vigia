@@ -46,22 +46,24 @@ jobs:
           $p = Start-Process -FilePath dist\VigiaAgente.exe -ArgumentList "--help" -PassThru -Wait
           if ($p.ExitCode -ne 0) { exit 1 }
       - name: Armar carpeta
+        # el .exe va como VigiaAgente.exe: las versiones viejas (hasta la 1.21) solo saben actualizarse con ese
+        # nombre; al arrancar, el programa se renombra solo a «Analítica Crítica.exe»
         run: |
-          New-Item -ItemType Directory -Force dist\VigiaAgente | Out-Null
-          Copy-Item dist\VigiaAgente.exe dist\VigiaAgente\
-          Copy-Item agent\LEEME-agente.txt dist\VigiaAgente\LEEME.txt
-          Compress-Archive -Path dist\VigiaAgente\* -DestinationPath dist\VigiaAgente-windows.zip -Force
+          New-Item -ItemType Directory -Force dist\AnaliticaCritica | Out-Null
+          Copy-Item dist\VigiaAgente.exe dist\AnaliticaCritica\
+          Copy-Item agent\LEEME-agente.txt dist\AnaliticaCritica\LEEME.txt
+          Compress-Archive -Path dist\AnaliticaCritica\* -DestinationPath dist\AnaliticaCritica-windows.zip -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: VigiaAgente-windows
-          path: dist\VigiaAgente-windows.zip
+          name: AnaliticaCritica-windows
+          path: dist\AnaliticaCritica-windows.zip
           retention-days: 30
       - name: Publicar en Releases
         if: startsWith(github.ref, 'refs/tags/agente-v') || inputs.version != ''
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/VigiaAgente-windows.zip
+          files: dist/AnaliticaCritica-windows.zip
           tag_name: ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
           name: Agente ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
           make_latest: true
-          body: "App de escritorio de Vigía para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe. Para actualizar: botón «Actualizar» dentro de la app (o reemplazar VigiaAgente.exe a mano; agente.env se conserva)."
+          body: "App de escritorio de Analítica Crítica para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe (se renombra solo a «Analítica Crítica.exe»). Para actualizar: botón «Buscar actualización» dentro de la app; agente.env se conserva."

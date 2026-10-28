@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>Vigía · Guía de instalación para el cliente</title>
+<title>Analítica Crítica · Guía de instalación para el cliente</title>
 <style>
   @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
   :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#e5484d; --ok:#2f8f46; --warn:#b7791f; --bg:#f4f6f8; }
@@ -37,13 +37,13 @@
 <body>
 
 <div class="cover">
-  <h1>Vigía · Guía de instalación</h1>
+  <h1>Analítica Crítica · Guía de instalación</h1>
   <div class="sub">Cómo dejar tu grabador listo para que el sistema vea tus cámaras, paso a paso</div>
   <p class="muted small">Versión del 22 de octubre de 2026 · Tiempo estimado: 1 a 2 horas · Dificultad: media (si ya entraste alguna vez al router o al grabador, la vas a poder hacer)</p>
 </div>
 
 <div class="box ok">
-  <b>Qué vamos a lograr.</b> Que la PC central de Vigía pueda ver el video de tus cámaras por internet, de forma segura, sin instalar nada en tu local.
+  <b>Qué vamos a lograr.</b> Que la PC central de Analítica Crítica pueda ver el video de tus cámaras por internet, de forma segura, sin instalar nada en tu local.
   Para eso hay que hacer tres cosas: (1) crear un usuario en el grabador, (2) abrir dos puertos en el router, y (3) probar desde afuera que se vea.
   Después, nosotros cargamos tus cámaras en el sistema y vos entrás a tu panel web, con tu usuario, para ver tus cámaras y las alertas de tu local.
 </div>
@@ -55,7 +55,7 @@
   <li>El router: IP fija para el grabador y dos puertos abiertos</li>
   <li>Probar desde afuera (celular con datos)</li>
   <li>Datos que nos tenés que mandar</li>
-  <li>Qué pasa del otro lado: la PC central de Vigía</li>
+  <li>Qué pasa del otro lado: la PC central de Analítica Crítica</li>
   <li>Tu acceso web: cámaras, alertas e incidentes de tu local</li>
   <li>Seguridad: lo que no hay que hacer</li>
   <li>Si algo falla</li>
@@ -194,13 +194,13 @@
   <tr><td>Nombre y celular de la persona a la que avisar si hay un posible hurto</td><td><span class="fill"></span></td></tr>
 </table>
 
-<h2 class="pb">6. Qué pasa del otro lado: la PC central de Vigía</h2>
-<p>Con el grabador accesible, el trabajo lo hace la <b>PC central de Vigía</b>, que está en nuestra oficina y queda prendida las 24 horas. No tenés que instalar nada ni hacer nada más: vos no accedés a esa PC.</p>
+<h2 class="pb">6. Qué pasa del otro lado: la PC central de Analítica Crítica</h2>
+<p>Con el grabador accesible, el trabajo lo hace la <b>PC central de Analítica Crítica</b>, que está en nuestra oficina y queda prendida las 24 horas. No tenés que instalar nada ni hacer nada más: vos no accedés a esa PC.</p>
 <div class="box">
   <b>Lo que hace la PC central:</b> entra a tu grabador con el usuario <code>vigia</code>, mira el video, detecta personas, mide dónde están y cuánto tiempo, y cuando algo coincide con una regla (por ejemplo, 45 segundos frente a una góndola y salida sin pasar por caja) guarda el video de esa situación, desde que la persona entró hasta que se fue, y lo sube al sistema. El resto del video <b>no</b> se guarda ni se sube. Lo que entra a tu grabador es solo lectura: no cambia ninguna configuración.
 </div>
 <p>Para que eso funcione, las <b>zonas</b> de cada cámara (góndolas, cajas, salida) las dibujamos nosotros sobre la imagen, con la información que nos mandás en la tabla del punto 5. Por eso es importante que nos digas qué ve cada cámara.</p>
-<p>El equipo de Vigía <b>revisa cada alerta</b> antes de avisarte: una persona mira el video y decide si vale la pena que lo veas. Nunca te va a llegar un aviso automático.</p>
+<p>El equipo de Analítica Crítica <b>revisa cada alerta</b> antes de avisarte: una persona mira el video y decide si vale la pena que lo veas. Nunca te va a llegar un aviso automático.</p>
 
 <h2>7. Tu acceso web</h2>
 <p>Te vamos a mandar por privado la <b>dirección web</b>, un <b>usuario</b> y una <b>clave</b>. Con eso entrás desde cualquier PC o celular. Tu usuario solo ve <b>tu local</b>: nadie más ve tus cámaras y vos no ves las de otros.</p>
@@ -241,13 +241,13 @@
   <tr><td>El navegador abre pero VLC no muestra video</td><td>Falta la regla del 38554 (es otra regla, distinta del HTTP), o la clave tiene <code>@</code>, <code>:</code> o <code>#</code>. Probá primero con el usuario admin para descartar permisos.</td></tr>
   <tr><td>VLC da "no se pudo abrir" desde la PC del local</td><td>Normal: el router no rebota la IP pública desde adentro. Probá desde el celular con datos o con la IP interna (<code>192.168.1.x</code>).</td></tr>
   <tr><td>Al entrar a <code>http://IP/ISAPI/System/deviceInfo</code> dice 401</td><td>El navegador no manda usuario y clave. No importa: la prueba válida es VLC.</td></tr>
-  <tr><td>En el panel, la cámara dice "Sin conexión"</td><td>La PC central de Vigía no llega a tu grabador: cambió la IP pública, se borró una regla del router, o el grabador está apagado. Volvé a probar el paso 4 y avisanos.</td></tr>
+  <tr><td>En el panel, la cámara dice "Sin conexión"</td><td>La PC central de Analítica Crítica no llega a tu grabador: cambió la IP pública, se borró una regla del router, o el grabador está apagado. Volvé a probar el paso 4 y avisanos.</td></tr>
   <tr><td>Hay alertas de gente que solo pasa o mira</td><td>Es lo esperado al principio. Nuestro equipo las marca como normales y el sistema aprende a descartarlas. Si son muchas, ajustamos los tiempos de las reglas de tu local.</td></tr>
   <tr><td>El video se corta o se ve a saltos</td><td>Poca subida de internet en el local o flujo secundario muy pesado. Bajarlo a 640×360, 10 cuadros por segundo, H.264 (paso 2.3).</td></tr>
   <tr><td>El clip muestra otro momento</td><td>La hora del grabador está mal (paso 2.5).</td></tr>
   <tr><td>El grabador dejó de responder después de varios intentos</td><td>Se bloqueó por intentos fallidos durante 30 minutos. Esperar, o reiniciarlo.</td></tr>
 </table>
 
-<p class="muted small" style="margin-top:24px">Ante cualquier duda, mandanos una captura de pantalla de lo que ves y te guiamos. Vigía · 2026.</p>
+<p class="muted small" style="margin-top:24px">Ante cualquier duda, mandanos una captura de pantalla de lo que ves y te guiamos. Analítica Crítica · 2026.</p>
 </body>
 </html>
