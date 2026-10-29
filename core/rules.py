@@ -202,6 +202,7 @@ class RuleEngine:
         self._states: dict[int, _TrackState] = {}
         self._last_fired: dict[tuple[str, str | None], float] = {}
         self.gestures = GestureEngine(self.cfg.gestures) if self.cfg.gestures.enabled else None
+        self._people: list[Track] = []
 
     def update(self, tracks: list[Track], ts: float, frame_size: tuple[int, int],
                wall_time: datetime | None = None, objects: list | None = None) -> list[RuleEvent]:
@@ -215,6 +216,8 @@ class RuleEngine:
         if self.gestures is not None:
             self.gestures.forget(live)
         bags = [o.bbox for o in objects or () if getattr(o, "label", "") in BAG_LABELS]
+        # las demás personas, con su último recuadro aunque en este cuadro no se las haya visto (para los gestos)
+        self._people = [t for t in tracks if t.label != VEHICLE_LABEL]
         has_shelves = any(z.type == "shelf" for z in self.zones)
         visible = sum(1 for t in tracks if t.visible and t.label != VEHICLE_LABEL)
 
@@ -290,7 +293,8 @@ class RuleEngine:
         mine = [b for b in bags if _belongs(b, t.bbox)]
         hits = self.gestures.step(t.id, t.kpts, t.bbox, ts, near_shelf=near,
                                   at_checkout=any(z.type == "checkout" for z in now.values()),
-                                  staff=any(z.type == "staff" for z in now.values()), bags=mine)
+                                  staff=any(z.type == "staff" for z in now.values()), bags=mine,
+                                  others=[o.bbox for o in self._people if o.id != t.id])
         person = self.gestures.people.get(t.id)
         if person is not None and person.take_ts == ts and st.last_shelf is not None and not st.pending_items:
             # una toma de verdad (brazo al estante y vuelta) frente a una góndola: «tomó algo»

@@ -103,7 +103,7 @@ class _Hand:
     reach_since: float | None = None
     reach_frames: int = 0
     reached_ts: float | None = None  # último alcance confirmado (brazo estirado 2 cuadros o más)
-    region_before_take: str | None = None
+    free_ts: float = -1e9  # última vez que se la vio fuera de toda región (libre)
 
 
 @dataclass
@@ -124,6 +124,25 @@ class _Person:
     conf_drop: float = 0.0
     frames_ok: int = 0
     frames_seen: int = 0
+    first_ts: float = 0.0
+    feet: deque = field(default_factory=lambda: deque(maxlen=40))  # (ts, x, y) de las caderas, en altos de persona
+
+    def speed(self, ts: float, window: float = 1.0) -> float:
+        """Cuánto se movió en el último segundo, en altos de su cuerpo por segundo (0,2 = casi quieta)."""
+        pts = [f for f in self.feet if ts - f[0] <= window]
+        if len(pts) < 2 or pts[-1][0] - pts[0][0] < 0.3:
+            return 0.0
+        return math.hypot(pts[-1][1] - pts[0][1], pts[-1][2] - pts[0][2]) / (pts[-1][0] - pts[0][0])
+
+
+def _inside_any(p, boxes, grow: float = 0.1) -> bool:
+    """El punto cae dentro de alguno de los recuadros (agrandados un poco: la mano que se le acerca a otra persona
+    queda en el borde de su recuadro)."""
+    for b in boxes or ():
+        mx, my = grow * (b[2] - b[0]), grow * (b[3] - b[1])
+        if b[0] - mx <= p[0] <= b[2] + mx and b[1] - my <= p[1] <= b[3] + my:
+            return True
+    return False
 
 
 def _pt(kp, i) -> tuple[float, float, float]:
@@ -204,6 +223,8 @@ class GestureEngine:
     RETRACT_SECONDS = 3.0  # la mano vuelve al cuerpo hasta tanto después del alcance
     GRACE_SECONDS = 0.35  # un cuadro perdido no corta la permanencia
     OCCLUSION_SECONDS = 1.5  # muñeca tapada que sigue contando como «adentro»
+    STILL_SPEED = 0.35  # «parada»: las caderas se mueven menos de tanto (altos de su cuerpo por segundo)
+    SETTLE_SECONDS = 1.5  # recién aparecida, una persona no «toma» nada todavía
 
     def __init__(self, cfg: GestureConfig):
         self.cfg = cfg
@@ -214,11 +235,14 @@ class GestureEngine:
             del self.people[tid]
 
     def step(self, tid: int, kp, bbox, ts: float, *, near_shelf: bool, at_checkout: bool, staff: bool,
-             bags: list | None = None) -> list[GestureHit]:
+             bags: list | None = None, others: list | None = None) -> list[GestureHit]:
         """Un cuadro de la persona `tid`. `near_shelf`: está (o estuvo hace poco) en una góndola, o la cámara no
-        tiene góndolas marcadas. `bags`: recuadros de bolsos, carteras o mochilas que ve el detector."""
+        tiene góndolas marcadas. `bags`: recuadros de bolsos, carteras o mochilas que ve el detector. `others`:
+        recuadros de las otras personas (estirar el brazo hacia otra persona, pasarle algo, no es tomar)."""
         cfg = self.cfg
-        p = self.people.setdefault(tid, _Person())
+        if tid not in self.people:
+            self.people[tid] = _Person(first_ts=ts)
+        p = self.people[tid]
         if kp is None or not cfg.enabled or bbox[3] - bbox[1] < cfg.min_person_px:
             self._lost(p, ts)
             return []
@@ -230,6 +254,10 @@ class GestureEngine:
             return []
         raw = math.hypot(body.H[0] - body.S[0], body.H[1] - body.S[1])
         p.torso.append(raw)
+        # ¿parada? por la mitad de las caderas (el recuadro se agranda al estirar un brazo; las caderas no)
+        bh = max(1.0, bbox[3] - bbox[1])
+        p.feet.append((ts, body.H[0] / bh, body.H[1] / bh))
+        still = p.speed(ts) <= self.STILL_SPEED
         p.frames_ok += 1
         p.bad_frames = 0
         center = ((body.S[0] + body.H[0]) / 2, (body.S[1] + body.H[1]) / 2)
@@ -238,9 +266,13 @@ class GestureEngine:
         for side, (si, ei, wi, hi) in SIDES.items():
             h = p.hands[side]
             sh, el, wr, hip = _pt(kp, si), _pt(kp, ei), _pt(kp, wi), _pt(kp, hi)
-            region = self._region(body, sh, el, wr, hip, h, ts, bbox, bags)
+            # la mano junto a otra persona (le pasa algo, la toma de la mano, un chico): no es bolsillo ni bolsa
+            with_other = wr[2] >= SEEN and _inside_any(wr, others)
+            region = None if with_other else self._region(body, sh, el, wr, hip, h, ts, bbox, bags)
             # alcance → toma
-            if self._reaching(body, sh, el, wr):
+            # tomar del estante se hace parado, y no apenas aparece (entrando por el borde el cuerpo se ve cortado)
+            settled = ts - p.first_ts >= self.SETTLE_SECONDS
+            if still and settled and self._reaching(body, sh, el, wr) and not with_other:
                 if h.reach_since is None:
                     h.reach_since, h.reach_frames = ts, 0
                 h.reach_frames += 1
@@ -256,8 +288,6 @@ class GestureEngine:
                     p.take_hist.append(ts)
                     p.takes += 1
                     h.reached_ts = None
-                    for hh in p.hands.values():  # lo que estaba en el bolsillo antes de la toma, era postura
-                        hh.region_before_take = hh.region
             # permanencia en la región (con un respiro de un cuadro)
             if region is not None and region == h.region:
                 h.last_in = ts
@@ -266,7 +296,9 @@ class GestureEngine:
                 h.region, h.since, h.last_in, h.frames = region, ts, ts, 1
                 entered[side] = ts
             elif h.region is not None and ts - h.last_in > self.GRACE_SECONDS:
-                h.region, h.frames, h.region_before_take = None, 0, None
+                h.region, h.frames = None, 0
+            if region is None and wr[2] >= SEEN:
+                h.free_ts = ts
             if h.region is not None:
                 dwell = h.last_in - h.since
                 p.max_dwell[h.region] = max(p.max_dwell[h.region], dwell)
@@ -284,6 +316,9 @@ class GestureEngine:
             weak_bag = h.region == "bolsa" and not self._near_bag(kp, side, body, bags)
             if weak_bag:
                 need *= 2
+                if not still:  # sin bolso a la vista, «guardar» es parada: caminando con algo en brazos es normal
+                    h.since, h.frames = ts, 1
+                    continue
             if dwell + 1e-6 < need or h.frames < 3:
                 continue
             since_take = self._since_take(p, h.since)
@@ -381,8 +416,12 @@ class GestureEngine:
             return "en la caja (pagar)"
         if dwell >= self.POSTURE_SECONDS:
             return "postura (mano quieta mucho rato)"
-        if h.region_before_take == h.region:
-            return "la mano ya estaba ahí antes de tomar"
+        if p.take_hist:
+            took = [x for x in p.take_hist if x <= h.since + 0.5]
+            if not took or h.free_ts < max(took) - 0.5:
+                # la mano ya estaba en el bolsillo o la cintura (apoyada) cuando tomó, o no estuvo libre desde la toma:
+                # no la llevó ahí después de tomar
+                return "la mano ya estaba ahí antes de tomar"
         other = p.hands["der" if side == "izq" else "izq"]
         if (gesture != MANO_BOLSA and other.region == h.region
                 and abs(other.since - h.since) <= self.BILATERAL_SECONDS):

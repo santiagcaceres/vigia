@@ -37,15 +37,15 @@ POCKET_L = dict(lw=(117, 205), le=(130, 160))
 def feed(eng, frames, t0=0.0, fps=5.0, tid=1, **kw):
     hits, ts = [], t0
     for kp in frames:
-        hits += eng.step(tid, kp, BBOX, ts, near_shelf=kw.get("near_shelf", True),
+        hits += eng.step(tid, kp, BBOX, ts, near_shelf=kw.get("near_shelf", True), others=kw.get("others"),
                          at_checkout=kw.get("at_checkout", False), staff=kw.get("staff", False), bags=kw.get("bags"))
         ts += 1.0 / fps
     return hits, ts
 
 
 def take_then(eng, after: dict, n_after: int, **kw):
-    """Alcance al estante (3 cuadros), vuelve al cuerpo, y después `after` durante n_after cuadros."""
-    frames = [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**after)] * n_after
+    """Parada 2 s, alcance al estante (3 cuadros), vuelve al cuerpo, y después `after` durante n_after cuadros."""
+    frames = [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**after)] * n_after
     return feed(eng, frames, **kw)
 
 
@@ -99,7 +99,7 @@ def test_toma_lejos_de_la_gondola_no_cuenta():
 
 def test_toma_vieja_no_cuenta():
     eng = GestureEngine(GestureConfig(enabled=ALL, take_window=10.0))
-    _, ts = feed(eng, [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))])
+    _, ts = feed(eng, [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))])
     _, ts = feed(eng, [pose()] * 60, t0=ts)  # 12 s con los brazos colgando
     hits, _ = feed(eng, [pose(**POCKET_R)] * 6, t0=ts)
     assert hits == [] and eng.summary(1)["suppressed"].get("la toma fue hace mucho")
@@ -179,7 +179,7 @@ def test_motor_de_reglas_emite_el_gesto_y_marca_que_tomo_algo():
                                          "polygon": [[0, 0.8], [1, 0.8], [1, 1], [0, 1]]}],
                               "gestures": {"enabled": list(ALL)}})
     eng = RuleEngine(zones, rc)
-    frames = [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 6
+    frames = [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 6
     events, ts = [], 0.0
     for kp in frames:
         events += eng.update([_track(kp, ts)], ts, (200, 420))
@@ -210,7 +210,7 @@ class _Pose:
 
 
 def test_analyzer_mira_la_postura_y_dibuja_el_esqueleto():
-    frames = [pose()] * 3 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 8
+    frames = [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 8
     cfg = {"zones": [], "gestures": {"enabled": list(ALL)}}
     an = Analyzer(cfg, _Det(), pose=_Pose(frames))
     img = np.zeros((420, 200, 3), np.uint8)
@@ -224,3 +224,38 @@ def test_analyzer_mira_la_postura_y_dibuja_el_esqueleto():
     assert not an2.gestures
     an3 = Analyzer({"zones": []}, _Det(), pose=_Pose(frames))
     assert not an3.gestures
+
+
+def test_pasarle_algo_a_otra_persona_no_es_tomar():
+    eng = GestureEngine(GestureConfig(enabled=ALL))
+    other = (-60.0, 60.0, 15.0, 400.0)  # otra persona a la izquierda de la imagen: la mano llega a ella
+    hits, _ = take_then(eng, POCKET_R, 6, others=[other])
+    assert hits == [] and eng.summary(1)["takes"] == 0
+
+
+def test_la_mano_que_ya_estaba_en_la_cadera_no_cuenta():
+    # la mano derecha queda apoyada en la cadera mientras la izquierda toma algo: no la «llevó» al bolsillo
+    eng = GestureEngine(GestureConfig(enabled=ALL))
+    reach_l = dict(lw=(210, 120), le=(170, 112))
+    frames = ([pose(**POCKET_R)] * 10 + [pose(**reach_l, **POCKET_R)] * 3 + [pose(lw=(105, 150), le=(130, 140), **POCKET_R)]
+              + [pose(**POCKET_R)] * 8)
+    hits, _ = feed(eng, frames)
+    assert hits == [] and eng.summary(1)["suppressed"].get("la mano ya estaba ahí antes de tomar")
+
+
+def test_caminando_o_recien_aparecida_no_toma():
+    eng = GestureEngine(GestureConfig(enabled=ALL))
+    # recién aparecida: el alcance no cuenta
+    hits, _ = feed(eng, [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 6)
+    assert hits == [] and eng.summary(1)["takes"] == 0
+    # caminando (las caderas se corren 60 px por cuadro, ~0,9 altos por segundo): tampoco
+    eng2 = GestureEngine(GestureConfig(enabled=ALL))
+    frames = [pose()] * 10 + [pose(**REACH_R)] * 3
+    hits, ts = [], 0.0
+    for i, kp in enumerate(frames):
+        k = kp.copy()
+        k[:, 0] += 60 * i
+        hits += eng2.step(1, k, (BBOX[0] + 60 * i, BBOX[1], BBOX[2] + 60 * i, BBOX[3]), ts,
+                          near_shelf=True, at_checkout=False, staff=False)
+        ts += 0.2
+    assert eng2.summary(1)["reaches"] == 0
