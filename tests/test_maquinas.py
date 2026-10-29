@@ -232,17 +232,17 @@ def test_modelo_por_lotes_da_lo_mismo_que_de_a_uno():
     from core.lotes import make_batch_model
 
     bm = make_batch_model(MODEL)
-    assert bm.col_of == {0: 4, 2: 5, 3: 6, 5: 7, 7: 8} and bm.size == (640, 640)
+    assert bm.col_of == {0: 4, 2: 5, 3: 6, 5: 7, 7: 8, 24: 9, 26: 10, 28: 11} and bm.size == (640, 640)
     orig = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
     lote = ort.InferenceSession(bm.data, providers=["CPUExecutionProvider"])
     rng = np.random.default_rng(3)
     imgs = rng.integers(0, 256, (3, 640, 640, 3), dtype=np.uint8)  # BGR, como sale de OpenCV
     out = lote.run(None, {bm.input_name: imgs})[0]
-    assert out.shape == (3, 9, 8400)
+    assert out.shape == (3, 12, 8400)
     for i in range(3):
         blob = imgs[i][:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
         ref = orig.run(None, {"images": blob})[0][0]
-        np.testing.assert_allclose(out[i], ref[[0, 1, 2, 3, 4, 6, 7, 9, 11]], rtol=1e-4, atol=1e-3)
+        np.testing.assert_allclose(out[i], ref[[0, 1, 2, 3, 4, 6, 7, 9, 11, 28, 30, 32]], rtol=1e-4, atol=1e-3)
 
 
 def test_detector_por_lotes_junta_cuadros_de_varias_camaras():
@@ -355,9 +355,10 @@ def test_flujo_maquinas_en_la_nube(app):
         a.put("/api/analysis", json={})  # fuerza un reparto
         assert len(m["m1"].get("/api/agent/config").json()["cameras"]) == 5
 
-        # el encendedor: 4 cámaras abiertas (la del local cerrado no cuenta) con capacidad 3 → 2 máquinas
+        # el encendedor: 4 cámaras abiertas (la del local cerrado no cuenta) con capacidad 3. Son de tipo «general» de
+        # un cliente con hurto: miran gestos y pesan 1,3 (la postura) → 5,2 → 3 máquinas
         plan = TestClient(app).get("/api/agent/scale", headers={"X-Pool-Key": key}).json()
-        assert plan["cameras_active"] == 4 and plan["plan"]["desired"] == 2
+        assert plan["cameras_active"] == 4 and plan["plan"]["desired"] == 3
         assert plan["online_instances"] == ["i-1"]
         assert TestClient(app).get("/api/agent/scale", headers={"X-Pool-Key": "otra-clave-x"}).status_code == 401
 
@@ -554,7 +555,8 @@ def test_maquina_spot_que_se_va_pasa_sus_camaras_y_el_plan_pide_otra(tmp_path, d
         assert len(mine("m1")) == 4 and mine("m2") == []
         plan = TestClient(app).get("/api/agent/scale", headers={"X-Pool-Key": key}).json()
         assert plan["online_instances"] == ["i-1"] and plan["leaving_instances"] == ["i-2"]
-        assert plan["plan"]["desired"] == 2 and "i-2" not in plan["plan"]["stop"]  # pide otra; a esta la saca AWS
+        # pide otras (4 cámaras con gestos pesan 5,2 → 3 máquinas de capacidad 3); a esta la saca AWS
+        assert plan["plan"]["desired"] == 3 and "i-2" not in plan["plan"]["stop"]
         assert {x["key"]: x["leaving"] for x in plan["machines"]} == {"i-1": False, "i-2": True}
         # si todavía manda su estado, sigue «yéndose»
         m["m2"].post("/api/agent/status", json={"cameras": [], "instance_id": "i-2"})

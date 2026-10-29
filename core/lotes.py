@@ -11,7 +11,7 @@ El ONNX exportado viene para una imagen por vez, con la imagen ya convertida a n
    en 1; se verificó que da exactamente lo mismo que el original);
 2. recibe las imágenes **tal como salen de OpenCV** (uint8, BGR, alto x ancho x 3): la conversión a
    decimales, el orden de colores y la transposición se hacen en la GPU;
-3. devuelve solo las cajas y las clases pedidas (persona y vehículos).
+3. devuelve solo las cajas y las clases pedidas (persona, vehículos y bolsos para el gesto «mano en la bolsa»).
 
 Necesita el paquete `onnx` (está en requirements-servidor.txt; la app de Windows no lo usa).
 """
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-KEEP_CLASSES = (0, 2, 3, 5, 7)  # persona; auto, moto, ómnibus, camión
+KEEP_CLASSES = (0, 2, 3, 5, 7, 24, 26, 28)  # persona; auto, moto, ómnibus, camión; mochila, cartera, valija
 INPUT_NAME = "imagenes"
 OUTPUT_NAME = "salida"
 

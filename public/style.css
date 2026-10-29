@@ -122,6 +122,9 @@ dl.kv dd { margin: 0; }
 .zone-editor canvas { width: 100%; display: block; border-radius: var(--radius); cursor: crosshair; background: #000; }
 .zone-item { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 6px; }
 .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+/* gestos de ocultamiento en el editor de zonas: casilleros y la aclaración (indicio, no prueba) */
+.gestures { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; }
+.note { font-size: 13px; line-height: 1.45; margin: 8px 0 0; }
 
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line);
   padding: 10px 16px; border-radius: 10px; box-shadow: var(--shadow); z-index: 50; max-width: calc(100% - 32px); }

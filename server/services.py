@@ -21,7 +21,11 @@ from .db import Client, Event, FilterModel, utcnow
 log = logging.getLogger("vigia.server")
 
 LABELS = {"salida_sin_pago": "Posible hurto: salió sin pasar por caja", "merodeo": "Merodeo prolongado",
-          "zona_restringida": "Ingreso a zona restringida", "fuera_de_horario": "Persona fuera de horario"}
+          "zona_restringida": "Ingreso a zona restringida", "fuera_de_horario": "Persona fuera de horario",
+          # gestos (core/gestos.py): un indicio para revisar el clip, nunca una prueba
+          "mano_bolsillo": "Posible ocultamiento: mano al bolsillo",
+          "mano_ropa": "Posible ocultamiento: mano dentro de la ropa",
+          "mano_bolsa": "Posible ocultamiento: mano en la bolsa"}
 
 
 def _telegram(token: str, chat_id: str, text: str, snapshot: bytes | None, timeout: float) -> None:

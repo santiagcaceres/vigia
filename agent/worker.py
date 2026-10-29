@@ -13,8 +13,10 @@ import cv2
 from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import write_mp4
 from core.detectors import Detector
+from core.gestos import GESTURE_NAMES
 from core.metrics import MetricsCollector
 from core.motion import MotionGate
+from core.pose import build_pose
 from core.rules import RuleEngine, parse_config
 from core.scorer import Scorer
 
@@ -32,6 +34,31 @@ NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
 
 DISPLAY_INTERVAL = 0.1  # la ventana de la PC central no necesita más de 10 cuadros por segundo
+
+_pose_lock = threading.Lock()
+_pose_state: dict = {}  # "est": el estimador de postura del proceso (o None), una vez que se intentó armarlo
+
+
+def shared_pose():
+    """La postura de las personas (core/pose.py) para los gestos de ocultamiento: un solo estimador para todas las
+    cámaras del proceso (y las alarmas), armado la primera vez que una cámara con gestos lo pide. Sin el modelo
+    (models/postura.onnx) o si no arranca, None: esas cámaras siguen sin gestos, con todo lo demás igual, y queda
+    una sola línea en el registro (no una por cámara ni por cada vez que se pide)."""
+    with _pose_lock:
+        if "est" not in _pose_state:
+            try:
+                _pose_state["est"] = build_pose()
+            except Exception as exc:  # noqa: BLE001 - un modelo roto no puede dejar las cámaras sin analizar
+                log.warning("No se pudo cargar la postura de las personas (%s): los gestos quedan apagados", exc)
+                _pose_state["est"] = None
+        return _pose_state["est"]
+
+
+def wants_gestures(analysis: dict | None, metrics_only: bool = False) -> bool:
+    """La cámara tiene algún gesto de ocultamiento activado (`analysis["gestures"]`, aparte de `rules`). Nunca en
+    una cámara de solo métricas: ahí no hay alertas ni clips."""
+    g = (analysis or {}).get("gestures")
+    return not metrics_only and isinstance(g, dict) and bool(g.get("enabled"))
 
 
 class MetricsQueue:
@@ -112,7 +139,10 @@ class CameraWorker:
         self.clip_pre = float(settings.get("clip_pre_seconds", 6))
         self.clip_post = float(settings.get("clip_post_seconds", 6))
         self.clip_max = float(settings.get("clip_max_seconds", 180))
-        self.analyzer = Analyzer(cam_cfg.get("analysis", {}), detector, scorer, self.clip_pre, self.clip_post,
+        # la postura (gestos) se engancha en el hilo de la cámara (`_sync_pose`): cargar el modelo la primera vez
+        # tarda un momento y no tiene que trabar a quien arma la cámara (la ventana)
+        self._analysis: dict = cam_cfg.get("analysis") or {}
+        self.analyzer = Analyzer(self._analysis, detector, scorer, self.clip_pre, self.clip_post,
                                  clip_max=self.clip_max, clips=not self.metrics_only)
         # sin movimiento y sin nadie en escena no se usa el detector (ahorra placa de video)
         self.gate = MotionGate()
@@ -167,8 +197,24 @@ class CameraWorker:
         return json.dumps(cam_cfg.get("analysis") or {}, sort_keys=True, default=str)
 
     def update_analysis(self, analysis: dict) -> None:
-        """Zonas o reglas nuevas: se aplican en el próximo cuadro, sin cortar el video."""
+        """Zonas, reglas o gestos nuevos: se aplican en el próximo cuadro, sin cortar el video."""
         self._pending_analysis = analysis
+
+    def _sync_pose(self) -> None:
+        """Con algún gesto activado el analizador mira la postura (el estimador compartido del proceso); sin gestos,
+        no la mira (no gasta). Corre en el hilo de la cámara, al conectar y al cambiar el análisis."""
+        want = wants_gestures(self._analysis, self.metrics_only)
+        if want and self.analyzer.pose is not None:
+            return  # ya la tiene (al reconectar no hace falta pedirla de nuevo)
+        pose = shared_pose() if want else None
+        if pose is self.analyzer.pose:
+            return
+        self.analyzer.pose = pose
+        if pose is not None:
+            log.info("[%s] gestos de ocultamiento activados: %s", self.name,
+                     ", ".join(GESTURE_NAMES[g].lower() for g in self.analyzer.engine.cfg.gestures.enabled))
+        else:  # (sin el modelo de postura no se llega acá: `shared_pose` ya lo dejó en el registro, una vez)
+            log.info("[%s] gestos de ocultamiento apagados", self.name)
 
     def start(self) -> None:
         self.thread.start()
@@ -180,7 +226,7 @@ class CameraWorker:
         return {"camera_id": self.id, "state": self.state, "error": self.error, "fps": round(self.fps, 2),
                 "events": self.events, "live": self.live.active,
                 "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
-                "metrics_only": self.metrics_only, "last_frame_age_s":
+                "metrics_only": self.metrics_only, "gestures": self.analyzer.gestures, "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
 
     def run(self) -> None:
@@ -227,6 +273,7 @@ class CameraWorker:
         self.state = "detenida"
 
     def _read_loop(self, cap: cv2.VideoCapture) -> None:
+        self._sync_pose()
         t0 = time.monotonic()
         # sigue desde donde quedó la conexión anterior, más lo que duró el corte
         base = 0.0 if self._last_ts is None else self._last_ts + max(t0 - self._last_ts_at, 0.1)
@@ -267,7 +314,7 @@ class CameraWorker:
             if show:  # la ventana se dibuja a 10 cuadros por segundo como máximo
                 last_show = now
                 self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, ts, self.name,
-                                   datetime.now(self.hik.tz))
+                                   datetime.now(self.hik.tz), self._gesture_engine())
             if not analyze:
                 continue
             last_proc = ts
@@ -282,7 +329,7 @@ class CameraWorker:
                 last_idle = now
                 self.idle_pct = self.gate.take_saved_fraction()
             if self.live.active:
-                self.live.push(frame, self.analyzer.last_tracks, ts, wall)
+                self.live.push(frame, self.analyzer.last_tracks, ts, wall, self._gesture_engine())
             for f in findings:
                 self._on_finding(f)
             if now - last_metrics > METRICS_EVERY_SECONDS:
@@ -329,18 +376,25 @@ class CameraWorker:
             log.exception("[%s] no se pudo generar el clip %s", self.name, c.uuid)
             self.outbox.clip_done(c.uuid, None)
 
+    def _gesture_engine(self):
+        """El motor de gestos, si la cámara los está mirando (para escribir el gesto en curso sobre la imagen)."""
+        return self.analyzer.engine.gestures if self.analyzer.gestures else None
+
     def _apply_analysis(self, analysis: dict) -> None:
         try:
             zones, rule_cfg = parse_config(analysis)
         except ValueError as exc:
-            log.warning("[%s] zonas inválidas, sigo con las anteriores: %s", self.name, exc)
+            log.warning("[%s] zonas, reglas o gestos inválidos, sigo con los anteriores: %s", self.name, exc)
             return
         self.analyzer.zones = zones
+        # motor nuevo: los tiempos de las reglas y de los gestos rigen desde este cuadro
         self.analyzer.engine = RuleEngine(zones, rule_cfg)
+        self._analysis = analysis
+        self._sync_pose()  # se prendieron o apagaron los gestos: enganchar o soltar la postura
         self._send_metrics(self.metrics.close())  # lo medido hasta ahora queda con las zonas viejas
         self.metrics = MetricsCollector(zones, rule_cfg.schedule)
         self.live.zones = zones
-        log.info("[%s] zonas y reglas actualizadas (%d zonas)", self.name, len(zones))
+        log.info("[%s] zonas, reglas y gestos actualizados (%d zonas)", self.name, len(zones))
 
     def _send_metrics(self, buckets: list[dict]) -> None:
         """Deja los cubos en la cola de la PC (un solo envío para todas las cámaras). Sin cola (pruebas,

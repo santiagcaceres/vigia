@@ -1,6 +1,7 @@
 """Vista en vivo "liviana": mientras alguien mira una cámara en el panel, la PC central sube
 un cuadro por segundo con las personas recuadradas, su número de seguimiento, los segundos
-que llevan en escena y la zona en la que están paradas.
+que llevan en escena y la zona en la que están paradas (y, si la cámara mira gestos de
+ocultamiento, el esqueleto y el gesto en curso).
 
 Por qué así y no video: el servidor (Vercel) no puede retransmitir video. Los cuadros van
 directo al almacenamiento (URL firmada) y el navegador los pide 1 vez por segundo. Cuesta
@@ -40,9 +41,25 @@ JPEG_QUALITY = 65
 LIVE_PROCESS_FPS = 3.0
 
 
+def gesture_text(gestures, tid: int, ts: float) -> tuple[str, bool]:
+    """El gesto en curso de una persona (core/gestos.GestureEngine.progress), corto y sin tildes (OpenCV no las
+    dibuja): «mano der bolsillo 0.4/0.6s  tomo algo hace 2s». El segundo valor dice si alguna mano ya llegó al
+    tiempo que pide el gesto (se escribe en rojo: posible ocultamiento, para revisar)."""
+    pr = gestures.progress(tid, ts) if gestures is not None else None
+    if not pr:
+        return "", False
+    parts = [f"mano {side} {region} {dwell:.1f}/{need:.1f}s"
+             for side, (region, dwell, need) in sorted(pr["hands"].items())]
+    if pr.get("took_ago") is not None:
+        parts.append(f"tomo algo hace {pr['took_ago']:.0f}s")
+    hot = any(dwell >= need for region, dwell, need in pr["hands"].values())
+    return "  ".join(parts), hot
+
+
 def hud(frame: np.ndarray, zones: list[Zone], tracks: list[Track], ts: float, name: str,
-        wall: datetime | None = None) -> np.ndarray:
-    """Cuadro con zonas, recuadros y, por persona, segundos en escena y zona donde está parada."""
+        wall: datetime | None = None, gestures=None) -> np.ndarray:
+    """Cuadro con zonas, recuadros y, por persona, segundos en escena y zona donde está parada. Con `gestures` (el
+    motor de gestos de la cámara, si los mira), debajo va el gesto en curso de cada persona."""
     img = annotate(frame, zones, tracks)
     h, w = img.shape[:2]
     thick = max(1, w // 640)
@@ -56,6 +73,11 @@ def hud(frame: np.ndarray, zones: list[Zone], tracks: list[Track], ts: float, na
         # debajo del recuadro; si no entra (tapado por la barra), adentro del recuadro
         y = y2 + 14 * thick if y2 + 16 * thick < h - bar else y2 - 6 * thick
         cv2.putText(img, texto, (x1 + 2, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45 * thick, (0, 255, 0), thick, cv2.LINE_AA)
+        gesto, hot = gesture_text(gestures, t.id, ts)
+        if gesto:
+            y = y + 14 * thick if y + 16 * thick < h - bar else y - 14 * thick
+            cv2.putText(img, gesto, (x1 + 2, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45 * thick,
+                        (0, 0, 255) if hot else (0, 165, 255), thick, cv2.LINE_AA)
     cv2.rectangle(img, (0, h - bar), (w, h), (0, 0, 0), -1)
     hora = (wall or datetime.now()).strftime("%H:%M:%S")
     cv2.putText(img, f"EN VIVO {hora}  {name}  personas: {len(visibles)}", (6, h - int(bar * 0.3)),
@@ -93,15 +115,16 @@ class LiveStreamer:
     def extend(self, seconds: float) -> None:
         self.until = max(self.until, time.monotonic() + seconds)
 
-    def push(self, frame: np.ndarray, tracks: list[Track], ts: float, wall: datetime | None = None) -> bool:
-        """Devuelve True si el cuadro se mandó (como máximo uno por segundo, sin encolar)."""
+    def push(self, frame: np.ndarray, tracks: list[Track], ts: float, wall: datetime | None = None,
+             gestures=None) -> bool:
+        """Devuelve True si el cuadro se mandó (como máximo uno por segundo, sin encolar). `gestures`: ver `hud`."""
         now = time.monotonic()
         if not self.active or now - self._last < FRAME_EVERY_SECONDS or self.client is None:
             return False
         if not self._busy.acquire(blocking=False):
             return False  # todavía se está subiendo el anterior: este se salta
         self._last = now
-        img = hud(frame, self.zones, tracks, ts, self.name, wall)
+        img = hud(frame, self.zones, tracks, ts, self.name, wall, gestures)
         threading.Thread(target=self._send, args=(img,), name=f"live-{self.id}", daemon=True).start()
         return True
 

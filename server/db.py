@@ -110,6 +110,9 @@ class Camera(Base):
     process_fps: Mapped[float] = mapped_column(Float, default=5.0)
     zones: Mapped[list] = mapped_column(JSON, default=list)
     rules: Mapped[dict] = mapped_column(JSON, default=dict)
+    # gestos de ocultamiento (core/gestos.py: mano al bolsillo, en la ropa, en la bolsa), aparte de `rules` porque un
+    # agente viejo rechaza nombres que no conoce. NULL = los del tipo de cámara; {"enabled": []} = apagados a propósito
+    gestures: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # "vivo": el agente mira el stream las 24 h. "alarmas": solo analiza el tramo de video de cada
     # alarma que el DVR manda a Hik-Partner Pro (mucho más barato: una PC atiende muchos locales).
@@ -325,7 +328,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-26.3"
+SCHEMA_VERSION = "2026-10-29.1"
 
 
 class CameraMetric(Base):

@@ -1,6 +1,11 @@
 "use strict";
 
-const TYPE_NAMES = { salida_sin_pago: "Salida sin pago", merodeo: "Merodeo", zona_restringida: "Zona restringida", fuera_de_horario: "Fuera de horario", alarma_dvr: "Alarma con persona" };
+const TYPE_NAMES = { salida_sin_pago: "Salida sin pago", merodeo: "Merodeo", zona_restringida: "Zona restringida", fuera_de_horario: "Fuera de horario", alarma_dvr: "Alarma con persona",
+  mano_bolsillo: "Mano al bolsillo", mano_ropa: "Mano dentro de la ropa", mano_bolsa: "Mano en la bolsa" };
+// reglas de zona (las únicas que van en `rules.enabled_rules`) y gestos de ocultamiento (van aparte, en `gestures`:
+// un agente viejo rechaza nombres que no conoce dentro de `rules`)
+const RULE_KEYS = ["salida_sin_pago", "merodeo", "zona_restringida", "fuera_de_horario"];
+const GESTURE_KEYS = ["mano_bolsillo", "mano_ropa", "mano_bolsa"];
 const ALARM_TYPES = { VMD: "Movimiento", fielddetection: "Intrusión", linedetection: "Cruce de línea", regionEntrance: "Entrada a zona", regionExiting: "Salida de zona" };
 const MODE_NAMES = { alarmas_equipo: "Alarmas del grabador", alarmas: "Alarmas HPP", vivo: "En vivo" };
 const isAlarmMode = (m) => m === "alarmas" || m === "alarmas_equipo";
@@ -226,10 +231,19 @@ function labelPanel(e) {
     <label>Nota (opcional)<textarea id="note" rows="2">${esc(e.note || "")}</textarea></label>`;
 }
 
+const fmtSec1 = (s) => (s == null ? "—" : Number(s).toFixed(1).replace(".", ",") + " s");
+
 function featuresHtml(e) {
   const f = e.features || {};
   const rows = [["Tiempo en escena", fmtSec(f.track_age_s)], ["Tiempo en góndola", fmtSec(f.shelf_total_s)], ["Tiempo en caja", fmtSec(f.checkout_total_s)],
     ["Visitas a góndola", f.shelf_visits ?? "—"], ["Personas en escena", f.people_in_scene ?? "—"]];
+  if (GESTURE_KEYS.includes(e.type) || f.gesture_dwell_s > 0) { // medidas del gesto (posible ocultamiento)
+    rows.push(["Mano en el lugar", fmtSec1(f.gesture_dwell_s)],
+      ["Desde que tomó algo", f.since_take_s == null ? "—" : f.since_take_s < 0 ? "No se vio que tomara algo" : fmtSec1(f.since_take_s)],
+      ["Veces que tomó algo", f.takes ?? "—"]);
+    if (e.type === "mano_bolsa") rows.push(["Bolso a la vista", f.bag_seen > 0 ? "Sí" : "No (manos a la cintura)"]);
+    if (f.pose_ok_ratio != null) rows.push(["Postura bien vista", pct(f.pose_ok_ratio)]);
+  }
   return `<details><summary class="muted">Datos medidos</summary><dl class="kv" style="margin-top:8px">${rows.map(([k, x]) => `<dt>${k}</dt><dd>${esc(x)}</dd>`).join("")}</dl></details>`;
 }
 
@@ -643,7 +657,11 @@ async function zonesView(v, id) {
   let zones = JSON.parse(JSON.stringify(cam.zones || []));
   const rules = cam.rules || {};
   let draft = [], selected = -1;
-  const enabled = new Set(rules.enabled_rules || Object.keys(TYPE_NAMES));
+  // sin elegir a mano rige lo del tipo de cámara (el servidor lo manda en rules_default / gestures_default)
+  const enabled = new Set(rules.enabled_rules || cam.rules_default || RULE_KEYS);
+  const gestOn = new Set((cam.gestures && cam.gestures.enabled) || cam.gestures_default || []);
+  const client = (await loadClients().catch(() => [])).find((c) => c.id === cam.client_id);
+  const noTheft = client && !(client.plans || ["hurto"]).includes("hurto");
   v.innerHTML = `
     <div class="row"><a href="#/camara/${id}">← ${esc(cam.name)}</a></div>
     <h1>${esc(cam.name)} · zonas y reglas</h1>
@@ -673,7 +691,10 @@ async function zonesView(v, id) {
           <label>Abre (opcional)<input id="r-open" type="time" value="${rules.opening_hours?.start || ""}"></label>
           <label>Cierra<input id="r-close" type="time" value="${rules.opening_hours?.end || ""}"></label>
         </div>
-        <div style="margin-top:8px">${Object.entries(TYPE_NAMES).map(([k, t]) => `<label class="inline" style="margin-right:12px"><input type="checkbox" class="r-en" value="${k}" ${enabled.has(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
+        <div style="margin-top:8px">${RULE_KEYS.map((k) => `<label class="inline" style="margin-right:12px"><input type="checkbox" class="r-en" value="${k}" ${enabled.has(k) ? "checked" : ""}> ${TYPE_NAMES[k]}</label>`).join("")}</div>
+        <h3 style="margin-top:16px">Gestos</h3>
+        <div class="gestures">${GESTURE_KEYS.map((k) => `<label class="inline"><input type="checkbox" class="g-en" value="${k}" ${gestOn.has(k) ? "checked" : ""}> ${TYPE_NAMES[k]}</label>`).join("")}</div>
+        <p class="muted note">Avisan un <b>posible ocultamiento</b> (tomar algo y llevar la mano al bolsillo, dentro de la ropa o a la bolsa): es un indicio para revisar el clip, nunca una prueba. Hace falta ver a la persona de la cintura para arriba; mirar la postura usa un 30 % más de procesador.${noTheft ? " <b>Este cliente no tiene «Detección de hurtos»: no se usan.</b>" : cam.profile === "metricas" ? " <b>Esta cámara es «Solo métricas»: no se usan.</b>" : ""}</p>
         <div class="row" style="margin-top:14px"><button id="save" class="primary">Guardar</button></div>
       </div>
     </div>`;
@@ -734,12 +755,19 @@ async function zonesView(v, id) {
   onKeys((e) => { if (e.key === "Escape") { draft = []; draw(); } if (e.key === "Enter") close(); });
   $("#save").addEventListener("click", async () => {
     if (draft.length) return toast("Tenés una zona sin cerrar", true);
-    const r = { shelf_dwell_seconds: +$("#r-shelf").value, checkout_min_seconds: +$("#r-checkout").value,
+    // lo que este formulario no muestra (por ejemplo cooldown_seconds, o lo que guardó la app) se conserva
+    const r = { ...rules, shelf_dwell_seconds: +$("#r-shelf").value, checkout_min_seconds: +$("#r-checkout").value,
       loiter_seconds: +$("#r-loiter").value, restricted_min_seconds: +$("#r-restricted").value,
       enabled_rules: $$(".r-en").filter((x) => x.checked).map((x) => x.value) };
     if ($("#r-open").value && $("#r-close").value) r.opening_hours = { start: $("#r-open").value, end: $("#r-close").value };
-    try { await api("PUT", `/api/cameras/${id}/analysis`, { zones, rules: r }); toast("Guardado. El agente aplica los cambios en menos de un minuto."); }
-    catch (e) { fail(e); }
+    else delete r.opening_hours;
+    // los gestos van aparte de las reglas; se guardan tal cual se ven (con los tiempos que ya tuvieran)
+    const gestures = { ...(cam.gestures || {}), enabled: $$(".g-en").filter((x) => x.checked).map((x) => x.value) };
+    try {
+      const saved = await api("PUT", `/api/cameras/${id}/analysis`, { zones, rules: r, gestures });
+      Object.assign(cam, saved);
+      toast("Guardado. El agente aplica los cambios en menos de un minuto.");
+    } catch (e) { fail(e); }
   });
 }
 

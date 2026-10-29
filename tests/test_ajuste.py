@@ -92,7 +92,7 @@ def test_ajustar_y_aprobar_desde_la_app(app):
         info = a.post("/api/agent/tune", headers=h, json={"camera_id": cam["id"]}).json()
         assert info["camera"]["connection"]["host"] == "10.0.0.1" and info["tuning"] == "sin_ajustar"
         assert info["camera"]["analysis"]["rules"]["enabled_rules"]  # lo que agrega el tipo de cámara
-        assert info["raw"] == {"zones": [], "rules": {}}  # lo guardado, para volver a guardarlo tal cual
+        assert info["raw"] == {"zones": [], "rules": {}, "gestures": None}  # lo guardado, para volver a guardarlo
         # al ajustar en vivo, la PC deja la imagen de la cámara (aunque no la analice)
         r = a.post(f"/api/agent/cameras/{cam['id']}/preview", headers=h,
                    files={"image": ("p.jpg", b"\xff\xd8jpg", "image/jpeg")})

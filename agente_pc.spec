@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller: genera dist/VigiaAgente.exe (la app de Analítica Crítica) con el modelo ONNX, el logo y el ícono adentro.
+# PyInstaller: genera dist/VigiaAgente.exe (la app de Analítica Crítica) con los modelos ONNX, el logo y el ícono.
 #   pip install pyinstaller && pyinstaller agente_pc.spec
 # Se sigue llamando VigiaAgente.exe adentro del .zip para que las versiones viejas (hasta la 1.21) puedan
 # actualizarse; al arrancar, el programa deja una copia «Analítica Crítica.exe» y la abre (agent/actualizar.py).
@@ -8,7 +8,9 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("models/personas.onnx", "models"), ("agent/recursos", "agent/recursos")]
+# personas.onnx: el detector; postura.onnx: la postura de cada persona para los gestos de ocultamiento (core/pose.py
+# la busca en models/ dentro del .exe: sin ella, «Configurar…» y el análisis siguen, sin gestos)
+datas = [("models/personas.onnx", "models"), ("models/postura.onnx", "models"), ("agent/recursos", "agent/recursos")]
 binaries, hiddenimports = [], []
 for pkg in ("onnxruntime", "cv2", "tzdata"):
     d, b, h = collect_all(pkg)

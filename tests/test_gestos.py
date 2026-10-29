@@ -259,3 +259,22 @@ def test_caminando_o_recien_aparecida_no_toma():
                           near_shelf=True, at_checkout=False, staff=False)
         ts += 0.2
     assert eng2.summary(1)["reaches"] == 0
+
+
+def test_si_la_placa_de_video_falla_la_postura_sigue_en_el_procesador(tmp_path):
+    from pathlib import Path
+
+    from core.pose import PoseEstimator, _CpuRunner
+
+    model = Path(__file__).resolve().parent.parent / "models" / "postura.onnx"
+    if not model.exists():
+        pytest.skip("sin modelo de postura")
+
+    class Rota:
+        def run(self, canvas):
+            raise RuntimeError("DmlExecutionProvider: falló la primera pasada")
+
+    est = PoseEstimator(model)
+    est.runner, est.on_gpu, est.device = Rota(), True, "GPU (Dml)"
+    est.estimate(np.zeros((360, 640, 3), np.uint8), (100.0, 50.0, 200.0, 340.0))  # no corta: sigue
+    assert isinstance(est.runner, _CpuRunner) and est.device == "procesador"

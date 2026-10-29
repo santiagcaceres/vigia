@@ -29,6 +29,7 @@ from core.scorer import Scorer
 
 from .cameras import BaseCamera, build_camera, download_nvr_clip
 from .outbox import ServerClient
+from .worker import shared_pose, wants_gestures
 
 log = logging.getLogger("vigia.alarms")
 IDLE_POLL_SECONDS = 20  # sin alarmas pendientes: cada cuánto se vuelve a preguntar (cada pregunta es un pedido al servidor)
@@ -110,8 +111,12 @@ class AlarmRunner:
                 self.client.alarm_fail(aid, "No se pudo bajar el video del DVR (¿VPN o DVR caídos? ¿canal o "
                                             "clave mal cargados?)")
                 return True
-            res = analyze_clip(str(clip), cam.get("analysis", {}), self._detector(cam.get("detector", "yolo")),
-                               Scorer.maybe(job.get("filter_model")), float(cam.get("process_fps") or 5), start)
+            analysis = cam.get("analysis") or {}
+            # gestos de ocultamiento: la postura compartida del proceso (None si falta el modelo: sin gestos)
+            pose = shared_pose() if wants_gestures(analysis, bool(cam.get("metrics_only"))) else None
+            res = analyze_clip(str(clip), analysis, self._detector(cam.get("detector", "yolo")),
+                               Scorer.maybe(job.get("filter_model")), float(cam.get("process_fps") or 5), start,
+                               pose=pose)
             if not res.has_person:
                 self.discarded += 1
                 log.info("[%s] alarma #%s (%s): sin personas, descartada", name, aid, job.get("event_type"))

@@ -5,7 +5,8 @@ para entrenar el modelo del cliente.
 - Los videos no se suben: quedan en esta PC. La lista va en `<datos>/videos_prueba.json`, con la ruta de cada uno.
   Por defecto se eligen de la carpeta Descargas\\VIGIA.
 - De cada video se dice qué es: «hurto» (con los momentos en que pasa) o «normal» (no debería dar alertas).
-- `evaluate` cruza las alertas de prueba con eso: qué hurtos vio la cámara, cuáles no, y alertas de más.
+- `evaluate` cruza las alertas de prueba con eso: qué hurtos vio la cámara, cuáles no, y alertas de más. Cada tipo de
+  alerta tiene su ventana alrededor del momento marcado (los gestos pasan justo en el momento; las reglas, después).
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from core.gestos import GESTURE_TYPES
+
 log = logging.getLogger("vigia.biblioteca")
 
 KINDS = {"hurto": "Hurto", "normal": "Normal (sin hurto)", "": "Sin clasificar"}
@@ -26,6 +29,9 @@ KINDS = {"hurto": "Hurto", "normal": "Normal (sin hurto)", "": "Sin clasificar"}
 # saltan después del momento del hurto (cuando la persona cumplió el tiempo o se fue)
 MATCH_BEFORE = 20.0
 MATCH_AFTER = 90.0
+# los gestos de ocultamiento (mano al bolsillo, a la ropa o a la bolsa) saltan en el momento en que se guarda algo:
+# una ventana más estrecha, para que un gesto de otro momento del video no cuente como «vio el hurto»
+MATCH_WINDOWS = {g: (5.0, 5.0) for g in GESTURE_TYPES}
 VIDEO_TYPES = ("Videos", "*.mp4 *.avi *.mkv *.mov *.ts *.dav *.264 *.h264")
 
 
@@ -128,8 +134,10 @@ def fmt_ts(sec: float) -> str:
     return f"{sec // 60}:{sec % 60:02d}"
 
 
-def matches(mark: float, alert_ts: float) -> bool:
-    return mark - MATCH_BEFORE <= alert_ts <= mark + MATCH_AFTER
+def matches(mark: float, alert_ts: float, alert_type: str | None = None) -> bool:
+    """La alerta (de ese tipo) cae cerca del momento marcado del hurto."""
+    before, after = MATCH_WINDOWS.get(alert_type, (MATCH_BEFORE, MATCH_AFTER))
+    return mark - before <= alert_ts <= mark + after
 
 
 def evaluate(video: TestVideo, alerts: list, type_names: dict[str, str] | None = None) -> dict:
@@ -138,12 +146,12 @@ def evaluate(video: TestVideo, alerts: list, type_names: dict[str, str] | None =
     names = type_names or {}
     caught, missed, used = [], [], set()
     for m in sorted(video.marks):
-        hit = next((a for a in alerts if matches(m, a.ts)), None)
+        hit = next((a for a in alerts if matches(m, a.ts, a.type)), None)
         if hit is None:
             missed.append(m)
         else:
             caught.append((m, hit))
-            used.update(id(a) for a in alerts if matches(m, a.ts))
+            used.update(id(a) for a in alerts if matches(m, a.ts, a.type))
     extra = [a for a in alerts if id(a) not in used]
 
     def what(a) -> str:
@@ -179,7 +187,7 @@ def suggested_label(video: TestVideo, alert) -> str | None:
     un video normal → «falso_positivo». Si no se sabe, None (la elige la persona)."""
     if video.kind == "normal":
         return "falso_positivo"
-    if video.kind == "hurto" and any(matches(m, alert.ts) for m in video.marks):
+    if video.kind == "hurto" and any(matches(m, alert.ts, alert.type) for m in video.marks):
         return "hurto"
     return None
 

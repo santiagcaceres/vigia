@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from core.gestos import GESTURE_TYPES, GestureConfig
 from core.metrics import empty_bucket, merge_bucket
-from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, SEVERITY, parse_config
+from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RULE_TYPES, SEVERITY, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
@@ -275,18 +276,56 @@ METRICS_FPS = 2.0
 METRICS_COUNT_FPS = 3.0
 
 # Tipo de cámara (qué mira): qué reglas de hurto se aplican si no se eligieron a mano en «Zonas y reglas».
+# `gestures`: gestos de ocultamiento (core/gestos.py) que mira si no se eligieron a mano (`cameras.gestures`). Solo
+# donde la gente toma mercadería y se la ve de cuerpo entero: en la caja se paga (meter la mano en el bolsillo es
+# normal), en la puerta se pasa de largo y afuera no hay góndolas. `only_metrics`: nunca gestos, ni elegidos a mano.
 CAMERA_PROFILES = {
-    "general": {"name": "General (todas las reglas)", "rules": None},
-    "gondola": {"name": "Góndola / pasillo", "rules": ["merodeo", "salida_sin_pago", "zona_restringida", "fuera_de_horario"]},
-    "caja": {"name": "Caja", "rules": ["zona_restringida", "fuera_de_horario"]},
-    "entrada": {"name": "Entrada / puerta", "rules": ["salida_sin_pago", "fuera_de_horario"]},
+    "general": {"name": "General (todas las reglas)", "rules": None, "gestures": list(GESTURE_TYPES)},
+    "gondola": {"name": "Góndola / pasillo", "rules": ["merodeo", "salida_sin_pago", "zona_restringida", "fuera_de_horario"],
+                "gestures": list(GESTURE_TYPES)},
+    "caja": {"name": "Caja", "rules": ["zona_restringida", "fuera_de_horario"], "gestures": []},
+    "entrada": {"name": "Entrada / puerta", "rules": ["salida_sin_pago", "fuera_de_horario"], "gestures": []},
     "deposito": {"name": "Depósito / trastienda", "rules": ["zona_restringida", "fuera_de_horario"],
-                 "whole_zone": "restricted"},
-    "exterior": {"name": "Calle / exterior", "rules": ["fuera_de_horario"], "vehicles": True},
-    "surtidor": {"name": "Surtidor (estación)", "rules": [], "vehicles": True},
-    "metricas": {"name": "Solo métricas (conteo y tiempos, sin hurto)", "rules": []},
+                 "whole_zone": "restricted", "gestures": []},
+    "exterior": {"name": "Calle / exterior", "rules": ["fuera_de_horario"], "vehicles": True, "gestures": []},
+    "surtidor": {"name": "Surtidor (estación)", "rules": [], "vehicles": True, "gestures": []},
+    "metricas": {"name": "Solo métricas (conteo y tiempos, sin hurto)", "rules": [], "gestures": [],
+                 "only_metrics": True},
 }
 OFF_HOURS = ("apagada", "alarmas", "vivo")
+
+
+def camera_profile(c: Camera) -> dict:
+    return CAMERA_PROFILES.get(c.profile or "general", CAMERA_PROFILES["general"])
+
+
+def type_gestures(c: Camera) -> list[str]:
+    """Gestos que mira la cámara por su tipo, si no se eligieron a mano. Si a mano se apagaron todas las reglas de
+    zona (la cámara quedó solo para métricas antes de que hubiera gestos), ninguno: mirar posturas cuesta más
+    (server/pool.py) y nadie lo pidió."""
+    prof = camera_profile(c)
+    if prof.get("only_metrics") or (c.rules or {}).get("enabled_rules") == []:
+        return []
+    return list(prof.get("gestures") or [])
+
+
+def camera_gestures(c: Camera) -> GestureConfig:
+    """Los gestos de la cámara: lo elegido a mano (`cameras.gestures`, sin "enabled" = los del tipo con esos tiempos)
+    o lo de su tipo, con los tiempos por defecto. No mira el plan del cliente (eso lo hace camera_analysis)."""
+    if camera_profile(c).get("only_metrics"):
+        return GestureConfig()
+    saved = c.gestures
+    if saved is None:
+        return GestureConfig(enabled=tuple(type_gestures(c)))
+    try:
+        cfg = GestureConfig.from_dict(saved)
+    except (ValueError, TypeError, AttributeError):
+        # se valida al guardar; si igual no se entiende (editado a mano en la base), apagados y que se vea en el log
+        log.warning("Cámara %s: gestos guardados inválidos %r; quedan apagados", c.id, saved)
+        return GestureConfig()
+    if "enabled" not in saved:
+        cfg.enabled = tuple(type_gestures(c))
+    return cfg
 
 
 class CameraIn(BaseModel):
@@ -341,6 +380,9 @@ class ZoneIn(BaseModel):
 class AnalysisIn(BaseModel):
     zones: list[ZoneIn] = []
     rules: dict = {}
+    # gestos de ocultamiento (GestureConfig de core/gestos.py), aparte de `rules`. None = no cambia (app vieja);
+    # {"enabled": []} = apagados a propósito; sin "enabled" = los del tipo de cámara con esos tiempos
+    gestures: dict | None = None
 
 
 class LabelIn(BaseModel):
@@ -654,10 +696,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cl = clients.get(c.client_id)
             if cl is None:
                 continue
-            fps = camera_fps(c, camera_analysis(c, cl))
+            analysis = camera_analysis(c, cl)
+            fps, pose = camera_fps(c, analysis), bool(analysis.get("gestures"))  # con gestos mira posturas: pesa más
             for i, t in enumerate(times):
                 out[i][c.id] = pool.camera_weight(fps=fps, mode=c.mode or "vivo", brand=c.brand, hours=cl.hours,
-                                                  tz=cl.timezone, off_hours=c.off_hours or "apagada", now=t)
+                                                  tz=cl.timezone, off_hours=c.off_hours or "apagada", now=t,
+                                                  pose=pose)
         return cams, out
 
     def machines_of(s, now: datetime, weights: dict[int, float]) -> list[pool.Machine]:
@@ -776,9 +820,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def camera_dict(c: Camera, user: User, status: dict | None = None, ops: dict | None = None) -> dict:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
              "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": c.rules or {},
+             "gestures": c.gestures,  # lo elegido a mano, o None = los de su tipo (gestures_default)
              "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
              "live": bool(status and status.get("live")), "mode": c.mode or "vivo"}
         if user.role != "cliente":
+            prof_rules = camera_profile(c)["rules"]
             d.update(brand=c.brand, host=c.host, username=c.username, has_password=bool(c.password_enc),
                      channel=c.channel,
                      rtsp_port=c.rtsp_port, http_port=c.http_port, detect_stream=c.detect_stream,
@@ -786,7 +832,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      hpp_serial=c.hpp_serial, hc_resource_id=c.hc_resource_id, alarm_cfg=alarm_cfg_of(c),
                      profile=c.profile or "general", off_hours=c.off_hours or "apagada",
                      analysis_location=c.analysis_location or "general", tuning=c.tuning or "sin_ajustar",
-                     tuned_by=c.tuned_by, tuned_at=iso(c.tuned_at), tuning_notes=c.tuning_notes)
+                     tuned_by=c.tuned_by, tuned_at=iso(c.tuned_at), tuning_notes=c.tuning_notes,
+                     # lo que rige por el tipo de cámara si no se eligió a mano (para mostrarlo en los editores)
+                     rules_default=list(RULE_TYPES if prof_rules is None else prof_rules),
+                     gestures_default=type_gestures(c))
             ops = ops or {}
             op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
             d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
@@ -940,7 +989,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/meta")
     def meta(_: User = Depends(current_user)) -> dict:
         return {"rule_types": list(EVENT_TYPES), "alarm_types": list(hpp.VIDEO_EVENT_TYPES), "severity": SEVERITY,
-                "labels": list(LABELS),
+                "labels": list(LABELS), "gesture_types": list(GESTURE_TYPES),
                 "zone_types": ["shelf", "checkout", "exit", "restricted"], "roles": list(ROLES)}
 
     # ------------------------------------------------------------ clientes y usuarios
@@ -1463,12 +1512,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cfg = {"zones": [z.model_dump(exclude_none=True) for z in body.zones], "rules": body.rules}
         try:
             parse_config(cfg)
-        except ValueError as exc:
+            gestures = clean_gestures(body.gestures)
+        except (ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc)) from exc
         c.zones, c.rules = cfg["zones"], cfg["rules"]
+        if gestures is not None:  # None = no cambia (la app vieja no los manda)
+            c.gestures = gestures
         bump_rev(s)
         s.commit()
         return camera_dict(c, user, ops=operator_map(s))
+
+    def clean_gestures(g: dict | None) -> dict | None:
+        """Valida los gestos que llegan (ValueError con el motivo) y guarda solo las claves que vinieron, con los
+        valores ya normalizados: lo que no se mandó sigue los valores por defecto de core/gestos.py."""
+        if g is None:
+            return None
+        if not isinstance(g.get("enabled", []), (list, type(None))):
+            raise ValueError("gestures.enabled: va una lista de gestos (" + ", ".join(GESTURE_TYPES) + ")")
+        try:
+            norm = GestureConfig.from_dict(g).to_dict()
+        except (ValueError, TypeError) as exc:
+            if str(exc).startswith("gestures"):
+                raise
+            raise ValueError("gestures: los tiempos van en segundos (números)") from exc
+        return {k: norm[k] for k in norm if g.get(k) is not None}  # "enabled": null = los del tipo
 
     def remove_cameras(s, cams: list[Camera], with_alerts: bool) -> None:
         """Borra cámaras con sus métricas y alarmas. Si tienen alertas o videos subidos, solo con `with_alerts`
@@ -1680,7 +1747,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def camera_analysis(c: Camera, client: Client | None = None) -> dict:
         plans = list((client.plans if client is not None else None) or [])
-        prof = CAMERA_PROFILES.get(c.profile or "general", CAMERA_PROFILES["general"])
+        prof = camera_profile(c)
         zones, rules = list(c.zones or []), dict(c.rules or {})
         if prof["rules"] is not None and "enabled_rules" not in rules:  # lo elegido a mano manda
             rules["enabled_rules"] = list(prof["rules"])
@@ -1689,9 +1756,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             zones.append({"name": prof["name"], "type": whole, "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]})
         vehicles = ("estacion" in plans or bool(prof.get("vehicles"))
                     or any((z or {}).get("type") == "pump" for z in zones))
-        # sin plan de hurto (o sin ninguna regla): la cámara solo mide; no hay alertas ni clips
+        # sin plan de hurto (o sin ninguna regla ni gesto): la cámara solo mide; no hay alertas ni clips
         # (sin cliente = video subido para entrenar: siempre con las reglas de hurto)
-        metrics_only = (client is not None and "hurto" not in plans) or rules.get("enabled_rules") == []
+        no_theft = client is not None and "hurto" not in plans
+        # gestos de ocultamiento: nunca dentro de `rules` (un agente viejo rechaza nombres que no conoce en
+        # enabled_rules o cooldown_seconds y deja de analizar la cámara); viajan aparte y solo si hay alguno
+        gestures = GestureConfig() if no_theft else camera_gestures(c)
+        metrics_only = no_theft or (rules.get("enabled_rules") == [] and not gestures.enabled)
         if metrics_only:
             rules["enabled_rules"] = []
         # zonas de tipos nuevos (personal, pasillo) aparte: un agente viejo no conoce el tipo y dejaría de usar todas
@@ -1699,6 +1770,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         extra = [z for z in zones if (z or {}).get("type") in NEW_ZONE_TYPES]
         out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES], "rules": rules,
                "vehicles": vehicles, "plans": plans, "profile": c.profile or "general", "metrics_only": metrics_only}
+        if gestures.enabled:
+            out["gestures"] = gestures.to_dict()
         if extra:
             out["extra_zones"] = extra
             staff = [z for z in extra if z.get("type") == "staff"]
@@ -1766,7 +1839,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c = get_or_404(s, Camera, body.camera_id, "Cámara")
         client = s.get(Client, c.client_id)
         return {"camera": {**agent_camera_cfg(c, client), "filter_model": model_spec(s, c.client_id)},
-                "raw": {"zones": c.zones or [], "rules": c.rules or {}},
+                "raw": {"zones": c.zones or [], "rules": c.rules or {}, "gestures": c.gestures},
                 "tuning": c.tuning or "sin_ajustar", "tuning_notes": c.tuning_notes,
                 "analyzed": locations(s).get(c.id) == "servidores"}
 

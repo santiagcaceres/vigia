@@ -120,6 +120,9 @@ class Agent:
         self._closed: set[int] = set()  # cámaras que no se miran ahora porque el local está cerrado
         self._alarms_until = 0.0
         self.workers: dict[int, CameraWorker] = {}
+        # cámaras que no se pudieron armar (configuración inválida): id → (configuración que falló, motivo). No se
+        # reintenta ni se repite el error en el registro hasta que su configuración cambie
+        self._broken: dict[int, tuple[str, str]] = {}
         self._stopping: list[CameraWorker] = []  # cámaras cerradas que todavía están terminando (app de escritorio)
         self.listeners: dict[int, DeviceAlarmListener] = {}
         self.live_workers: dict[int, LiveWorker] = {}  # vivo de cámaras en modo alarmas
@@ -240,18 +243,30 @@ class Agent:
                     lw.streamer.zones = parse_zones((self._cams_cfg[cid].get("analysis") or {}).get("zones"))
                 except ValueError:
                     pass
+        self._broken = {cid: v for cid, v in self._broken.items() if cid in wanted}
         for cid, c in wanted.items():
             if cid in self.workers:
                 continue
+            key = CameraWorker.fingerprint_of(c) + CameraWorker.analysis_of(c)
+            if self._broken.get(cid, ("",))[0] == key:
+                continue  # ya falló con esta misma configuración: se reintenta cuando la cambien
             try:
                 det = self._detector(c.get("detector", "yolo"), c)
             except Exception as exc:
                 log.error("Cámara %s: no se pudo crear el detector: %s", c["name"], exc)
                 continue
             # modo central: cada cámara trae el modelo de su cliente; si no, se usa el del agente
-            scorer = Scorer.maybe(c["filter_model"]) if c.get("filter_model") is not None else self.scorer
-            w = CameraWorker(c, det, scorer, self.outbox, self.client, self.clip_pool, cfg.get("settings", {}),
-                             metrics_queue=self.metrics_queue)
+            try:
+                scorer = Scorer.maybe(c["filter_model"]) if c.get("filter_model") is not None else self.scorer
+                w = CameraWorker(c, det, scorer, self.outbox, self.client, self.clip_pool, cfg.get("settings", {}),
+                                 metrics_queue=self.metrics_queue)
+            except Exception as exc:  # noqa: BLE001 - una cámara mal configurada no frena a las demás
+                # (zonas, reglas o gestos que esta versión no entiende, conexión incompleta...)
+                log.error("Cámara %s: configuración inválida, no se analiza hasta que la corrijan: %s",
+                          c.get("name", cid), exc)
+                self._broken[cid] = (key, f"Configuración inválida: {exc}")
+                continue
+            self._broken.pop(cid, None)
             self.workers[cid] = w
             w.start()
             log.info("Iniciada cámara %s", c["name"])
@@ -337,6 +352,8 @@ class Agent:
                 last_status = now
                 payload = {"cameras": [w.status() for w in self.workers.values()]
                            + [l.status() for l in self.listeners.values()]
+                           + [{"camera_id": cid, "state": "error", "error": why}
+                              for cid, (_, why) in self._broken.items()]
                            + [{"camera_id": cid, "state": "fuera_de_horario"}
                               for cid in self._closed if cid not in self.listeners],
                            "live": self.live_ids(),
@@ -534,7 +551,10 @@ class Agent:
                 txt += f" · {w.fps:.0f} fps"
                 if w.idle_pct:
                     txt += f" · {w.idle_pct:.0%} quieta"
-            return txt + (" · solo métricas" if w.metrics_only else "")
+            return (txt + (" · solo métricas" if w.metrics_only else "")
+                    + (" · con gestos" if w.analyzer.gestures else ""))
+        if cid in self._broken:
+            return "Error: " + self._broken[cid][1]
         if lw is not None and lw.thread.is_alive():
             return "En vivo (panel)"
         if cid in self.listeners:
@@ -586,6 +606,8 @@ class Agent:
                               .get(w.state, w.state)))
             elif lw is not None and lw.thread.is_alive():
                 tiles.append((name, lw.display, "Abriendo el stream..."))
+            elif cid in self._broken:
+                tiles.append((name, None, "Error: " + self._broken[cid][1]))
             elif cid in self._closed and cid not in self.listeners:
                 tiles.append((name, None, self._closed_text(cid) + " (no se gasta video ni análisis)"))
             else:

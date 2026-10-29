@@ -51,6 +51,23 @@ class PoseEstimator:
         self.device, self.on_gpu, self.size = self.runner.device, self.runner.on_gpu, self.runner.size
         self.pad = pad
         self.min_conf = min_conf
+        self.model_path = model_path or getattr(getattr(self.runner, "session", None), "_model_path", None)
+        self._lock = threading.Lock()
+
+    def _run(self, canvas: np.ndarray) -> np.ndarray:
+        """Corre el modelo; si falla en la placa de video (le pasó a otro modelo con DirectML en la Dell), sigue en
+        el procesador en vez de cortar el análisis de la cámara."""
+        try:
+            return self.runner.run(canvas)
+        except Exception as exc:  # noqa: BLE001
+            if not self.on_gpu or not self.model_path:
+                raise
+            with self._lock:
+                if self.on_gpu:  # otra cámara pudo haberlo cambiado ya
+                    log.warning("La postura falló en %s (%s): sigue en el procesador", self.device, exc)
+                    self.runner = _CpuRunner(self.model_path)
+                    self.device, self.on_gpu = "procesador", False
+            return self.runner.run(canvas)
 
     def estimate(self, frame: np.ndarray, bbox: BBox) -> np.ndarray | None:
         fh, fw = frame.shape[:2]
@@ -72,7 +89,7 @@ class PoseEstimator:
         canvas = np.full((th, tw, 3), 114, np.uint8)
         ox, oy = (tw - nw) // 2, (th - nh) // 2
         canvas[oy:oy + nh, ox:ox + nw] = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        out = self.runner.run(canvas)  # (56, N): cx, cy, w, h, puntaje, 17 x (x, y, conf)
+        out = self._run(canvas)  # (56, N): cx, cy, w, h, puntaje, 17 x (x, y, conf)
         if out.shape[0] > out.shape[1]:
             out = out.T
         scores = out[4]
@@ -94,6 +111,24 @@ class PoseEstimator:
         kp[:, 0] = (kp[:, 0] - ox) / r + cx1
         kp[:, 1] = (kp[:, 1] - oy) / r + cy1
         return kp
+
+
+class _CpuRunner:
+    """La sesión del modelo de postura en el procesador (cuando la placa de video falla)."""
+
+    def __init__(self, model_path: str | Path, threads: int = 2):
+        import onnxruntime as ort
+
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = threads
+        self.session = ort.InferenceSession(str(model_path), opts, providers=["CPUExecutionProvider"])
+        self.input_name = self.session.get_inputs()[0].name
+        self._lock = threading.Lock()
+
+    def run(self, canvas: np.ndarray) -> np.ndarray:
+        blob = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+        with self._lock:
+            return self.session.run(None, {self.input_name: blob})[0][0]
 
 
 def pick(tracks: list, limit: int = MAX_PER_FRAME, min_px: float = MIN_PERSON_PX) -> list:
@@ -153,7 +188,7 @@ def build_pose(model_path: str | Path | None = None) -> PoseEstimator | None:
         if key not in _estimators:
             hilos = int(os.getenv("VIGIA_HILOS") or 0)
             runner = SessionPool(path, hilos) if hilos > 1 else OnnxSession(path, threads=2, max_batch=1)
-            est = PoseEstimator(runner=runner)
+            est = PoseEstimator(path, runner=runner)
             _estimators[key] = est
             log.info("Postura de las personas (%s) en %s", est.name, est.device)
         return _estimators[key]

@@ -1,8 +1,8 @@
 """Máquinas de análisis (servidores en la nube): cuánto pesa cada cámara, cómo se reparten y cuántas
 máquinas hacen falta prendidas. Solo funciones puras: la base de datos la maneja server/main.py.
 
-- **Peso** de una cámara = cuánto de una máquina ocupa ahora (1,0 = cámara de hurto a 5 fps). Con el local
-  cerrado y «No mirar», pesa 0: no hace falta ninguna máquina para ella.
+- **Peso** de una cámara = cuánto de una máquina ocupa ahora (1,0 = cámara de hurto a 5 fps; con gestos, un 30 %
+  más por la postura). Con el local cerrado y «No mirar», pesa 0: no hace falta ninguna máquina para ella.
 - **Reparto**: cada cámara se queda en su máquina mientras esa máquina esté en línea y le entre; las demás
   van a la menos cargada. Si una máquina se cae (90 s sin noticias), sus cámaras pasan a las otras.
 - **Plan**: cuántas máquinas tienen que estar prendidas (mirando también los próximos 20 min, para
@@ -22,12 +22,17 @@ HEADROOM = 0.85  # no llenar las máquinas más allá del 85 %
 LOOKAHEAD = timedelta(minutes=20)  # una máquina tarda 2-3 min en arrancar: prenderla antes de que abran
 ONLINE = timedelta(seconds=90)  # sin noticias en este tiempo = máquina caída
 DEFAULT_CAPACITY = 30.0  # cámaras de hurto a 5 fps por máquina (hasta medirlo)
+# cámara con gestos de ocultamiento: además del detector, la postura (core/pose.py, ~18 ms por persona) suma
+# un 20-40 % con gente a la vista; se cuenta un 30 % más (sin gente, el filtro de movimiento ahorra igual)
+POSE_FACTOR = 1.3
 
 
 def camera_weight(*, fps: float, mode: str, brand: str, hours: dict | None, tz: str, off_hours: str,
-                  now: datetime) -> float:
-    """Cuánto ocupa la cámara en este momento (`now` en UTC, con o sin zona)."""
+                  now: datetime, pose: bool = False) -> float:
+    """Cuánto ocupa la cámara en este momento (`now` en UTC, con o sin zona). `pose`: mira gestos (postura)."""
     base = 0.1 if mode in ("alarmas", "alarmas_equipo") else 0.2 + 0.8 * fps / 5.0  # 0,2 = decodificar el video
+    if pose:
+        base *= POSE_FACTOR
     if hours:
         local = (now if now.tzinfo else now.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo(tz or "UTC"))
         if not is_open(hours, local, DEFAULT_MARGIN_MIN):

@@ -552,6 +552,61 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     Usa `metrics_summary()` (main.py), lo mismo que `/api/metrics`. Web: botón «⬇ Descargar PDF» en Métricas y en el
     Resumen del cliente (el período elegido). App: Clientes → Métricas → «Exportar (PDF o Excel)…» (PDF de un cliente,
     o el CSV de antes, de uno o de todos).
+- **Gestos de ocultamiento por postura (29 oct, pedido del dueño: «mano al bolsillo y mano dentro del cuerpo… dejame la
+  detección perfecta»; app 1.30.0).** «Perfecta» no existe: lo mejor publicado con pose en tiendas reales es PoseLift
+  (AUC 67-69) y RetailS con hurtos reales (61); Paza da precisión 89,5 % y recall 59 % en clips curados. Es un indicio
+  para revisar, como todo.
+  - **Lo que traía Gemini, corregido:** BlazePose/MediaPipe sigue descartado (una persona, su ficha excluye vigilancia).
+    La «caída de visibilidad» viene de BlazePose: en YOLO-pose la confianza de cada punto NO es visibilidad (COCO anota
+    los puntos tapados que se pueden adivinar): acá es una pista secundaria. Los 350-480 ms son lo que dura el
+    movimiento de alcance, no una permanencia validada (a 5 fps son 2 cuadros): se usan 0,6-1 s.
+  - **Modelo:** `models/postura.onnx` = YOLO11n-pose (AGPL, la misma familia) exportado a 256x256, **sobre el recorte de
+    cada persona del detector** (`core/pose.py`, `PoseEstimator`, `look`, `build_pose`). Sobre la imagen entera el
+    modelo de pose pierde a la gente chica (128 imágenes de COCO: AP50 0,53 contra 0,76 del detector); en recortes
+    coincide con la versión 640 a ~0,08 largos de torso y cuesta ~18 ms por persona (1 hilo). Solo personas de 90 px o
+    más, hasta 8 por cuadro. RTMPose (más preciso en recortes) no se pudo bajar: openmmlab y Hugging Face están
+    bloqueados en la sesión cloud. Regenerar: `python -m tools.export_model yolo11n-pose.pt models/postura.onnx --imgsz 256`.
+  - **`core/gestos.py`** (Python puro; `GestureEngine` por persona y brazo, todo en largos de torso T):
+    1. **Toma**: la muñeca lejos del cuerpo a la altura del pecho para arriba (o arriba de los hombros, o abajo muy al
+       costado), 2 cuadros, y vuelve al cuerpo en 3 s; **parada** (caderas a menos de 0,35 altos/s), con 1,5 s o más a
+       la vista, frente a una góndola (o en una cámara sin góndolas marcadas) y **no hacia otra persona** (pasarle algo).
+       Pegado a la góndola el brazo no se estira del todo (Minas: codo a 85-115°): por eso se mira dónde está la
+       muñeca y no solo el codo. Una toma frente a una góndola también marca «tomó algo» para salida sin pago.
+    2. **Ocultamiento** después de la toma (hasta 10 s): **bolsillo** (muñeca a ≤0,35 T de la cadera del mismo lado,
+       sale a 0,5, codo ≤160°, 0,6 s), **ropa** (dentro del torso y además cruza el cuerpo, baja a la cintura en el
+       centro o deja de verse con el codo a la vista; codo ≤120°; 0,8 s), **bolsa** (bolso, cartera o mochila del
+       detector junto a la mano, 1 s; sin bolso detectado: manos bajas delante del cuerpo con el codo doblado, el doble
+       de tiempo y solo parada).
+    3. **Descartes**: sin toma, dos manos a la vez (acomodarse), la mano que ya estaba en la cadera cuando tomó
+       (apoyada), 15 s quieta (postura), bolsillo en la caja (pagar), zona de personal, la mano junto a otra persona.
+       Enfriamiento: el mismo gesto de la misma persona cada 30 s; entre gestos, 10 s.
+  - **Tipos de evento** `mano_bolsillo` (alta), `mano_ropa` (alta), `mano_bolsa` (media), en `EVENT_TYPES`,
+    `RULE_PRIORITY` y `SEVERITY`; medidas nuevas en `FEATURE_NAMES` (gesture_dwell_s, since_take_s, takes, reaches,
+    wrist_conf_drop, bag_seen, pose_ok_ratio). El Scorer usa las variables con las que se entrenó (un modelo viejo
+    sigue valiendo) y no filtra un tipo que no conoce. **Los gestos viajan en `analysis["gestures"]` (GestureConfig),
+    nunca dentro de `rules`**: `RuleConfig.from_dict` es estricto y un agente viejo se caería.
+  - **Servidor:** `cameras.gestures` (JSON; NULL = los del tipo de cámara: general y góndola los 3, el resto ninguno;
+    `{"enabled": []}` = apagados); `PUT /api/cameras/{id}/analysis` acepta `gestures` (None = no cambia);
+    `/api/agent/tune` devuelve `raw.gestures`; sin plan hurto o «Solo métricas», nunca. Con gestos y sin reglas de zona
+    la cámara no es «solo métricas». Peso en el reparto ×1,3 (`pool.POSE_FACTOR`). Editor de zonas web: casillas de
+    gestos aparte (y arreglado el 422 por `alarma_dvr` en las casillas de reglas).
+  - **Agente:** `agent/worker.shared_pose()` (una postura por proceso); prender/apagar gestos o cambiar sus tiempos se
+    aplica en caliente sin reconectar; una cámara con configuración inválida ya no tira abajo `apply_config` (queda en
+    error y siguen las demás). `analyze_clip(..., pose=)` en el modo alarmas. `python -m agent.medir --gestos` suma el
+    costo de la postura. En el lote de NVIDIA (`core/lotes.py`) se suman los bolsos (24, 26, 28) para «mano en la bolsa».
+  - **App («Configurar…»):** esqueleto sobre la imagen, «BOLSILLO 0.4/0.6s», «TOMÓ ALGO»; casillas de los 3 gestos con
+    sus segundos y «Pedir que tome algo antes»; «Probar estos tiempos» re-evalúa sin volver a correr la postura (los
+    puntos quedan guardados por cuadro); la explicación dice por qué dio o no (tomas, segundos contra lo pedido,
+    descartes); avisos si la postura se ve mal (< 60 %), personas chicas o infrarrojo. Una alerta de gesto «ve» el
+    hurto marcado si cae a ±5 s.
+  - **Validado con Minas** (los únicos videos que hay): el hurto de Pasillo bebidas (la señora mete un producto en una
+    bolsa) → «posible ocultamiento: mano en la bolsa» a los 5,8 s, a 5, 8 y 10 fps, de 480x270 a 1920x1080 y con las
+    zonas reales de la cámara 44; 3 clips normales de la cámara 1 (dos señoras en la góndola; una le pasa una botella a
+    otra persona; una chica entra abrazando una botella) → sin alertas (los dos últimos daban falsas alarmas y se
+    corrigieron con «no hacia otra persona» y «parada»). Es un solo hurto: **no mide la precisión**. Hacen falta 30-50
+    clips por gesto (y normales) en la biblioteca de videos de prueba.
+  - **Minas en producción:** gestos activos en Góndolas ventana (7) y Pasillo bebidas (44); apagados a mano en Depósito
+    estanterías (6), Caja mostrador (29) y Portón calle (38) (manipular cosas ahí es normal).
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),
@@ -776,8 +831,10 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 
 ## Limitaciones honestas (decirlas siempre, no prometer de más)
 
-- **No detecta ocultamiento** (guardar algo en la ropa/mochila). Marca patrones por zonas y
-  tiempos. Cada evento es un indicio para revisar, **no una prueba**.
+- **Gestos de ocultamiento (desde el 29 oct):** mira la postura (mano al bolsillo, dentro de la ropa, en la bolsa) después
+  de tomar algo, pero con un solo hurto real para probar: **no se sabe todavía cuánto acierta**. Falla con cámaras
+  cenitales u ojo de pez, de noche (infrarrojo), con personas chicas o de espaldas, y la bolsa propia del cliente o el
+  celular pueden dar falsas alarmas. Cada evento es un indicio para revisar, **no una prueba**.
 - **La precisión nunca se midió con video real.** Es lo primero del piloto.
 - Probado con un video real de noticiero: detecta a la persona en el 86 % de los cuadros y
   dispara "merodeo", pero no "ve" el gesto del hurto.
@@ -871,9 +928,9 @@ seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_t
 5. **Preguntas a Hikvision:** ¿requisitos y costo de la clave VSaaS / HPNetSDK? ¿permite bajar la
    grabación por horario (o el clip de alarma)? ¿corre en Windows/Linux? ¿UY/AR? Si la dan,
    los clientes Hikvision se quedan sin VPN (otro `ClipFetcher` en `agent/alarms.py`).
-6. **Detector de gestos** (mano al bolsillo en caja, botella/elemento al cuerpo; lavado de vidrios en
-   estaciones): necesita 30–50 clips etiquetados por gesto y un modelo de pose (YOLO-pose) o de acción;
-   hoy el sistema solo mide posiciones y tiempos.
+6. **Gestos (hecho el 29 oct con postura + reglas, ver arriba): medirlos.** Juntar 30–50 clips por gesto (y normales)
+   en la biblioteca de videos de prueba, ajustar los umbrales y después entrenar un clasificador de esqueletos o sumar
+   «producto en la mano». Falta: mano a la caja registradora → bolsillo (empleados), lavado de vidrios en estaciones.
 7. **Licencia del detector** (AGPL) antes de cobrar.
 8. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
    los archivos a 50 MB).

@@ -11,7 +11,12 @@ a las máquinas de análisis. Sirve en vivo o con videos grabados (por ejemplo, 
   detector, apariciones breves, cuadros por segundo, cortes, zonas que faltan).
 - YOLO completo: en la misma pasada del modelo se ven también los objetos (mochilas, carteras, botellas…). Se
   dibujan y se cuentan, pero no entran al seguimiento ni a las reglas: las personas son las mismas que en las
-  máquinas (`OnnxYoloDetector.detect_also`).
+  máquinas (`OnnxYoloDetector.detect_also`). Los bolsos, carteras y mochilas sí cuentan para «mano en la bolsa».
+- Gestos de ocultamiento (core/gestos.py): si la cámara los tiene, se mira la postura de cada persona (core/pose.py,
+  el mismo modelo que las máquinas) y se guarda con el cuadro. Cambiar qué gestos o sus segundos (`set_gestures`)
+  recalcula todo sin volver a mirar la postura (lo caro); se dibuja el esqueleto y, bajo cada persona, la mano en el
+  bolsillo, la ropa o la bolsa contra lo que pide («BOLSILLO 0.4/0.6s»). Es un indicio de posible ocultamiento para
+  revisar, nunca una prueba.
 """
 
 from __future__ import annotations
@@ -30,11 +35,16 @@ import cv2
 import numpy as np
 
 from core.analyzer import annotate
-from core.detectors import Detector
+from core.detectors import Detection, Detector
 from core.escena import COCO_ES, OBJECT_CONF, light
+from core.gestos import (GESTURE_NAMES, GESTURE_OF, MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA, REGION_OF, GestureConfig,
+                         body_of)
 from core.metrics import door_counts
 from core.pisadas import FootMap
-from core.rules import MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
+from core.pose import build_pose, look
+from core.pose import draw as draw_pose
+from core.rules import (BAG_LABELS, MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone,
+                        parse_config)
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
 
@@ -54,7 +64,46 @@ ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restrict
              "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal",
              "aisle": "pasillo"}
 ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO", "zona_restringida": "ZONA RESTRINGIDA",
-              "fuera_de_horario": "FUERA DE HORARIO"}
+              "fuera_de_horario": "FUERA DE HORARIO", MANO_BOLSILLO: "POSIBLE OCULTAMIENTO (BOLSILLO)",
+              MANO_ROPA: "POSIBLE OCULTAMIENTO (ROPA)", MANO_BOLSA: "POSIBLE OCULTAMIENTO (BOLSA)"}
+REGION_TEXT = {"bolsillo": "BOLSILLO", "ropa": "ROPA", "bolsa": "BOLSA"}
+BAG_CONF = 0.3  # bolsos para «mano en la bolsa» con la misma confianza que las máquinas (core/pose.detect_with_bags)
+POSE_OK_MIN = 60.0  # postura bien vista en menos de este % de las veces: los gestos no andan bien en esa cámara
+# por qué un gesto no dio alerta (los motivos de core/gestos.py, dichos para el que ajusta la cámara)
+SUPPRESS_TEXT = {"sin toma vista antes": "no se vio que tomara algo antes",
+                 "las dos manos a la vez (acomodarse)": "las dos manos a la vez (acomodarse la ropa)",
+                 "la mano ya estaba ahí antes de tomar": "la mano ya estaba ahí antes de tomar",
+                 "postura (mano quieta mucho rato)": "la mano se quedó quieta mucho rato (es postura, no un gesto)",
+                 "en la caja (pagar)": "estaba en la caja (pagar)",
+                 "zona de personal": "estaba en la zona de personal"}
+_KEEP = object()
+
+
+def gestures_blocked(analysis: dict) -> str | None:
+    """Por qué la cámara no puede mirar gestos aunque se elijan (como el servidor, `camera_analysis`), o None."""
+    if (analysis.get("profile") or "general") == "metricas":
+        return "la cámara es del tipo «Solo métricas»"
+    plans = analysis.get("plans")
+    if plans is not None and "hurto" not in plans:
+        return "el cliente no tiene el plan «Detección de hurtos»"
+    return None
+
+
+def with_gestures(analysis: dict, gestures: dict | None) -> dict:
+    """La configuración con otros gestos (sin guardar), armada como la arma el servidor: `gestures` aparte de `rules`
+    y solo si hay alguno activado (un agente viejo rechaza nombres que no conoce en `rules`), y una cámara con las
+    reglas apagadas deja de ser «solo métricas» si mira gestos. ValueError si los gestos están mal."""
+    a = dict(analysis)
+    blocked = gestures_blocked(a)
+    on = bool(gestures and gestures.get("enabled")) and blocked is None
+    if on:
+        GestureConfig.from_dict(gestures)  # estricto: que el error salga acá y no en las máquinas
+        a["gestures"] = dict(gestures)
+    else:
+        a.pop("gestures", None)
+    if blocked is None and (a.get("rules") or {}).get("enabled_rules") == []:
+        a["metrics_only"] = not on
+    return a
 
 
 @dataclass
@@ -65,8 +114,10 @@ class Sample:
     wall: datetime | None  # hora real (solo en vivo)
     jpg: bytes
     size: tuple[int, int]  # tamaño del cuadro original: los recuadros están en esa escala
-    tracks: list[Track]  # copia de las personas de ese cuadro (sin el histograma de color)
-    objects: list[tuple[str, float, tuple]] = field(default_factory=list)  # (qué, confianza, recuadro): solo se muestran
+    tracks: list[Track]  # copia de las personas de ese cuadro (sin el histograma de color; con la postura, si se miró)
+    # (qué, confianza, recuadro): se muestran; los bolsos, carteras y mochilas cuentan para «mano en la bolsa»
+    objects: list[tuple[str, float, tuple]] = field(default_factory=list)
+    posed: bool = False  # se miró la postura en este cuadro (la cámara tenía gestos)
 
 
 @dataclass
@@ -89,7 +140,9 @@ class Tuner:
     cámara, sin mandar nada al servidor."""
 
     def __init__(self, cfg: dict, detector: Detector, videos: list[str] | None = None,
-                 keep_seconds: float = LIVE_KEEP_SECONDS):
+                 keep_seconds: float = LIVE_KEEP_SECONDS, pose=None):
+        """`pose`: estimador de postura (core/pose.py) para los gestos; sin él, si la cámara tiene gestos se arma el
+        de las máquinas (`build_pose`, compartido) al empezar a analizar."""
         self.cfg = cfg
         self.id: int = cfg["id"]
         self.name = f"{cfg['client_name']} · {cfg['name']}" if cfg.get("client_name") else cfg["name"]
@@ -105,8 +158,13 @@ class Tuner:
         self.marks: list[dict] = []  # por cuadro: zonas y segundos de cada persona (RuleEngine.progress)
         self.base = 0  # número del primer cuadro guardado (en vivo se descartan los viejos)
         self.alerts: list[TestAlert] = []
+        # lo medido de los gestos de cada persona ((video, número) → GestureEngine.summary), para explicar
+        self.gsum: dict[tuple[int, int], dict] = {}
         self.engine: RuleEngine | None = None
         self._engine_seg = -1
+        self.pose = pose
+        self._pose_built = pose is not None
+        self.pose_missing = False  # la cámara tiene gestos pero en esta PC no está el modelo de postura
         self.set_analysis(cfg.get("analysis") or {})
         self.tracker = CentroidTracker()
         # YOLO completo: qué más ve el modelo en la misma pasada (solo para mostrar; no toca las reglas)
@@ -135,6 +193,8 @@ class Tuner:
         self._spans: dict[tuple[int, int], list[float]] = {}
         self._visible_now: set[tuple[int, int]] = set()
         self._times: list[float] = []
+        self._pose_people = self._pose_small = 0  # personas vistas / más chicas que lo que pide la postura
+        self._pose_tried = self._pose_ok = 0  # personas a las que se les miró la postura / con hombros y caderas a la vista
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name=f"ajuste-{self.id}", daemon=True)
 
@@ -142,31 +202,69 @@ class Tuner:
     def set_analysis(self, analysis: dict) -> None:
         """Zonas y reglas nuevas: se recalcula todo lo ya analizado (sin volver a detectar). ValueError si están mal."""
         zones, rule_cfg = parse_config(analysis)
+        metrics_only = bool(analysis.get("metrics_only"))
+        if metrics_only:  # como en las máquinas (Analyzer sin clips): solo métricas no mira gestos
+            rule_cfg.gestures = GestureConfig()
         with self._lock:
             self.analysis = analysis
             self.zones, self.rule_cfg = zones, rule_cfg
-            self.metrics_only = bool(analysis.get("metrics_only"))
+            self.metrics_only = metrics_only
             self._reevaluate()
 
-    def set_times(self, times: dict[str, float]) -> None:
-        """Probar otros tiempos (merodeo, «tomó algo», caja, restringida) sin guardarlos."""
-        self.set_analysis({**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}})
+    def set_times(self, times: dict[str, float], gestures=_KEEP) -> bool:
+        """Probar otros tiempos (merodeo, «tomó algo», caja, restringida) sin guardarlos; con `gestures`, también otros
+        gestos (como `set_gestures`, en la misma vuelta). Devuelve `needs_pose()`."""
+        analysis = {**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}}
+        self.set_analysis(analysis if gestures is _KEEP else with_gestures(analysis, gestures))
+        return self.needs_pose()
+
+    def set_gestures(self, gestures: dict | None) -> bool:
+        """Probar otros gestos o segundos (lo de `GestureConfig.to_dict`; None o sin "enabled" = apagados) sin
+        guardarlos: se recalcula todo con la postura ya mirada, sin volver a estimarla. Devuelve `needs_pose()`."""
+        self.set_analysis(with_gestures(self.analysis, gestures))
+        return self.needs_pose()
+
+    @property
+    def gestures_on(self) -> bool:
+        return bool(self.rule_cfg.gestures.enabled)
+
+    def needs_pose(self) -> bool:
+        """Hay gestos pero lo ya analizado se hizo sin mirar la postura: para verlos hay que volver a analizar (en vivo,
+        se ven desde ahora)."""
+        with self._lock:
+            return self.gestures_on and not self.pose_missing and any(not s.posed for s in self.samples)
 
     def _reevaluate(self) -> None:
         engine, seg = None, None
         alerts: list[TestAlert] = []
         marks: list[dict] = []
+        gsum: dict[tuple[int, int], dict] = {}
         for i, s in enumerate(self.samples):
             if s.seg != seg:  # cada video empieza de cero
                 engine, seg = RuleEngine(self.zones, self.rule_cfg), s.seg
-            alerts += self._feed(engine, s, self.base + i, marks)
+            alerts += self._feed(engine, s, self.base + i, marks, gsum)
         self.engine = engine or RuleEngine(self.zones, self.rule_cfg)
         self._engine_seg = seg if seg is not None else -1
-        self.alerts, self.marks = alerts, marks
+        self.alerts, self.marks, self.gsum = alerts, marks, gsum
 
-    def _feed(self, engine: RuleEngine, s: Sample, index: int, marks: list[dict]) -> list[TestAlert]:
-        evs = engine.update(s.tracks, s.ts, s.size, s.wall)
-        marks.append(engine.progress(s.ts))
+    def _feed(self, engine: RuleEngine, s: Sample, index: int, marks: list[dict],
+              gsum: dict[tuple[int, int], dict]) -> list[TestAlert]:
+        gest = engine.gestures
+        bags = [(label, box) for label, _conf, box in s.objects if label in BAG_LABELS] if gest is not None else []
+        evs = engine.update(s.tracks, s.ts, s.size, s.wall, [Detection(box, label) for label, box in bags])
+        prog = engine.progress(s.ts)
+        if gest is not None:
+            for t in s.tracks:
+                if t.label == VEHICLE_LABEL:
+                    continue
+                sm = gest.summary(t.id)
+                if sm is not None:
+                    gsum[(s.seg, t.id)] = sm  # se pisa en cada cuadro: queda lo de la última vez que se la vio
+                g = (prog.get(t.id) or {}).get("gesture")
+                for side, (region, dwell, need) in list((g or {}).get("hands", {}).items()):
+                    if region == "bolsa" and not _bag_near(t, side, [b for _l, b in bags]):
+                        g["hands"][side] = (region, dwell, need * 2)  # sin bolso a la vista se pide el doble
+        marks.append(prog)
         out = []
         for e in evs:
             score = self.scorer.score(e.type, e.features) if self.scorer else None
@@ -283,27 +381,53 @@ class Tuner:
                 self._stop.wait(2.0)
         self.state = "detenido"
 
+    def _pose_for(self):
+        """El estimador de postura (se arma la primera vez que hace falta: tarda un poco)."""
+        if not self._pose_built:
+            self._pose_built = True
+            self.pose = build_pose()
+            self.pose_missing = self.pose is None
+        return self.pose
+
     def _analyze(self, frame: np.ndarray, ts: float, wall: datetime | None, seg: int) -> None:
+        gest = self.gestures_on
         if self.extra:
-            dets, objs = self.detector.detect_also(frame, self.extra, OBJECT_CONF)
+            dets, objs = self.detector.detect_also(frame, self.extra, BAG_CONF if gest else OBJECT_CONF)
+            if gest:  # los bolsos con la confianza de las máquinas; lo demás, como siempre
+                objs = [o for o in objs if o.conf >= OBJECT_CONF or o.label in BAG_LABELS]
         else:
             dets, objs = self.detector.detect(frame), []
         tracks = self.tracker.update(dets, ts, frame)
+        min_px = self.rule_cfg.gestures.min_person_px
+        posed = gest and self._pose_for() is not None
+        if posed:  # postura de cada persona (lo caro): se guarda con el cuadro y no se vuelve a mirar
+            look(self.pose, frame, tracks, min_px)
+        else:
+            for t in tracks:
+                t.kpts = None
         h, w = frame.shape[:2]
         small = frame if w <= WIDTH else cv2.resize(frame, (WIDTH, int(h * WIDTH / w)), interpolation=cv2.INTER_AREA)
         ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         sample = Sample(seg, ts, wall, jpg.tobytes() if ok else b"", (w, h), [replace(t, hist=None) for t in tracks],
-                        [(o.label, o.conf, o.bbox) for o in objs])
+                        [(o.label, o.conf, o.bbox) for o in objs], posed)
         dark, night = light(small)
+        people = [t for t in tracks if t.visible and t.label != VEHICLE_LABEL]
+        big = [t for t in people if t.bbox[3] - t.bbox[1] >= min_px]
+        well = sum(1 for t in big if t.kpts is not None and body_of(t.kpts, t.bbox) is not None) if posed else 0
         with self._lock:
             self._dark += dark
             self._night += night
-            self._objects.update({o[0] for o in sample.objects})
+            self._objects.update({o[0] for o in sample.objects if o[1] >= OBJECT_CONF})
             self._measure(dets, sample, h)
+            self._pose_people += len(people)
+            self._pose_small += len(people) - len(big)
+            if posed:
+                self._pose_tried += len(big)
+                self._pose_ok += well
             if seg != self._engine_seg or self.engine is None:
                 self.engine, self._engine_seg = RuleEngine(self.zones, self.rule_cfg), seg
             self.samples.append(sample)
-            self.alerts += self._feed(self.engine, sample, self.base + len(self.samples) - 1, self.marks)
+            self.alerts += self._feed(self.engine, sample, self.base + len(self.samples) - 1, self.marks, self.gsum)
             if self.live:
                 self._trim()
 
@@ -316,6 +440,9 @@ class Tuner:
         del self.marks[:cut]
         self.base += cut
         self.alerts = [a for a in self.alerts if a.index >= self.base]
+        if self.gsum:
+            keep = {(s.seg, t.id) for s in self.samples for t in s.tracks}
+            self.gsum = {k: v for k, v in self.gsum.items() if k in keep}
 
     def _measure(self, dets, sample: Sample, h: int) -> None:
         self._n += 1
@@ -392,6 +519,10 @@ class Tuner:
             short = sum(1 for k, (a, b) in self._spans.items() if b - a < SHORT_TRACK_SECONDS and k not in self._visible_now)
             objects = [(k, 100.0 * v / n) for k, v in self._objects.most_common(6)] if n else []
             dark_pct, night_pct = (100.0 * self._dark / n, 100.0 * self._night / n) if n else (0.0, 0.0)
+            pose = {"people": self._pose_people, "tried": self._pose_tried,
+                    "small_pct": 100.0 * self._pose_small / self._pose_people if self._pose_people else None,
+                    "ok_pct": 100.0 * self._pose_ok / self._pose_tried if self._pose_tried else None,
+                    "min_px": self.rule_cfg.gestures.min_person_px}
         return {"frames": n, "seconds": n / self.process_fps, "people_pct": 100.0 * self._n_people / n if n else 0.0,
                 "persons": persons, "short": short, "detections": det, "objects": objects,
                 "dark_pct": dark_pct, "night_pct": night_pct,
@@ -401,7 +532,7 @@ class Tuner:
                 "fps": len(self._times) / 10.0 if self.live else None, "cuts": self.cuts, "alerts": alerts,
                 "dropped": dropped,
                 "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None,
-                "door": self.door()}
+                "door": self.door(), "gestures": self.gestures_on, "pose": pose}
 
     def footmap(self) -> FootMap:
         """Mapa de pisadas de lo analizado (cada video por separado): dónde camina y dónde se para la gente, para
@@ -443,11 +574,13 @@ class Tuner:
 
     def explain(self, seg: int, top: int = 3) -> list[str]:
         """Por qué un video dio (o no) alertas con la configuración de ahora: qué midió de cada persona (segundos a la
-        vista, en cada zona y si «tomó algo») contra lo que pide cada regla. Para «Probar clip»."""
+        vista, en cada zona y si «tomó algo»; con gestos, la postura, las tomas y la mano en el bolsillo, la ropa o la
+        bolsa contra lo que pide, y por qué se descartó) contra lo que pide cada regla. Para «Probar clip»."""
         with self._lock:
             rows = [(s, m) for s, m in zip(self.samples, self.marks) if s.seg == seg]
             alerts = [a for a in self.alerts if a.seg == seg]
             zones, cfg = list(self.zones), self.rule_cfg
+            gsum = {tid: v for (sg, tid), v in self.gsum.items() if sg == seg}
         seen: dict[int, list[float]] = {}  # id -> [primer, último] momento a la vista
         in_zone: dict[int, dict[str, float]] = {}  # id -> zona -> segundos seguidos (máximo)
         took: set[int] = set()
@@ -467,15 +600,19 @@ class Tuner:
                     z[name] = max(z.get(name, 0.0), secs)
                 if info.get("took"):
                     took.add(t.id)
+        alerted = {a.track_id for a in alerts}
+        # primero los que dieron alerta; después, los que más se vieron
         people = sorted((tid for tid, (a, b) in seen.items() if b - a >= SHORT_TRACK_SECONDS),
-                        key=lambda tid: seen[tid][0] - seen[tid][1])[:top]
+                        key=lambda tid: (tid not in alerted, seen[tid][0] - seen[tid][1]))[:top]
         types = {z.name: z.type for z in zones}
         rules = set(cfg.enabled_rules)
+        g = cfg.gestures
         out: list[str] = []
         if not people:
             return ["No se vio a nadie más de 2 s: no hay nada que medir."]
         if not zones:
-            out.append("La cámara no tiene zonas: ninguna regla puede saltar. Dibujalas en «Zonas…».")
+            out.append("La cámara no tiene zonas: ninguna regla puede saltar. Dibujalas en «Zonas…»."
+                       + (" Los gestos sí miran sin zonas." if g.enabled else ""))
         for tid in people:
             secs = seen[tid][1] - seen[tid][0]
             text = f"Persona #{tid}: {secs:.0f} s a la vista"
@@ -492,6 +629,8 @@ class Tuner:
                 text += " y nunca pisó una zona (cuenta el punto de los pies)"
                 if edge[tid] >= 0.5 * frames[tid]:
                     text += ". Tiene los pies cortados por el borde de abajo: la zona tiene que llegar hasta el borde"
+            if g.enabled:
+                text += ". Gestos: " + gesture_text(gsum.get(tid), frames[tid], g)
             out.append(text + ".")
         if not alerts and zones:
             if took and SALIDA_SIN_PAGO in rules:
@@ -505,6 +644,16 @@ class Tuner:
             if shelf and MERODEO in rules and max(shelf) < cfg.loiter_seconds:
                 out.append(f"Para «merodeo» tiene que quedarse {cfg.loiter_seconds:g} s en una góndola; el que más "
                            f"estuvo: {max(shelf):.0f} s.")
+        if g.enabled and not any(a.type in g.enabled for a in alerts):
+            if self.pose_missing:
+                out.append("En esta PC no está el modelo de postura: los gestos no se probaron (actualizá la app).")
+            elif any(not s.posed for s, _m in rows):
+                out.append("Este video se analizó sin mirar la postura: para ver los gestos, volvé a analizarlo "
+                           "(«▶ Videos guardados»).")
+            elif g.require_take and not any((gsum.get(tid) or {}).get("takes") for tid in people):
+                out.append("Los gestos piden ver antes que tome algo (parado, estira el brazo hacia el estante y lo trae "
+                           "al cuerpo) y no se vio ninguna toma. Si la cámara ve la góndola de costado o muy de arriba, "
+                           "probá sin «Pedir que tome algo antes» (da más falsas alarmas).")
         return out
 
     def hints(self) -> list[str]:
@@ -512,15 +661,18 @@ class Tuner:
         st = self.stats()
         types = {z.type for z in self.zones}
         rules = set(self.rule_cfg.enabled_rules)
+        g = self.rule_cfg.gestures
         out: list[str] = []
         if any(z.type == "entrance" and not z.direction for z in self.zones):
             out.append("La zona Entrada no tiene sentido: cuenta igual a los que entran y a los que salen. Marcá hacia "
                        "dónde caminan los que entran en «Zonas…» → «Sentido».")
-        if self.metrics_only or not rules:
+        if self.metrics_only or (not rules and not g.enabled):
             out.append("Esta cámara no da alertas: es «solo métricas» (el cliente no tiene el plan de hurto o el tipo de "
                        "cámara no usa reglas).")
         elif not self.zones:
-            out.append("No hay zonas: no se puede disparar ninguna regla. Dibujá góndolas, caja y salida con «Zonas…».")
+            out.append("No hay zonas: no se puede disparar ninguna regla. Dibujá góndolas, caja y salida con «Zonas…»."
+                       + (" Los gestos sí miran sin zonas (con las góndolas marcadas dan menos falsas alarmas)."
+                          if g.enabled else ""))
         else:
             if MERODEO in rules and "shelf" not in types:
                 out.append("Sin zona «Góndola» no hay «merodeo» ni «tomó algo».")
@@ -537,9 +689,12 @@ class Tuner:
             if st["conf"] < 0.5:
                 out.append(f"El detector duda (confianza media {st['conf']:.2f} de 1): poca luz, contraluz, reflejos o "
                            "cámara muy de arriba. Probala también de noche.")
+        if g.enabled:
+            out += self._gesture_hints(st, types)
         if st["frames"] >= 20 and st["night_pct"] > 50:
-            out.append("La imagen está en blanco y negro (infrarrojo, de noche): el detector ve bastante menos. Probala "
-                       "también de día antes de aprobar.")
+            out.append("La imagen está en blanco y negro (infrarrojo, de noche): el detector ve bastante menos"
+                       + (" y la postura peor (los gestos fallan más)" if g.enabled else "")
+                       + ". Probala también de día antes de aprobar.")
         elif st["frames"] >= 20 and st["dark_pct"] > 50:
             out.append("La imagen está oscura: el detector ve menos. Si se puede, más luz o subir el brillo en el grabador.")
         if st["persons"] >= 5 and st["short"] / st["persons"] > 0.3:
@@ -556,6 +711,25 @@ class Tuner:
                 out.append("Todavía no pasó nadie: dejala correr hasta que haya gente, o probá con un video.")
         if not out and st["detections"] >= 20:
             out.append("No se ven problemas. Antes de aprobar, revisá que cada alerta de prueba tenga sentido.")
+        return out
+
+    def _gesture_hints(self, st: dict, types: set[str]) -> list[str]:
+        """Avisos de los gestos: si la postura se puede ver bien en esta cámara."""
+        g, pose, out = self.rule_cfg.gestures, st["pose"], []
+        if self.pose_missing:
+            return ["En esta PC no está el modelo de postura (models/postura.onnx): los gestos no se pueden probar acá. "
+                    "Actualizá la app."]
+        if pose["people"] >= 20 and pose["small_pct"] is not None and pose["small_pct"] > 50:
+            out.append(f"El {pose['small_pct']:.0f} % de las veces las personas miden menos de {g.min_person_px:.0f} "
+                       "píxeles de alto: a esas no se les mira la postura y los gestos no las ven. Mejor el stream "
+                       "principal o una cámara más cerca.")
+        if pose["tried"] >= 20 and pose["ok_pct"] is not None and pose["ok_pct"] < POSE_OK_MIN:
+            out.append(f"La postura (hombros y caderas) se ve bien solo en el {pose['ok_pct']:.0f} % de las veces: los "
+                       "gestos no van a andar bien en esta cámara (gente tapada por góndolas o mostrador, de espaldas, "
+                       "cortada por el borde o cámara muy de arriba).")
+        if g.require_take and self.zones and "shelf" not in types:
+            out.append("Sin zona «Góndola», cualquier brazo estirado cuenta como «tomar algo» para los gestos: marcá las "
+                       "góndolas para que den menos falsas alarmas.")
         return out
 
 
@@ -589,6 +763,47 @@ def square_pixels(frame: np.ndarray, sar: float) -> np.ndarray:
 
 
 OBJECT_COLOR = (230, 80, 230)  # violeta: lo que ve YOLO además de las personas
+POSE_COLOR = (0, 220, 255)  # esqueleto (amarillo; naranja el de la persona de la alerta), como en las fotos de alertas
+GESTURE_COLOR = (255, 255, 0)  # celeste: la mano en el bolsillo, la ropa o la bolsa (rojo al llegar)
+
+
+def gesture_text(sm: dict | None, frames: int, g: GestureConfig) -> str:
+    """Lo medido de los gestos de una persona (`GestureEngine.summary`) en castellano: si se le vio la postura, las
+    tomas, el máximo de segundos con la mano en el bolsillo, la ropa o la bolsa contra lo que pide, y por qué se
+    descartó. `frames`: cuadros en que se la vio."""
+    if not sm or not sm.get("frames"):
+        return "no se le vio la postura (chica, tapada, de espaldas o cortada por el borde)"
+    ok = sm["pose_ok_ratio"] * sm["frames"] / max(1, frames, sm["frames"])
+    parts = [f"postura bien vista en el {100 * ok:.0f} % de los cuadros"]
+    takes = sm.get("takes") or 0
+    parts.append(f"{takes} toma{'s' if takes != 1 else ''} (brazo al estante y vuelta)" if takes else
+                 "no se la vio tomar algo")
+    need = {"bolsillo": g.pocket_seconds, "ropa": g.clothes_seconds, "bolsa": g.bag_seconds}
+    dwell = []
+    for gesture in g.enabled:
+        region = REGION_OF[gesture]
+        v = (sm.get("max_dwell") or {}).get(region, 0.0)
+        if v > 0:
+            dwell.append(f"{GESTURE_NAMES[gesture].lower()} hasta {v:.1f} s (pide {need[region]:g} s"
+                         + (", el doble sin bolso a la vista" if region == "bolsa" else "") + ")")
+    parts.append(", ".join(dwell) if dwell else "nunca llevó la mano al bolsillo, a la ropa ni a la bolsa")
+    sup = sm.get("suppressed") or {}
+    if sup:
+        why = {**SUPPRESS_TEXT, "la toma fue hace mucho": f"la toma fue hace más de {g.take_window:g} s"}
+        parts.append("descartado: " + ", ".join(why.get(k, k) for k in sorted(sup, key=lambda k: -sup[k])))
+    return "; ".join(parts)
+
+
+def _bag_near(t: Track, side: str, bags: list) -> bool:
+    """Hay un bolso, cartera o mochila junto a la muñeca de ese lado (como core/gestos.py): si no, «mano en la bolsa»
+    pide el doble de tiempo. Solo para mostrar lo que pide."""
+    kp = t.kpts
+    if kp is None or not bags:
+        return bool(bags)
+    body = body_of(kp, t.bbox)
+    m = 0.15 * body.T if body is not None else 0.0
+    x, y = float(kp[9 if side == "izq" else 10][0]), float(kp[9 if side == "izq" else 10][1])
+    return any(b[0] - m <= x <= b[2] + m and b[1] - m <= y <= b[3] + m for b in bags)
 
 
 def ascii_text(text: str) -> str:
@@ -600,9 +815,18 @@ def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleCon
          clock: str, objects: bool = True) -> np.ndarray:
     h, w = img.shape[:2]
     k = w / s.size[0] if s.size[0] else 1.0
-    tracks = [replace(t, bbox=tuple(v * k for v in t.bbox)) for t in s.tracks]
+    # el esqueleto se dibuja aparte, escalado como los recuadros (los puntos están en la escala del cuadro original)
+    tracks = [replace(t, bbox=tuple(v * k for v in t.bbox), kpts=None) for t in s.tracks]
     ev = SimpleNamespace(track_id=hot[-1].track_id, type=hot[-1].type) if hot else None
     out = annotate(img, zones, tracks, ev)  # zonas, recuadros, #número y el cartel de la alerta
+    for t in s.tracks:
+        if t.kpts is None or not t.visible:
+            continue
+        hands = ((mark.get(t.id) or {}).get("gesture") or {}).get("hands") or {}
+        hot_wrists = tuple(9 if side == "izq" else 10 for side, (region, _d, _n) in hands.items()
+                           if GESTURE_OF[region] in cfg.gestures.enabled)  # en rojo, la mano que cuenta para un gesto
+        draw_pose(out, t.kpts, (0, 140, 255) if ev is not None and t.id == ev.track_id else POSE_COLOR, scale=k,
+                  hot_wrists=hot_wrists)
     for label, conf, box in (s.objects if objects else []):
         x1, y1, x2, y2 = (int(v * k) for v in box)
         cv2.rectangle(out, (x1, y1), (x2, y2), OBJECT_COLOR, 1)
@@ -623,7 +847,16 @@ def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleCon
             lim = limits.get(ztype)
             lines.append((f"{ZONE_TEXT.get(ztype, ztype)} {dwell:.0f}" + (f"/{lim:.0f}s" if lim else "s"),
                           (0, 0, 255) if lim and dwell >= lim else (0, 255, 255)))
-        if info.get("took") and SALIDA_SIN_PAGO in cfg.enabled_rules:
+        g = info.get("gesture") or {}
+        for _side, (region, dwell, need) in sorted((g.get("hands") or {}).items()):
+            if GESTURE_OF[region] in cfg.gestures.enabled:
+                lines.append((f"{REGION_TEXT[region]} {dwell:.1f}/{need:.1f}s",
+                              (0, 0, 255) if dwell + 1e-6 >= need else GESTURE_COLOR))
+        if g.get("reaching"):
+            lines.append(("ESTIRA EL BRAZO", GESTURE_COLOR))
+        if g.get("took_ago") is not None:  # tomó algo hace poco (brazo al estante y vuelta): cuenta para los gestos
+            lines.append((f"TOMO ALGO ({g['took_ago']:.0f}s)", (0, 140, 255)))
+        elif info.get("took") and SALIDA_SIN_PAGO in cfg.enabled_rules:
             lines.append(("TOMO ALGO", (0, 140, 255)))
         x1, _y1, _x2, y2 = (int(v) for v in t.bbox)
         y = min(y2 + 14, h - bar - 14 * len(lines))
@@ -637,5 +870,10 @@ def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleCon
     text = f"{clock}   personas: {people}"
     if hot:
         text += f"   ALERTA DE PRUEBA: {ALERT_TEXT.get(hot[-1].type, hot[-1].type)} #{hot[-1].track_id}"
-    cv2.putText(out, text, (6, h - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    text = ascii_text(text)
+    size = 0.5
+    tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, size, 1)[0][0]
+    if tw > w - 12:  # que entre en la barra (los carteles de los gestos son largos)
+        size *= (w - 12) / tw
+    cv2.putText(out, text, (6, h - 7), cv2.FONT_HERSHEY_SIMPLEX, size, (255, 255, 255), 1, cv2.LINE_AA)
     return out
