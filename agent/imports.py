@@ -22,6 +22,7 @@ import httpx
 from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import video_duration, write_mp4
 from core.detectors import build_detector
+from core.imagen import pixel_aspect, square_pixels
 from core.scorer import Scorer
 
 from .outbox import ServerClient
@@ -88,11 +89,16 @@ class ImportJobRunner:
         cam = job["camera"]
         iid = job["import_id"]
         detector = build_detector(cam.get("detector", "yolo"), self.model_path)
+        from .worker import shared_pose, wants_gestures
+
+        # con gestos activados en la cámara, el video para entrenar se mira igual que en vivo (postura incluida)
+        pose = shared_pose() if wants_gestures(cam["analysis"], bool(cam["analysis"].get("metrics_only"))) else None
         analyzer = Analyzer(cam["analysis"], detector, Scorer.maybe(job.get("filter_model")),
-                            clip_pre=6, clip_post=6, clip_width=960)
+                            clip_pre=6, clip_post=6, clip_width=960, pose=pose)
         cap = cv2.VideoCapture(str(video))
         if not cap.isOpened():
             raise RuntimeError("No se pudo abrir el video. Si viene de iVMS-4200, exportalo en formato MP4.")
+        sar = pixel_aspect(cap)  # «1080p lite»: con píxeles cuadrados, como en vivo
         fps = cap.get(cv2.CAP_PROP_FPS) or 0
         fps = fps if 0 < fps < 120 else 25.0
         total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
@@ -108,6 +114,8 @@ class ImportJobRunner:
                 if idx % step == 0:
                     ok, frame = cap.retrieve()
                     if ok:
+                        if sar:
+                            frame = square_pixels(frame, sar, shrink=True)
                         ts = idx / fps
                         wall = start + timedelta(seconds=ts) if start else None
                         for f in analyzer.process(frame, ts, wall):

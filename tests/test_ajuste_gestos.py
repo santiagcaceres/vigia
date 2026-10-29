@@ -138,7 +138,7 @@ def test_explica_por_que_un_gesto_no_dio_alerta(tmp_path):
 
 def test_mano_en_la_bolsa_con_la_cartera_que_ve_yolo(tmp_path):
     det = _DetWithBag()
-    t, _ = _tuner(tmp_path, TAKE + [pose(rw=(55, 225), re=(62, 165))] * 8, det=det)
+    t, _ = _tuner(tmp_path, TAKE + [pose(rw=(55, 225), re=(45, 170))] * 8, det=det)  # codo doblado: guardando
     assert det.conf == 0.3  # con gestos, los bolsos se buscan con la confianza de las máquinas
     assert [a.type for a in t.alerts] == [MANO_BOLSA] and t.alerts[0].features["bag_seen"] == 1.0
     hand = t.marks[t.alerts[0].index - t.base][1]["gesture"]["hands"]["der"]
@@ -168,7 +168,11 @@ def test_avisa_si_la_camara_no_sirve_para_los_gestos(tmp_path):
     # personas chicas (70 px de alto): no se les mira la postura
     t, est = _tuner(tmp_path / "a", [pose()] * 25, det=_Det((40.0, 50.0, 80.0, 120.0)))
     assert est.calls == 0
-    assert any("menos de 90 píxeles" in h for h in t.hints())
+    assert any("menos del 25 % del alto" in h for h in t.hints())
+    assert t.stats()["pose"]["min_pct"] == 25.0
+    # sin postura vista no tiene sentido sugerir que no pida la toma: se dice que no se vio la postura
+    why = " ".join(t.explain(0))
+    assert "No se le vio la postura a nadie" in why and "«Pedir que tome algo antes»" not in why
     # postura mal vista (hombros y caderas con confianza baja: tapados)
     t2, _ = _tuner(tmp_path / "b", [pose(conf=0.2)] * 25)
     assert t2.stats()["pose"]["ok_pct"] == 0
@@ -197,8 +201,92 @@ def test_los_gestos_viajan_aparte_de_las_reglas():
     sin_plan = {**a, "plans": ["comercio"]}
     assert gestures_blocked(sin_plan) and "gestures" not in with_gestures(sin_plan, {"enabled": ALL})
     assert gestures_blocked({**a, "profile": "metricas"}) and gestures_blocked(a) is None
-    with pytest.raises(ValueError):
-        with_gestures(a, {"enabled": ["mano_magica"]})
+    # lo que esta versión no conoce (de un servidor más nuevo) se deja pasar, como en las máquinas: «Probar estos
+    # tiempos» no se traba; un gesto desconocido solo no prende nada
+    c = with_gestures(a, {"enabled": [MANO_ROPA], "clave_nueva": 3})
+    assert c["gestures"]["clave_nueva"] == 3 and not c["metrics_only"]
+    assert "gestures" not in with_gestures(a, {"enabled": ["mano_magica"]})
+    with pytest.raises(ValueError):  # un tiempo fuera de rango sí es error
+        with_gestures(a, {"enabled": [MANO_ROPA], "clothes_seconds": -1})
+
+
+def test_guardar_solo_manda_lo_que_cambio():
+    from agent.ajuste import gestures_to_save
+
+    secs = {"pocket_seconds": 0.6, "clothes_seconds": 0.8, "bag_seconds": 1.0, "require_take": True}
+    eff_all = {"enabled": ALL}  # lo que rige: los 3 por el tipo de cámara, tiempos de siempre (compacto)
+    # nada cambió: no se manda nada (antes se fijaban la lista y los tiempos de siempre)
+    assert gestures_to_save(None, {"enabled": ALL, **secs}, eff_all, ALL) is None
+    # un tiempo cambiado: solo ese; la lista sigue siendo la del tipo
+    assert gestures_to_save(None, {"enabled": ALL, **secs, "pocket_seconds": 1.2}, eff_all, ALL) == {
+        "pocket_seconds": 1.2}
+    # se saca un gesto: se fija la lista
+    assert gestures_to_save(None, {"enabled": [MANO_BOLSILLO, MANO_ROPA], **secs}, eff_all, ALL) == {
+        "enabled": [MANO_BOLSILLO, MANO_ROPA]}
+    # apagados a mano y se prende uno: la lista elegida, y lo que había guardado queda
+    raw = {"enabled": [], "bag_seconds": 1.5}
+    assert gestures_to_save(raw, {"enabled": [MANO_BOLSA], **secs, "bag_seconds": 1.5}, None, ALL) == {
+        "enabled": [MANO_BOLSA], "bag_seconds": 1.5}
+    # lo guardado que esta versión no toca (o no conoce) no se pierde
+    raw = {"take_window": 8.0, "clave_nueva": 1}
+    assert gestures_to_save(raw, {"enabled": ALL, **secs, "require_take": False}, {**eff_all, "take_window": 8.0},
+                            ALL) == {"take_window": 8.0, "clave_nueva": 1, "require_take": False}
+    # servidor viejo (sin la lista del tipo): cambiar la lista la fija
+    assert gestures_to_save(None, {"enabled": [MANO_ROPA], **secs}, eff_all, None) == {"enabled": [MANO_ROPA]}
+
+
+def test_tocar_un_tiempo_sin_probarlo_cuenta_como_cambio(monkeypatch):
+    """«Aprobar» guarda y «Cerrar» pregunta también si se cambió un tiempo o un gesto sin «Probar estos tiempos»."""
+    from agent.oficina import TuneWindow
+
+    class _Var:
+        def __init__(self, v):
+            self.v = v
+
+        def get(self):
+            return self.v
+
+        def set(self, v):
+            self.v = v
+
+    w = TuneWindow.__new__(TuneWindow)
+    w.tv = {"loiter_seconds": _Var("45")}
+    w.gv = {MANO_BOLSILLO: _Var(True)}
+    w.gs = {"pocket_seconds": _Var("0.6")}
+    w.g_take = _Var(True)
+    w._tested, w._saved_view = False, None
+    assert not w.dirty  # todavía no se cargó la cámara
+    w._saved_view = w._view()
+    assert not w.dirty
+    w.gs["pocket_seconds"].set("1.2")
+    assert w.dirty
+    w.gs["pocket_seconds"].set("0.6")
+    assert not w.dirty  # volvió a lo guardado
+    w._tested = True  # probado sin guardar
+    assert w.dirty
+
+
+def test_los_bolsos_salen_como_en_las_maquinas(tmp_path):
+    """Con gestos, el Tuner pide los bolsos aparte (la clase de más puntaje entre mochila, cartera y valija, desde
+    0,3), como core/pose.detect_with_bags en las máquinas, y lo demás que ve YOLO desde 0,45."""
+    from core.pose import BAG_CLASSES
+
+    class _DetGroups(_Det):
+        def detect_also(self, frame, classes, conf):
+            raise AssertionError("con grupos no se usa detect_also")
+
+        def detect_groups(self, frame, groups):
+            self.groups = groups
+            (rest, rest_conf), (bags, bag_conf) = groups
+            assert bags == BAG_CLASSES and bag_conf == 0.3 and rest_conf == 0.45
+            assert not set(rest) & set(BAG_CLASSES)  # un bolso no sale dos veces
+            return self.detect(frame), [[Detection((150.0, 10.0, 190.0, 40.0), "botella", 0.6)],
+                                        [Detection(_DetWithBag.BAG, "cartera", 0.35)]]
+
+    det = _DetGroups()
+    t, _ = _tuner(tmp_path, TAKE + [pose(rw=(55, 225), re=(45, 170))] * 8, det=det)
+    assert [a.type for a in t.alerts] == [MANO_BOLSA] and t.alerts[0].features["bag_seen"] == 1.0
+    assert {o[0] for o in t.samples[-1].objects} == {"botella", "cartera"}
 
 
 def test_dibuja_el_esqueleto_escalado_y_la_marcha_del_gesto():
@@ -243,3 +331,29 @@ def test_la_app_nombra_los_gestos():
     from agent.oficina import TYPE_NAMES
 
     assert TYPE_NAMES[MANO_BOLSILLO] == "Mano al bolsillo" and TYPE_NAMES[MANO_BOLSA] == "Mano en la bolsa"
+
+
+def test_el_texto_nombra_solo_los_gestos_que_se_miran():
+    from agent.ajuste import gesture_text
+    from core.gestos import GestureConfig
+
+    sm = {"frames": 10, "pose_ok_ratio": 1.0, "takes": 0, "max_dwell": {}, "suppressed": {}}
+    txt = gesture_text(sm, 10, GestureConfig(enabled=(MANO_BOLSA,)))
+    assert "nunca llevó la mano a la bolsa" in txt and "bolsillo" not in txt
+    assert "nunca llevó la mano al bolsillo, a la ropa ni a la bolsa" in gesture_text(
+        sm, 10, GestureConfig(enabled=tuple(ALL)))
+
+
+def test_guardar_compara_contra_lo_guardado_y_no_contra_lo_probado():
+    """Cámara con las reglas apagadas a mano: se marca un gesto, se prueba y se guarda → se tiene que mandar (antes,
+    después de «Probar estos tiempos» se comparaba contra lo probado y no se guardaba nada)."""
+    from agent.oficina import TuneWindow
+
+    w = TuneWindow.__new__(TuneWindow)
+    w.analysis = {"plans": ["hurto"], "profile": "general", "gestures": {"enabled": [MANO_BOLSILLO]}}  # lo probado
+    w.info = {"raw": {"rules": {"enabled_rules": []}}}
+    w._eff_gestures, w._type_gestures, w._gestures_unreadable = None, [], False  # lo que rige: ningún gesto
+    secs = {"pocket_seconds": 0.6, "clothes_seconds": 0.8, "bag_seconds": 1.0, "require_take": True}
+    assert w._gestures_save({"enabled": [MANO_BOLSILLO], **secs}) == {"enabled": [MANO_BOLSILLO]}
+    w._gestures_unreadable = True  # los gestos guardados no se entendieron: no se tocan
+    assert w._gestures_save({"enabled": [MANO_BOLSILLO], **secs}) is None

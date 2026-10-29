@@ -564,7 +564,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     cada persona del detector** (`core/pose.py`, `PoseEstimator`, `look`, `build_pose`). Sobre la imagen entera el
     modelo de pose pierde a la gente chica (128 imágenes de COCO: AP50 0,53 contra 0,76 del detector); en recortes
     coincide con la versión 640 a ~0,08 largos de torso y cuesta ~18 ms por persona (1 hilo). Solo personas de 90 px o
-    más, hasta 8 por cuadro. RTMPose (más preciso en recortes) no se pudo bajar: openmmlab y Hugging Face están
+    más **en un cuadro de 360 de alto** (25 % del alto; `GestureConfig.min_height` lo escala si el video es de otro
+    tamaño), hasta 8 por cuadro. RTMPose (más preciso en recortes) no se pudo bajar: openmmlab y Hugging Face están
     bloqueados en la sesión cloud. Regenerar: `python -m tools.export_model yolo11n-pose.pt models/postura.onnx --imgsz 256`.
   - **`core/gestos.py`** (Python puro; `GestureEngine` por persona y brazo, todo en largos de torso T):
     1. **Toma**: la muñeca lejos del cuerpo a la altura del pecho para arriba (o arriba de los hombros, o abajo muy al
@@ -583,22 +584,34 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   - **Tipos de evento** `mano_bolsillo` (alta), `mano_ropa` (alta), `mano_bolsa` (media), en `EVENT_TYPES`,
     `RULE_PRIORITY` y `SEVERITY`; medidas nuevas en `FEATURE_NAMES` (gesture_dwell_s, since_take_s, takes, reaches,
     wrist_conf_drop, bag_seen, pose_ok_ratio). El Scorer usa las variables con las que se entrenó (un modelo viejo
-    sigue valiendo) y no filtra un tipo que no conoce. **Los gestos viajan en `analysis["gestures"]` (GestureConfig),
-    nunca dentro de `rules`**: `RuleConfig.from_dict` es estricto y un agente viejo se caería.
+    sigue valiendo) y no filtra un tipo que no conoce. **Entrenar** sin ejemplos de gestos usa las 18 variables de antes
+    (`scorer.LEGACY_NAMES`, `training.vector_names`): así un modelo nuevo sigue andando en una máquina sin actualizar.
+    **Los gestos viajan en `analysis["gestures"]` (GestureConfig), nunca dentro de `rules`**: `RuleConfig.from_dict` es
+    estricto y un agente viejo se caería. Viajan compactos (`to_dict(compact=True)`: la lista y solo lo que difiere de
+    los valores de siempre) y los agentes los leen tolerantes (`strict=False`: una clave nueva del servidor no los
+    traba); el servidor sí valida estricto al guardar (`clean_gestures`).
   - **Servidor:** `cameras.gestures` (JSON; NULL = los del tipo de cámara: general y góndola los 3, el resto ninguno;
     `{"enabled": []}` = apagados); `PUT /api/cameras/{id}/analysis` acepta `gestures` (None = no cambia);
     `/api/agent/tune` devuelve `raw.gestures`; sin plan hurto o «Solo métricas», nunca. Con gestos y sin reglas de zona
     la cámara no es «solo métricas». Peso en el reparto ×1,3 (`pool.POSE_FACTOR`). Editor de zonas web: casillas de
-    gestos aparte (y arreglado el 422 por `alarma_dvr` en las casillas de reglas).
+    gestos aparte (y arreglado el 422 por `alarma_dvr` en las casillas de reglas); solo manda gestos si se cambiaron
+    contra los del tipo (`camera_dict.profile_gestures` / `gestures_default`), así no se fijan sin querer.
   - **Agente:** `agent/worker.shared_pose()` (una postura por proceso); prender/apagar gestos o cambiar sus tiempos se
     aplica en caliente sin reconectar; una cámara con configuración inválida ya no tira abajo `apply_config` (queda en
-    error y siguen las demás). `analyze_clip(..., pose=)` en el modo alarmas. `python -m agent.medir --gestos` suma el
+    error y siguen las demás). **Píxeles no cuadrados** («1080p lite», 960x1080 con píxeles 2:1, como graban los
+    grabadores de Minas): `core/imagen.py` (`pixel_aspect`, `square_pixels`) los cuadra en las máquinas (por conexión,
+    achicando a 960x540), en las alarmas (`analyze_clip`), en los videos subidos y en «Configurar…» (estirando): si no,
+    la postura y los tamaños salen deformados. `analyze_clip(..., pose=)` en el modo alarmas. `python -m agent.medir --gestos` suma el
     costo de la postura. En el lote de NVIDIA (`core/lotes.py`) se suman los bolsos (24, 26, 28) para «mano en la bolsa».
   - **App («Configurar…»):** esqueleto sobre la imagen, «BOLSILLO 0.4/0.6s», «TOMÓ ALGO»; casillas de los 3 gestos con
     sus segundos y «Pedir que tome algo antes»; «Probar estos tiempos» re-evalúa sin volver a correr la postura (los
     puntos quedan guardados por cuadro); la explicación dice por qué dio o no (tomas, segundos contra lo pedido,
     descartes); avisos si la postura se ve mal (< 60 %), personas chicas o infrarrojo. Una alerta de gesto «ve» el
-    hurto marcado si cae a ±5 s.
+    hurto marcado si cae de 5 s antes a 15 s después. Con gestos prueba a 5 fps o más (como la máquina). Los bolsos
+    salen como en las máquinas (`OnnxYoloDetector.detect_groups`: la clase más probable entre mochila, cartera y valija,
+    desde 0,3) y lo que pide cada gesto lo dice el motor (`GestureEngine.progress`: la bolsa sin bolso, el doble).
+    «Guardar» manda solo lo cambiado contra lo que rige (`ajuste.gestures_to_save`: no fija valores de siempre ni la
+    lista del tipo); tocar un tiempo o un gesto sin «Probar» también cuenta («Aprobar» lo guarda y «Cerrar» pregunta).
   - **Validado con Minas** (los únicos videos que hay): el hurto de Pasillo bebidas (la señora mete un producto en una
     bolsa) → «posible ocultamiento: mano en la bolsa» a los 5,8 s, a 5, 8 y 10 fps, de 480x270 a 1920x1080 y con las
     zonas reales de la cámara 44; 3 clips normales de la cámara 1 (dos señoras en la góndola; una le pasa una botella a
@@ -607,6 +620,11 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     clips por gesto (y normales) en la biblioteca de videos de prueba.
   - **Minas en producción:** gestos activos en Góndolas ventana (7) y Pasillo bebidas (44); apagados a mano en Depósito
     estanterías (6), Caja mostrador (29) y Portón calle (38) (manipular cosas ahí es normal).
+  - **Las máquinas toman el código nuevo solo al arrancar** (`vigia-actualizar` corre una vez, al prender, y hace
+    `git pull`): reiniciar solo `vigia-maquina@*` NO actualiza. Reiniciar la VM (consola de Google Cloud → Restablecer, o
+    `sudo reboot`) o `sudo systemctl restart vigia-actualizar && sudo systemctl restart 'vigia-maquina@*'`. El 29 oct a
+    las 16:17 UTC la VM `vigia-analisis-1` quedó sin conexión: su `maquina.env` apunta al dominio viejo (borrado) y el
+    código que lo corrige solo a sí mismo lo trae el `git pull` del arranque; hasta que se reinicie no analiza ni mide.
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),

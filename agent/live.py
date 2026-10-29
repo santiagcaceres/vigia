@@ -48,11 +48,16 @@ def gesture_text(gestures, tid: int, ts: float) -> tuple[str, bool]:
     pr = gestures.progress(tid, ts) if gestures is not None else None
     if not pr:
         return "", False
+    from core.gestos import GESTURE_OF
+
+    enabled = set(gestures.cfg.enabled)
     parts = [f"mano {side} {region} {dwell:.1f}/{need:.1f}s"
-             for side, (region, dwell, need) in sorted(pr["hands"].items())]
+             for side, (region, dwell, need) in sorted(pr["hands"].items()) if GESTURE_OF[region] in enabled]
     if pr.get("took_ago") is not None:
         parts.append(f"tomo algo hace {pr['took_ago']:.0f}s")
-    hot = any(dwell >= need for region, dwell, need in pr["hands"].values())
+    # en rojo solo si el motor dio el aviso hace poco (no por tiempo: puede estar descartado, p. ej. sin toma)
+    person = gestures.people.get(tid)
+    hot = person is not None and any(ts - when <= 5.0 for when in person.fired.values())
     return "  ".join(parts), hot
 
 

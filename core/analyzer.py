@@ -162,7 +162,10 @@ class Analyzer:
             self.frames += 1
             return []
         if self.gestures:
-            look(self.pose, frame, tracks, self.engine.cfg.gestures.min_person_px)
+            look(self.pose, frame, tracks, self.engine.cfg.gestures.min_height(h))
+        else:  # sin gestos (o recién apagados) no queda un esqueleto viejo dibujado
+            for t in tracks:
+                t.kpts = None
         jpg_small = self._small_jpg(frame)
         self._remember(ts, jpg_small)
         visible_ids = {t.id for t in tracks if t.visible}

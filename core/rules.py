@@ -157,7 +157,7 @@ def parse_config(config: dict | None) -> tuple[list[Zone], RuleConfig]:
     # el horario del local viaja aparte de las reglas (un agente viejo lo ignora en vez de fallar)
     cfg.schedule = parse_hours(config.get("schedule")) or None
     # los gestos también (un agente viejo ignora la clave)
-    cfg.gestures = GestureConfig.from_dict(config.get("gestures"))
+    cfg.gestures = GestureConfig.from_dict(config.get("gestures"), strict=False)
     # las zonas de tipos nuevos viajan aparte (un agente viejo no conoce el tipo y rechazaría todas las zonas)
     extra = list(config.get("extra_zones") or config.get("staff_zones") or [])
     return parse_zones(list(config.get("zones") or []) + extra), cfg
@@ -216,8 +216,9 @@ class RuleEngine:
         if self.gestures is not None:
             self.gestures.forget(live)
         bags = [o.bbox for o in objects or () if getattr(o, "label", "") in BAG_LABELS]
-        # las demás personas, con su último recuadro aunque en este cuadro no se las haya visto (para los gestos)
-        self._people = [t for t in tracks if t.label != VEHICLE_LABEL]
+        # las demás personas (para los gestos): las que se ven, o se vieron hace un segundo o menos (las que el
+        # seguimiento recuerda por más tiempo pueden ser recuadros viejos que ya no están ahí)
+        self._people = [t for t in tracks if t.label != VEHICLE_LABEL and (t.visible or ts - t.last_ts <= 1.0)]
         has_shelves = any(z.type == "shelf" for z in self.zones)
         visible = sum(1 for t in tracks if t.visible and t.label != VEHICLE_LABEL)
 
@@ -226,6 +227,9 @@ class RuleEngine:
                 continue  # las reglas de hurto son solo para personas
             st = self._states.setdefault(t.id, _TrackState(first_ts=t.first_ts, last_ts=ts))
             if not t.visible:
+                if self.gestures is not None:  # que el motor de gestos sepa que no se la ve (corta las permanencias)
+                    self.gestures.step(t.id, None, t.bbox, ts, near_shelf=False, at_checkout=False, staff=False,
+                                       frame_h=h)
                 continue
             dt = min(max(ts - st.last_ts, 0.0), 1.0)
             st.last_ts = ts
@@ -291,10 +295,13 @@ class RuleEngine:
         near = (not has_shelves or any(z.type == "shelf" for z in now.values())
                 or (st.last_shelf is not None and ts - st.last_shelf[1] <= self.NEAR_SHELF_SECONDS))
         mine = [b for b in bags if _belongs(b, t.bbox)]
+        # otras personas: no los recuadros que caen casi enteros dentro del de esta (el detector a veces da otro
+        # recuadro con el torso y el brazo estirado de la misma persona)
+        others = [o.bbox for o in self._people if o.id != t.id and _inside_ratio(o.bbox, t.bbox) < 0.8]
         hits = self.gestures.step(t.id, t.kpts, t.bbox, ts, near_shelf=near,
                                   at_checkout=any(z.type == "checkout" for z in now.values()),
                                   staff=any(z.type == "staff" for z in now.values()), bags=mine,
-                                  others=[o.bbox for o in self._people if o.id != t.id])
+                                  others=others, frame_h=size[1])
         person = self.gestures.people.get(t.id)
         if person is not None and person.take_ts == ts and st.last_shelf is not None and not st.pending_items:
             # una toma de verdad (brazo al estante y vuelta) frente a una góndola: «tomó algo»
@@ -363,6 +370,14 @@ def track_features(t: Track, st: _TrackState, ts: float, visible: int,
         feats.update(has_time=1.0, hour_sin=math.sin(2 * math.pi * hour / 24),
                      hour_cos=math.cos(2 * math.pi * hour / 24))
     return {k: round(float(v), 4) for k, v in feats.items()}
+
+
+def _inside_ratio(a: BBox, b: BBox) -> float:
+    """Qué parte del recuadro `a` cae dentro de `b` (0 a 1)."""
+    iw = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    ih = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    area = max(1e-6, (a[2] - a[0]) * (a[3] - a[1]))
+    return iw * ih / area
 
 
 def _belongs(bag: BBox, person: BBox) -> bool:

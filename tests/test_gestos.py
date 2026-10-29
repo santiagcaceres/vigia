@@ -121,8 +121,16 @@ def test_sostener_el_producto_delante_no_es_ropa():
 def test_mano_en_la_bolsa_con_bolso_detectado():
     eng = GestureEngine(GestureConfig(enabled=ALL))
     bag = (20.0, 190.0, 75.0, 260.0)  # cartera colgada del lado derecho
-    hits, _ = take_then(eng, dict(rw=(55, 225), re=(62, 165)), 6, bags=[bag])
+    hits, _ = take_then(eng, dict(rw=(55, 225), re=(45, 170)), 6, bags=[bag])  # codo doblado, mano en la cartera
     assert [h.type for h in hits] == [MANO_BOLSA] and hits[0].features["bag_seen"] == 1.0
+
+
+def test_la_mano_que_cuelga_junto_a_la_cartera_no_es_guardar():
+    # el brazo estirado hacia abajo con la mano al lado de la cartera (apoyada, llevando algo): no es «en la bolsa»
+    eng = GestureEngine(GestureConfig(enabled=ALL))
+    bag = (20.0, 190.0, 75.0, 260.0)
+    hits, _ = take_then(eng, dict(rw=(55, 225), re=(62, 165)), 10, bags=[bag])
+    assert hits == []
 
 
 def test_persona_chica_o_sin_postura_no_se_mira():
@@ -130,6 +138,61 @@ def test_persona_chica_o_sin_postura_no_se_mira():
     small = (40.0, 50.0, 60.0, 100.0)
     assert eng.step(1, pose(), small, 0.0, near_shelf=True, at_checkout=False, staff=False) == []
     assert eng.step(1, None, BBOX, 0.2, near_shelf=True, at_checkout=False, staff=False) == []
+
+
+def test_mismo_gesto_en_cualquier_lugar_de_la_imagen():
+    # el mismo guion corrido a la otra punta de un cuadro de 1080p: tiene que dar lo mismo (antes «parada» dependía
+    # de dónde estaba la persona)
+    def guion(dx, dy, frame_h):
+        eng = GestureEngine(GestureConfig(enabled=ALL))
+        frames = [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 6
+        hits, ts = [], 0.0
+        for kp in frames:
+            k = kp.copy()
+            k[:, 0] += dx
+            k[:, 1] += dy
+            box = (BBOX[0] + dx, BBOX[1] + dy, BBOX[2] + dx, BBOX[3] + dy)
+            hits += eng.step(1, k, box, ts, near_shelf=True, at_checkout=False, staff=False, frame_h=frame_h)
+            ts += 0.2
+        return [h.type for h in hits]
+
+    assert guion(0, 0, 1080) == guion(1500, 600, 1080) == guion(700, 300, 1080) == [MANO_BOLSILLO]
+
+
+def test_tamano_minimo_relativo_al_cuadro():
+    cfg = GestureConfig(enabled=ALL)
+    assert cfg.min_height(360) == pytest.approx(90) and cfg.min_height(1080) == pytest.approx(270)
+    eng = GestureEngine(cfg)
+    # 350 px de alto: en 1080p alcanza (> 270), en un cuadro de 4320 de alto no (es chica para ese cuadro)
+    assert eng.step(1, pose(), BBOX, 0.0, near_shelf=True, at_checkout=False, staff=False, frame_h=1080) == []
+    assert eng.summary(1)["frames"] == 1
+    eng2 = GestureEngine(cfg)
+    eng2.step(1, pose(), BBOX, 0.0, near_shelf=True, at_checkout=False, staff=False, frame_h=4320)
+    assert eng2.summary(1)["frames"] == 0
+
+
+def test_tapada_un_rato_la_permanencia_arranca_de_nuevo():
+    # toma, la mano 1 cuadro en el bolsillo, alguien la tapa 2 s y vuelve con la mano ahí 2 cuadros: no suma el rato
+    # en que no se la vio (0,6 s seguidos no los cumplió)
+    eng = GestureEngine(GestureConfig(enabled=ALL))
+    _, ts = feed(eng, [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)])
+    for _ in range(10):  # 2 s sin verla
+        assert eng.step(1, None, BBOX, ts, near_shelf=True, at_checkout=False, staff=False) == []
+        ts += 0.2
+    hits, _ = feed(eng, [pose(**POCKET_R)] * 2, t0=ts)
+    assert hits == []
+
+
+def test_configuracion_tolerante_en_los_agentes_y_compacta_al_mandar():
+    nueva = {"enabled": ["mano_bolsa", "mano_manga"], "pocket_seconds": 0.9, "min_pose_ok": 0.5}
+    with pytest.raises(ValueError):
+        GestureConfig.from_dict(nueva)  # el servidor no la guarda
+    cfg = GestureConfig.from_dict(nueva, strict=False)  # un agente viejo la lee igual: ignora lo que no conoce
+    assert cfg.enabled == (MANO_BOLSA,) and cfg.pocket_seconds == 0.9
+    # al mandarla, solo los gestos y lo que difiere de lo de siempre
+    assert cfg.to_dict(compact=True) == {"enabled": ["mano_bolsa"], "pocket_seconds": 0.9}
+    _, rc = parse_config({"zones": [], "gestures": nueva})
+    assert rc.gestures.enabled == (MANO_BOLSA,)
 
 
 def test_configuracion_estricta_y_viaja_aparte_de_las_reglas():
@@ -190,6 +253,20 @@ def test_motor_de_reglas_emite_el_gesto_y_marca_que_tomo_algo():
     assert set(FEATURE_NAMES) <= set(e.features)
     assert eng.progress(ts)[1]["took"] is True  # la toma frente a la góndola cuenta como «tomó algo»
     assert eng.progress(ts)[1]["gesture"]["hands"]["der"][0] == "bolsillo"
+
+
+def test_un_recuadro_duplicado_de_la_misma_persona_no_la_tapa():
+    # el detector da, además de la persona, otro recuadro con su torso y el brazo (el seguimiento lo toma como otra
+    # persona): no tiene que contar como «otra persona» a la que se le pasa algo
+    zones, rc = parse_config({"zones": [], "gestures": {"enabled": list(ALL)}})
+    eng = RuleEngine(zones, rc)
+    frames = [pose()] * 10 + [pose(**REACH_R)] * 3 + [pose(rw=(95, 150), re=(70, 140))] + [pose(**POCKET_R)] * 6
+    events, ts = [], 0.0
+    for kp in frames:
+        dup = Track(2, (60.0, 90.0, 150.0, 260.0), "persona", 0.0, ts, hits=5)
+        events += eng.update([_track(kp, ts), dup], ts, (200, 420))
+        ts += 0.2
+    assert [e.type for e in events] == [MANO_BOLSILLO]
 
 
 class _Det:
@@ -278,3 +355,13 @@ def test_si_la_placa_de_video_falla_la_postura_sigue_en_el_procesador(tmp_path):
     est.runner, est.on_gpu, est.device = Rota(), True, "GPU (Dml)"
     est.estimate(np.zeros((360, 640, 3), np.uint8), (100.0, 50.0, 200.0, 340.0))  # no corta: sigue
     assert isinstance(est.runner, _CpuRunner) and est.device == "procesador"
+
+
+def test_sin_ejemplos_de_gestos_se_entrena_con_las_variables_de_antes():
+    # un modelo entrenado sin gestos usa exactamente las variables de antes: las máquinas sin actualizar lo siguen usando
+    from core.scorer import LEGACY_NAMES
+    from server.training import vector_names
+
+    assert len(LEGACY_NAMES) == 18 and not any("gesture" in n or "mano_" in n for n in LEGACY_NAMES)
+    assert vector_names([{"type": "merodeo"}, {"type": "salida_sin_pago"}]) == LEGACY_NAMES
+    assert vector_names([{"type": "merodeo"}, {"type": MANO_BOLSA}]) == VECTOR_NAMES

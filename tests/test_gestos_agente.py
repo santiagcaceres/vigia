@@ -206,8 +206,16 @@ def test_prender_cambiar_y_apagar_los_gestos_sin_cortar_el_video(tmp_path, monke
     assert w.analyzer.engine.cfg.gestures.pocket_seconds == 1.5 and w.analyzer.pose is est
     assert w.analyzer.engine.gestures.cfg.enabled == tuple(ALL)
 
-    # un gesto que esta versión no conoce: sigue con lo anterior, sin caerse
-    w.update_analysis({"zones": [], "gestures": {"enabled": ["mano_magica"]}})
+    # un gesto o una clave que esta versión no conoce (de un servidor más nuevo): se ignoran, sigue con lo demás
+    w.update_analysis({"zones": [], "gestures": {"enabled": ["mano_magica", MANO_ROPA], "pocket_seconds": 1.5,
+                                                 "clave_nueva": 1}})
+    run(w, clock, 0.4)
+    assert w.analyzer.engine.cfg.gestures.enabled == (MANO_ROPA,) and w.analyzer.gestures
+    # una configuración rota de verdad (un número en null): sigue con la anterior, sin caerse ni reintentar
+    w.update_analysis({"zones": [], "rules": {"loiter_seconds": None}, "gestures": {"enabled": ALL}})
+    run(w, clock, 0.4)
+    assert w.analyzer.engine.cfg.gestures.enabled == (MANO_ROPA,) and w._pending_analysis is None
+    w.update_analysis({"zones": [], "gestures": {"enabled": ALL, "pocket_seconds": 1.5}})
     run(w, clock, 0.4)
     assert w.analyzer.engine.cfg.gestures.pocket_seconds == 1.5 and w.analyzer.gestures
 
@@ -262,7 +270,7 @@ def test_una_camara_mal_configurada_no_tira_abajo_a_las_demas(tmp_path, monkeypa
         return {"id": cid, "name": f"Cámara {cid}", "client_name": "Minas", "connection": CONN, "mode": "vivo",
                 "analysis": analysis, **extra}
     good = cam(1, {"zones": [], "gestures": {"enabled": ALL}})
-    bad_gesture = cam(2, {"zones": [], "gestures": {"enabled": ["mano_magica"]}})  # de una versión más nueva
+    bad_gesture = cam(2, {"zones": [], "rules": {"merodeo_magico": 1}})  # una regla que esta versión no conoce
     bad_zone = cam(3, {"zones": [{"name": "x", "type": "inventada", "polygon": [[0, 0], [1, 0], [1, 1]]}]})
     no_conn = {"id": 4, "name": "Cámara 4", "mode": "vivo", "analysis": {}}  # sin datos de conexión
     cfg = {"cameras": [good, bad_gesture, bad_zone, no_conn], "settings": {}, "process_imports": False}
@@ -270,7 +278,7 @@ def test_una_camara_mal_configurada_no_tira_abajo_a_las_demas(tmp_path, monkeypa
         ag.apply_config(cfg)  # no explota
         assert set(ag.workers) == {1} and started == [1]
         assert set(ag._broken) == {2, 3, 4}
-        assert ag._cam_state(2).startswith("Error: Configuración inválida") and "mano_magica" in ag._cam_state(2)
+        assert ag._cam_state(2).startswith("Error: Configuración inválida") and "merodeo_magico" in ag._cam_state(2)
         errors = len([r for r in caplog.records if r.levelno >= logging.ERROR])
         assert errors == 3
         ag.apply_config(cfg)  # la misma configuración: no se reintenta ni se repite el error en el registro

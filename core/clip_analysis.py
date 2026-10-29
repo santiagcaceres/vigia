@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from .analyzer import annotate
+from .imagen import pixel_aspect, square_pixels
 from .pose import detect_with_bags, look
 from .detectors import Detector
 from .rules import ALARMA_DVR, RULE_PRIORITY, SEVERITY, RuleEngine, RuleEvent, parse_config
@@ -99,6 +100,7 @@ def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | 
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
     fps = fps if 0 < fps < 120 else 25.0
     step = max(1, int(round(fps / max(process_fps, 0.5))))
+    sar = pixel_aspect(cap)  # «1080p lite» (960x1080 con píxeles 2:1): igual que en vivo y en «Configurar…»
     res = ClipResult()
     best: dict[int, _Moment] = {}  # por persona, su momento más interesante
     fired: _Moment | None = None  # la regla más grave que se disparó
@@ -113,6 +115,8 @@ def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | 
                 break
             ts = idx / fps
             idx += 1
+            if sar:
+                frame = square_pixels(frame, sar, shrink=True)
             h, w = frame.shape[:2]
             res.frame_size = (w, h)
             wall = start_wall + timedelta(seconds=ts) if start_wall else None
@@ -123,7 +127,7 @@ def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | 
                 res.max_people = max(res.max_people, len(dets))
             tracks = tracker.update(dets, ts, frame)
             if gestures:
-                look(pose, frame, tracks, rule_cfg.gestures.min_person_px)
+                look(pose, frame, tracks, rule_cfg.gestures.min_height(h))
             events = engine.update(tracks, ts, (w, h), wall, objects)
             feats = engine.current_features(tracks, ts, (w, h), wall)
             snap = [dataclasses.replace(t) for t in tracks]

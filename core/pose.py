@@ -57,17 +57,20 @@ class PoseEstimator:
     def _run(self, canvas: np.ndarray) -> np.ndarray:
         """Corre el modelo; si falla en la placa de video (le pasó a otro modelo con DirectML en la Dell), sigue en
         el procesador en vez de cortar el análisis de la cámara."""
+        runner = self.runner
         try:
-            return self.runner.run(canvas)
+            return runner.run(canvas)
         except Exception as exc:  # noqa: BLE001
-            if not self.on_gpu or not self.model_path:
+            if not self.model_path:
                 raise
             with self._lock:
-                if self.on_gpu:  # otra cámara pudo haberlo cambiado ya
+                if self.runner is runner:  # nadie lo cambió todavía
+                    if not self.on_gpu:
+                        raise
                     log.warning("La postura falló en %s (%s): sigue en el procesador", self.device, exc)
                     self.runner = _CpuRunner(self.model_path)
                     self.device, self.on_gpu = "procesador", False
-            return self.runner.run(canvas)
+            return self.runner.run(canvas)  # (otra cámara ya la pasó al procesador: reintentar ahí)
 
     def estimate(self, frame: np.ndarray, bbox: BBox) -> np.ndarray | None:
         fh, fw = frame.shape[:2]

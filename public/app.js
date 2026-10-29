@@ -761,11 +761,21 @@ async function zonesView(v, id) {
       enabled_rules: $$(".r-en").filter((x) => x.checked).map((x) => x.value) };
     if ($("#r-open").value && $("#r-close").value) r.opening_hours = { start: $("#r-open").value, end: $("#r-close").value };
     else delete r.opening_hours;
-    // los gestos van aparte de las reglas; se guardan tal cual se ven (con los tiempos que ya tuvieran)
-    const gestures = { ...(cam.gestures || {}), enabled: $$(".g-en").filter((x) => x.checked).map((x) => x.value) };
+    // los gestos van aparte de las reglas. Si se dejaron como los del tipo de cámara (y no estaban elegidos a mano),
+    // no se manda la lista: así siguen al tipo si después se cambia (p. ej. a «Caja», que no mira gestos)
+    const marked = $$(".g-en").filter((x) => x.checked).map((x) => x.value);
+    const pinned = cam.gestures && Array.isArray(cam.gestures.enabled);
+    // lo que regiría por el tipo con las reglas que se están guardando (con todas apagadas, el tipo no prende gestos)
+    const typeNow = r.enabled_rules.length ? (cam.profile_gestures || cam.gestures_default || []) : [];
+    const sameAsType = [...marked].sort().join() === [...typeNow].sort().join();
+    const body = { zones, rules: r };
+    if (pinned || !sameAsType) body.gestures = { ...(cam.gestures || {}), enabled: marked };
     try {
-      const saved = await api("PUT", `/api/cameras/${id}/analysis`, { zones, rules: r, gestures });
+      const saved = await api("PUT", `/api/cameras/${id}/analysis`, body);
       Object.assign(cam, saved);
+      // las casillas, como quedó guardado (lo elegido a mano o lo del tipo)
+      const on = new Set((cam.gestures && cam.gestures.enabled) || cam.gestures_default || []);
+      $$(".g-en").forEach((x) => { x.checked = on.has(x.value); });
       toast("Guardado. El agente aplica los cambios en menos de un minuto.");
     } catch (e) { fail(e); }
   });

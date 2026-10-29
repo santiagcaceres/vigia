@@ -835,7 +835,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      tuned_by=c.tuned_by, tuned_at=iso(c.tuned_at), tuning_notes=c.tuning_notes,
                      # lo que rige por el tipo de cámara si no se eligió a mano (para mostrarlo en los editores)
                      rules_default=list(RULE_TYPES if prof_rules is None else prof_rules),
-                     gestures_default=type_gestures(c))
+                     gestures_default=type_gestures(c),
+                     # los del tipo sin mirar las reglas (con las reglas apagadas a mano, el tipo no prende gestos)
+                     profile_gestures=[] if camera_profile(c).get("only_metrics")
+                     else list(camera_profile(c).get("gestures") or []))
             ops = ops or {}
             op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
             d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
@@ -1770,8 +1773,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         extra = [z for z in zones if (z or {}).get("type") in NEW_ZONE_TYPES]
         out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES], "rules": rules,
                "vehicles": vehicles, "plans": plans, "profile": c.profile or "general", "metrics_only": metrics_only}
-        if gestures.enabled:
-            out["gestures"] = gestures.to_dict()
+        if gestures.enabled:  # compacto: solo los gestos y lo que difiere de lo de siempre (una clave nueva viaja
+            out["gestures"] = gestures.to_dict(compact=True)  # solo a las cámaras que la cambiaron)
         if extra:
             out["extra_zones"] = extra
             staff = [z for z in extra if z.get("type") == "staff"]

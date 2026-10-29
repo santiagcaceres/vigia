@@ -12,6 +12,7 @@ import math
 
 import numpy as np
 
+from .gestos import GESTURE_TYPES
 from .rules import EVENT_TYPES
 
 log = logging.getLogger("vigia.scorer")
@@ -29,6 +30,12 @@ _LOG_FEATURES = {"track_age_s", "shelf_total_s", "checkout_total_s", "restricted
                  "reaches"}
 
 VECTOR_NAMES = tuple(FEATURE_NAMES) + tuple(f"regla={r}" for r in EVENT_TYPES)
+GESTURE_FEATURES = ("gesture_dwell_s", "since_take_s", "takes", "reaches", "wrist_conf_drop", "bag_seen",
+                    "pose_ok_ratio")
+# las variables de antes de los gestos (29 oct), en el mismo orden: un modelo entrenado sin ejemplos de gestos usa
+# solo estas, así lo siguen usando los agentes que todavía no se actualizaron (piden exactamente esta lista)
+LEGACY_NAMES = tuple(n for n in FEATURE_NAMES if n not in GESTURE_FEATURES) + tuple(
+    f"regla={r}" for r in EVENT_TYPES if r not in GESTURE_TYPES)
 
 POSITIVE_LABELS = ("hurto", "sospechoso")
 NEGATIVE_LABELS = ("normal", "falso_positivo")

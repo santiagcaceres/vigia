@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.scorer import NEGATIVE_LABELS, POSITIVE_LABELS, VECTOR_NAMES, vectorize
+from core.gestos import GESTURE_TYPES
+from core.scorer import LEGACY_NAMES, NEGATIVE_LABELS, POSITIVE_LABELS, VECTOR_NAMES, vectorize
 
 MIN_TOTAL = 30
 MIN_PER_CLASS = 8
@@ -20,7 +21,16 @@ class NotEnoughData(ValueError):
     pass
 
 
-def build_dataset(events: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def vector_names(events: list[dict]) -> tuple[str, ...]:
+    """Con qué variables entrenar: sin ejemplos de gestos, las de antes de los gestos (un agente sin actualizar exige
+    esa lista exacta y si no, ignora el modelo entero y no filtra nada)."""
+    if any(e.get("type") in GESTURE_TYPES for e in events):
+        return VECTOR_NAMES
+    return LEGACY_NAMES
+
+
+def build_dataset(events: list[dict], names: tuple[str, ...] = VECTOR_NAMES) -> tuple[np.ndarray, np.ndarray,
+                                                                                      np.ndarray]:
     X, y, groups = [], [], []
     for e in events:
         if e["label"] in POSITIVE_LABELS:
@@ -29,9 +39,9 @@ def build_dataset(events: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarra
             y.append(0)
         else:
             continue
-        X.append(vectorize(e["type"], e["features"] or {}))
+        X.append(vectorize(e["type"], e["features"] or {}, names))
         groups.append(e["camera_id"])
-    return np.array(X).reshape(len(y), len(VECTOR_NAMES)), np.array(y), np.array(groups)
+    return np.array(X).reshape(len(y), len(names)), np.array(y), np.array(groups)
 
 
 class Standardizer:
@@ -95,7 +105,8 @@ def _folds(y: np.ndarray, groups: np.ndarray) -> tuple[list[np.ndarray], str]:
 
 
 def train(events: list[dict], target_recall: float = 0.9) -> tuple[dict, dict]:
-    X, y, groups = build_dataset(events)
+    names = vector_names(events)
+    X, y, groups = build_dataset(events, names)
     n_pos, n_neg = int(y.sum()), int(len(y) - y.sum())
     if len(y) < MIN_TOTAL or n_pos < MIN_PER_CLASS or n_neg < MIN_PER_CLASS:
         raise NotEnoughData(
@@ -116,7 +127,7 @@ def train(events: list[dict], target_recall: float = 0.9) -> tuple[dict, dict]:
 
     sc = Standardizer().fit(X)
     coef, b = fit_logistic(sc.transform(X), y)
-    spec = {"vector_names": list(VECTOR_NAMES), "mean": sc.mean.tolist(), "scale": sc.scale.tolist(),
+    spec = {"vector_names": list(names), "mean": sc.mean.tolist(), "scale": sc.scale.tolist(),
             "coef": coef.tolist(), "intercept": b, "threshold": float(threshold)}
     return spec, metrics
 

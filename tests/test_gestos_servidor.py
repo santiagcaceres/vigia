@@ -67,7 +67,8 @@ def test_gestos_segun_el_tipo_de_camara(app, admin):
         analysis = tune(app, admin, cam["id"])["camera"]["analysis"]
         check_old_agent_safe(analysis)
         if prof in ("general", "gondola"):
-            assert analysis["gestures"] == GestureConfig(enabled=GESTURE_TYPES).to_dict()  # con los tiempos por defecto
+            # compacto: los gestos (los tiempos por defecto no viajan; una clave nueva llega solo si se cambió)
+            assert analysis["gestures"] == {"enabled": list(GESTURE_TYPES)}
             assert not analysis["metrics_only"]
             _, cfg = parse_config(analysis)
             assert cfg.gestures.enabled == GESTURE_TYPES
@@ -148,7 +149,8 @@ def test_guardar_gestos_aparte_de_las_reglas(app, admin):
     t = tune(app, admin, cam["id"])
     assert t["raw"]["gestures"] == saved and t["raw"]["rules"] == {"loiter_seconds": 30}
     eff = t["camera"]["analysis"]["gestures"]
-    assert eff == {**GestureConfig().to_dict(), "enabled": ["mano_bolsillo", "mano_ropa"], "pocket_seconds": 0.8}
+    assert eff == {"enabled": ["mano_bolsillo", "mano_ropa"], "pocket_seconds": 0.8}
+    assert GestureConfig.from_dict(eff).clothes_seconds == GestureConfig().clothes_seconds  # el resto, por defecto
     check_old_agent_safe(t["camera"]["analysis"])
 
     # apagados a propósito (aunque el tipo los traiga)

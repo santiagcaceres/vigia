@@ -2433,8 +2433,13 @@ class TuneWindow:
         self._alert_rows: list = []
         self._stats_at = 0.0
         self._setting_scale = False
-        self.dirty = False  # tiempos o gestos probados sin guardar
+        self._tested = False  # tiempos o gestos probados («Probar estos tiempos») sin guardar
+        self._saved_view: tuple | None = None  # cómo quedaron las casillas al cargar o guardar (para `dirty`)
+        self._filling = False  # se están llenando las casillas desde lo guardado (no es un cambio del usuario)
+        self._gestures_unreadable = False  # los gestos guardados no se entendieron: no se tocan al guardar
+        self._eff_gestures: dict | None = None  # los gestos que rigen (guardados), no los que se están probando
         self._note = ""  # se agrega al estado (p. ej. «se vuelve a analizar mirando la postura»)
+        self._note_until = 0.0  # en vivo, hasta cuándo se muestra la nota
         self._type_gestures: list | None = None  # los gestos del tipo de cámara (si no se eligieron a mano)
         self.closed = False
         self.preview_sent = False
@@ -2555,6 +2560,8 @@ class TuneWindow:
         cb = ttk.Checkbutton(tf, text="Pedir que tome algo antes", variable=self.g_take)
         cb.grid(row=3, column=2, columnspan=2, sticky="w", padx=(14, 0))
         self.g_widgets.append(cb)
+        for var in (*self.tv.values(), *self.gv.values(), *self.gs.values(), self.g_take):
+            var.trace_add("write", lambda *_a: self._show_dirty())
         ttk.Button(tf, text="Zonas…", command=self.edit_zones).grid(row=0, column=4, sticky="ew", padx=(14, 0))
         ttk.Button(tf, text="Probar estos tiempos", command=self.apply_times).grid(row=1, column=4, sticky="ew",
                                                                                 padx=(14, 0))
@@ -2626,11 +2633,36 @@ class TuneWindow:
 
     def _fill_times(self) -> None:
         rules = self.analysis.get("rules") or {}
-        for key, _lab, default in self.TIMES:
-            v = float(rules.get(key, default))
-            self.tv[key].set(f"{v:g}")
-        self._fill_gestures()
+        self._eff_gestures = self.analysis.get("gestures")  # se llama con lo que mandó el servidor
+        self._filling = True
+        try:
+            for key, _lab, default in self.TIMES:
+                v = float(rules.get(key, default))
+                self.tv[key].set(f"{v:g}")
+            self._fill_gestures()
+        finally:
+            self._filling = False
+        self._tested = False
+        self._saved_view = self._view()
+        self._show_dirty()
         self._rules_text()
+
+    def _view(self) -> tuple:
+        """Lo que se ve en las casillas de tiempos y gestos (para saber si se tocó algo)."""
+        return (tuple(v.get() for v in self.tv.values()), tuple(v.get() for v in self.gv.values()),
+                tuple(v.get() for v in self.gs.values()), self.g_take.get())
+
+    @property
+    def dirty(self) -> bool:
+        """Hay tiempos o gestos probados o cambiados sin guardar («Aprobar» los guarda y «Cerrar» pregunta)."""
+        return self._tested or (self._saved_view is not None and self._view() != self._saved_view)
+
+    def _show_dirty(self) -> None:
+        if self._filling or not hasattr(self, "save_btn"):
+            return
+        text = "Guardar *" if self.dirty else "Guardar"
+        if str(self.save_btn.cget("text")) != text:
+            self.save_btn.configure(text=text)
 
     def _fill_gestures(self) -> None:
         """Los gestos que rigen (los manda el servidor en `analysis`) y sus segundos; sin gestos, los segundos
@@ -2639,10 +2671,12 @@ class TuneWindow:
         from .ajuste import gestures_blocked
         eff = self.analysis.get("gestures")
         raw = dict((self.info or {}).get("raw", {}).get("gestures") or {})
-        try:
-            cfg = GestureConfig.from_dict(eff if eff else {k: v for k, v in raw.items() if k != "enabled"})
-        except (ValueError, TypeError):
-            cfg = GestureConfig()
+        self._gestures_unreadable = False
+        try:  # lo que esta versión no conoce (de un servidor más nuevo) se deja como está
+            cfg = GestureConfig.from_dict(eff if eff else {k: v for k, v in raw.items() if k != "enabled"},
+                                          strict=False)
+        except (ValueError, TypeError, AttributeError):
+            cfg, self._gestures_unreadable = GestureConfig(), True  # al guardar no se tocan
         for gesture, key in self.GESTURES:
             self.gv[gesture].set(gesture in cfg.enabled)
             self.gs[key].set(f"{getattr(cfg, key):g}")
@@ -2657,7 +2691,10 @@ class TuneWindow:
         rules = self.analysis.get("rules") or {}
         enabled = rules.get("enabled_rules")
         if self.analysis.get("metrics_only"):
-            txt = "Esta cámara es «solo métricas»: no da alertas."
+            blocked = gestures_blocked(self.analysis)
+            txt = (f"Esta cámara es «solo métricas» ({blocked}): no da alertas ni mira gestos." if blocked else
+                   "Esta cámara es «solo métricas» (sus reglas de zona están apagadas): no da alertas. Si marcás "
+                   "gestos de ocultamiento, los mira.")
         else:
             names = [TYPE_NAMES.get(r, r) for r in (enabled if enabled is not None else
                                                      ("salida_sin_pago", "merodeo", "zona_restringida", "fuera_de_horario"))]
@@ -2699,18 +2736,13 @@ class TuneWindow:
                 "require_take": bool(self.g_take.get())}
 
     def _gestures_save(self, body: dict) -> dict | None:
-        """Lo que se guarda de los gestos (PUT …/analysis, aparte de `rules`); None = no cambia. Si la cámara sigue los
-        gestos de su tipo y se dejaron esos mismos, no se guarda la lista: si después se le cambia el tipo, cambian
-        con él."""
-        from .ajuste import gestures_blocked
-        if gestures_blocked(self.analysis):
+        """Lo que se guarda de los gestos (PUT …/analysis, aparte de `rules`); None = no cambia. Solo lo que se cambió
+        acá (`gestures_to_save`): ni los valores de siempre ni la lista del tipo de cámara quedan fijados."""
+        from .ajuste import gestures_blocked, gestures_to_save
+        if gestures_blocked(self.analysis) or self._gestures_unreadable:
             return None
         raw = (self.info or {}).get("raw", {}).get("gestures") or {}
-        out = {**raw, **body}  # lo que se eligió a mano y no se toca acá (p. ej. take_window) queda como estaba
-        if ("enabled" not in raw and self._type_gestures is not None
-                and set(out["enabled"]) == set(self._type_gestures)):
-            del out["enabled"]
-        return out
+        return gestures_to_save(raw, body, self._eff_gestures, self._type_gestures)
 
     # ---------- qué se analiza ----------
     def _start(self, videos: list[str] | None = None, library: list | None = None) -> None:
@@ -2898,7 +2930,7 @@ class TuneWindow:
             elif not gestures_blocked(self.analysis):
                 msg += ("\n\nLas reglas miden zonas y tiempos: un hurto rápido (tomar y guardar en segundos, sin ir a la "
                         "salida) no lo ven. Para eso están los gestos (postura), que esta cámara tiene apagados: marcalos "
-                        "en «Gestos de ocultamiento» y «Probar estos tiempos».")
+                        "en «Zonas, tiempos de las reglas y gestos de ocultamiento» y tocá «Probar estos tiempos».")
             else:
                 msg += ("\n\nLas reglas miden zonas y tiempos: un hurto rápido (tomar y guardar en segundos, sin ir a la "
                         "salida) no lo ven.")
@@ -3024,8 +3056,8 @@ class TuneWindow:
         times, gestures = self._times(), self._gestures_body()
         if times is None or gestures is None:
             return
-        self.dirty = True
-        self.save_btn.configure(text="Guardar *")
+        self._tested = True
+        self._show_dirty()
         self._apply(times, gestures)
 
     def _apply(self, times: dict[str, float], gestures: dict) -> None:
@@ -3053,10 +3085,15 @@ class TuneWindow:
         """Ya se recalculó. Con gestos nuevos sobre algo analizado sin mirar la postura: los videos se vuelven a
         analizar (en vivo, los gestos se ven desde ahora)."""
         self._redraw()
-        if not needs_pose or t is not self.tuner or self.closed:
+        if t is not self.tuner or self.closed:
+            return
+        if not needs_pose:
+            if t.live:
+                self._note = ""  # p. ej. se volvieron a apagar los gestos
             return
         if t.live:
             self._note = "los gestos se ven desde ahora (lo de antes se analizó sin mirar la postura)"
+            self._note_until = time.monotonic() + 20.0
         else:
             if self.run_videos:
                 self._start(library=self.run_videos)
@@ -3085,22 +3122,29 @@ class TuneWindow:
         saved_gestures = self._gestures_save(gestures)
         if saved_gestures is not None:
             body["gestures"] = saved_gestures
-        cid = self.cam["id"]
+        cid, view = self.cam["id"], self._view()
 
         def work():
-            self.app.api.put(f"/api/cameras/{cid}/analysis", body)
+            saved = self.app.api.put(f"/api/cameras/{cid}/analysis", body)
             if (self.info or {}).get("tuning", "sin_ajustar") == "sin_ajustar":
                 self.app.api.post(f"/api/cameras/{cid}/tuning", {"status": "en_ajuste"})
                 self.info["tuning"] = "en_ajuste"
+            return saved
 
-        def done(_):
+        def done(saved):
             raw["rules"] = rules
             if saved_gestures is not None:
                 raw["gestures"] = saved_gestures
-            self.dirty = False
-            self.save_btn.configure(text="Guardar")
+                if isinstance(saved, dict) and "gestures" not in saved:
+                    # un servidor sin actualizar responde bien pero descarta los gestos: decirlo, no darlo por hecho
+                    self.app.mb.showwarning(
+                        NOMBRE, "Se guardaron las zonas y los tiempos, pero el servidor todavía no conoce los gestos: "
+                                "no quedaron guardados. Avisá para que lo actualicen.", parent=self.top)
+            self._tested, self._saved_view = False, view
+            self._show_dirty()
             self.app.config_saved()
             self._apply(times, gestures)  # lo que se analiza acá es lo guardado (aunque no se haya «probado»)
+            self._eff_gestures = self.analysis.get("gestures")  # y es lo que rige ahora
             if then:
                 then()
         self.app.bg.run(work, done, lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
@@ -3124,9 +3168,7 @@ class TuneWindow:
                 return
             self.info = {**info}
             self.analysis = info["camera"].get("analysis") or {}
-            self.dirty = False
-            self.save_btn.configure(text="Guardar")
-            self._fill_times()
+            self._fill_times()  # lo guardado (con los tiempos y gestos que se estaban probando)
             if self.tuner is not None:
                 t, analysis = self.tuner, self.analysis
 
@@ -3171,7 +3213,7 @@ class TuneWindow:
 
     def close(self, force: bool = False) -> None:
         if not force and self.dirty and not self.app.mb.askyesno(
-                NOMBRE, "Hay tiempos o gestos probados sin guardar. ¿Cerrar igual?", parent=self.top):
+                NOMBRE, "Hay tiempos o gestos cambiados sin guardar. ¿Cerrar igual?", parent=self.top):
             return
         self.closed = True
         if self.tuner is not None:
@@ -3311,6 +3353,8 @@ class TuneWindow:
             self.bar["value"] = t.progress * 100
         if self._note and not t.live and t.state in ("listo", "detenido", "error"):
             self._note = ""  # ya se volvió a analizar
+        elif self._note and t.live and time.monotonic() > self._note_until:
+            self._note = ""
         if self._note:
             txt += f" · {self._note}"
         if txt != self._state_text:
@@ -3360,7 +3404,8 @@ class TuneWindow:
                 if pose.get("ok_pct") is not None:
                     parts.append(f"bien vista (hombros y caderas) en el {pose['ok_pct']:.0f} %")
                 if pose.get("small_pct"):
-                    parts.append(f"personas chicas para mirarla (< {pose['min_px']:.0f} px) {pose['small_pct']:.0f} %")
+                    parts.append(f"personas chicas para mirarla (menos del {pose['min_pct']:.0f} % del alto) "
+                                 f"{pose['small_pct']:.0f} %")
                 if parts:
                     lines.append("Postura: " + " · ".join(parts))
             if st.get("night_pct", 0) > 50:

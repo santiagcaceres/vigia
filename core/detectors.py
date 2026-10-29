@@ -259,6 +259,19 @@ class OnnxYoloDetector:
                  if idx else [])
         return self._decode(res, self._cols, self._labels, self.conf), extra
 
+    def detect_groups(self, frame: np.ndarray, groups: list[tuple[dict[int, str], float]]) -> tuple[
+            list[Detection], list[list[Detection]]]:
+        """Como `detect_also` pero con varios grupos de clases, cada uno decodificado aparte (una caja es la clase de
+        más puntaje DENTRO de su grupo). Así «Configurar…» saca los bolsos igual que las máquinas (entre mochila,
+        cartera y valija) y además muestra todo lo demás que ve YOLO, con una sola pasada del modelo."""
+        res = self._infer(frame)
+        out = []
+        for classes, conf in groups:
+            idx = [c for c in sorted(classes) if c in self.runner.col_of and c not in self.classes]
+            out.append(self._decode(res, np.array([self.runner.col_of[c] for c in idx]), [classes[c] for c in idx],
+                                    conf) if idx else [])
+        return self._decode(res, self._cols, self._labels, self.conf), out
+
     def _infer(self, frame: np.ndarray) -> tuple:
         h, w = frame.shape[:2]
         tw, th = self.size

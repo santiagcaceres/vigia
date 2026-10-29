@@ -6,7 +6,7 @@ para entrenar el modelo del cliente.
   Por defecto se eligen de la carpeta Descargas\\VIGIA.
 - De cada video se dice qué es: «hurto» (con los momentos en que pasa) o «normal» (no debería dar alertas).
 - `evaluate` cruza las alertas de prueba con eso: qué hurtos vio la cámara, cuáles no, y alertas de más. Cada tipo de
-  alerta tiene su ventana alrededor del momento marcado (los gestos pasan justo en el momento; las reglas, después).
+  alerta tiene su ventana alrededor del momento marcado (los gestos, al guardar lo tomado; las reglas, después).
 """
 
 from __future__ import annotations
@@ -29,9 +29,11 @@ KINDS = {"hurto": "Hurto", "normal": "Normal (sin hurto)", "": "Sin clasificar"}
 # saltan después del momento del hurto (cuando la persona cumplió el tiempo o se fue)
 MATCH_BEFORE = 20.0
 MATCH_AFTER = 90.0
-# los gestos de ocultamiento (mano al bolsillo, a la ropa o a la bolsa) saltan en el momento en que se guarda algo:
-# una ventana más estrecha, para que un gesto de otro momento del video no cuente como «vio el hurto»
-MATCH_WINDOWS = {g: (5.0, 5.0) for g in GESTURE_TYPES}
+# los gestos de ocultamiento (mano al bolsillo, a la ropa o a la bolsa) saltan cuando se guarda algo: si se marcó el
+# momento en que lo toma del estante, el gesto llega unos segundos después (la toma vale hasta 10 s y la mano tiene que
+# quedarse de 0,6 a 2 s). Ventana de 5 s antes a 15 s después: más estrecha que la de las reglas, para que un gesto de
+# otro momento del video no cuente como «vio el hurto»
+MATCH_WINDOWS = {g: (5.0, 15.0) for g in GESTURE_TYPES}
 VIDEO_TYPES = ("Videos", "*.mp4 *.avi *.mkv *.mov *.ts *.dav *.264 *.h264")
 
 

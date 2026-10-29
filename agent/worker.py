@@ -14,6 +14,7 @@ from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import write_mp4
 from core.detectors import Detector
 from core.gestos import GESTURE_NAMES
+from core.imagen import pixel_aspect, square_pixels
 from core.metrics import MetricsCollector
 from core.motion import MotionGate
 from core.pose import build_pose
@@ -142,6 +143,7 @@ class CameraWorker:
         # la postura (gestos) se engancha en el hilo de la cámara (`_sync_pose`): cargar el modelo la primera vez
         # tarda un momento y no tiene que trabar a quien arma la cámara (la ventana)
         self._analysis: dict = cam_cfg.get("analysis") or {}
+        self._sar_logged: float | None = None
         self.analyzer = Analyzer(self._analysis, detector, scorer, self.clip_pre, self.clip_post,
                                  clip_max=self.clip_max, clips=not self.metrics_only)
         # sin movimiento y sin nadie en escena no se usa el detector (ahorra placa de video)
@@ -280,6 +282,12 @@ class CameraWorker:
         # Hik-Connect (HLS) manda el video en ráfagas de 1-4 s: con el reloj de la PC se analizaría un solo
         # cuadro por ráfaga. Ahí se usa el reloj del video (marca de tiempo de cada cuadro).
         clock = MediaClock(cap) if self.hik.brand == "hikconnect" else None
+        # «1080p lite» (960x1080 con píxeles 2:1): se analiza con píxeles cuadrados (960x540), igual que en
+        # «Configurar…» y en las alarmas; si no, las personas quedan flacas y los gestos no andan
+        sar = pixel_aspect(cap)
+        if sar and sar != self._sar_logged:
+            self._sar_logged = sar
+            log.info("[%s] el video tiene píxeles de %.2f:1: se analiza con píxeles cuadrados", self.name, sar)
         last_proc = -1e9
         last_show = -1e9
         last_preview = -1e9
@@ -288,8 +296,9 @@ class CameraWorker:
         fails = 0
         while not self._stop.is_set():
             if self._pending_analysis is not None:
-                self._apply_analysis(self._pending_analysis)
-                self._pending_analysis = None
+                # se saca antes de aplicarlo: si falla, no se reintenta en cada cuadro
+                pending, self._pending_analysis = self._pending_analysis, None
+                self._apply_analysis(pending)
             # tomar todos los cuadros evita acumular retraso; solo se convierten a imagen los que se usan
             # (analizar o mostrar en la ventana), que es lo que más procesador gasta
             ok = cap.grab()
@@ -311,6 +320,8 @@ class CameraWorker:
             ok, frame = cap.retrieve()
             if not ok or frame is None:
                 continue
+            if sar:
+                frame = square_pixels(frame, sar, shrink=True)
             if show:  # la ventana se dibuja a 10 cuadros por segundo como máximo
                 last_show = now
                 self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, ts, self.name,
@@ -328,8 +339,8 @@ class CameraWorker:
             if now - last_idle > 60:
                 last_idle = now
                 self.idle_pct = self.gate.take_saved_fraction()
-            if self.live.active:
-                self.live.push(frame, self.analyzer.last_tracks, ts, wall, self._gesture_engine())
+            if self.live.active:  # (la imagen en vivo la puede ver el cliente: sin la marcha de los gestos)
+                self.live.push(frame, self.analyzer.last_tracks, ts, wall)
             for f in findings:
                 self._on_finding(f)
             if now - last_metrics > METRICS_EVERY_SECONDS:
@@ -383,7 +394,7 @@ class CameraWorker:
     def _apply_analysis(self, analysis: dict) -> None:
         try:
             zones, rule_cfg = parse_config(analysis)
-        except ValueError as exc:
+        except Exception as exc:  # noqa: BLE001 - (un número en null, una clave rara): seguir con lo anterior
             log.warning("[%s] zonas, reglas o gestos inválidos, sigo con los anteriores: %s", self.name, exc)
             return
         self.analyzer.zones = zones
