@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from .analyzer import annotate
+from .pose import detect_with_bags, look
 from .detectors import Detector
 from .rules import ALARMA_DVR, RULE_PRIORITY, SEVERITY, RuleEngine, RuleEvent, parse_config
 from .scorer import Scorer
@@ -86,9 +87,11 @@ def _interest(f: dict[str, float]) -> float:
 
 
 def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | None = None,
-                 process_fps: float = 5.0, start_wall: datetime | None = None) -> ClipResult:
+                 process_fps: float = 5.0, start_wall: datetime | None = None, pose=None) -> ClipResult:
+    """`pose`: core/pose.PoseEstimator para los gestos de ocultamiento (si la cámara los tiene activados)."""
     zones, rule_cfg = parse_config(config)
     engine = RuleEngine(zones, rule_cfg)
+    gestures = pose is not None and engine.gestures is not None
     tracker = CentroidTracker()
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -113,13 +116,15 @@ def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | 
             h, w = frame.shape[:2]
             res.frame_size = (w, h)
             wall = start_wall + timedelta(seconds=ts) if start_wall else None
-            dets = detector.detect(frame)
+            dets, objects = detect_with_bags(detector, frame, gestures)
             res.frames += 1
             if dets:
                 res.person_frames += 1
                 res.max_people = max(res.max_people, len(dets))
             tracks = tracker.update(dets, ts, frame)
-            events = engine.update(tracks, ts, (w, h), wall)
+            if gestures:
+                look(pose, frame, tracks, rule_cfg.gestures.min_person_px)
+            events = engine.update(tracks, ts, (w, h), wall, objects)
             feats = engine.current_features(tracks, ts, (w, h), wall)
             snap = [dataclasses.replace(t) for t in tracks]
             for ev in events:

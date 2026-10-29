@@ -14,6 +14,9 @@ import cv2
 import numpy as np
 
 from .detectors import Detector
+from .gestos import MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA
+from .pose import detect_with_bags, look
+from .pose import draw as draw_pose
 from .rules import RuleEngine, RuleEvent, Zone, parse_config
 from .scorer import Scorer
 from .tracker import CentroidTracker, Track
@@ -22,7 +25,9 @@ ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 15
                "entrance": (255, 0, 200), "pump": (0, 120, 255), "shop": (200, 200, 0), "staff": (140, 140, 140),
                "aisle": (255, 255, 120)}
 ASCII_LABELS = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO",
-                "zona_restringida": "ZONA RESTRINGIDA", "fuera_de_horario": "FUERA DE HORARIO"}
+                "zona_restringida": "ZONA RESTRINGIDA", "fuera_de_horario": "FUERA DE HORARIO",
+                MANO_BOLSILLO: "POSIBLE OCULTAMIENTO: MANO AL BOLSILLO", MANO_ROPA: "POSIBLE OCULTAMIENTO: MANO EN LA ROPA",
+                MANO_BOLSA: "POSIBLE OCULTAMIENTO: MANO EN LA BOLSA"}
 
 
 @dataclass
@@ -101,6 +106,8 @@ def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: R
         color = (0, 0, 255) if hot else ((255, 200, 0) if t.label == "vehiculo" else (0, 255, 0))
         x1, y1, x2, y2 = (int(v) for v in t.bbox)
         cv2.rectangle(img, (x1, y1), (x2, y2), color, (3 if hot else 2) * thick)
+        if getattr(t, "kpts", None) is not None:
+            draw_pose(img, t.kpts, (0, 220, 255) if not hot else (0, 140, 255))
         cv2.putText(img, f"#{t.id}", (x1, max(12, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * thick, color,
                     thick, cv2.LINE_AA)
     if event is not None:
@@ -122,10 +129,11 @@ class Analyzer:
 
     def __init__(self, config: dict, detector: Detector, scorer: Scorer | None = None,
                  clip_pre: float = 6.0, clip_post: float = 6.0, clip_width: int = 640, clip_max: float = 180.0,
-                 lead_seconds: float = 3.0, clips: bool = True):
+                 lead_seconds: float = 3.0, clips: bool = True, pose=None):
         self.zones, rule_cfg = parse_config(config)
         self.clips = clips  # False = solo métricas: sin buffer de cuadros (no comprime JPEG ni gasta memoria)
         self.detector = detector
+        self.pose = pose  # core/pose.PoseEstimator: postura para los gestos (None = sin gestos)
         self.tracker = CentroidTracker()
         self.engine = RuleEngine(self.zones, rule_cfg)
         self.scorer = scorer
@@ -140,13 +148,21 @@ class Analyzer:
         self._ready: list[ClipReady] = []
         self.last_tracks: list[Track] = []
 
+    @property
+    def gestures(self) -> bool:
+        """Se buscan gestos: hay modelo de postura y la cámara los tiene activados."""
+        return self.pose is not None and self.engine.gestures is not None and self.clips
+
     def process(self, frame: np.ndarray, ts: float, wall: datetime | None = None) -> list[Finding]:
         h, w = frame.shape[:2]
-        tracks = self.tracker.update(self.detector.detect(frame), ts, frame)
+        dets, objects = detect_with_bags(self.detector, frame, self.gestures)
+        tracks = self.tracker.update(dets, ts, frame)
         self.last_tracks = tracks
         if not self.clips:  # solo métricas: no hay alertas ni clips
             self.frames += 1
             return []
+        if self.gestures:
+            look(self.pose, frame, tracks, self.engine.cfg.gestures.min_person_px)
         jpg_small = self._small_jpg(frame)
         self._remember(ts, jpg_small)
         visible_ids = {t.id for t in tracks if t.visible}
@@ -163,7 +179,7 @@ class Analyzer:
         self._pending = still
 
         findings = []
-        for ev in self.engine.update(tracks, ts, (w, h), wall):
+        for ev in self.engine.update(tracks, ts, (w, h), wall, objects):
             score = self.scorer.score(ev.type, ev.features) if self.scorer else None
             alert = self.scorer.is_alert(score) if self.scorer and score is not None else True
             ok, jpg = cv2.imencode(".jpg", annotate(frame, self.zones, tracks, ev), [cv2.IMWRITE_JPEG_QUALITY, 85])

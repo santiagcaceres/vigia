@@ -22,6 +22,7 @@ class Track:
     missed: int = 0
     hist: np.ndarray | None = field(default=None, repr=False)  # colores de la ropa (para reconocerla)
     at_border: bool = False  # la última vez se la vio tocando el borde de la imagen (saliendo)
+    kpts: np.ndarray | None = field(default=None, repr=False)  # postura (17x3) de este cuadro, si se miró
 
     @property
     def visible(self) -> bool:
@@ -165,6 +166,7 @@ class CentroidTracker:
                 continue
             t = self._tracks[tid]
             t.missed += 1
+            t.kpts = None
             confirmed = t.hits >= self.min_hits
             gone = (not confirmed and t.missed > 2) \
                 or (t.at_border and t.missed > self.max_missed) \
