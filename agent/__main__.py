@@ -319,7 +319,8 @@ class Agent:
                 elif isinstance(val, httpx.HTTPError):
                     log.warning("Servidor no disponible (%s); las cámaras siguen funcionando", val)
                     if self.window is not None:
-                        self.window.set_status(f"{self.pc_name} · sin conexión con el servidor (reintentando)", ok=False)
+                        self.window.set_status(("" if self.on_demand else f"{self.pc_name} · ")
+                                               + "sin conexión con el servidor (reintentando)", ok=False)
                     last_cfg = now - CONFIG_EVERY_SECONDS + 15
                 else:
                     raise val
@@ -424,7 +425,7 @@ class Agent:
         if len(self.viewers) != self._viewing_shown:
             self._viewing_shown = len(self.viewers)
             n = self._viewing_shown
-            self.window.set_status(f"{self.pc_name} · mirando {n} cámara{'s' if n != 1 else ''}")
+            self.window.set_status("Conectado" + (f" · viendo {n} cámara{'s' if n != 1 else ''}" if n else ""))
 
     def _fetch_view(self, ids: set[int]) -> None:
         try:

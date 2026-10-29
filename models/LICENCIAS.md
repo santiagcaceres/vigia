@@ -3,7 +3,6 @@
 | Archivo | Qué es | De dónde sale | Licencia |
 |---|---|---|---|
 | `personas.onnx` | YOLO11n (COCO, 80 clases), el detector de las máquinas y la app | Ultralytics | **AGPL-3.0**: para cobrar, el código del sistema tiene que publicarse bajo AGPL o hay que comprar la licencia Enterprise de Ultralytics |
-| `dfine_n.onnx` | D-FINE-N (COCO, 80 clases), opción de prueba en «Ajustar…» | [Peterande/D-FINE](https://github.com/Peterande/D-FINE), `dfine_n_coco.pth` exportado el 28 oct 2026 con `tools/deployment/export_onnx.py` (640x640, salidas `labels`/`boxes`/`scores`) | **Apache-2.0**: libre para vender (conservar este aviso) |
 
 Comparación del 28 oct 2026 (128 imágenes de COCO con 254 personas, procesador, 1 hilo):
 
@@ -14,5 +13,7 @@ Comparación del 28 oct 2026 (128 imágenes de COCO con 254 personas, procesador
 | YOLOX-s (Apache) | 0,779 | — | 228 | — |
 | YOLOX-tiny / nano (Apache) | 0,709 / 0,624 | — | 60 / 16 | — |
 
-D-FINE-N a 480x480 (sin reentrenar) baja a 0,699: no conviene. Con placa de video la diferencia de velocidad casi no
-importa. Falta compararlos con video real de cámaras de techo (Minas) en «Ajustar…».
+D-FINE-N a 480x480 (sin reentrenar) baja a 0,699: no conviene. En video real de Minas (28 oct, Dell): tarda 1,5-1,8
+veces lo de YOLO11n y casi no ve más (sostiene mejor a una 2.ª persona del fondo; objetos con falsos). **Decisión del
+dueño (29 oct): solo YOLO.** D-FINE salió de la app y del repo (`dfine_n_coco.pth` se exporta de nuevo con
+`tools/deployment/export_onnx.py` de D-FINE si algún día hiciera falta).

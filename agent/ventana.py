@@ -24,6 +24,7 @@ import logging
 import math
 import queue
 import socket
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -31,7 +32,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import marca
+from . import estilo, marca
 
 log = logging.getLogger("vigia.ventana")
 
@@ -149,11 +150,15 @@ class Ventana:
         marca.apply_icon(self.root)
         self.root.geometry("1280x760")
         self.root.minsize(900, 560)
-        self.root.protocol("WM_DELETE_WINDOW", self._ask_close)
-        try:
-            ttk.Style().theme_use("vista" if "vista" in ttk.Style().theme_names() else "clam")
-        except Exception:
+        try:  # que ocupe toda la pantalla (en 1366x768 no sobra nada)
+            if sys.platform == "win32":
+                self.root.state("zoomed")
+            else:
+                self.root.attributes("-zoomed", True)
+        except Exception:  # noqa: BLE001
             pass
+        self.root.protocol("WM_DELETE_WINDOW", self._ask_close)
+        estilo.aplicar(self.root)
         self.open = True
         logging.getLogger().addHandler(self.log_handler)
 
@@ -177,8 +182,9 @@ class Ventana:
         head.grid(row=0, column=0, columnspan=2, pady=(0, 2))
         if self._login_logo is not None:
             ttk.Label(head, image=self._login_logo).pack(pady=(0, 6))
-        ttk.Label(head, text=marca.NOMBRE, font=("Segoe UI", 24, "bold"), foreground="#011b5d").pack()
-        ttk.Label(frame, text="Gestión de clientes, cámaras y alertas", foreground="#666").grid(row=1, column=0, columnspan=2, pady=(0, 18))
+        ttk.Label(head, text=marca.NOMBRE, font=(estilo.familia(self.root), 24, "bold"), foreground=estilo.MARCA).pack()
+        ttk.Label(frame, text="Gestión de clientes, cámaras y alertas", style="Suave.TLabel").grid(
+            row=1, column=0, columnspan=2, pady=(0, 18))
         user, pwd = tk.StringVar(), tk.StringVar()
         for i, (label, var, show) in enumerate((("Usuario", user, ""), ("Clave", pwd, "•")), start=2):
             ttk.Label(frame, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=(0, 12))
@@ -204,7 +210,8 @@ class Ventana:
             except ValueError as exc:
                 msg.configure(text=str(exc), foreground="#c0392b")
 
-        ttk.Button(frame, text="Entrar", command=submit).grid(row=7, column=0, columnspan=2, pady=(8, 0), sticky="ew")
+        ttk.Button(frame, text="Entrar", command=submit, style="Primario.TButton").grid(
+            row=7, column=0, columnspan=2, pady=(8, 0), sticky="ew")
         self.root.bind("<Return>", submit)
         self.root.protocol("WM_DELETE_WINDOW", lambda: (self.close(), done.set(True)))
         try:
@@ -226,37 +233,48 @@ class Ventana:
         tk, ttk = self.tk, self.ttk
         self.analyze = analyze
         self.on_demand = on_demand
-        top = ttk.Frame(self.root, padding=(10, 6))
+        # cabecera blanca: logo, nombre, estado y, a la derecha, el menú del usuario (la Oficina le suma «Buscar
+        # actualización» y, si hay versión nueva, el botón para actualizar)
+        top = ttk.Frame(self.root, padding=(14, 8), style="Cabecera.TFrame")
         top.pack(side="top", fill="x")
-        self.header = top  # la Oficina suma acá el botón de actualizar
+        tk.Frame(self.root, height=1, bg=estilo.BORDE).pack(side="top", fill="x")
+        self.header = top
         self._header_logo = marca.logo(self.root, 28)
         if self._header_logo is not None:
-            ttk.Label(top, image=self._header_logo).pack(side="left", padx=(0, 6))
-        ttk.Label(top, text=marca.NOMBRE, font=("Segoe UI", 14, "bold"), foreground="#011b5d").pack(side="left")
-        self.status = ttk.Label(top, text=f"  ·  {title}", foreground="#666")
-        self.status.pack(side="left")
-        ttk.Button(top, text="Cerrar sesión", command=self._logout).pack(side="right")
+            ttk.Label(top, image=self._header_logo, style="Cabecera.TLabel").pack(side="left", padx=(0, 8))
+        ttk.Label(top, text=marca.NOMBRE, style="CabeceraMarca.TLabel").pack(side="left")
+        self.status = ttk.Label(top, text="", style="CabeceraSuave.TLabel")
+        self.status.pack(side="left", padx=(12, 0))
+        user = ttk.Menubutton(top, text=title, style="Cabecera.TMenubutton")
+        self.user_menu = tk.Menu(user, tearoff=False)
+        self.user_menu.add_command(label="Cerrar sesión", command=self._logout)
+        user["menu"] = self.user_menu
+        user.pack(side="right")
 
-        bottom = ttk.Frame(self.root, padding=(6, 0, 6, 6))
+        # abajo: la última línea del registro; «Registro» lo despliega entero
+        bottom = ttk.Frame(self.root, style="Barra.TFrame", padding=(10, 3))
         bottom.pack(side="bottom", fill="x")
-        ttk.Label(bottom, text="Registro", foreground="#666").pack(anchor="w")
-        self.logbox = tk.Text(bottom, height=5, bg="#1b1f24", fg="#d0d6de", font=("Consolas", 9), relief="flat",
-                              state="disabled", wrap="none")
-        self.logbox.pack(fill="x")
+        self.last_line = ttk.Label(bottom, text="", style="Barra.TLabel")
+        self.last_line.pack(side="left", fill="x", expand=True)
+        self.log_btn = ttk.Button(bottom, text="Registro ▴", style="Barra.TButton", command=self._toggle_log)
+        self.log_btn.pack(side="right")
+        self.logbox = tk.Text(self.root, height=7, bg="#1b1f24", fg="#d0d6de", font=("Consolas", 9), relief="flat",
+                              state="disabled", wrap="none", padx=8, pady=4)
+        self.log_open = False
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(side="top", fill="both", expand=True, padx=6)
+        self.notebook.pack(side="top", fill="both", expand=True, padx=8, pady=(6, 6))
         if analyze:
             body = ttk.Frame(self.notebook)
             self.notebook.add(body, text="  En vivo  ")
-            left = ttk.Frame(body, padding=6)
+            left = ttk.Frame(body, padding=10)
             left.pack(side="left", fill="y")
-            ttk.Label(left, text="Cámaras" if on_demand else "Clientes y cámaras",
-                      font=("Segoe UI", 11, "bold")).pack(anchor="w")
-            help_text = ("Clic en una cámara = se ve en vivo (no se analiza).\nCtrl o Shift para varias. Lo que se "
-                         "analiza se elige en «Clientes»."
+            ttk.Label(left, text="Cámaras" if on_demand else "Clientes y cámaras", style="Subtitulo.TLabel").pack(
+                anchor="w")
+            help_text = ("Clic en una cámara para verla (Ctrl o Mayús\npara varias). Ver no la analiza: eso se elige "
+                         "en\n«Clientes»."
                          if on_demand else "Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.")
-            ttk.Label(left, text=help_text, foreground="#666").pack(anchor="w", pady=(0, 6))
+            ttk.Label(left, text=help_text, style="Suave.TLabel").pack(anchor="w", pady=(0, 6))
             self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=18)
             self.tree.heading("#0", text="Cámara")
             self.tree.heading("estado", text="Estado")
@@ -270,7 +288,7 @@ class Ventana:
                 ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left", padx=(0, 4))
             ttk.Button(btns, text="Cerrar todas" if on_demand else "Ninguna",
                        command=self._select_none).pack(side="left")
-            self.info = ttk.Label(left, text="", foreground="#666", wraplength=340, justify="left")
+            self.info = ttk.Label(left, text="", style="Suave.TLabel", wraplength=340, justify="left")
             self.info.pack(anchor="w", pady=(4, 0))
             right = tk.Frame(body, bg="#111")
             right.pack(side="right", fill="both", expand=True)
@@ -281,7 +299,17 @@ class Ventana:
 
     def set_status(self, text: str, ok: bool = True) -> None:
         if self.main_built and self.open:
-            self.status.configure(text=f"  ·  {text}", foreground="#2f8f46" if ok else "#c0392b")
+            self.status.configure(text=("● " if ok else "⚠ ") + text, foreground=estilo.OK if ok else estilo.ERROR)
+
+    def _toggle_log(self) -> None:
+        """Muestra u oculta el registro completo (abajo)."""
+        self.log_open = not self.log_open
+        if self.log_open:
+            self.logbox.pack(side="bottom", fill="x", before=self.notebook)
+            self.logbox.see("end")
+        else:
+            self.logbox.pack_forget()
+        self.log_btn.configure(text="Registro ▾" if self.log_open else "Registro ▴")
 
     def _logout(self) -> None:
         extra = "\nLas cámaras dejan de analizarse hasta que vuelvas a entrar." if getattr(self, "analyze", False) else ""
@@ -307,6 +335,8 @@ class Ventana:
             self.logbox.delete("1.0", f"{n - 300}.0")
         self.logbox.see("end")
         self.logbox.configure(state="disabled")
+        last = lines[-1].strip().splitlines()[0] if lines[-1].strip() else ""
+        self.last_line.configure(text=last[:160])
 
     def _load_selection(self) -> set[int] | None:
         try:

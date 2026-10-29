@@ -330,7 +330,7 @@ def test_el_aviso_de_sin_conexion_se_borra_al_volver_el_servidor(tmp_path):
                 return
             time.sleep(0.05)
 
-    wait(lambda s: "mirando 0" in s[0])  # anda: «mirando 0 cámaras»
+    wait(lambda s: s[0] == "Conectado")  # anda
     ag.client.down, ag._force_config = True, True  # se corta el DNS
     wait(lambda s: not s[1])
     assert "sin conexión" in ag.window.shown[-1][0]
@@ -339,4 +339,4 @@ def test_el_aviso_de_sin_conexion_se_borra_al_volver_el_servidor(tmp_path):
     ag.stop()
     t.join(5)
     text, ok = ag.window.shown[-1]
-    assert ok and "mirando 0 cámaras" in text
+    assert ok and text == "Conectado"

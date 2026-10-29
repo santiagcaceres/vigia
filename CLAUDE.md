@@ -497,17 +497,42 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   si se puede (Media Foundation en Windows) o MPEG-4, a lo sumo 15 cuadros/s, con la resolución del grabador. Nombre
   «Minas - Pasillo bebidas - 2026-10-28 08.00-08.30.mp4»; estados listo / incompleto (< 90 % del tramo) / error /
   detenido; casilla «Sumarlos a los videos de prueba» (para «Probar clip» y «Ajustar…»). **La reproducción por
-  Hik-Connect (`type` 3) no se probó nunca con el grabador real:** primera prueba en la Dell. Cuánto tarda (¿a
-  velocidad real?) y si el H.264 de Windows abre bien, también sin probar. No cambia nada en el grabador.
+  Hik-Connect no se probó todavía con el grabador real:** la primera prueba (Dell, 28 oct, 1.27.1) dio en los 12
+  tramos «Record setting does not exist{OPEN000502}» porque se pedía `type` 3 (= nube); desde el 29 oct se pide `type`
+  2 (disco del grabador): reintentar. Cuánto tarda y si el H.264 de Windows abre bien, sin probar. No cambia nada en el
+  grabador.
   Pendiente de decidir con el dueño: que la app arranque con Windows (la Dell se reinició el 28 a las 08:05 y la
   app quedó cerrada hasta las 20:43).
-- **D-FINE-N en la Dell (28 oct, sesión de escritorio; app 1.27.1):** en DirectML la sesión se creaba pero la primera
-  pasada fallaba con un error ilegible («'utf-8' codec can't decode byte 0xf3»: texto de Windows en español). Ahora,
-  si una pasada falla en la placa, `OnnxDfineDetector` rehace la sesión en el procesador y sigue (la ventana pasa a
-  decir «en procesador»). Comparado en el procesador de la Dell (mismo `Tuner`, 5 cuadros/s): D-FINE-N tarda 1,5-1,8
-  veces lo de YOLO11n; en Pasillo bebidas da igual (0 cuadros distintos de 141); en Góndolas ventana sostiene mejor a
-  la 2.ª persona del fondo (con gente 98,3 % contra 96,7 %, 179 contra 158 detecciones, mismas 3 personas). Sus
-  objetos tienen falsos (heladera = estantería, gato). Sigue YOLO11n en las máquinas.
+- **D-FINE-N en la Dell (28 oct, sesión de escritorio):** comparado en el procesador de la Dell (mismo `Tuner`, 5
+  cuadros/s): tarda 1,5-1,8 veces lo de YOLO11n; en Pasillo bebidas da igual (0 cuadros distintos de 141); en Góndolas
+  ventana sostiene mejor a la 2.ª persona del fondo (con gente 98,3 % contra 96,7 %, mismas 3 personas); sus objetos
+  tienen falsos (heladera = estantería, gato). En DirectML fallaba la primera pasada. **Decisión del dueño (29 oct):
+  «Solo YOLO».** D-FINE salió de la app, del .exe y del repo (app 1.28.0).
+- **App simple, sin repetidos (29 oct, pedido del dueño: «muchos botones, cosas que se repiten… lo más simple posible,
+  sin perder funcionalidades, amigable y lindo»; app 1.28.0):**
+  - **Estilo propio** (`agent/estilo.py`, `estilo.aplicar(root)`): tema «clam» con los colores de la marca (azul
+    #011b5d), fondo gris claro, listas blancas con filas de 27 px, pestañas planas; botón principal
+    `Primario.TButton`; textos `Titulo/Subtitulo/Suave/Aviso.TLabel`. Igual en Windows y Linux (el tema nativo de
+    Windows no deja cambiar colores). La ventana abre maximizada.
+  - **Cabecera:** logo, nombre, estado («● Conectado · viendo N cámaras»), botón «★ Actualizar a X» solo si hay versión
+    nueva (o «Buscando…»), y el menú del usuario (Buscar actualización, versión, Cerrar sesión). **Registro plegado**:
+    abajo se ve la última línea; «Registro ▴» lo despliega.
+  - **Clientes:** izquierda la lista (con «Por revisar»; «＋ Nuevo»; doble clic edita). Derecha, el cliente: título,
+    planes · horario · acceso web · alertas, y sus acciones (Editar cliente, Métricas, Más: Entrenamiento del modelo,
+    Eliminar cliente). Sus cámaras (Cámara, Estado, Se analiza, Puesta a punto, Alertas hoy; «＋ Agregar cámaras») con
+    **una sola barra**: **Configurar…** (principal) · Editar · **Analizar / Dejar de analizar** (un botón que cambia según
+    lo elegido) · Más (Probar conexión, Bajar grabación, Nombres e imágenes de todas, Elegir todas, Eliminar). Lo mismo
+    con clic derecho; Ctrl+A elige todas. Debajo, la **imagen de la cámara** (se baja una vez por imagen nueva) y sus
+    datos.
+  - **Lo que se juntó (antes repetido):** «Zonas y reglas» y «Probar clip» sueltos → dentro de **Configurar…** (ex
+    «Ajustar»); «Otro video…» y «Agregar…» → **Probar clip…**; los tiempos de las reglas estaban en el editor de zonas
+    y en Ajustar → solo en Configurar (el editor de zonas ya no tiene tiempos: «Guardar zonas»); «✔ Analizar», «✘ No
+    analizar» y la casilla del formulario → un botón; «Métricas» y «Exportar métricas…» → Métricas (ventana propia) con
+    «Exportar a Excel…»; todos los «Actualizar» → las pestañas se refrescan al entrar (`_tab_changed`) y cada 30 s.
+  - **Configurar…** (`TuneWindow`): arriba a la derecha «Probar clip…» (principal; pide qué se ve y al terminar dice si
+    dio alerta y por qué) · «▶ Videos guardados» · «● En vivo»; videos de prueba con un menú «Video elegido» (marcar
+    hurto/normal, quitar, abrir carpeta); «Zonas y tiempos de las reglas» (Zonas…, Probar estos tiempos); alertas de
+    prueba; cómo anda la cámara. Abajo: Notas · Guardar · **✔ Aprobar y analizar** · Cerrar.
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),
@@ -518,12 +543,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     (Apache-2.0) 0,809, 124-145 ms (con la misma precisión ve 4-7 puntos más de personas; `agent.medir`: 1 cámara
     contra 3 en 2 núcleos); D-FINE-N a 480 sin reentrenar 0,699 (no); YOLOX nano/tiny/s 0,624/0,709/0,779 con 16/60/228
     ms (no). RF-DETR-Nano bajado pero sin exportar (el control de permisos frenó instalar `rfdetr`).
-  - **Decisión: las máquinas siguen con YOLO11n** (mejor por peso de procesador). D-FINE-N quedó como **opción de
-    prueba en «Ajustar…»** (selector junto a «Objetos»: vuelve a analizar lo mismo con el otro detector; la «Última
-    prueba» dice «· D-FINE-N»). `core/detectors.py` `OnnxDfineDetector` (`build_detector("dfine")`, modelo
-    `models/dfine_n.onnx` al lado del de YOLO, también en el .exe; umbral 0,55 ≈ 0,35 de YOLO). Exportado con
-    `tools/deployment/export_onnx.py` de D-FINE (PyTorch en un venv aparte, sin variables de entorno). Con placa de
-    video la diferencia de velocidad casi no importa: candidato para máquinas con GPU si en video real ve más.
+  - **Decisión: solo YOLO11n** (29 oct). D-FINE-N estuvo de prueba en «Ajustar…» (1.23-1.27) y se quitó; para volver
+    a probarlo hay que exportarlo de nuevo (`tools/deployment/export_onnx.py` de D-FINE, Apache-2.0).
   - Licencias: el dueño dijo que no se pierda potencia por licencias. Se acordó no usar nada «solo no comercial» en el
     producto; YOLO11n (AGPL) se puede cobrar publicando el código bajo AGPL (el repo ya es público) o con licencia
     Enterprise de Ultralytics.
@@ -682,8 +703,13 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   distinta de la de HPP (`/api/hccgw/...` en vez de `/api/hpcgw/...`). Desde 2026 cualquier cuenta en modo
   equipo genera AppKey/Secret en Team Management → API Integration (gratis según usuarios). Token:
   `POST https://<región>.hikcentralconnect.com/api/hccgw/platform/v1/token/get` → `accessToken` + `areaDomain`.
-  Video: `POST /api/hccgw/video/v1/live/address/get` (`resourceId`, `deviceSerial`, `type` 1 vivo / 2 nube /
-  3 grabación local con `startTime`/`stopTime`, `protocol` 1 EZOPEN / 2 HLS, `quality` 1/2, `expireTime`).
+  Video: `POST /api/hccgw/video/v1/live/address/get` (`resourceId`, `deviceSerial`, `type` 1 vivo / **2 grabación
+  del disco del grabador / 3 nube** con `startTime`/`stopTime` «AAAA-MM-DD hh:mm:ss», `protocol` 1 EZOPEN / 2 HLS,
+  `quality` 1/2, `expireTime`). (Hasta el 29 oct estaban 2 y 3 al revés: daba «Record setting does not exist
+  {OPEN000502}» = no hay nube.) La guía dice que con HLS/RTMP la reproducción puede no estar soportada; si `type` 2
+  no anda, el otro camino es exportar a MP4: `/api/hccgw/video/v1/video/save` (`cameraId`, `beginTime`/`endTime` ISO
+  con desfase) → `taskId` → `/api/hccgw/video/v1/video/download/url` hasta `status` 0 → links .mp4 (lo usa el
+  proyecto abierto SofianMargoum/IASportVision; sin probar acá).
   HLS solo H.264 y sin cifrado de stream; con cifrado solo EZOPEN (SDK EZUIKit). También
   `/api/hccgw/video/v1/isapi/proxypass` (ISAPI por la nube) y `/api/hccgw/resource/v1/areas/cameras/get`.
   Fuente: integración de Home Assistant `Frens98/hikconnect-nvr` (vivo por HLS, funciona) y una referencia de

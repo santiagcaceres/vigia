@@ -2,7 +2,6 @@
 la cámara ve los hurtos marcados y sus alertas etiquetadas sirven para entrenar el modelo del cliente."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -187,62 +186,3 @@ def test_videos_del_grabador_con_pixeles_anchos_se_ven_como_en_el_grabador(tmp_p
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=960x1080:rate=5", "-t",
                     "0.4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(sin_dato)], check=True)
     assert pixel_aspect(cv2.VideoCapture(str(sin_dato))) == 2.0
-
-
-def test_dfine_como_segundo_detector_para_comparar():
-    """D-FINE-N (Apache-2.0) se elige en «Ajustar…» para comparar con YOLO11n: misma interfaz (personas aparte de los
-    objetos), salidas ya en píxeles, NMS por etiqueta y vehículos juntos."""
-    from core.detectors import DFINE_FILE, OnnxDfineDetector, build_detector
-
-    class Session:
-        def get_inputs(self):
-            return [SimpleNamespace(name="images", shape=["N", 3, 640, 640]),
-                    SimpleNamespace(name="orig_target_sizes", shape=["N", 2])]
-
-        def get_providers(self):
-            return ["CPUExecutionProvider"]
-
-        def run(self, _out, feeds):
-            assert feeds["images"].shape == (1, 3, 640, 640) and feeds["images"].max() <= 1.0
-            assert feeds["orig_target_sizes"].tolist() == [[1280, 720]]
-            labels = np.array([[0, 0, 0, 24, 2, 7]])
-            boxes = np.array([[[100, 100, 200, 400], [102, 101, 201, 399], [900, 50, 950, 200], [130, 300, 180, 380],
-                               [500, 400, 700, 600], [505, 405, 705, 600]]], np.float32)
-            scores = np.array([[0.8, 0.7, 0.4, 0.9, 0.9, 0.6]], np.float32)
-            return labels, boxes, scores
-
-    det = OnnxDfineDetector(None, session=Session(), classes={0: "persona", 2: "vehiculo", 7: "vehiculo"})
-    frame = np.zeros((720, 1280, 3), np.uint8)
-    people = det.detect(frame)
-    assert [(d.label, round(d.conf, 1)) for d in people] == [("persona", 0.8), ("vehiculo", 0.9)]  # sin repetidas
-    _, objs = det.detect_also(frame, {24: "mochila"}, 0.45)
-    assert [o.label for o in objs] == ["mochila"]
-    assert det.name == "D-FINE-N" and det.device == "procesador"
-    model = Path(__file__).resolve().parents[1] / "models" / DFINE_FILE
-    assert model.exists()  # viaja en el repo y adentro del .exe (agente_pc.spec)
-    real = build_detector("dfine", Path(__file__).resolve().parents[1] / "models" / "personas.onnx")
-    assert real.name == "D-FINE-N" and real.size == (640, 640)
-
-
-def test_dfine_que_falla_en_la_placa_sigue_en_el_procesador():
-    """En la Dell (DirectML, 28 oct) la sesión de D-FINE se creó en la placa pero la primera pasada falló, con un error
-    ilegible («'utf-8' codec can't decode byte 0xf3»: texto de Windows en español). Ahora sigue en el procesador."""
-    from core.detectors import DFINE_FILE, OnnxDfineDetector
-
-    model = Path(__file__).resolve().parents[1] / "models" / DFINE_FILE
-    det = OnnxDfineDetector(model, threads=1)
-
-    class EnLaPlaca:
-        def __init__(self, real):
-            self.real = real
-
-        def get_providers(self):
-            return ["DmlExecutionProvider", "CPUExecutionProvider"]
-
-        def run(self, *_a):
-            raise UnicodeDecodeError("utf-8", b"\xf3", 0, 1, "invalid continuation byte")
-
-    det.session, det.on_gpu, det.device = EnLaPlaca(det.session), True, "GPU (Dml)"
-    assert det.detect(np.zeros((360, 640, 3), np.uint8)) == []
-    assert det.device == "procesador" and not det.on_gpu
-    assert det.detect(np.zeros((360, 640, 3), np.uint8)) == []  # y sigue andando

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("models/personas.onnx", "models"), ("models/dfine_n.onnx", "models"), ("agent/recursos", "agent/recursos")]
+datas = [("models/personas.onnx", "models"), ("agent/recursos", "agent/recursos")]
 binaries, hiddenimports = [], []
 for pkg in ("onnxruntime", "cv2", "tzdata"):
     d, b, h = collect_all(pkg)

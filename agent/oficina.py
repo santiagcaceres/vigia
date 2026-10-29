@@ -5,11 +5,13 @@ la misma API del servidor, con la sesión de un usuario (admin o empleado). Las 
 corren en hilos aparte (`Bg`) y el resultado se aplica en el hilo de la ventana, así nada se congela.
 
 Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «En vivo», para mirar cualquier cámara
-sin analizarla, la arma `Ventana`):
-- Clientes: alta/edición/borrado de clientes y cámaras, «Nombres e imágenes…» (renombrar viendo la imagen, con lo que
-  ve la IA: `NamesWindow`), qué cámaras se analizan («✔ Analizar», en las máquinas
-  de análisis), probar conexión, zonas y reglas, métricas del día. «Ajustar…» pone a punto una cámara analizándola
-  en esta PC (en vivo o con videos grabados) antes de aprobarla (`TuneWindow`, motor en agent/ajuste.py).
+sin analizarla, la arma `Ventana`). Cada cosa se hace en UN solo lugar (pedido del dueño, 29 oct: «sin cosas que se
+repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
+- Clientes: a la izquierda los clientes; a la derecha el cliente elegido (Editar cliente, Métricas → Exportar a Excel,
+  Más: entrenamiento y eliminar) y sus cámaras, con una sola barra: «Configurar…» (`TuneWindow`: zonas, tiempos,
+  probar clips o en vivo y aprobar; motor en agent/ajuste.py), «Editar» (conexión, nombre, tipo), «Analizar» / «Dejar
+  de analizar» (cambia según lo elegido) y «Más» (probar conexión, bajar grabación, nombres e imágenes, eliminar),
+  también con clic derecho. Abajo, la imagen y los datos de la cámara elegida.
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
   "Avisar al cliente".
 - Administración (solo admin): usuarios y PCs centrales.
@@ -257,7 +259,7 @@ class Oficina:
                  on_restart: Callable[[], None] | None = None,
                  agent: Callable[[], Any] | None = None):
         self.local_probe = local_probe
-        self.agent_of = agent  # el analizador de esta PC (para «Ajustar»: analizar una cámara acá)
+        self.agent_of = agent  # el analizador de esta PC (para «Configurar»: analizar una cámara acá)
         self.on_restart = on_restart
         self.latest: dict | None = None  # última versión publicada (para el botón de actualizar)
         self.on_config_saved = on_config_saved
@@ -295,10 +297,24 @@ class Oficina:
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
         header = getattr(self.v, "header", None)
         if header is not None:
-            self.upd_btn = ttk.Button(header, text="Buscar actualización", command=self.update_dialog)
-            self.upd_btn.pack(side="right", padx=6)
-            ttk.Label(header, text=f"versión {VERSION}", foreground="#888").pack(side="right", padx=6)
+            # el botón de actualizar aparece solo si hay versión nueva (o mientras se busca); buscar a mano y la
+            # versión instalada están en el menú del usuario
+            self.upd_btn = ttk.Button(header, text="", command=self.update_dialog, style="Primario.TButton")
+            menu = getattr(self.v, "user_menu", None)
+            if menu is not None:
+                menu.insert_command(0, label="Buscar actualización", command=self.update_dialog)
+                menu.insert_command(1, label=f"Versión {VERSION}", state="disabled")
+                menu.insert_separator(2)
             self.v.root.after(4000, self._check_update)
+
+    def _upd_show(self, text: str | None, enabled: bool = True) -> None:
+        """Botón de actualizar de la cabecera: visible solo con `text`."""
+        if not text:
+            self.upd_btn.pack_forget()
+            return
+        self.upd_btn.configure(text=text, state="normal" if enabled else "disabled")
+        if not self.upd_btn.winfo_ismapped():
+            self.upd_btn.pack(side="right", padx=8)
 
     # ---------- actualización de la app ----------
     def _check_update(self) -> None:
@@ -306,7 +322,7 @@ class Oficina:
         def done(info):
             self.latest = info
             if actualizar.is_newer(info.get("version")):
-                self.upd_btn.configure(text=f"★ Actualizar a {info['version']}")
+                self._upd_show(f"★ Actualizar a {info['version']}")
                 log.info("Hay una versión nueva de la app: %s (esta es %s). Botón «Actualizar» arriba a la derecha.",
                          info["version"], VERSION)
         self.bg.run(lambda: self.api.get("/api/app/update"), done, lambda e: log.debug("Sin datos de versión: %s", e))
@@ -317,12 +333,12 @@ class Oficina:
         if getattr(self, "_checking_update", False):
             return
         self._checking_update = True
-        self.upd_btn.configure(text="Buscando…", state="disabled")
+        self._upd_show("Buscando actualización…", enabled=False)
         log.info("Buscando actualización…")
 
         def finish(newer: str | None = None) -> None:
             self._checking_update = False
-            self.upd_btn.configure(state="normal", text=f"★ Actualizar a {newer}" if newer else "Buscar actualización")
+            self._upd_show(f"★ Actualizar a {newer}" if newer else None)
 
         def fail(exc: Exception) -> None:
             finish()
@@ -358,7 +374,7 @@ class Oficina:
         self.bg.run(lambda: self.api.get("/api/app/update"), done, fail)
 
     def _install_update(self, new: str) -> None:
-        tk, ttk = self.tk, self.ttk
+        ttk = self.ttk
         top, frm = self._dialog(f"Actualizando {NOMBRE}", width=420)
         top.protocol("WM_DELETE_WINDOW", lambda: None)  # no se cierra a mitad de camino
         msg = ttk.Label(frm, text=f"Descargando la versión {new}…")
@@ -409,7 +425,7 @@ class Oficina:
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
 
     def library(self):
-        """Videos de prueba guardados de cada cámara (un solo archivo para toda la app: varias ventanas de «Ajustar»
+        """Videos de prueba guardados de cada cámara (un solo archivo para toda la app: varias ventanas de «Configurar»
         lo comparten)."""
         if getattr(self, "_library", None) is None:
             from .biblioteca import Library
@@ -449,74 +465,139 @@ class Oficina:
 
     # ================================================================ clientes y cámaras
     def _build_clients(self) -> None:
+        """Izquierda, los clientes; a la derecha, el cliente elegido (sus datos y acciones) y sus cámaras, con UNA barra
+        de acciones para la cámara elegida (lo demás en «Más ▾» y con clic derecho) y el detalle con su imagen."""
         tk, ttk, f = self.tk, self.ttk, self.tab_clients
-        left = ttk.Frame(f)
+        left = ttk.Frame(f, padding=(4, 4, 12, 4))
         left.pack(side="left", fill="y")
-        ttk.Label(left, text="Clientes", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        self.cl_tree = ttk.Treeview(left, columns=("planes", "alertas"), show="tree headings", height=20,
-                                    selectmode="browse")
-        self.cl_tree.heading("#0", text="Cliente")
-        self.cl_tree.heading("planes", text="Planes")
-        self.cl_tree.heading("alertas", text="Alertas")
-        self.cl_tree.column("#0", width=170)
-        self.cl_tree.column("planes", width=110)
-        self.cl_tree.column("alertas", width=100, anchor="center")
+        lh = ttk.Frame(left)
+        lh.pack(fill="x", pady=(0, 6))
+        ttk.Label(lh, text="Clientes", style="Subtitulo.TLabel").pack(side="left")
+        ttk.Button(lh, text="＋ Nuevo", style="Chico.TButton", command=lambda: self.client_dialog()).pack(side="right")
+        self.cl_tree = ttk.Treeview(left, columns=("pend",), show="tree headings", height=20, selectmode="browse")
+        self.cl_tree.heading("#0", text="Cliente", anchor="w")
+        self.cl_tree.heading("pend", text="Por revisar")
+        self.cl_tree.column("#0", width=200)
+        self.cl_tree.column("pend", width=90, anchor="center")
         self.cl_tree.pack(fill="y", expand=True)
-        ttk.Label(left, text="Alertas: hoy · últimos 7 días · sin revisar", foreground="#666").pack(anchor="w")
         self.cl_tree.bind("<<TreeviewSelect>>", lambda e: self._fill_cameras())
-        b = ttk.Frame(left)
-        b.pack(fill="x", pady=6)
-        ttk.Button(b, text="Nuevo cliente", command=lambda: self.client_dialog()).pack(side="left")
-        ttk.Button(b, text="Editar", command=lambda: self.client_dialog(self._sel_client())).pack(side="left", padx=4)
-        if self.is_admin:
-            ttk.Button(b, text="Eliminar", command=self.delete_client).pack(side="left")
-        ttk.Button(b, text="Actualizar", command=self.refresh_all).pack(side="right")
-        bt = ttk.Frame(left)
-        bt.pack(fill="x")
-        ttk.Button(bt, text="Entrenamiento del modelo…", command=self.training_dialog).pack(side="left")
+        self.cl_tree.bind("<Double-1>", lambda e: self.client_dialog(self._sel_client()))
 
-        right = ttk.Frame(f, padding=(12, 0, 0, 0))
+        right = ttk.Frame(f, padding=(4, 4, 4, 4))
         right.pack(side="left", fill="both", expand=True)
-        self.cam_title = ttk.Label(right, text="Elegí un cliente", font=("Segoe UI", 11, "bold"))
-        self.cam_title.pack(anchor="w")
-        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "modo", "conexion", "ajuste", "analiza",
-                                                     "alertas", "zonas"), show="headings", height=12, selectmode="extended")
-        for col, txt, w in (("nombre", "Cámara", 120), ("estado", "Estado", 115), ("modo", "Modo", 95),
-                            ("conexion", "Grabador", 125), ("ajuste", "Ajuste", 80), ("analiza", "Analizar", 105),
-                            ("alertas", "Alertas", 80), ("zonas", "Zonas", 45)):
-            self.cam_tree.heading(col, text=txt)
-            self.cam_tree.column(col, width=w)
-        self.cam_tree.pack(fill="x")
-        self.cam_tree.bind("<Double-1>", lambda e: self.camera_dialog(self._sel_camera()))
-        # tres filas por tarea (entran en 1366 de ancho): la cámara · ponerla a punto y mandarla a las máquinas · el resto
-        b2 = ttk.Frame(right)
-        b2.pack(fill="x", pady=(6, 0))
-        ttk.Button(b2, text="Agregar cámara", command=lambda: self.camera_dialog()).pack(side="left")
-        ttk.Button(b2, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left", padx=4)
-        ttk.Button(b2, text="Zonas y reglas", command=lambda: self.zones_dialog(self._sel_camera())).pack(side="left")
-        ttk.Button(b2, text="Probar conexión", command=lambda: self.probe(self._sel_camera())).pack(side="left", padx=4)
+        # el cliente elegido: nombre, datos y sus acciones
+        ch = ttk.Frame(right)
+        ch.pack(fill="x")
+        self.cl_title = ttk.Label(ch, text="Elegí un cliente", style="Titulo.TLabel")
+        self.cl_title.pack(side="left")
+        more = ttk.Menubutton(ch, text="Más", width=6)
+        self.cl_menu = tk.Menu(more, tearoff=False)
+        self.cl_menu.add_command(label="Entrenamiento del modelo…", command=self.training_dialog)
         if self.is_admin:
-            ttk.Button(b2, text="Eliminar", command=self.delete_camera).pack(side="left")
-        # ponerla a punto en esta PC (en vivo o con clips) y qué se analiza en las máquinas de análisis (se eligen
-        # varias con Ctrl o Shift)
-        b3 = ttk.Frame(right)
-        b3.pack(fill="x", pady=(4, 0))
-        ttk.Button(b3, text="Ajustar…", command=lambda: self.tune_dialog(self._sel_camera())).pack(side="left")
-        ttk.Button(b3, text="Probar clip…", command=lambda: self.clip_dialog(self._sel_camera())).pack(side="left",
-                                                                                                     padx=4)
-        ttk.Button(b3, text="✔ Analizar", command=lambda: self.set_analyze(True)).pack(side="left")
-        ttk.Button(b3, text="✘ No analizar", command=lambda: self.set_analyze(False)).pack(side="left", padx=4)
-        b4 = ttk.Frame(right)
-        b4.pack(fill="x", pady=(4, 0))
-        ttk.Button(b4, text="Elegir todas", command=lambda: self.cam_tree.selection_set(
-            self.cam_tree.get_children())).pack(side="left")
-        ttk.Button(b4, text="Nombres e imágenes…", command=self.names_dialog).pack(side="left", padx=4)
-        ttk.Button(b4, text="Bajar grabación…", command=self.recording_dialog).pack(side="left")
-        ttk.Button(b4, text="Exportar métricas…", command=self.export_dialog).pack(side="right")
-        ttk.Button(b4, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=4)
-        self.cam_info = tk.Text(right, height=8, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
-        self.cam_info.pack(fill="both", expand=True, pady=(6, 0))
-        self._set_info("Elegí una cámara para ver el detalle. Doble clic para editarla.")
+            self.cl_menu.add_separator()
+            self.cl_menu.add_command(label="Eliminar cliente…", command=self.delete_client)
+        more["menu"] = self.cl_menu
+        more.pack(side="right")
+        ttk.Button(ch, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=6)
+        ttk.Button(ch, text="Editar cliente", command=lambda: self.client_dialog(self._sel_client())).pack(side="right")
+        self.cl_sub = ttk.Label(right, text="", style="Suave.TLabel")
+        self.cl_sub.pack(anchor="w", pady=(0, 10))
+
+        # sus cámaras
+        kh = ttk.Frame(right)
+        kh.pack(fill="x", pady=(0, 4))
+        self.cam_title = ttk.Label(kh, text="Cámaras", style="Subtitulo.TLabel")
+        self.cam_title.pack(side="left")
+        ttk.Button(kh, text="＋ Agregar cámaras", command=lambda: self.camera_dialog()).pack(side="right")
+        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "analiza", "ajuste", "alertas"),
+                                     show="headings", height=9, selectmode="extended")
+        for col, txt, w, stretch in (("nombre", "Cámara", 170, True), ("estado", "Estado", 170, True),
+                                     ("analiza", "Se analiza", 170, True), ("ajuste", "Puesta a punto", 125, False),
+                                     ("alertas", "Alertas hoy", 95, False)):
+            self.cam_tree.heading(col, text=txt, anchor="w")
+            self.cam_tree.column(col, width=w, stretch=stretch, anchor="center" if col == "alertas" else "w")
+        self.cam_tree.pack(fill="x")
+        self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
+        self.cam_tree.bind("<Double-1>", lambda e: self.camera_dialog(self._sel_camera()))
+        self.cam_tree.bind("<Button-3>", self._camera_menu)
+        self.cam_tree.bind("<Control-a>", lambda e: self.cam_tree.selection_set(self.cam_tree.get_children()))
+        # UNA barra para la cámara elegida; lo de menos uso, en «Más» (y con clic derecho en la lista)
+        bar = ttk.Frame(right)
+        bar.pack(fill="x", pady=(8, 0))
+        ttk.Button(bar, text="Configurar…", style="Primario.TButton",
+                   command=lambda: self.tune_dialog(self._sel_camera())).pack(side="left")
+        ttk.Button(bar, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left", padx=6)
+        self.an_btn = ttk.Button(bar, text="Analizar", command=lambda: self.set_analyze(None))
+        self.an_btn.pack(side="left")
+        cmore = ttk.Menubutton(bar, text="Más", width=6)
+        self.cam_menu = tk.Menu(cmore, tearoff=False)
+        self._fill_camera_menu(self.cam_menu, full=False)
+        cmore["menu"] = self.cam_menu
+        cmore.pack(side="left", padx=6)
+        ttk.Label(bar, text="Clic derecho: más opciones", style="Suave.TLabel").pack(side="right")
+        # detalle de la cámara elegida: su imagen y sus datos
+        det = ttk.Frame(right)
+        det.pack(fill="both", expand=True, pady=(10, 0))
+        self.cam_img = tk.Label(det, bg="#e4e9f2", width=40, height=10, text="Sin imagen", fg="#8a93a6")
+        self.cam_img.pack(side="left", anchor="n")
+        self._cam_photo = None
+        self._previews: dict[tuple, bytes] = {}
+        self.cam_info = tk.Text(det, height=9, wrap="word", relief="flat", bg="#ffffff", font=("Segoe UI", 10),
+                                padx=12, pady=8, highlightthickness=1, highlightbackground="#d8dee9")
+        self.cam_info.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        self._set_info("Elegí una cámara para ver el detalle.")
+        self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed, add="+")
+
+    def _fill_camera_menu(self, menu, full: bool) -> None:
+        """Opciones de la cámara: en «Más» van las de menos uso; con clic derecho, todas."""
+        sel = self._sel_camera
+        if full:
+            menu.add_command(label="Configurar…", command=lambda: self.tune_dialog(sel()))
+            menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
+            menu.add_command(label=self._analyze_label(), command=lambda: self.set_analyze(None))
+            menu.add_separator()
+        menu.add_command(label="Probar conexión", command=lambda: self.probe(sel()))
+        menu.add_command(label="Bajar grabación…", command=self.recording_dialog)
+        menu.add_command(label="Nombres e imágenes de todas…", command=self.names_dialog)
+        menu.add_command(label="Elegir todas", command=lambda: self.cam_tree.selection_set(self.cam_tree.get_children()))
+        if self.is_admin:
+            menu.add_separator()
+            menu.add_command(label="Eliminar…", command=self.delete_camera)
+
+    def _camera_menu(self, ev) -> None:
+        row = self.cam_tree.identify_row(ev.y)
+        if not row:
+            return
+        if row not in self.cam_tree.selection():
+            self.cam_tree.selection_set(row)
+        menu = self.tk.Menu(self.cam_tree, tearoff=False)
+        self._fill_camera_menu(menu, full=True)
+        try:
+            menu.tk_popup(ev.x_root, ev.y_root)
+        finally:
+            menu.grab_release()
+
+    def _sel_cameras(self) -> list[dict]:
+        sel = set(self.cam_tree.selection())
+        return [c for c in self.cameras if str(c["id"]) in sel]
+
+    def _analyze_label(self) -> str:
+        cams = self._sel_cameras()
+        return "Dejar de analizar" if cams and all(c.get("analyzed") for c in cams) else "Analizar"
+
+    def _tab_changed(self, _e=None) -> None:
+        """Al volver a una pestaña se pide lo último (no hay botones «Actualizar»)."""
+        try:
+            tab = self.notebook.select()
+        except Exception:  # noqa: BLE001
+            return
+        if tab == str(self.tab_clients) and self.clients:
+            self.refresh_all()
+        elif tab == str(self.tab_alerts):
+            self.load_alerts()
+        elif self.is_admin and tab == str(getattr(self, "tab_admin", "")):
+            self.load_users()
+            self.load_machines()
 
     def _set_info(self, text: str) -> None:
         self.cam_info.configure(state="normal")
@@ -537,10 +618,8 @@ class Oficina:
         self.cl_tree.delete(*self.cl_tree.get_children())
         counts = (getattr(self, "alert_counts", None) or {}).get("clients") or {}
         for c in self.clients:
-            n = sum(1 for x in self.cameras if x["client_id"] == c["id"])
-            self.cl_tree.insert("", "end", iid=str(c["id"]), text=f"{c['name']}  ({n})",
-                                values=(", ".join(PLAN_NAMES.get(p, p).split()[0] for p in c.get("plans") or []),
-                                        fmt_counts(counts.get(str(c["id"])))))
+            pend = (counts.get(str(c["id"])) or {}).get("unreviewed", 0)
+            self.cl_tree.insert("", "end", iid=str(c["id"]), text=c["name"], values=(pend or "",))
         if prev and self.cl_tree.exists(prev[0]):
             self.cl_tree.selection_set(prev)
         elif self.clients:
@@ -553,10 +632,10 @@ class Oficina:
             return "Deshabilitada"
         if not st:  # nadie la analiza (en «En vivo» se puede mirar igual)
             if not c.get("analyzed"):
-                return "Sin analizar"
+                return "—"
             return "Esperando máquina" if not c.get("agent_id") else "Sin datos de la máquina"
         if not st.get("agent_online"):
-            return "PC desconectada"
+            return "Máquina desconectada"
         txt = STATE_NAMES.get(st.get("state"), st.get("state") or "—")
         if st.get("fps") and st.get("state") == "en_linea":
             txt += f" · {st['fps']:.0f} fps"
@@ -569,56 +648,93 @@ class Oficina:
         prev_cam = self.cam_tree.selection()
         self.cam_tree.delete(*self.cam_tree.get_children())
         if not c:
-            self.cam_title.configure(text="Elegí un cliente")
+            self.cl_title.configure(text="Elegí un cliente")
+            self.cl_sub.configure(text="")
             return
-        web = f"   ·   acceso web: {c['web_username']}" if c.get("web_username") else "   ·   sin acceso web (Editar para crearlo)"
-        self.cam_title.configure(text=f"Cámaras de {c['name']}{web}")
+        cams = [x for x in self.cameras if x["client_id"] == c["id"]]
+        cnt = ((getattr(self, "alert_counts", None) or {}).get("clients") or {}).get(str(c["id"])) or {}
+        plans = ", ".join(PLAN_NAMES.get(p, p) for p in c.get("plans") or []) or "sin planes"
+        web = f"acceso web: {c['web_username']}" if c.get("web_username") else "sin acceso web"
+        hours = "con horario" if c.get("hours") else "sin horario (24 h)"
+        self.cl_title.configure(text=c["name"])
+        self.cl_sub.configure(text=f"{plans}  ·  {hours}  ·  {web}  ·  alertas: {cnt.get('today', 0)} hoy, "
+                                   f"{cnt.get('week', 0)} en 7 días, {cnt.get('unreviewed', 0)} por revisar")
+        analyzed = sum(1 for x in cams if x.get("analyzed"))
+        self.cam_title.configure(text=f"Cámaras ({len(cams)})" + (f" · {analyzed} se analizan" if analyzed else ""))
         counts = (getattr(self, "alert_counts", None) or {}).get("cameras") or {}
-        for cam in [x for x in self.cameras if x["client_id"] == c["id"]]:
-            conn = (f"Hik-Connect · serie {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
-                    if cam.get("brand") == "hikconnect" else
-                    f"{BRAND_NAMES.get(cam.get('brand'), '')} · {cam.get('host', '')}:{cam.get('rtsp_port')}/{cam.get('http_port')} · canal {cam.get('channel')}")
+        for cam in cams:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
                 cam["name"], self._cam_state(cam),
-                f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))} · {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]}", conn,
-                TUNING_NAMES.get(cam.get("tuning") or "sin_ajustar", "—"),
                 ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")) if cam.get("analyzed") else "No",
-                fmt_counts(counts.get(str(cam["id"]))), len(cam.get("zones") or [])))
-        self.cam_tree.bind("<<TreeviewSelect>>", lambda e: self._show_camera())
+                TUNING_NAMES.get(cam.get("tuning") or "sin_ajustar", "—"),
+                (counts.get(str(cam["id"])) or {}).get("today", 0) or ""))
         if prev_cam and self.cam_tree.exists(prev_cam[0]):
             self.cam_tree.selection_set(prev_cam)  # sigue elegida (el detalle se actualiza solo si no hay otra cosa)
         elif not keep_info:
-            self._set_info("Elegí una cámara para ver el detalle. Doble clic para editarla.")
+            self._set_info("Elegí una cámara para ver el detalle.")
+            self._show_preview(None)
 
     def _show_camera(self) -> None:
-        cam = self._sel_camera()
+        cams = self._sel_cameras()
+        self.an_btn.configure(text=self._analyze_label())
+        cam = cams[0] if len(cams) == 1 else None
+        if len(cams) > 1:
+            self._show_preview(None)
+            return self._set_info(f"{len(cams)} cámaras elegidas: {', '.join(c['name'] for c in cams[:8])}"
+                                  + ("…" if len(cams) > 8 else ""))
         if not cam:
             return
+        self._show_preview(cam)
         if getattr(self, "_info_locked", None) == cam["id"]:
-            return  # se está mostrando el resultado de una prueba o las métricas: no pisarlo
+            return  # se está mostrando el resultado de una prueba: no pisarlo
         self._info_locked = None
         st = cam.get("status") or {}
         zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])})" for z in cam.get("zones") or []) or \
-            "ninguna: sin zonas no se disparan reglas ni hay métricas por zona"
+            "ninguna (sin zonas no hay alertas: se dibujan en «Configurar…»)"
+        conn = (f"Hik-Connect · grabador {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
+                if cam.get("brand") == "hikconnect" else
+                f"{BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · canal {cam.get('channel')} · RTSP "
+                f"{cam.get('rtsp_port')} · HTTP {cam.get('http_port')}")
         self._set_info(
             f"{cam['name']}\n"
             f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
-            f"Modo: {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
-            f"Analizar: {('sí · ' + (cam.get('analyzer_name') or 'esperando una máquina en línea')) if cam.get('analyzed') else 'no (se puede mirar en «En vivo»)'}\n"
-            f"Ajuste: {self._tuning_text(cam)}\n"
-            f"Grabador: {BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · RTSP {cam.get('rtsp_port')} · "
-            f"HTTP {cam.get('http_port')} · canal {cam.get('channel')} · usuario {cam.get('username')}\n"
-            f"Zonas: {zones}\n\n"
-            "Enlace para probar en VLC (con la clave del grabador):\n"
-            f"rtsp://{cam.get('username')}:CLAVE@{cam.get('host')}:{cam.get('rtsp_port')}/"
-            + (f"cam/realmonitor?channel={cam.get('channel')}&subtype=1" if cam.get("brand") == "dahua"
-               else f"Streaming/Channels/{cam.get('channel')}02"))
+            f"Se analiza: {('sí, en ' + (cam.get('analyzer_name') or 'la primera máquina que se prenda')) if cam.get('analyzed') else 'no (se puede ver en «En vivo»)'}\n"
+            f"Puesta a punto: {self._tuning_text(cam)}\n"
+            f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
+            f"{int(cam.get('process_fps') or 5)} cuadros por segundo · {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
+            f"Zonas: {zones}\n"
+            f"Conexión: {conn}")
+
+    def _show_preview(self, cam: dict | None) -> None:
+        """La última imagen de la cámara al lado del detalle (se baja una vez por imagen nueva)."""
+        self._preview_for = cam["id"] if cam else None
+        if not cam or not cam.get("has_preview"):
+            self._cam_photo = None
+            self.cam_img.configure(image="", text="Sin imagen" if cam else "", width=40, height=10)
+            return
+        key = (cam["id"], cam.get("preview_at"))
+        if key in self._previews:
+            return self._put_preview(cam["id"], self._previews[key])
+
+        def done(data):
+            self._previews[key] = data
+            self._put_preview(cam["id"], data)
+        self.bg.run(lambda: self.api.download(f"/api/cameras/{cam['id']}/preview"), done, lambda e: None)
+
+    def _put_preview(self, cam_id: int, data: bytes) -> None:
+        if self._preview_for != cam_id:
+            return  # ya eligieron otra
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return
+        self._cam_photo = ppm_photo(self.tk, img, 320, 180)
+        self.cam_img.configure(image=self._cam_photo, text="", width=320, height=180)
 
     @staticmethod
     def _tuning_text(cam: dict) -> str:
         t = cam.get("tuning") or "sin_ajustar"
         if t == "sin_ajustar":
-            return "sin ajustar («Ajustar…» la analiza en esta PC, en vivo o con videos, antes de aprobarla)"
+            return "falta («Configurar…»: zonas, tiempos y prueba con clips o en vivo)"
         txt = {"en_ajuste": "en ajuste", "aprobada": "aprobada"}.get(t, t)
         if cam.get("tuned_by"):
             txt += f" por {cam['tuned_by']} el {fmt_date(cam.get('tuned_at'))}"
@@ -952,7 +1068,6 @@ class Oficina:
             "profile": tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general")),
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
             "off_hours": tk.StringVar(value=OFF_HOURS_NAMES.get(cam.get("off_hours") or "apagada")),
-            "analyze": tk.BooleanVar(value=bool(cam.get("analyzed"))),
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
@@ -1030,8 +1145,6 @@ class Oficina:
                                                        for d in DAYS))
         ttk.Label(frm, text=hours_txt, foreground="#666", wraplength=560, justify="left").grid(
             row=16, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(frm, text="Analizar en las máquinas de análisis (si no, solo se mira en «En vivo»)",
-                        variable=v["analyze"]).grid(row=19, column=1, sticky="w")
         row(None, 17, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
         if "hurto" not in ((owner or {}).get("plans") or ["hurto"]):
             ttk.Label(frm, text="Este cliente es solo de métricas: la cámara usa 2-3 cuadros por segundo y no guarda "
@@ -1089,8 +1202,6 @@ class Oficina:
                     return self.mb.showwarning(NOMBRE, "Faltan el nombre o la IP del grabador.", parent=top)
                 bodies = [{**common, "name": v["name"].get().strip()}]
 
-            analyze = v["analyze"].get()
-
             def send():
                 if cam.get("id"):
                     added, repeated = [self.api.put(f"/api/cameras/{cam['id']}", bodies[0])], []
@@ -1103,9 +1214,6 @@ class Oficina:
                             if exc.status != 409 or len(bodies) == 1:
                                 raise
                             repeated.append(b["name"])  # ya estaba cargada: no se repite
-                changed = [x["id"] for x in added if bool(x.get("analyzed")) != analyze]
-                if changed:  # analizar o no: el mismo camino que los botones de la lista
-                    self.api.post("/api/cameras/analyze", {"camera_ids": changed, "analyze": analyze})
                 return added, repeated
 
             def done(res):
@@ -1121,21 +1229,25 @@ class Oficina:
         bb = ttk.Frame(frm)
         bb.grid(row=22, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
-        ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
+        ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
+        ttk.Label(bb, text="Qué se analiza se elige con «Analizar» en la lista; zonas y tiempos, en «Configurar…».",
+                  style="Suave.TLabel").pack(side="left")
 
-    def set_analyze(self, analyze: bool) -> None:
+    def set_analyze(self, analyze: bool | None) -> None:
         """Elegir qué cámaras se analizan: las marcadas van a las máquinas de análisis; las demás solo se miran
-        en «En vivo»."""
+        en «En vivo». `analyze` None = lo que dice el botón (si todas las elegidas se analizan, dejar de analizar)."""
         ids = [int(i) for i in self.cam_tree.selection()]
         if not ids:
-            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Shift para varias).")
+            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
+        if analyze is None:
+            analyze = self._analyze_label() == "Analizar"
         if not analyze and not self.mb.askyesno(
                 NOMBRE, f"¿Dejar de analizar {len(ids)} cámara(s)?\n\nNo van a generar alertas ni métricas. "
                          "Se pueden seguir mirando en «En vivo»."):
             return
         raw = [c["name"] for c in self.cameras if c["id"] in ids and c.get("tuning") != "aprobada" and not c.get("analyzed")]
         if analyze and raw and not self.mb.askyesno(
-                NOMBRE, f"{len(raw)} cámara(s) sin aprobar en «Ajustar…» ({', '.join(raw[:4])}"
+                NOMBRE, f"{len(raw)} cámara(s) sin aprobar en «Configurar…» ({', '.join(raw[:4])}"
                          f"{'…' if len(raw) > 4 else ''}).\n\nSin ajustar pueden dar muchas alertas falsas. "
                          "¿Analizarlas igual?"):
             return
@@ -1219,41 +1331,30 @@ class Oficina:
                 self._set_info(msg + f"\n\nEnlace para VLC: {r.get('rtsp_url')}")
         self.bg.run(run, done, self.err)
 
-    # ---------- zonas y ajuste ----------
-    def zones_dialog(self, cam: dict | None) -> None:
-        if not cam:
-            return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
-        ZonesEditor(self, cam)
-
+    # ---------- configurar (zonas, tiempos, pruebas) ----------
     def tune_dialog(self, cam: dict | None, clips: list | None = None) -> None:
         if not cam:
             return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
         if len(self.cam_tree.selection()) > 1:
-            return self.mb.showinfo(NOMBRE, "«Ajustar» es de a una cámara: elegí solo una.")
+            return self.mb.showinfo(NOMBRE, "«Configurar» es de a una cámara: elegí solo una.")
         if self.agent_of is None or self.agent_of() is None:
             return self.mb.showinfo(NOMBRE, "La app todavía está arrancando el analizador. Probá en unos segundos.")
         TuneWindow(self, cam, clips=clips)
 
-    def clip_dialog(self, cam: dict | None) -> None:
-        """«Probar clip»: uno o varios videos de esa cámara (por ejemplo, un hurto que pasó) se analizan en esta PC con
-        TODA la configuración guardada de la cámara (zonas, tiempos, tipo, cuadros por segundo, modelo del cliente),
-        como lo haría la máquina de análisis, y se dice si habría dado alerta y por qué. Quedan en los videos de prueba
-        de la cámara; si está bien, «Aprobar y mandar a las máquinas» la pasa a una máquina de análisis."""
-        if not cam:
-            return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
-        if len(self.cam_tree.selection()) > 1:
-            return self.mb.showinfo(NOMBRE, "«Probar clip» es de a una cámara: elegí solo una.")
+    def pick_clips(self, cam: dict, parent) -> list | None:
+        """«Probar clip» (en «Configurar…»): se eligen videos de esa cámara (por ejemplo, un hurto que pasó) y qué se ve
+        en ellos; quedan en los videos de prueba de la cámara. Devuelve esos videos (None si se canceló)."""
         from tkinter import filedialog
 
         from .biblioteca import VIDEO_TYPES, default_folder
-        paths = filedialog.askopenfilenames(parent=self.v.root, title=f"Clip de «{cam['name']}» (se analiza con la "
+        paths = filedialog.askopenfilenames(parent=parent, title=f"Clip de «{cam['name']}» (se analiza con la "
                                             "configuración de esta cámara)", initialdir=str(default_folder()),
                                             filetypes=[VIDEO_TYPES, ("Todos los archivos", "*.*")])
         if not paths:
-            return
+            return None
         kind = self._ask_clip_kind(cam, len(paths))
         if kind is None:
-            return
+            return None
         lib = self.library()
         lib.add(cam["id"], list(paths))
         wanted = {os.path.normcase(os.path.abspath(p)) for p in paths}
@@ -1264,7 +1365,7 @@ class Oficina:
                 if kind != "hurto":
                     v.marks = []
                 lib.update(cam["id"], v)
-        self.tune_dialog(cam, clips=clips)
+        return clips
 
     def _ask_clip_kind(self, cam: dict, n: int) -> str | None:
         """Qué hay en el clip: «hurto», «normal» o «» (no se sabe). None = cancelar."""
@@ -1291,7 +1392,7 @@ class Oficina:
 
     def training_dialog(self) -> None:
         """Entrenar el modelo de un cliente: cuántos ejemplos etiquetados tiene (alertas revisadas y los que se mandaron
-        desde «Ajustar…»), entrenar y activar. El modelo aprende qué alertas de ese cliente suelen ser hurto y cuáles
+        desde «Configurar…»), entrenar y activar. El modelo aprende qué alertas de ese cliente suelen ser hurto y cuáles
         no; las máquinas lo usan para no molestar a los empleados con las que descartaría."""
         c = self._sel_client()
         if not c:
@@ -1320,7 +1421,7 @@ class Oficina:
             neg = labels.get("normal", 0) + labels.get("falso_positivo", 0)
             need_t, need_c = summary["min_total"], summary["min_per_class"]
             lines = [f"Ejemplos etiquetados: {pos + neg} (hurto o sospechoso: {pos} · normal o falsa alarma: {neg}).",
-                     f"De «Ajustar…» (videos de prueba): {(row or {}).get('from_tuning', 0)}. Sin revisar: "
+                     f"De «Configurar…» (videos de prueba): {(row or {}).get('from_tuning', 0)}. Sin revisar: "
                      f"{labels.get('sin_etiqueta', 0)}.", ""]
             if pos + neg >= need_t and pos >= need_c and neg >= need_c:
                 lines.append("Alcanza para entrenar. Después de entrenar, mirá cuántos hurtos deja pasar antes de "
@@ -1328,7 +1429,7 @@ class Oficina:
             else:
                 lines.append(f"Todavía no alcanza: hacen falta al menos {need_t} en total y {need_c} de cada lado. Se "
                              "suman revisando alertas (teclas 1-4 en «Alertas») o mandando alertas de prueba "
-                             "etiquetadas desde «Ajustar…».")
+                             "etiquetadas desde «Configurar…».")
             info.configure(state="normal")
             info.delete("1.0", "end")
             info.insert("1.0", "\n".join(lines))
@@ -1395,18 +1496,37 @@ class Oficina:
 
     # ---------- métricas ----------
     def metrics_dialog(self) -> None:
+        """Métricas del cliente (hoy y últimos 7 días) y, desde ahí, exportarlas a Excel."""
         c = self._sel_client()
         if not c:
-            return
+            return self.mb.showinfo(NOMBRE, "Elegí un cliente.")
+        tk, ttk = self.tk, self.ttk
+        top, frm = self._dialog(f"Métricas · {c['name']}", width=620)
+        txt = tk.Text(frm, width=78, height=24, wrap="word", relief="flat", bg="#ffffff", padx=12, pady=8,
+                      highlightthickness=1, highlightbackground="#d8dee9", font=("Segoe UI", 10))
+        txt.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        txt.insert("1.0", "Cargando…")
+        txt.configure(state="disabled")
+        bb = ttk.Frame(frm)
+        bb.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(bb, text="Exportar a Excel…", command=self.export_dialog).pack(side="left")
+        ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="left", padx=(6, 0))
 
-        self._info_locked = (self._sel_camera() or {}).get("id")
+        def show(text: str) -> None:
+            txt.configure(state="normal")
+            txt.delete("1.0", "end")
+            txt.insert("1.0", text)
+            txt.configure(state="disabled")
 
         def done(res):
             today, week = res
             t, w = today["total"], week["total"]
             zones = sorted((today["total"].get("zones") or {}).items(), key=lambda kv: -kv[1]["visits"])
-            lines = [f"Métricas de {c['name']}", "", "HOY"]
-            lines += [f"  Personas vistas: {t['people']}" + (f" · ingresos: {t['entries']}" if t.get("entries") else ""),
+            lines = ["HOY"]
+            if t.get("door"):
+                lines.append(f"  Entraron {t.get('entries', 0)} · salieron {t.get('exits', 0)}"
+                             + (f" · {t['staff_entries']} de personal descontados" if t.get("staff_entries") else ""))
+            lines += [f"  Personas vistas: {t['people']}" + (f" · ingresos: {t['entries']}" if t.get("entries") and not t.get("door") else ""),
                       f"  Tiempo promedio en cámara: {fmt_dur(t['people_dwell_s'] / t['people']) if t['people'] else '—'}",
                       f"  Máximo al mismo tiempo: {t['people_max']}"]
             if "estacion" in (c.get("plans") or []):
@@ -1420,10 +1540,12 @@ class Oficina:
             lines += [f"    {d['date']}: {d['people']} personas" + (f", {d['vehicles']} vehículos" if d.get("vehicles") else "")
                       for d in week["by_day"]]
             if not t.get("frames") and not w.get("frames"):
-                lines += ["", "Todavía no hay datos: se generan con cámaras en modo «En vivo 24 h» y se envían cada 5 minutos."]
-            self._set_info("\n".join(lines))
+                lines += ["", "Todavía no hay datos: las métricas salen de las cámaras que se analizan (llegan cada 5 "
+                              "minutos)."]
+            show("\n".join(lines))
         self.bg.run(lambda: (self.api.get("/api/metrics", client_id=c["id"], days=1),
-                             self.api.get("/api/metrics", client_id=c["id"], days=7)), done, self.err)
+                             self.api.get("/api/metrics", client_id=c["id"], days=7)), done,
+                    lambda e: show(f"No se pudieron traer las métricas: {e}"))
 
     # ================================================================ alertas
     def _build_alerts(self) -> None:
@@ -1432,20 +1554,19 @@ class Oficina:
         top.pack(fill="x")
         self.al_state = tk.StringVar(value="Sin revisar")
         self.al_client = tk.StringVar(value="Todos")
-        ttk.Label(top, text="Mostrar").pack(side="left")
+        ttk.Label(top, text="Mostrar", style="Subtitulo.TLabel").pack(side="left")
         ttk.Combobox(top, textvariable=self.al_state, values=["Sin revisar", "Todas", "Hurto", "Sospechoso", "Normal",
                                                                "Falso positivo"], state="readonly", width=14).pack(side="left", padx=6)
         ttk.Label(top, text="Cliente").pack(side="left")
         self.al_client_cb = ttk.Combobox(top, textvariable=self.al_client, values=["Todos"], state="readonly", width=24)
         self.al_client_cb.pack(side="left", padx=6)
-        ttk.Button(top, text="Actualizar", command=self.load_alerts).pack(side="left")
-        self.al_count = ttk.Label(top, text="", foreground="#666")
+        self.al_count = ttk.Label(top, text="", style="Suave.TLabel")
         self.al_count.pack(side="left", padx=10)
         for var in (self.al_state, self.al_client):
             var.trace_add("write", lambda *_: self.load_alerts())
 
         body = ttk.Frame(f)
-        body.pack(fill="both", expand=True, pady=(6, 0))
+        body.pack(fill="both", expand=True, pady=(8, 0))
         self.al_tree = ttk.Treeview(body, columns=("fecha", "cliente", "camara", "tipo", "etiqueta"), show="headings",
                                     selectmode="browse")
         for col, txt, w in (("fecha", "Fecha", 95), ("cliente", "Cliente", 130), ("camara", "Cámara", 120),
@@ -1454,25 +1575,24 @@ class Oficina:
             self.al_tree.column(col, width=w)
         self.al_tree.pack(side="left", fill="y")
         self.al_tree.bind("<<TreeviewSelect>>", lambda e: self.show_alert())
-        right = ttk.Frame(body, padding=(10, 0, 0, 0))
+        right = ttk.Frame(body, padding=(14, 0, 0, 0))
         right.pack(side="left", fill="both", expand=True)
-        self.al_title = ttk.Label(right, text="Elegí una alerta", font=("Segoe UI", 11, "bold"))
+        self.al_title = ttk.Label(right, text="Elegí una alerta", style="Subtitulo.TLabel")
         self.al_title.pack(anchor="w")
-        self.al_desc = ttk.Label(right, text="", foreground="#444", wraplength=640, justify="left")
+        self.al_desc = ttk.Label(right, text="", style="Suave.TLabel", wraplength=640, justify="left")
         self.al_desc.pack(anchor="w")
         self.al_img = tk.Label(right, bg="#111", height=20)
         self.al_img.pack(fill="both", expand=True, pady=6)
         b = ttk.Frame(right)
         b.pack(fill="x")
         ttk.Button(b, text="▶ Reproducir clip", command=self.play_clip).pack(side="left")
-        ttk.Button(b, text="Abrir en el reproductor", command=self.open_clip).pack(side="left", padx=4)
-        ttk.Button(b, text="Avisar al cliente…", command=self.report_dialog).pack(side="right")
+        ttk.Button(b, text="Abrir en el reproductor", command=self.open_clip).pack(side="left", padx=6)
+        ttk.Button(b, text="Avisar al cliente…", style="Primario.TButton", command=self.report_dialog).pack(side="right")
         lb = ttk.Frame(right)
         lb.pack(fill="x", pady=(6, 0))
-        ttk.Label(lb, text="Etiqueta:").pack(side="left")
+        ttk.Label(lb, text="Etiqueta (teclas 1-4)", style="Subtitulo.TLabel").pack(side="left", padx=(0, 4))
         for key, lab in LABEL_KEYS.items():
             ttk.Button(lb, text=f"{key} · {LABEL_NAMES[lab]}", command=lambda l=lab: self.set_label(l)).pack(side="left", padx=3)
-        ttk.Label(lb, text="(teclas 1-4; pasa sola a la siguiente)", foreground="#666").pack(side="left", padx=6)
         self.v.root.bind("<Key>", self._on_key, add="+")
         self.alerts: list[dict] = []
         self._play = {"cap": None, "job": None, "photo": None, "path": None}
@@ -1639,10 +1759,10 @@ class Oficina:
     # ================================================================ administración
     def _build_admin(self) -> None:
         ttk, f = self.ttk, self.tab_admin
-        ttk.Label(f, text="Usuarios", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave y abren las cámaras "
-                          "desde «En vivo» (no hay que asignar nada). Los clientes entran a la web y ven solo su local.",
-                  foreground="#666", wraplength=900, justify="left").pack(anchor="w")
+        ttk.Label(f, text="Usuarios", style="Subtitulo.TLabel").pack(anchor="w")
+        ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave. Los clientes entran a "
+                          "la web y ven solo su local.", style="Suave.TLabel", wraplength=900, justify="left").pack(
+            anchor="w", pady=(0, 4))
         self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "activo"), show="tree headings", height=5,
                                     selectmode="browse")
         self.us_tree.heading("#0", text="Usuario")
@@ -1654,8 +1774,8 @@ class Oficina:
         self.us_tree.bind("<Double-1>", lambda e: self.user_dialog(self._sel_user()))
         b = ttk.Frame(f)
         b.pack(fill="x", pady=6)
-        ttk.Button(b, text="Nuevo usuario", command=lambda: self.user_dialog()).pack(side="left")
-        ttk.Button(b, text="Editar", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=4)
+        ttk.Button(b, text="＋ Nuevo usuario", command=lambda: self.user_dialog()).pack(side="left")
+        ttk.Button(b, text="Editar", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=6)
         ttk.Button(b, text="Eliminar", command=self.delete_user).pack(side="left")
         self.users: list[dict] = []
         self._build_machines(f)
@@ -1663,13 +1783,14 @@ class Oficina:
     # ---------- máquinas de análisis ----------
     def _build_machines(self, f) -> None:
         tk, ttk = self.tk, self.ttk
-        ttk.Separator(f).pack(fill="x", pady=8)
-        ttk.Label(f, text="Dónde se analizan las cámaras", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Separator(f).pack(fill="x", pady=10)
+        ttk.Label(f, text="Máquinas de análisis", style="Subtitulo.TLabel").pack(anchor="w")
         top = ttk.Frame(f)
         top.pack(fill="x", pady=(2, 4))
         self.an_mode = tk.StringVar()
         self.an_cap = tk.StringVar(value="30")
         self.an_spare = tk.StringVar(value="0")
+        ttk.Label(top, text="Se analizan").pack(side="left", padx=(0, 6))
         ttk.Combobox(top, textvariable=self.an_mode, values=list(ANALYSIS_MODES.values()), state="readonly",
                      width=34).pack(side="left")
         ttk.Label(top, text="  Cámaras por máquina").pack(side="left")
@@ -1678,7 +1799,7 @@ class Oficina:
         ttk.Spinbox(top, from_=0, to=5, textvariable=self.an_spare, width=3).pack(side="left", padx=4)
         ttk.Button(top, text="Guardar", command=self.save_analysis).pack(side="left", padx=6)
         self.an_info = tk.StringVar(value="Cargando…")
-        ttk.Label(f, textvariable=self.an_info, foreground="#444", wraplength=900, justify="left").pack(anchor="w")
+        ttk.Label(f, textvariable=self.an_info, style="Suave.TLabel", wraplength=900, justify="left").pack(anchor="w")
         self.mq_tree = ttk.Treeview(f, columns=("estado", "camaras", "carga", "instancia"), show="tree headings",
                                     height=8, selectmode="browse")
         self.mq_tree.heading("#0", text="Máquina")
@@ -1691,8 +1812,7 @@ class Oficina:
         b.pack(side="bottom", fill="x", pady=6)
         self.mq_tree.pack(fill="both", expand=True)
         ttk.Button(b, text="Clave para máquinas nuevas", command=self.pool_key_dialog).pack(side="left")
-        ttk.Button(b, text="Quitar máquina o PC", command=self.remove_machine).pack(side="left", padx=4)
-        ttk.Button(b, text="Actualizar", command=self.load_machines).pack(side="left")
+        ttk.Button(b, text="Quitar máquina o PC", command=self.remove_machine).pack(side="left", padx=6)
         self.analysis: dict = {}
 
     def load_machines(self) -> None:
@@ -1925,7 +2045,7 @@ class ZonesEditor:
     - Zona nueva: «＋ Zona nueva» (o clic afuera de las zonas) y clics en el piso; doble clic para cerrarla.
     - Corregir: clic en una zona para elegirla; arrastrar sus puntos o la zona entera; clic derecho en un punto lo
       borra. Nombre, tipo y sentido se cambian con «Aplicar a la elegida».
-    - Desde «Ajustar…» llega el mapa de pisadas (`footmap`, core/pisadas.py): se ve encima de la imagen (celeste =
+    - Desde «Configurar…» llega el mapa de pisadas (`footmap`, core/pisadas.py): se ve encima de la imagen (celeste =
       caminan, rojo = se paran) y «Sugerir zonas» propone zonas a partir de él (punteadas hasta guardar)."""
 
     W, H = 880, 495
@@ -1935,7 +2055,7 @@ class ZonesEditor:
                  on_saved: Callable[[dict], None] | None = None, confirm: str | None = None, footmap=None):
         """`image`: dibujar sobre esa imagen (la del ajuste) en vez de bajar la última de la cámara. `on_saved`
         recibe lo guardado (zonas y reglas). `confirm`: pregunta antes de guardar (cámara que ya se analiza).
-        `footmap`: el mapa de pisadas de lo analizado en «Ajustar…»."""
+        `footmap`: el mapa de pisadas de lo analizado en «Configurar…»."""
         self.app, self.cam = app, cam
         self.on_saved = on_saved
         self.confirm = confirm
@@ -1948,7 +2068,7 @@ class ZonesEditor:
         self.sel: int | None = None
         self.drag: tuple | None = None
         self.base: np.ndarray | None = None  # la imagen sin el mapa
-        self.top, frm = app._dialog(f"Zonas y reglas · {cam['name']}", 300)
+        self.top, frm = app._dialog(f"Zonas · {cam['name']}", 300)
         self.top.resizable(True, True)
         left = ttk.Frame(frm)
         left.grid(row=0, column=0, sticky="n")
@@ -1964,7 +2084,7 @@ class ZonesEditor:
         self.zname = tk.StringVar()
         self.ztype = tk.StringVar(value=ZONE_NAMES["shelf"])
         self.zdir = tk.StringVar(value=DOOR_NAMES["abajo"])
-        ttk.Label(right, text="Zona", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(right, text="Zona", style="Subtitulo.TLabel").pack(anchor="w")
         row = ttk.Frame(right)
         row.pack(anchor="w", fill="x")
         ttk.Label(row, text="Nombre", width=8).pack(side="left")
@@ -1990,7 +2110,7 @@ class ZonesEditor:
         ttk.Button(bz, text="Deshacer punto", command=self.undo).pack(side="left")
         ttk.Button(right, text="Aplicar nombre, tipo y sentido a la elegida", command=self.apply_selected).pack(
             anchor="w", pady=(4, 0))
-        ttk.Label(right, text="Zonas", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 0))
+        ttk.Label(right, text="Zonas", style="Subtitulo.TLabel").pack(anchor="w", pady=(8, 0))
         self.zlist = tk.Listbox(right, height=6, width=42, exportselection=False)
         self.zlist.pack(anchor="w")
         self.zlist.bind("<<ListboxSelect>>", lambda _e: self.select(self.zlist.curselection()[0]
@@ -2004,22 +2124,12 @@ class ZonesEditor:
             ttk.Button(fr, text="Sugerir zonas", command=self.suggest_zones).pack(side="left", padx=6)
             ttk.Label(right, text=f"{footmap.persons} personas en {fmt_dur(footmap.seconds)} de video · celeste: "
                                   "caminan · rojo: se paran", foreground="#666").pack(anchor="w")
-        ttk.Label(right, text="Reglas (segundos)", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 0))
-        self.rv = {}
-        for key, lab, default in (("loiter_seconds", "Merodeo: tiempo en góndola", 45),
-                                  ("shelf_dwell_seconds", "En góndola para «tomó algo»", 3),
-                                  ("checkout_min_seconds", "En caja para «pagó»", 1),
-                                  ("restricted_min_seconds", "En zona restringida", 1)):
-            row = ttk.Frame(right)
-            row.pack(anchor="w", fill="x")
-            ttk.Label(row, text=lab, width=28).pack(side="left")
-            var = tk.StringVar(value=str(self.rules.get(key, default)))
-            ttk.Entry(row, textvariable=var, width=6).pack(side="left")
-            self.rv[key] = var
+        ttk.Label(right, text="Los tiempos de las reglas se prueban y se guardan en «Configurar…».", style="Suave.TLabel",
+                  wraplength=320, justify="left").pack(anchor="w", pady=(10, 0))
         bb = ttk.Frame(right)
         bb.pack(anchor="e", pady=(10, 0), fill="x")
         ttk.Button(bb, text="Cancelar", command=self.top.destroy).pack(side="right")
-        ttk.Button(bb, text="Guardar", command=self.save).pack(side="right", padx=6)
+        ttk.Button(bb, text="Guardar zonas", style="Primario.TButton", command=self.save).pack(side="right", padx=6)
         self.photo = None
         self.canvas.bind("<ButtonPress-1>", self.press)
         self.canvas.bind("<B1-Motion>", self.motion)
@@ -2180,7 +2290,7 @@ class ZonesEditor:
     def suggest_zones(self) -> None:
         from core.pisadas import suggest
         if self.footmap is None or self.footmap.persons == 0:
-            return self.app.mb.showinfo(NOMBRE, "No hay pisadas: analizá primero en «Ajustar…» un rato de video con "
+            return self.app.mb.showinfo(NOMBRE, "No hay pisadas: analizá primero un rato de video con "
                                                 "gente (mejor 15 a 30 minutos).", parent=self.top)
         new = suggest(self.footmap, existing=self.zones)
         if not new:
@@ -2246,10 +2356,7 @@ class ZonesEditor:
                 c.create_oval(x * self.W - 4, y * self.H - 4, x * self.W + 4, y * self.H + 4, fill=col, outline="")
 
     def save(self) -> None:
-        try:
-            rules = {**self.rules, **{k: float(v.get()) for k, v in self.rv.items()}}
-        except ValueError:
-            return self.app.mb.showwarning(NOMBRE, "Las reglas tienen que ser números.", parent=self.top)
+        rules = dict(self.rules)  # los tiempos los manda «Configurar» (los que se están probando ahí)
         if self.drawing and len(self.draft) >= 3 and not self.app.mb.askyesno(
                 NOMBRE, "Hay una zona sin cerrar: se descarta. ¿Guardar igual?", parent=self.top):
             return
@@ -2270,10 +2377,11 @@ class ZonesEditor:
 
 
 class TuneWindow:
-    """«Ajustar cámara»: la analiza en esta PC (en vivo o con videos grabados, por ejemplo hurtos de esa cámara) con
-    alertas de prueba que no salen de la app. Los tiempos se prueban y todo lo analizado se recalcula al instante;
-    «Aprobar y mandar a las máquinas» la pasa a una máquina de análisis. «Probar clip» (en Clientes) la abre con uno o
-    varios clips ya elegidos y al terminar dice si dieron alerta y por qué. El motor está en agent/ajuste.py (`Tuner`)."""
+    """«Configurar cámara» (antes «Ajustar»): todo lo de poner a punto una cámara en un solo lugar. La analiza en esta
+    PC (en vivo o con clips, por ejemplo hurtos de esa cámara) con alertas de prueba que no salen de la app; «Zonas…»
+    las dibuja sobre esa imagen; los tiempos se prueban y todo lo analizado se recalcula al instante; «Probar clip…»
+    pide qué se ve y al terminar dice si dio alerta y por qué; «Aprobar y analizar» la pasa a una máquina de análisis.
+    El motor está en agent/ajuste.py (`Tuner`)."""
 
     W, H = 640, 360  # el tamaño en que se guardan los cuadros: entra en una pantalla de 1366x768
     TIMES = (("loiter_seconds", "Merodeo (góndola)", 45),
@@ -2310,7 +2418,7 @@ class TuneWindow:
         self.labels: dict[tuple, str | None] = {}  # etiquetas puestas a mano a las alertas de prueba (para entrenar)
         self._results: dict[int, dict] = {}  # resultado por video (segmento) de la última prueba
         self._results_key: tuple | None = None
-        self.top, frm = app._dialog(f"Ajustar cámara · {cam['name']}")
+        self.top, frm = app._dialog(f"Configurar cámara · {cam['name']}")
         self.top.resizable(True, True)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         # en Windows hubo clics que no hacían nada en esta ventana: queda en el registro qué clic llega y a dónde
@@ -2336,48 +2444,42 @@ class TuneWindow:
         # mapa de pisadas encima (celeste: caminan, rojo: se paran): para ver dónde van de verdad las zonas
         self.show_feet = tk.BooleanVar(value=False)
         ttk.Checkbutton(nav, text="Pisadas", variable=self.show_feet, command=self._redraw).pack(side="left", padx=(4, 0))
-        # otro detector para comparar con los mismos videos, zonas y tiempos (las máquinas siguen con YOLO11n)
-        self.det_var = tk.StringVar(value="YOLO11n")
-        det_box = ttk.Combobox(nav, textvariable=self.det_var, values=("YOLO11n", "D-FINE-N (prueba)"), width=16,
-                               state="readonly")
-        det_box.pack(side="left", padx=(6, 0))
-        det_box.bind("<<ComboboxSelected>>", self.change_detector)
-        self.pos = ttk.Label(left, text="", foreground="#666")
+        self.pos = ttk.Label(left, text="", style="Suave.TLabel")
         self.pos.pack(anchor="w")
-        self.state_lbl = ttk.Label(left, text="Preparando el detector…", font=("Segoe UI", 10, "bold"))
+        self.state_lbl = ttk.Label(left, text="Preparando el detector…", style="Subtitulo.TLabel")
         self.state_lbl.pack(anchor="w", pady=(2, 0))
-        self.live_warn = ttk.Label(left, text="", foreground="#b45309", wraplength=self.W, justify="left")
+        self.live_warn = ttk.Label(left, text="", style="Aviso.TLabel", wraplength=self.W, justify="left")
         self.live_warn.pack(anchor="w")
-        ttk.Label(left, foreground="#666", wraplength=self.W, justify="left", text=(
-            "Igual que en las máquinas. Debajo de cada persona: segundos en cada zona contra el tiempo de la regla (rojo: "
-            "llegó) y «TOMO ALGO». En violeta, otros objetos que ve YOLO: no cuentan para las reglas.")).pack(
-            anchor="w", pady=(2, 0))
-        self.rules_lbl = ttk.Label(left, text="", foreground="#666", wraplength=self.W, justify="left")
+        ttk.Label(left, style="Suave.TLabel", wraplength=self.W, justify="left", text=(
+            "Se analiza igual que en las máquinas. Bajo cada persona: segundos en cada zona contra el tiempo de la "
+            "regla (rojo = llegó) y «TOMÓ ALGO». En violeta, otros objetos que ve YOLO (no cuentan para las reglas)."
+            )).pack(anchor="w", pady=(2, 0))
+        self.rules_lbl = ttk.Label(left, text="", style="Suave.TLabel", wraplength=self.W, justify="left")
         self.rules_lbl.pack(anchor="w", pady=(4, 0))
         nf = ttk.Frame(left)
-        nf.pack(fill="x", pady=(8, 0))
-        ttk.Label(nf, text="Notas del ajuste").pack(side="left")
+        nf.pack(fill="x", pady=(10, 0))
+        ttk.Label(nf, text="Notas").pack(side="left")
         self.notes = tk.StringVar(value=cam.get("tuning_notes") or "")
-        ttk.Entry(nf, textvariable=self.notes).pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Entry(nf, textvariable=self.notes).pack(side="left", fill="x", expand=True, padx=(6, 0))
         bb = ttk.Frame(left)
-        bb.pack(fill="x", pady=(8, 0))
+        bb.pack(fill="x", pady=(10, 0))
         ttk.Button(bb, text="Cerrar", command=self.close).pack(side="right")
-        ttk.Button(bb, text="✔ Aprobar y mandar a las máquinas", command=self.approve).pack(side="right", padx=4)
-        self.save_btn = ttk.Button(bb, text="Guardar tiempos", command=self.save_times)
+        ttk.Button(bb, text="✔ Aprobar y analizar", style="Primario.TButton", command=self.approve).pack(
+            side="right", padx=6)
+        self.save_btn = ttk.Button(bb, text="Guardar", command=self.save_times)
         self.save_btn.pack(side="right")
 
-        right = ttk.Frame(frm, padding=(12, 0, 0, 0))
+        right = ttk.Frame(frm, padding=(14, 0, 0, 0))
         right.grid(row=0, column=1, sticky="nsew")
         src = ttk.Frame(right)  # qué se analiza (sin recuadro: la ventana tiene que entrar en 768 de alto)
         src.pack(fill="x")
-        ttk.Label(src, text="Analizar:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
-        ttk.Button(src, text="En vivo", command=self.start_live).pack(side="left")
-        ttk.Button(src, text="▶ Videos de prueba", command=self.run_library).pack(side="left", padx=4)
-        ttk.Button(src, text="Otro video…", command=self.pick_videos).pack(side="left")
+        ttk.Button(src, text="Probar clip…", style="Primario.TButton", command=self.probar_clip).pack(side="left")
+        ttk.Button(src, text="▶ Videos guardados", command=self.run_library).pack(side="left", padx=6)
+        ttk.Button(src, text="● En vivo", command=self.start_live).pack(side="left")
         self.bar = ttk.Progressbar(src, length=90, mode="determinate", maximum=100)
-        self.bar.pack(side="left", padx=4)
-        lf = ttk.LabelFrame(right, text="Videos de prueba de esta cámara (quedan guardados en esta PC)", padding=4)
-        lf.pack(fill="x", pady=(6, 0))
+        self.bar.pack(side="left", padx=6)
+        lf = ttk.LabelFrame(right, text="Videos de prueba de esta cámara (guardados en esta PC)", padding=6)
+        lf.pack(fill="x", pady=(8, 0))
         self.vtree = ttk.Treeview(lf, columns=("kind", "res"), show="tree headings", height=3, selectmode="browse")
         for col, text, width in (("#0", "Video", 165), ("kind", "Qué es", 90), ("res", "Última prueba", 225)):
             self.vtree.heading(col, text=text, anchor="w")
@@ -2386,35 +2488,34 @@ class TuneWindow:
         self.vtree.bind("<<TreeviewSelect>>", self.goto_video)
         vb = ttk.Frame(lf)
         vb.pack(fill="x", pady=(4, 0))
-        ttk.Button(vb, text="Agregar…", command=self.add_videos).pack(side="left")
-        mark = ttk.Menubutton(vb, text="Marcar ▾")
+        mark = ttk.Menubutton(vb, text="Video elegido")
         menu = tk.Menu(mark, tearoff=False)
         menu.add_command(label="Hurto en el momento que se ve", command=self.mark_theft)
         menu.add_command(label="Es un video de hurto (sin marcar el momento)", command=lambda: self.set_kind("hurto"))
         menu.add_command(label="Es un video normal (no tendría que dar alertas)", command=lambda: self.set_kind("normal"))
         menu.add_command(label="Sin clasificar", command=lambda: self.set_kind(""))
-        menu.add_separator()
         menu.add_command(label="Borrar los momentos marcados", command=self.clear_marks)
+        menu.add_separator()
+        menu.add_command(label="Quitar de la lista", command=self.remove_video)
+        menu.add_command(label="Abrir la carpeta de videos", command=self.open_folder)
         mark["menu"] = menu
-        mark.pack(side="left", padx=4)
-        ttk.Button(vb, text="Quitar", command=self.remove_video).pack(side="left")
-        ttk.Button(vb, text="Abrir carpeta", command=self.open_folder).pack(side="left", padx=4)
-        self.vsum = ttk.Label(lf, text="", foreground="#666", wraplength=490, justify="left")
-        self.vsum.pack(anchor="w", pady=(2, 0))
-        tf = ttk.LabelFrame(right, text="Tiempos de las reglas (segundos)", padding=4)
-        tf.pack(fill="x", pady=(6, 0))
+        mark.pack(side="left")
+        self.vsum = ttk.Label(vb, text="", style="Suave.TLabel", wraplength=330, justify="left")
+        self.vsum.pack(side="left", padx=(8, 0))
+        tf = ttk.LabelFrame(right, text="Zonas y tiempos de las reglas (segundos)", padding=6)
+        tf.pack(fill="x", pady=(8, 0))
         self.tv: dict[str, Any] = {}
         for i, (key, lab, default) in enumerate(self.TIMES):  # en dos columnas: entra en pantallas de 768 de alto
-            ttk.Label(tf, text=lab).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0 if i % 2 == 0 else 12, 4))
+            ttk.Label(tf, text=lab).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0 if i % 2 == 0 else 14, 4))
             var = tk.StringVar(value=str(default))
             ttk.Entry(tf, textvariable=var, width=5).grid(row=i // 2, column=(i % 2) * 2 + 1, sticky="w", pady=1)
             self.tv[key] = var
         bt = ttk.Frame(tf)
-        bt.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        ttk.Button(bt, text="Probar estos tiempos", command=self.apply_times).pack(side="left")
-        ttk.Button(bt, text="Zonas…", command=self.edit_zones).pack(side="left", padx=4)
-        af = ttk.LabelFrame(right, text="Alertas de prueba (no le llegan a nadie) · clic = ir al momento", padding=4)
-        af.pack(fill="both", expand=True, pady=(6, 0))
+        bt.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Button(bt, text="Zonas…", command=self.edit_zones).pack(side="left")
+        ttk.Button(bt, text="Probar estos tiempos", command=self.apply_times).pack(side="left", padx=6)
+        af = ttk.LabelFrame(right, text="Alertas de prueba (no le llegan a nadie) · clic = ir al momento", padding=6)
+        af.pack(fill="both", expand=True, pady=(8, 0))
         self.alist = tk.Listbox(af, height=4, width=50)
         self.alist.pack(fill="both", expand=True)
         self.alist.bind("<<ListboxSelect>>", self.goto_alert)
@@ -2422,12 +2523,14 @@ class TuneWindow:
             self.alist.bind(key, lambda _e, lab=label: self.set_label(lab))
         tb = ttk.Frame(af)
         tb.pack(fill="x", pady=(4, 0))
-        ttk.Label(tb, text="Etiquetar: 1 hurto · 2 sospechoso · 3 normal · 4 falsa alarma", foreground="#666").pack(side="left")
+        ttk.Label(tb, text="Teclas: 1 hurto · 2 sospechoso · 3 normal · 4 falsa alarma", style="Suave.TLabel").pack(
+            side="left")
         self.train_btn = ttk.Button(tb, text="Mandar al entrenamiento", command=self.send_training)
         self.train_btn.pack(side="right")
-        sf = ttk.LabelFrame(right, text="Cómo anda la cámara", padding=4)
-        sf.pack(fill="x", pady=(6, 0))
-        self.stats_txt = tk.Text(sf, height=5, width=50, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 9))
+        sf = ttk.LabelFrame(right, text="Cómo anda la cámara", padding=6)
+        sf.pack(fill="x", pady=(8, 0))
+        self.stats_txt = tk.Text(sf, height=5, width=50, wrap="word", relief="flat", bg="#ffffff", font=("Segoe UI", 9),
+                                 padx=6, pady=4)
         ssb = ttk.Scrollbar(sf, orient="vertical", command=self.stats_txt.yview)
         self.stats_txt.configure(yscrollcommand=ssb.set)
         ssb.pack(side="right", fill="y")
@@ -2455,12 +2558,13 @@ class TuneWindow:
                 self._start(library=self.clips)
             elif self.tuner is None:
                 if any(v.exists() for v in self.lib.videos(self.cam["id"])):  # hay videos guardados: elegir qué ver
-                    self.state_lbl.configure(text="Elegí arriba a la derecha: «En vivo» o «▶ Videos de prueba».")
+                    self.state_lbl.configure(text="Elegí arriba a la derecha: «Probar clip…», «▶ Videos guardados» "
+                                                  "o «● En vivo».")
                 else:
                     self.start_live()
 
         def fail(exc):
-            self.state_lbl.configure(text=f"No se pudo preparar el ajuste: {exc}")
+            self.state_lbl.configure(text=f"No se pudo preparar la cámara: {exc}")
         self.app.bg.run(lambda: self.agent.tune_setup(self.cam["id"]), done, fail)
 
     def _set_detector_text(self) -> None:
@@ -2468,43 +2572,8 @@ class TuneWindow:
         name = getattr(self.detector, "name", "YOLO11n")
         self.detector_text = (f"Detector de personas: {name} en {dev}." if dev else
                               "Detector: movimiento (solo para pruebas; cambialo a YOLO en «Editar»).")
-        if name != "YOLO11n" and dev:
-            self.detector_text += " Es una prueba: las máquinas siguen con YOLO11n."
         if self.info and self.info["camera"].get("filter_model"):
             self.detector_text += " Con el modelo entrenado del cliente: cada alerta muestra su puntaje."
-
-    def change_detector(self, _e=None) -> None:
-        """Probar otro detector con las mismas zonas, tiempos y videos: se vuelve a analizar lo que se estaba viendo.
-        No cambia nada en las máquinas ni en la cámara."""
-        if self.info is None or self.agent is None:
-            return
-        choice = self.det_var.get()
-        name = "dfine" if choice.startswith("D-FINE") else "yolo"
-        if getattr(self.detector, "name", "YOLO11n") == choice.split(" ")[0]:
-            return
-        self.state_lbl.configure(text=f"Preparando {choice}…")
-
-        def done(det):
-            if self.closed:
-                return
-            self.detector = det
-            self._set_detector_text()
-            self._fill_times()
-            t = self.tuner
-            if t is None:
-                return
-            if self.run_videos is not None:
-                self._start(library=self.run_videos)
-            elif t.live:
-                self._start()
-            else:
-                self._start(videos=list(t.videos))
-
-        def fail(exc):
-            self.state_lbl.configure(text=f"No se pudo preparar {choice}: {exc}")
-            self.det_var.set(getattr(self.detector, "name", "YOLO11n"))
-        cam = self.info["camera"]
-        self.app.bg.run(lambda: self.agent._detector(name, cam), done, fail)
 
     def _fill_times(self) -> None:
         rules = self.analysis.get("rules") or {}
@@ -2564,15 +2633,6 @@ class TuneWindow:
     def start_live(self) -> None:
         self._start()
 
-    def pick_videos(self) -> None:
-        from tkinter import filedialog
-        from .biblioteca import VIDEO_TYPES, default_folder
-        paths = filedialog.askopenfilenames(parent=self.top, title="Videos sueltos (no se guardan en la lista)",
-                                            initialdir=str(default_folder()),
-                                            filetypes=[VIDEO_TYPES, ("Todos los archivos", "*.*")])
-        if paths:
-            self._start(list(paths))
-
     # ---------- videos de prueba (biblioteca) ----------
     def _fill_library(self) -> None:
         from .biblioteca import KINDS, fmt_ts
@@ -2590,8 +2650,8 @@ class TuneWindow:
         seen = sum(1 for v in hurtos if v.last.startswith("✔"))
         false = sum(1 for v in normales if v.last.startswith("✘"))
         if not videos:
-            text = ("Agregá videos de esta cámara (hurtos y ratos normales). Quedan guardados: después de cambiar zonas "
-                    "o tiempos, «▶ Videos de prueba» los vuelve a analizar todos.")
+            text = ("Con «Probar clip…» se suman videos de esta cámara (hurtos y ratos normales). Después de cambiar "
+                    "zonas o tiempos, «▶ Videos guardados» los vuelve a analizar.")
         else:
             text = f"{len(videos)} video(s)"
             if hurtos:
@@ -2599,7 +2659,7 @@ class TuneWindow:
             if normales:
                 text += f" · normales con falsas alarmas: {false} de {len(normales)}"
             if not hurtos and not normales:
-                text += " · decí con «Marcar» si cada uno es hurto o normal"
+                text += " · decí si cada uno es hurto o normal («Video elegido»)"
         self.vsum.configure(text=text)
 
     def _selected_video(self):
@@ -2609,25 +2669,23 @@ class TuneWindow:
             return None
         return next((v for v in self.lib.videos(self.cam["id"]) if v.path == sel[0]), None)
 
-    def add_videos(self) -> None:
-        from tkinter import filedialog
-
-        from .biblioteca import VIDEO_TYPES, default_folder
-        paths = filedialog.askopenfilenames(parent=self.top, title=f"Videos de prueba de {self.cam['name']}",
-                                            initialdir=str(default_folder()),
-                                            filetypes=[VIDEO_TYPES, ("Todos los archivos", "*.*")])
-        if not paths:
+    def probar_clip(self) -> None:
+        """Uno o varios clips de esta cámara: se dice qué se ve, quedan en los videos de prueba, se analizan con la
+        configuración de la cámara y al terminar se dice si dieron alerta y por qué (`_clip_verdict`)."""
+        clips = self.app.pick_clips(self.cam, self.top)
+        if not clips:
             return
-        new = self.lib.add(self.cam["id"], list(paths))
+        self.clips, self._verdict_for = clips, None
         self._fill_library()
-        if new:
-            self.vtree.selection_set(new[0].path)
-            self._start(library=new)  # se analizan enseguida
+        if self.vtree.exists(clips[0].path):
+            self.vtree.selection_set(clips[0].path)
+        if self.info is not None:  # si todavía se está preparando, arranca solo al terminar (`load`)
+            self._start(library=clips)
 
     def run_library(self) -> None:
         videos = [v for v in self.lib.videos(self.cam["id"]) if v.exists()]
         if not videos:
-            return self.app.mb.showinfo(NOMBRE, "Todavía no hay videos de prueba de esta cámara: «Agregar…».",
+            return self.app.mb.showinfo(NOMBRE, "Todavía no hay videos de prueba de esta cámara: «Probar clip…».",
                                         parent=self.top)
         self._start(library=videos)
 
@@ -2654,8 +2712,8 @@ class TuneWindow:
         idx = (end - 1 if self.index is None else self.index) if end > first else None
         smp = t.sample_at(idx) if idx is not None else None
         if smp is None or not self.run_videos or smp.seg >= len(self.run_videos):
-            return self.app.mb.showinfo(NOMBRE, "Primero analizá los videos de prueba («▶ Videos de prueba»), buscá con la "
-                                                "barra el momento del hurto y volvé a «Marcar».", parent=self.top)
+            return self.app.mb.showinfo(NOMBRE, "Primero analizá los videos («▶ Videos guardados»), buscá con la barra "
+                                                "el momento del hurto y volvé a «Video elegido».", parent=self.top)
         video = next((v for v in self.lib.videos(self.cam["id"]) if v.path == self.run_videos[smp.seg].path), None)
         if video is None:
             return
@@ -2731,7 +2789,7 @@ class TuneWindow:
                     "o tiempos acá («Zonas…», «Probar estos tiempos»): todo lo analizado se recalcula enseguida. Ojo: un "
                     "tiempo de merodeo corto da muchas falsas alarmas con gente que solo elige.")
         if all_ok:
-            msg += "\n\nSi está bien: «✔ Aprobar y mandar a las máquinas» la pasa a una máquina de análisis."
+            msg += "\n\nSi está bien: «✔ Aprobar y analizar» la pasa a una máquina de análisis."
         self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
 
     def _library_results(self, t) -> None:
@@ -2999,7 +3057,7 @@ class TuneWindow:
         try:
             if ev.widget.winfo_class() not in ("TButton", "TMenubutton", "TCheckbutton"):
                 return
-            log.info("Ajustar: clic en «%s» (%d, %d)", ev.widget.cget("text"), ev.x_root, ev.y_root)
+            log.info("Configurar: clic en «%s» (%d, %d)", ev.widget.cget("text"), ev.x_root, ev.y_root)
         except Exception:  # noqa: BLE001 - es solo diagnóstico
             pass
 
@@ -3119,8 +3177,7 @@ class TuneWindow:
                       if st["detections"] else "")
             lines.append(f"{people}Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
             if st.get("objects"):
-                name = "D-FINE" if getattr(self.detector, "name", "").startswith("D-FINE") else "YOLO"
-                lines.append(f"{name} también ve (% de los cuadros): " + ", ".join(f"{k} {v:.0f} %"
+                lines.append("YOLO también ve (% de los cuadros): " + ", ".join(f"{k} {v:.0f} %"
                                                                                   for k, v in st["objects"][:6]))
             door = st.get("door")
             if door:
@@ -3414,7 +3471,7 @@ class NamesWindow:
 class RecordingWindow:
     """«Bajar grabación…»: tramos de la grabación de las cámaras elegidas (del disco del grabador, por Hik-Connect o por
     IP y puertos) a archivos MP4 en esta PC, de a uno, sin ffmpeg (agent/grabacion.py). Quedan en Descargas\\VIGIA y,
-    si se elige, en los videos de prueba de cada cámara (para «Probar clip» o «Ajustar…»)."""
+    si se elige, en los videos de prueba de cada cámara (para «Configurar…» → «Probar clip»)."""
 
     def __init__(self, app: Oficina, cams: list[dict]):
         from .biblioteca import default_folder
@@ -3452,7 +3509,7 @@ class RecordingWindow:
         ttk.Entry(ff, textvariable=self.folder, width=46).pack(side="left", fill="x", expand=True)
         ttk.Button(ff, text="Cambiar…", command=self.pick_folder).pack(side="left", padx=(4, 0))
         app._row(frm, 6, "Carpeta", ff)
-        ttk.Checkbutton(frm, text="Sumarlos a los videos de prueba de cada cámara («Probar clip», «Ajustar…»)",
+        ttk.Checkbutton(frm, text="Sumarlos a los videos de prueba de cada cámara (para «Configurar…»)",
                         variable=self.add_lib).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.tree = ttk.Treeview(frm, columns=("estado",), show="tree headings", height=8)
         self.tree.heading("#0", text="Tramo", anchor="w")

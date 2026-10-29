@@ -72,7 +72,7 @@ def run_threads(n: int, seconds: float, work) -> float:
     return sum(counts) / (time.monotonic() - t0)
 
 
-def measure(model: str, seconds: float = 15.0, cores: int | None = None, detector: str = "yolo") -> dict:
+def measure(model: str, seconds: float = 15.0, cores: int | None = None) -> dict:
     if cores and hasattr(os, "sched_setaffinity"):
         os.sched_setaffinity(0, set(sorted(os.sched_getaffinity(0))[:cores]))
     ncpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
@@ -89,7 +89,7 @@ def measure(model: str, seconds: float = 15.0, cores: int | None = None, detecto
     with tempfile.TemporaryDirectory() as tmp:
         video = test_video(Path(tmp) / "prueba.mp4")
         frames = frames_of(video)
-        det = build_detector(detector, model)
+        det = build_detector("yolo", model)
         det.detect(frames[0])  # la primera vez arma el modelo
         gpu = bool(getattr(det, "on_gpu", False))
         workers = max(ncpu, 16 if gpu else ncpu)  # con placa hacen falta muchas cámaras a la vez para llenarla
@@ -123,16 +123,14 @@ def main() -> None:
     p.add_argument("--modelo", default=str(Path(__file__).resolve().parent.parent / "models" / "personas.onnx"))
     p.add_argument("--segundos", type=float, default=15.0)
     p.add_argument("--nucleos", type=int, default=None, help="usar solo estos núcleos (para comparar tamaños)")
-    p.add_argument("--detector", default="yolo", choices=["yolo", "dfine"],
-                   help="dfine: D-FINE-N (libre, más preciso, más lento) para comparar")
     p.add_argument("--numero", action="store_true",
                    help="solo el número de cámaras (lo usa deploy/maquina-analisis/instalar.sh)")
     a = p.parse_args()
-    r = measure(a.modelo, a.segundos, a.nucleos, a.detector)
+    r = measure(a.modelo, a.segundos, a.nucleos)
     if a.numero:
         print(max(1, int(r["cameras"])))
         return
-    print(f"Núcleos: {r['cores']} · detector {a.detector} en {r['device']}")
+    print(f"Núcleos: {r['cores']} · detector en {r['device']}")
     print(f"Análisis completo (detector + seguimiento + reglas + clip): {r['analyzed_fps']:.1f} cuadros por segundo")
     print(f"Decodificar video 640x360: {r['decoded_fps']:.0f} cuadros por segundo")
     print(f"→ Entran unas {r['cameras']:.0f} cámaras de hurto (5 cuadros por segundo analizados, 8 por segundo de "
