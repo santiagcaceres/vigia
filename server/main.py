@@ -26,7 +26,7 @@ from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RULE_TYPES, SEVERITY, parse_
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
-from . import hikconnect, hpp, pool, probe, training
+from . import hikconnect, hpp, nube, pool, probe, training
 from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, new_token, token_hash, verify_password
@@ -240,6 +240,16 @@ class EnrollIn(BaseModel):
     instance_id: str | None = Field(None, max_length=80)
     capacity: float | None = Field(None, gt=0, le=1000)
     process_imports: bool = False
+
+
+class CloudKeyIn(BaseModel):
+    key: str = Field(min_length=10, max_length=20000)  # el .json de la clave de la cuenta de servicio de Google
+
+
+class CloudActionIn(BaseModel):
+    zone: str = Field(min_length=1, max_length=63)
+    name: str = Field(min_length=1, max_length=63)
+    action: Literal["start", "stop", "reset", "resume"]
 
 
 class AnalysisSettingsIn(BaseModel):
@@ -806,6 +816,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cam_count[c.agent_id] = cam_count.get(c.agent_id, 0) + 1
         open_now = sum(1 for w in w_now.values() if w > 0)
         clients_on = sorted({c.client_id for c in cams})
+        seen: dict[str, str] = {}  # máquina → último contacto (el más nuevo de sus procesos)
+        for a in server_agents(s):
+            key = a.instance_id or f"agente-{a.id}"
+            if a.last_seen and iso(a.last_seen) > (seen.get(key) or ""):
+                seen[key] = iso(a.last_seen)
         return {"mode": mode, "capacity": pool_capacity(s), "spare": spare, "clients_on_servers": clients_on,
                 "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
                 "cameras": len(cams), "cameras_active": open_now,
@@ -813,7 +828,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "leaving_instances": [m.instance_id for m in ms if m.leaving and m.instance_id],
                 "machines": [{"key": m.key, "instance_id": m.instance_id, "names": m.names, "agent_ids": m.agent_ids,
                               "online": m.online, "draining": m.draining, "leaving": m.leaving,
-                              "capacity": m.capacity,
+                              "capacity": m.capacity, "last_seen": seen.get(m.key),
                               "load": round(m.load, 2), "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
                              for m in ms]}
 
@@ -1366,6 +1381,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_setting(s, "pool_key_hash", token_hash(key))
         s.commit()
         return {"key": key}
+
+    # ------------------------------------------------------------ máquinas virtuales (server/nube.py)
+    def cloud_client(s) -> nube.GoogleCloud | None:
+        enc = setting(s, "gcp_key_enc")
+        if not enc:
+            return None
+        return nube.GoogleCloud(json.loads(box.decrypt(enc)))
+
+    def cloud_view(s) -> dict:
+        """Las máquinas virtuales de Google Cloud con su estado, y lo que dice el sistema de cada una (si está en
+        línea y qué analiza). Sin clave: solo lo del sistema."""
+        overview = analysis_overview(s)
+        out = {"provider": "google", "connected": False, "account": None, "project": None, "error": None,
+               "instances": [], "machines": overview["machines"]}
+        try:
+            gc = cloud_client(s)
+        except (ValueError, RuntimeError) as exc:
+            out["error"] = f"La clave guardada no se puede leer ({exc}): conectá Google Cloud de nuevo."
+            return out
+        if gc is None:
+            return out
+        out.update(connected=True, account=gc.account, project=gc.project)
+        try:
+            out["instances"] = gc.instances()
+        except nube.CloudError as exc:
+            out["error"] = str(exc)
+        return out
+
+    @app.get("/api/cloud")
+    def get_cloud(_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        return cloud_view(s)
+
+    @app.put("/api/cloud/credentials")
+    def put_cloud_credentials(body: CloudKeyIn, me_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        """Conectar Google Cloud con la clave (.json) de una cuenta de servicio. Se prueba antes de guardarla y se
+        guarda cifrada; nunca se devuelve."""
+        try:
+            key = nube.parse_key(body.key)
+            nube.GoogleCloud(key).instances()
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except nube.CloudError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        set_setting(s, "gcp_key_enc", box.encrypt(json.dumps(key)))
+        s.commit()
+        log.info("%s conectó Google Cloud (proyecto %s, cuenta %s)", me_.username, key["project_id"],
+                 key["client_email"])
+        return cloud_view(s)
+
+    @app.delete("/api/cloud/credentials")
+    def delete_cloud_credentials(me_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        set_setting(s, "gcp_key_enc", "")
+        s.commit()
+        log.info("%s desconectó Google Cloud", me_.username)
+        return cloud_view(s)
+
+    @app.post("/api/cloud/action")
+    def cloud_action(body: CloudActionIn, me_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        """Prender, apagar o reiniciar una máquina virtual. Google lo hace en segundo plano (tarda de segundos a un
+        par de minutos)."""
+        try:
+            gc = cloud_client(s)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, "La clave guardada de Google Cloud no se puede leer: conectala de nuevo.") from exc
+        if gc is None:
+            raise HTTPException(409, "Primero conectá Google Cloud (Máquinas → «Conectar Google Cloud…»).")
+        try:
+            res = gc.action(body.zone, body.name, body.action)
+        except nube.CloudError as exc:
+            raise HTTPException(exc.status if 400 <= exc.status < 600 else 502, str(exc)) from exc
+        log.info("%s pidió %s de la máquina %s (%s)", me_.username, body.action, body.name, body.zone)
+        return {"ok": True, **res}
 
     @app.post("/api/agents/{aid}/token")
     def rotate_agent_token(aid: int, _: User = Depends(admin_only), s=Depends(db)) -> dict:

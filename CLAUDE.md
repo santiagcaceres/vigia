@@ -624,7 +624,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     `git pull`): reiniciar solo `vigia-maquina@*` NO actualiza. Reiniciar la VM (consola de Google Cloud → Restablecer, o
     `sudo reboot`) o `sudo systemctl restart vigia-actualizar && sudo systemctl restart 'vigia-maquina@*'`. El 29 oct a
     las 16:17 UTC la VM `vigia-analisis-1` quedó sin conexión: su `maquina.env` apunta al dominio viejo (borrado) y el
-    código que lo corrige solo a sí mismo lo trae el `git pull` del arranque; hasta que se reinicie no analiza ni mide.
+    código que lo corrige solo a sí mismo lo trae el `git pull` del arranque. El dueño la reinició («Restablecer») y a las
+    22:47 UTC volvió en línea con las 5 cámaras de Minas.
+- **Pestaña «Máquinas»: ver y prender las máquinas virtuales desde la app (29 oct, pedido del dueño; app 1.31.0).**
+  Solo admin. Una sola lista: cada máquina con lo que dice **Google Cloud** (prendida / apagada / arrancando, tipo,
+  Spot, desde cuándo) y lo que dice **el sistema** (en línea, sin conexión desde HH:MM, qué analiza: máquina → cliente →
+  cámara), con «▶ Prender», «■ Apagar» y «⟳ Reiniciar» (confirman; avisa si apagarla deja cámaras sin analizar). Abajo, el
+  reparto (antes en Administración, que quedó solo con usuarios). Consejos por estado (`vm_estado` en agent/oficina.py):
+  «prendida pero sin conexión» → reiniciar (al arrancar hace `git pull`); «prendida · no analiza» = gasta créditos sin
+  darse de alta. Sin Google conectado dice «sin conexión desde…» (no «apagada»: no se sabe).
+  - **Google Cloud** se conecta con la clave (.json) de una **cuenta de servicio** del proyecto (rol «Administrador de
+    instancias de Compute (v1)»; «Visualizador de Compute» solo para ver): Máquinas → «Google Cloud ▾» → «Conectar…» (y
+    «Cómo crear la clave», paso a paso). `PUT /api/cloud/credentials` la prueba y la guarda **cifrada**
+    (`app_settings.gcp_key_enc`, SecretBox); nunca vuelve a salir. `server/nube.py`: token con JWT RS256 firmado con
+    `cryptography` (sin librerías de Google), `aggregated/instances` (todas las zonas, sin IPs), acciones
+    `start`/`stop`/`reset`/`resume`; errores en castellano (sin permiso, API apagada, no existe). `GET /api/cloud` cruza
+    cada instancia con la máquina del sistema por `agents.instance_id` (= nombre de la instancia en Google);
+    `analysis_overview` trae `last_seen` por máquina. La app refresca cada 30 s con la pestaña a la vista y cada 5 s
+    durante 3 min después de prender/apagar. AWS (Tigo) todavía no: la lista muestra sus máquinas con lo del sistema.
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),
