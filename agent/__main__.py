@@ -658,7 +658,10 @@ class Agent:
         self.outbox.stop()
 
 
-SERVIDOR_POR_DEFECTO = "https://vigia-three-ashy.vercel.app"
+SERVIDOR_POR_DEFECTO = "https://analitica-critica.vercel.app"
+# direcciones viejas del servidor: el 29 oct se borró «vigia-three-ashy» (decía vigia) y quedó la de arriba. Una PC o
+# máquina que tenga guardada una vieja pasa sola a la nueva (y agente.env se corrige).
+SERVIDORES_VIEJOS = ("https://vigia-three-ashy.vercel.app",)
 ARCHIVO_CONFIG = "agente.env"
 
 
@@ -691,6 +694,27 @@ def read_env_file(path: Path) -> dict[str, str]:
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip().strip('"').strip("'")
     return out
+
+
+def servidor_actual(url: str | None) -> str | None:
+    """La dirección del servidor de ahora si `url` es una vieja (ver SERVIDORES_VIEJOS); si no, la misma."""
+    if url and url.strip().rstrip("/").lower() in SERVIDORES_VIEJOS:
+        return SERVIDOR_POR_DEFECTO
+    return url
+
+
+def corregir_servidor(cfg_path: Path) -> None:
+    """Si agente.env tiene guardada una dirección vieja del servidor, la cambia por la de ahora (lo demás queda)."""
+    values = read_env_file(cfg_path)
+    old = values.get("VIGIA_SERVER")
+    if not old or servidor_actual(old) == old:
+        return
+    values["VIGIA_SERVER"] = servidor_actual(old)
+    try:
+        write_env_file(cfg_path, values)
+        log.info("Servidor cambiado en %s: %s → %s", cfg_path.name, old, values["VIGIA_SERVER"])
+    except OSError as exc:
+        log.warning("No se pudo corregir el servidor en %s: %s", cfg_path, exc)
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
@@ -781,7 +805,8 @@ def main() -> None:
         restart_app(renamed)  # se abre la copia con el nombre nuevo (que borra este archivo) y este proceso termina
         return
     threading.Thread(target=actualizar.cleanup_old, daemon=True).start()
-    a.server = a.server or SERVIDOR_POR_DEFECTO
+    corregir_servidor(cfg_path)
+    a.server = servidor_actual(a.server) or SERVIDOR_POR_DEFECTO
     verify = not a.insecure
     if a.ventana:
         ventana = Ventana(data_dir / "ventana.json")

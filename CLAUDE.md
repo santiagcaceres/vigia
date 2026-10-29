@@ -13,11 +13,16 @@ genera `agent/recursos/` (íconos de la app y el .ico del .exe) y `public/img/` 
 
 | Pieza | Dónde |
 |---|---|
-| Panel + API | https://vigia-three-ashy.vercel.app (proyecto Vercel `vigia`, región iad1 desde el 22 oct) |
+| Panel + API | https://analitica-critica.vercel.app (proyecto Vercel `vigia`, región iad1 desde el 22 oct; hasta el 29 oct era vigia-three-ashy.vercel.app, que el dueño borró) |
 | Base + archivos | Supabase proyecto **CAMARAS**, ref `cnwhpaqvdjabntteacrj` (sa-east-1 no: us-east-1) |
 | Repo | github.com/santiagcaceres/vigia (**público**, verificado el 23 oct: nada de claves ni IPs reales) |
 | Dueño | Santiago Cáceres, Uruguay (America/Montevideo) |
 
+**Dominio (29 oct):** el dueño borró `vigia-three-ashy.vercel.app` y se creó `analitica-critica.vercel.app` (gratis, de
+Vercel; `PUBLIC_URL` también). La app y las máquinas que tenían guardada la vieja pasan solas a la nueva desde la app
+1.29.1 (`SERVIDORES_VIEJOS`, `corregir_servidor` reescribe `agente.env`); una app vieja no llega al servidor para
+actualizarse: bajar el .zip de GitHub Releases a mano o cambiar `VIGIA_SERVER` en `agente.env`. Las máquinas lo
+toman al reiniciar (`git pull`). Los links de avisos mandados antes con la dirección vieja ya no abren.
 **Publicado:** ver `git log origin/main` (el último deploy de producción apunta a `main`). El proyecto Vercel
 **no** tiene auto-deploy: después de `git push` hay que lanzar el deploy a mano (MCP de Vercel
 con `gitSource` = rama + sha, o desde el panel de Vercel) y verificar `/api/health`.
@@ -797,7 +802,7 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
 ```bash
 python -m pytest -q                 # ~210 tests (unos 55 se saltean sin Postgres)
 VIGIA_TEST_PG="postgresql://postgres@127.0.0.1:54329/vigia_test" python -m pytest -q   # Postgres
-python -m agent --server https://vigia-three-ashy.vercel.app --token TOKEN   # agente
+python -m agent --server https://analitica-critica.vercel.app --token TOKEN   # agente
 python -m agent.hikvision --host IP --user vigia --password ****             # probar DVR Hikvision
 python -m agent.dahua     --host IP --user vigia --password ****             # probar DVR Dahua
 ```

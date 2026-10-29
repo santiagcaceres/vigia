@@ -19,7 +19,7 @@ else
   PROCESOS=${PROCESOS:-1}
   CAPACIDAD=${CAPACIDAD:-}     # sin placa: se mide al final de la instalación
 fi
-SERVIDOR=${VIGIA_SERVER:-https://vigia-three-ashy.vercel.app}
+SERVIDOR=${VIGIA_SERVER:-https://analitica-critica.vercel.app}
 REPO=${VIGIA_REPO:-https://github.com/santiagcaceres/vigia.git}
 if [ -z "${VIGIA_POOL_KEY:-}" ] && [ -z "${VIGIA_POOL_KEY_SSM:-}" ]; then
   echo "Falta VIGIA_POOL_KEY (se crea en la app: Administración → Máquinas de análisis)" >&2

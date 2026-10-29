@@ -39,6 +39,9 @@ from pathlib import Path
 import httpx
 
 log = logging.getLogger("vigia.escalador")
+
+SERVIDOR = "https://analitica-critica.vercel.app"
+SERVIDORES_VIEJOS = ("https://vigia-three-ashy.vercel.app",)  # borrada el 29 oct: se pasa sola a la de ahora
 BROKEN_AFTER = timedelta(minutes=20)  # prendida hace más de esto y sin darse de alta en Vigía = rota
 # AWS no tiene lugar para ese tipo de máquina (o no hay Spot a ese precio): se prueba el siguiente
 CAPACITY_ERRORS = {"InsufficientInstanceCapacity", "InsufficientCapacity", "SpotMaxPriceTooLow",
@@ -303,7 +306,7 @@ def main() -> None:
     env = {**read_env_file(Path(os.getenv("VIGIA_ESCALADOR_CONFIG", "/etc/vigia/escalador.env"))),
            **{k: v for k, v in os.environ.items() if k.startswith(("VIGIA_", "AWS_"))}}
     p = argparse.ArgumentParser(description="Prende y apaga las máquinas de análisis de Vigía")
-    p.add_argument("--server", default=env.get("VIGIA_SERVER", "https://vigia-three-ashy.vercel.app"))
+    p.add_argument("--server", default=env.get("VIGIA_SERVER", SERVIDOR))
     p.add_argument("--clave-maquinas", default=env.get("VIGIA_POOL_KEY"))
     p.add_argument("--nube", default=env.get("VIGIA_NUBE", "aws"), choices=["aws-asg", "aws", "ninguna"])
     p.add_argument("--region", default=env.get("AWS_REGION", "sa-east-1"))
@@ -318,6 +321,8 @@ def main() -> None:
                    help="Tope de máquinas prendidas (protege la factura)")
     p.add_argument("--cada", type=int, default=60, help="Segundos entre revisiones")
     a = p.parse_args()
+    if a.server.strip().rstrip("/").lower() in SERVIDORES_VIEJOS:
+        a.server = SERVIDOR
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not a.clave_maquinas:
         p.error("Falta la clave de máquinas (VIGIA_POOL_KEY)")
