@@ -501,6 +501,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   velocidad real?) y si el H.264 de Windows abre bien, también sin probar. No cambia nada en el grabador.
   Pendiente de decidir con el dueño: que la app arranque con Windows (la Dell se reinició el 28 a las 08:05 y la
   app quedó cerrada hasta las 20:43).
+- **D-FINE-N en la Dell (28 oct, sesión de escritorio; app 1.27.1):** en DirectML la sesión se creaba pero la primera
+  pasada fallaba con un error ilegible («'utf-8' codec can't decode byte 0xf3»: texto de Windows en español). Ahora,
+  si una pasada falla en la placa, `OnnxDfineDetector` rehace la sesión en el procesador y sigue (la ventana pasa a
+  decir «en procesador»). Comparado en el procesador de la Dell (mismo `Tuner`, 5 cuadros/s): D-FINE-N tarda 1,5-1,8
+  veces lo de YOLO11n; en Pasillo bebidas da igual (0 cuadros distintos de 141); en Góndolas ventana sostiene mejor a
+  la 2.ª persona del fondo (con gente 98,3 % contra 96,7 %, 179 contra 158 detecciones, mismas 3 personas). Sus
+  objetos tienen falsos (heladera = estantería, gato). Sigue YOLO11n en las máquinas.
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),

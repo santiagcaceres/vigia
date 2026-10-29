@@ -2511,6 +2511,11 @@ class TuneWindow:
         for key, _lab, default in self.TIMES:
             v = float(rules.get(key, default))
             self.tv[key].set(f"{v:g}")
+        self._rules_text()
+
+    def _rules_text(self) -> None:
+        """Qué reglas usa la cámara y con qué detector corre (sin tocar los tiempos que se están probando)."""
+        rules = self.analysis.get("rules") or {}
         enabled = rules.get("enabled_rules")
         if self.analysis.get("metrics_only"):
             txt = "Esta cámara es «solo métricas»: no da alertas."
@@ -3056,6 +3061,10 @@ class TuneWindow:
         self._library_results(t)
         self._show_alerts(t)
         self._clip_verdict(t)
+        if getattr(self.detector, "device", None) != getattr(self, "_det_device", None):  # p. ej. pasó al procesador
+            self._det_device = getattr(self.detector, "device", None)
+            self._set_detector_text()
+            self._rules_text()
 
     def _show_state(self, t) -> None:
         if t.live:

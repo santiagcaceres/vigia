@@ -222,3 +222,27 @@ def test_dfine_como_segundo_detector_para_comparar():
     assert model.exists()  # viaja en el repo y adentro del .exe (agente_pc.spec)
     real = build_detector("dfine", Path(__file__).resolve().parents[1] / "models" / "personas.onnx")
     assert real.name == "D-FINE-N" and real.size == (640, 640)
+
+
+def test_dfine_que_falla_en_la_placa_sigue_en_el_procesador():
+    """En la Dell (DirectML, 28 oct) la sesión de D-FINE se creó en la placa pero la primera pasada falló, con un error
+    ilegible («'utf-8' codec can't decode byte 0xf3»: texto de Windows en español). Ahora sigue en el procesador."""
+    from core.detectors import DFINE_FILE, OnnxDfineDetector
+
+    model = Path(__file__).resolve().parents[1] / "models" / DFINE_FILE
+    det = OnnxDfineDetector(model, threads=1)
+
+    class EnLaPlaca:
+        def __init__(self, real):
+            self.real = real
+
+        def get_providers(self):
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        def run(self, *_a):
+            raise UnicodeDecodeError("utf-8", b"\xf3", 0, 1, "invalid continuation byte")
+
+    det.session, det.on_gpu, det.device = EnLaPlaca(det.session), True, "GPU (Dml)"
+    assert det.detect(np.zeros((360, 640, 3), np.uint8)) == []
+    assert det.device == "procesador" and not det.on_gpu
+    assert det.detect(np.zeros((360, 640, 3), np.uint8)) == []  # y sigue andando

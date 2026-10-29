@@ -332,6 +332,7 @@ class OnnxDfineDetector:
             except Exception:  # noqa: BLE001 - placa sin soporte: seguir con el procesador
                 session = ort.InferenceSession(str(model_path), opts, providers=["CPUExecutionProvider"])
         self.session = session
+        self.model_path, self.threads = model_path, threads
         used = self.session.get_providers()
         self.on_gpu = bool(used and used[0] != "CPUExecutionProvider")
         self.device = "GPU (" + used[0].replace("ExecutionProvider", "") + ")" if self.on_gpu else "procesador"
@@ -350,7 +351,20 @@ class OnnxDfineDetector:
         if len(self.inputs) > 1:
             feeds[self.inputs[1]] = np.array([[w, h]], dtype=np.int64)
         with self._lock:
-            labels, boxes, scores = self.session.run(None, feeds)
+            try:
+                labels, boxes, scores = self.session.run(None, feeds)
+            except Exception as exc:  # noqa: BLE001
+                if not self.on_gpu or self.model_path is None:
+                    raise
+                # en la Dell (DirectML, 28 oct) la sesión se crea pero la primera pasada falla en la placa, y el error
+                # llega ilegible (texto de Windows en español leído como UTF-8): se sigue con el procesador
+                log.warning("D-FINE-N falló en %s (%s): sigue en el procesador", self.device, exc)
+                import onnxruntime as ort
+                opts = ort.SessionOptions()
+                opts.intra_op_num_threads = self.threads
+                self.session = ort.InferenceSession(str(self.model_path), opts, providers=["CPUExecutionProvider"])
+                self.on_gpu, self.device = False, "procesador"
+                labels, boxes, scores = self.session.run(None, feeds)
         return labels[0], boxes[0], scores[0], w, h
 
     def _decode(self, res: tuple, classes: dict[int, str], conf: float) -> list[Detection]:
