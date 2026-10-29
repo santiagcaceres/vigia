@@ -35,7 +35,10 @@ log = logging.getLogger("vigia.hikconnect")
 # que se cargó en el cliente, ej. el dominio que muestra el navegador al entrar al portal).
 REGION_URLS = ("https://isa.hikcentralconnect.com", "https://ius.hikcentralconnect.com",
                "https://ieu.hikcentralconnect.com", "https://isgp.hikcentralconnect.com")
-TYPES = {"live": "1", "cloud": "2", "playback": "3"}
+# `type` de /video/v1/live/address/get: 1 vivo, 2 grabación del disco del grabador, 3 grabación en la nube (guía
+# V2.15.0 de la API y la plataforma de EZVIZ que envuelve). Antes estaban 2 y 3 al revés: pidiendo «3» Hik-Connect
+# contestaba «Record setting does not exist{OPEN000502}» (no hay plan de nube), 28 oct, Minas.
+TYPES = {"live": "1", "playback": "2", "cloud": "3"}
 
 
 class HikConnectError(RuntimeError):

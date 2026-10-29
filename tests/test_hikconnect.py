@@ -100,7 +100,8 @@ def test_camara_por_hik_connect_de_punta_a_punta(app, fake):
         c.post(f"/api/agent/cameras/{cam['id']}/stream-url", headers=h,
                json={"kind": "playback", "quality": "main", "start": "2026-10-23T10:00:00", "end": "2026-10-23T10:02:00"})
         sent = [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]
-        assert sent["type"] == "3" and sent["startTime"] == "2026-10-23 10:00:00" and sent["stopTime"] == "2026-10-23 10:02:00"
+        # «2» = el disco del grabador («3» es la nube: sin plan de nube da OPEN000502)
+        assert sent["type"] == "2" and sent["startTime"] == "2026-10-23 10:00:00" and sent["stopTime"] == "2026-10-23 10:02:00"
         # probar conexión desde el servidor
         p = c.post(f"/api/cameras/{cam['id']}/probe").json()
         assert p["ok"] and p["hikconnect"]
