@@ -212,7 +212,7 @@ def test_prender_cambiar_y_apagar_los_gestos_sin_cortar_el_video(tmp_path, monke
     run(w, clock, 0.4)
     assert w.analyzer.engine.cfg.gestures.enabled == (MANO_ROPA,) and w.analyzer.gestures
     # una configuración rota de verdad (un número en null): sigue con la anterior, sin caerse ni reintentar
-    w.update_analysis({"zones": [], "rules": {"loiter_seconds": None}, "gestures": {"enabled": ALL}})
+    w.update_analysis({"zones": [], "rules": {"shelf_dwell_seconds": None}, "gestures": {"enabled": ALL}})
     run(w, clock, 0.4)
     assert w.analyzer.engine.cfg.gestures.enabled == (MANO_ROPA,) and w._pending_analysis is None
     w.update_analysis({"zones": [], "gestures": {"enabled": ALL, "pocket_seconds": 1.5}})

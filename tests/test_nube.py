@@ -116,7 +116,7 @@ def test_lista_las_maquinas_de_todas_las_zonas_con_un_token_firmado():
     v = vms[1]
     assert v == {"name": "vigia-analisis-1", "zone": "southamerica-east1-c", "status": "RUNNING",
                  "machine_type": "e2-standard-4", "spot": False, "created": INSTANCE["creationTimestamp"],
-                 "last_start": INSTANCE["lastStartTimestamp"], "last_stop": None}
+                 "last_start": INSTANCE["lastStartTimestamp"], "last_stop": None, "last_suspend": None}
     assert vms[0]["spot"] is True and vms[0]["status"] == "TERMINATED"
     assert "34.0.0.1" not in json.dumps(vms)  # sin IPs: la app no las necesita
     gc.instances()
@@ -144,7 +144,7 @@ def test_sin_permiso_lo_dice_en_castellano():
     gc = _gc(FakeGoogle(deny=True))
     with pytest.raises(nube.CloudError) as e:
         gc.instances()
-    assert e.value.status == 403 and "Administrador de instancias de Compute" in str(e.value)
+    assert e.value.status == 403 and "compute.instances.list, .get, .start" in str(e.value)
 
 
 def test_clave_invalida():
@@ -161,7 +161,8 @@ def test_api_de_la_nube(app, admin, monkeypatch):
     fake = FakeGoogle()
     real = nube.GoogleCloud
     monkeypatch.setattr(nube, "GoogleCloud",
-                        lambda key, http=None: real(key, http=httpx.Client(transport=httpx.MockTransport(fake))))
+                        lambda key, http=None, fresh=False: real(key, http=httpx.Client(transport=httpx.MockTransport(fake)),
+                                                                  fresh=fresh))
     # sin conectar: las máquinas del sistema, sin las de Google
     r = admin.get("/api/cloud").json()
     assert r["connected"] is False and r["instances"] == [] and r["machines"] == []
@@ -239,3 +240,36 @@ def test_la_app_dice_en_castellano_como_esta_cada_maquina():
     assert hace(iso(now - timedelta(hours=3)), now) == "hace 3 h" and hace(None, now) == ""
     assert desde(None, now) == "(nunca se conectó)"
     assert desde("2026-10-27T15:44:00.000-07:00", now).startswith("desde el 27/10")
+
+
+def test_una_clave_nueva_de_la_misma_cuenta_se_prueba_con_google_y_una_rota_no_da_500(app, admin, monkeypatch):
+    """Lo que encontró la revisión: el token se guardaba por cuenta, así que una clave rota de la misma cuenta se
+    «probaba» con el token viejo, se guardaba y después /api/cloud daba 500."""
+    fake = FakeGoogle()
+    real = nube.GoogleCloud
+    monkeypatch.setattr(nube, "GoogleCloud", lambda key, http=None, fresh=False: real(
+        key, http=httpx.Client(transport=httpx.MockTransport(fake)), fresh=fresh))
+    assert admin.put("/api/cloud/credentials", json={"key": json.dumps(KEY)}).status_code == 200
+    tokens = fake.tokens
+    roto = {**KEY, "private_key": "-----BEGIN PRIVATE KEY-----\nno-sirve\n-----END PRIVATE KEY-----\n"}
+    r = admin.put("/api/cloud/credentials", json={"key": json.dumps(roto)})
+    assert r.status_code == 422 and "no sirve" in r.json()["detail"]
+    assert fake.tokens == tokens  # no se pidió token: la firma falló antes, y la clave buena sigue guardada
+    assert admin.get("/api/cloud").json()["instances"]
+    # aunque una clave rota quedara guardada (editada a mano), nada da 500
+    with app.state.Session() as s:
+        from server.main import Settings  # noqa: F401  (solo para tener la sesión)
+        row = s.get(AppSetting, "gcp_key_enc")
+        from server.security import SecretBox
+        box = SecretBox.from_env_or_file(app.state.settings.data_dir)
+        row.value = box.encrypt(json.dumps(roto))
+        s.commit()
+    nube._tokens.clear()
+    r = admin.get("/api/cloud")
+    assert r.status_code == 200 and "no sirve" in r.json()["error"]
+    r = admin.post("/api/cloud/action", json={"zone": "southamerica-east1-c", "name": "vigia-analisis-1",
+                                              "action": "reset"})
+    assert r.status_code == 409
+    # desconectar olvida el token también
+    admin.delete("/api/cloud/credentials")
+    assert not nube._tokens

@@ -28,7 +28,7 @@ Grabadores ── Hik-Connect ──► máquinas de análisis (Spot, Graviton) 
 | Disco e IP pública | por máquina prendida | centavos por día | igual |
 
 **Cuántas cámaras por máquina:** cada máquina lo mide al prender (`agent/medir.py`: detector, seguimiento, reglas
-y decodificación, con 30 % de margen) y aparece en la app, Administración → máquinas («carga / capacidad»). En
+y decodificación, con 30 % de margen) y aparece en la app, pestaña Máquinas («carga / capacidad»). En
 Google Cloud medimos unos **10-11 cuadros analizados por segundo por núcleo real** (una cámara de hurto usa 5): una
 máquina de 4 núcleos reales ≈ **6 cámaras de hurto**. **Graviton todavía no se midió**; la primera máquina lo dice.
 
@@ -38,7 +38,7 @@ confirmar en la consola (Spot cambia según la demanda).
 
 ## 1. Antes de crear la pila
 
-1. **La clave de máquinas.** En la app: Administración → **Clave para máquinas nuevas** → copiala.
+1. **La clave de máquinas.** En la app: Máquinas → «Más» → **Clave para máquinas nuevas** → copiala.
 2. **Guardarla en AWS** (región São Paulo): Systems Manager → **Parameter Store** → Create parameter:
    - Name: `/vigia/clave-maquinas`
    - Tier: Standard · Type: **SecureString** · KMS key: la que viene (`alias/aws/ssm`)
@@ -76,7 +76,7 @@ aws cloudformation deploy --region sa-east-1 --stack-name analitica-critica \
 2. Hace falta alguna máquina solo si hay cámaras para analizar: en la app, **Clientes → elegir cámaras → ✔ Analizar**
    (y el local abierto según su horario).
 3. Aparece una máquina en EC2 (`vigia-analisis`). En unos 5-7 minutos se instala, mide y se da de alta: en la app,
-   Administración → máquinas → «maquina-i-0…» **En línea**, con su capacidad. Las cámaras pasan a ella.
+   pestaña Máquinas → «maquina-i-0…» **En línea**, con su capacidad. Las cámaras pasan a ella.
 4. Al cerrar el local (más 15 minutos), sus cámaras dejan de pesar, el servidor vacía la máquina y el encendedor la
    termina. 20 minutos antes de abrir, la vuelve a crear.
 

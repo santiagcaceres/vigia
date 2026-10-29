@@ -206,8 +206,8 @@ def test_configuracion_estricta_y_viaja_aparte_de_las_reglas():
     # un agente viejo solo mira `rules`: los gestos no pueden ir ahí (RuleConfig es estricto)
     with pytest.raises(ValueError):
         RuleConfig.from_dict({"enabled_rules": ["mano_bolsillo"]})
-    zones, rc = parse_config({"zones": [], "rules": {"loiter_seconds": 30}, "gestures": {"enabled": ["mano_ropa"]}})
-    assert rc.gestures.enabled == (MANO_ROPA,) and rc.loiter_seconds == 30
+    zones, rc = parse_config({"zones": [], "rules": {"shelf_dwell_seconds": 30}, "gestures": {"enabled": ["mano_ropa"]}})
+    assert rc.gestures.enabled == (MANO_ROPA,) and rc.shelf_dwell_seconds == 30
     assert RuleEngine(zones, rc).gestures is not None
     assert RuleEngine(*parse_config({"zones": []})).gestures is None  # sin gestos: como siempre
 

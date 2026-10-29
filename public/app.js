@@ -4,7 +4,7 @@ const TYPE_NAMES = { salida_sin_pago: "Salida sin pago", merodeo: "Merodeo", zon
   mano_bolsillo: "Mano al bolsillo", mano_ropa: "Mano dentro de la ropa", mano_bolsa: "Mano en la bolsa" };
 // reglas de zona (las únicas que van en `rules.enabled_rules`) y gestos de ocultamiento (van aparte, en `gestures`:
 // un agente viejo rechaza nombres que no conoce dentro de `rules`)
-const RULE_KEYS = ["salida_sin_pago", "merodeo", "zona_restringida", "fuera_de_horario"];
+const RULE_KEYS = ["salida_sin_pago", "zona_restringida", "fuera_de_horario"];  // (el merodeo ya no existe)
 const GESTURE_KEYS = ["mano_bolsillo", "mano_ropa", "mano_bolsa"];
 const ALARM_TYPES = { VMD: "Movimiento", fielddetection: "Intrusión", linedetection: "Cruce de línea", regionEntrance: "Entrada a zona", regionExiting: "Salida de zona" };
 const MODE_NAMES = { alarmas_equipo: "Alarmas del grabador", alarmas: "Alarmas HPP", vivo: "En vivo" };
@@ -686,7 +686,6 @@ async function zonesView(v, id) {
         <div class="form" style="grid-template-columns:1fr 1fr">
           <label>Seg. en góndola para "tomó algo"<input id="r-shelf" type="number" step="0.5" min="0" value="${rules.shelf_dwell_seconds ?? 3}"></label>
           <label>Seg. en caja para "pagó"<input id="r-checkout" type="number" step="0.5" min="0" value="${rules.checkout_min_seconds ?? 1}"></label>
-          <label>Seg. para merodeo<input id="r-loiter" type="number" step="1" min="0" value="${rules.loiter_seconds ?? 45}"></label>
           <label>Seg. en zona restringida<input id="r-restricted" type="number" step="0.5" min="0" value="${rules.restricted_min_seconds ?? 1}"></label>
           <label>Abre (opcional)<input id="r-open" type="time" value="${rules.opening_hours?.start || ""}"></label>
           <label>Cierra<input id="r-close" type="time" value="${rules.opening_hours?.end || ""}"></label>
@@ -757,8 +756,9 @@ async function zonesView(v, id) {
     if (draft.length) return toast("Tenés una zona sin cerrar", true);
     // lo que este formulario no muestra (por ejemplo cooldown_seconds, o lo que guardó la app) se conserva
     const r = { ...rules, shelf_dwell_seconds: +$("#r-shelf").value, checkout_min_seconds: +$("#r-checkout").value,
-      loiter_seconds: +$("#r-loiter").value, restricted_min_seconds: +$("#r-restricted").value,
+      restricted_min_seconds: +$("#r-restricted").value,
       enabled_rules: $$(".r-en").filter((x) => x.checked).map((x) => x.value) };
+    delete r.loiter_seconds;  // el merodeo ya no existe
     if ($("#r-open").value && $("#r-close").value) r.opening_hours = { start: $("#r-open").value, end: $("#r-close").value };
     else delete r.opening_hours;
     // los gestos van aparte de las reglas. Si se dejaron como los del tipo de cámara (y no estaban elegidos a mano),

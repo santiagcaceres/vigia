@@ -2,7 +2,7 @@
 a las máquinas de análisis. Sirve en vivo o con videos grabados (por ejemplo, hurtos reales de esa cámara).
 
 - Se ve lo que ve el análisis: los cuadros que se analizan (a los fps de la cámara), las zonas, cada persona con su
-  número y, por zona, cuánto lleva contra el tiempo de la regla («gondola 32/45s»), y si ya «tomó algo».
+  número y, por zona, cuánto lleva («gondola 32s»; caja y restringida contra su tiempo), y si ya «tomó algo».
 - Las alertas son **de prueba**: quedan en la ventana; no van a los empleados ni al cliente ni sirven para entrenar.
 - Cambiar zonas o tiempos recalcula al instante todo lo analizado (los últimos 10 min en vivo, o los videos
   enteros): detectar y seguir personas (lo caro) no depende de las zonas ni de los tiempos, así que se guarda lo
@@ -43,8 +43,7 @@ from core.metrics import door_counts
 from core.pisadas import FootMap
 from core.pose import BAG_CLASSES, build_pose, look
 from core.pose import draw as draw_pose
-from core.rules import (BAG_LABELS, MERODEO, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone,
-                        parse_config)
+from core.rules import BAG_LABELS, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
 
@@ -64,7 +63,7 @@ BANNER_SECONDS = 2.0  # cuánto se ve el cartel de una alerta de prueba
 ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restricted": "restringida",
              "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal",
              "aisle": "pasillo"}
-ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO", "zona_restringida": "ZONA RESTRINGIDA",
+ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "zona_restringida": "ZONA RESTRINGIDA",
               "fuera_de_horario": "FUERA DE HORARIO", MANO_BOLSILLO: "POSIBLE OCULTAMIENTO (BOLSILLO)",
               MANO_ROPA: "POSIBLE OCULTAMIENTO (ROPA)", MANO_BOLSA: "POSIBLE OCULTAMIENTO (BOLSA)"}
 REGION_TEXT = {"bolsillo": "BOLSILLO", "ropa": "ROPA", "bolsa": "BOLSA"}
@@ -245,7 +244,7 @@ class Tuner:
             self._reevaluate()
 
     def set_times(self, times: dict[str, float], gestures=_KEEP) -> bool:
-        """Probar otros tiempos (merodeo, «tomó algo», caja, restringida) sin guardarlos; con `gestures`, también otros
+        """Probar otros tiempos («tomó algo», caja, restringida) sin guardarlos; con `gestures`, también otros
         gestos (como `set_gestures`, en la misma vuelta). Devuelve `needs_pose()`."""
         analysis = {**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}}
         self.set_analysis(analysis if gestures is _KEEP else with_gestures(analysis, gestures))
@@ -662,9 +661,7 @@ class Tuner:
             if in_zone.get(tid):
                 parts = []
                 for name, v in sorted(in_zone[tid].items(), key=lambda kv: -kv[1]):
-                    typ = types.get(name, "")
-                    need = cfg.loiter_seconds if typ == "shelf" and MERODEO in rules else None
-                    parts.append(f"{v:.0f} s seguidos en «{name}»" + (f" (merodeo pide {need:g} s)" if need else ""))
+                    parts.append(f"{v:.0f} s seguidos en «{name}»")
                 text += "; " + ", ".join(parts)
                 if tid in took:
                     text += "; «tomó algo»"
@@ -683,10 +680,6 @@ class Tuner:
                 else:
                     out.append("«Tomó algo» da alerta si después pisa la Salida sin pasar por Caja: no llegó a la Salida "
                                "en este video.")
-            shelf = [v for tid in people for name, v in (in_zone.get(tid) or {}).items() if types.get(name) == "shelf"]
-            if shelf and MERODEO in rules and max(shelf) < cfg.loiter_seconds:
-                out.append(f"Para «merodeo» tiene que quedarse {cfg.loiter_seconds:g} s en una góndola; el que más "
-                           f"estuvo: {max(shelf):.0f} s.")
         if g.enabled and not any(a.type in g.enabled for a in alerts):
             if self.pose_missing:
                 out.append("En esta PC no está el modelo de postura: los gestos no se probaron (actualizá la app).")
@@ -720,8 +713,8 @@ class Tuner:
                        + (" Los gestos sí miran sin zonas (con las góndolas marcadas dan menos falsas alarmas)."
                           if g.enabled else ""))
         else:
-            if MERODEO in rules and "shelf" not in types:
-                out.append("Sin zona «Góndola» no hay «merodeo» ni «tomó algo».")
+            if SALIDA_SIN_PAGO in rules and "shelf" not in types:
+                out.append("Sin zona «Góndola» no hay «tomó algo» (ni «salida sin pago»).")
             if SALIDA_SIN_PAGO in rules:
                 if "exit" not in types:
                     out.append("Sin zona «Salida», «salida sin pago» no se puede disparar.")
@@ -847,8 +840,7 @@ def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleCon
         text = f"{ascii_text(label)} {conf * 100:.0f}%"
         cv2.putText(out, text, (x1 + 2, max(10, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(out, text, (x1 + 2, max(10, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, OBJECT_COLOR, 1, cv2.LINE_AA)
-    limits = {"shelf": cfg.loiter_seconds if MERODEO in cfg.enabled_rules else None,
-              "checkout": cfg.checkout_min_seconds, "restricted": cfg.restricted_min_seconds}
+    limits = {"checkout": cfg.checkout_min_seconds, "restricted": cfg.restricted_min_seconds}
     bar = 22
     people = 0
     for t in tracks:

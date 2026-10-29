@@ -44,10 +44,10 @@ def test_probar_una_camara_con_videos_y_cambiar_tiempos(tmp_path):
 
     # otros tiempos: se recalcula todo lo analizado sin volver a detectar
     calls = det.calls
-    t.set_times({"loiter_seconds": 3})
+    t.set_times({"checkout_min_seconds": 99, "loiter_seconds": 3})  # (el merodeo ya no existe: se ignora)
     segs = t.segments()
-    assert sorted(a.type for a in segs[0]["alerts"]) == ["merodeo", "salida_sin_pago"]
-    assert [a.type for a in segs[1]["alerts"]] == ["merodeo"]
+    assert [a.type for a in segs[0]["alerts"]] == ["salida_sin_pago"]
+    assert [a.type for a in segs[1]["alerts"]] == ["salida_sin_pago"]  # con 99 s en caja para «pagó», no pagó
     assert det.calls == calls
 
     # se puede ir al momento de cada alerta: la imagen tiene zonas, recuadros y el cartel
@@ -56,7 +56,7 @@ def test_probar_una_camara_con_videos_y_cambiar_tiempos(tmp_path):
     assert img.shape[:2] == (synthetic.H, synthetic.W)
     assert t.clock_text(a).startswith("hurto.mp4 00:")
     st = t.stats()
-    assert st["persons"] >= 2 and st["alerts"] == 3 and st["detections"] > 0
+    assert st["persons"] >= 2 and st["alerts"] == 2 and st["detections"] > 0
     assert not any("zona" in h.lower() and "sin" in h.lower() for h in t.hints())
 
     # sin zonas: no hay alertas y lo avisa
@@ -99,13 +99,15 @@ def test_ajustar_y_aprobar_desde_la_app(app):
         assert r.status_code == 200
         assert a.get("/api/agent/config", headers=h).json()["cameras"] == []  # la PC no la analiza
 
-        a.put(f"/api/cameras/{cam['id']}/analysis", json={"zones": synthetic.STORE_ZONES, "rules": {"loiter_seconds": 30}})
+        # una app vieja todavía manda el tiempo de merodeo: se descarta al guardar
+        a.put(f"/api/cameras/{cam['id']}/analysis", json={"zones": synthetic.STORE_ZONES,
+                                                          "rules": {"loiter_seconds": 30, "shelf_dwell_seconds": 4}})
         res = a.post(f"/api/cameras/{cam['id']}/tuning", json={"status": "aprobada", "notes": "probada con 3 hurtos",
                                                                  "analyze": True}).json()
         assert res["tuning"] == "aprobada" and res["tuned_by"] == "admin" and res["analyzed"]
         assert res["tuning_notes"] == "probada con 3 hurtos" and res["has_preview"]
         assert a.post("/api/agent/tune", headers=h, json={"camera_id": cam["id"]}).json()["raw"]["rules"] == \
-            {"loiter_seconds": 30}
+            {"shelf_dwell_seconds": 4}
 
         # una PC vieja (sin usuario) o una máquina no ajustan cámaras
         vieja = a.post("/api/agents", json={"name": "PC vieja", "client_id": None}).json()
@@ -164,8 +166,8 @@ def test_probar_clip_explica_por_que_no_dio_alerta(tmp_path):
     t.run()
     assert t.alerts == []
     why = t.explain(0)
-    assert why[0].startswith("Persona #") and "«tomó algo»" in why[0] and "merodeo pide 45 s" in why[0]
-    assert any("no tiene Salida" in x for x in why) and any("Para «merodeo»" in x for x in why)
+    assert why[0].startswith("Persona #") and "«tomó algo»" in why[0] and "s seguidos en «" in why[0]
+    assert any("no tiene Salida" in x for x in why) and "merodeo" not in " ".join(why)
     # con la salida: da la alerta y ya no dice que falta
     t.set_analysis({"zones": synthetic.STORE_ZONES, "rules": {}})
     assert [a.type for a in t.alerts] == ["salida_sin_pago"]

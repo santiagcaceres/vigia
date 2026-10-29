@@ -19,7 +19,7 @@ Grabadores ── Hik-Connect (São Paulo) ──► máquinas de análisis (AWS
 
 ## 0. En la app
 
-Administración → **Clave para máquinas nuevas** → copiala (no se vuelve a mostrar).
+Máquinas → «Más» → **Clave para máquinas nuevas** → copiala (no se vuelve a mostrar).
 
 ## 1. La primera máquina (AWS, región São Paulo `sa-east-1`)
 
@@ -41,7 +41,7 @@ Administración → **Clave para máquinas nuevas** → copiala (no se vuelve a 
    (CUDA) (lotes de hasta 16 cuadros)»** y «Máquina … dada de alta». Si dice «en procesador», la placa no se
    está usando: revisá `nvidia-smi` (el driver tiene que ser 580 o más nuevo; si es más viejo, instalá
    `onnxruntime-gpu[cuda,cudnn]==1.22.*` en `/opt/vigia/.venv`).
-4. En la app, Administración → «Dónde se analizan las cámaras» → **En las máquinas de análisis** → Guardar.
+4. En la app, Máquinas → «Se analizan» → **Todas las cámaras** (o marcá cada cámara con «Analizar» en Clientes) → Guardar.
    Mientras no haya ninguna máquina en línea, las cámaras siguen en la PC de cada usuario.
 
 ## 2. Medir cuántas cámaras aguanta una máquina
@@ -87,7 +87,7 @@ Para probar el circuito completo con un cliente (por ejemplo 5 cámaras de Minas
 el procesador: medido en 4 núcleos x86, unos 42 cuadros por segundo (≈ 8 cámaras de hurto a 5 fps sin contar la
 decodificación); en ARM rinde menos. No hace falta el encendedor: la máquina queda siempre prendida.
 
-**Antes, en la app:** Administración → **Clave para máquinas nuevas** (copiala). En el cliente de prueba, dejá solo
+**Antes, en la app:** Máquinas → «Más» → **Clave para máquinas nuevas** (copiala). En el cliente de prueba, dejá solo
 las cámaras a probar o elegí «Dónde se analiza: En las máquinas de análisis» **cámara por cámara**: si lo ponés en el
 cliente, se van a la máquina todas sus cámaras. El ajuste general queda en «En la PC de cada usuario».
 
@@ -131,7 +131,7 @@ Desde agosto de 2026 (según varios sitios; Oracle no lo confirma en su página)
    - Bajá la clave SSH que te ofrece. Lo demás, como viene.
    - Si dice «Out of capacity», probá otro «availability domain» o reintentá más tarde (pasa seguido).
 3. Entrá por SSH (`ssh -i clave.key ubuntu@IP_PUBLICA`; en Windows, desde PowerShell) y corré los mismos comandos
-   que en Google Cloud. En la app aparece en Administración → Máquinas de análisis.
+   que en Google Cloud. En la app aparece en la pestaña Máquinas.
 
 Oracle puede recuperar una máquina gratis que pase una semana casi sin usar el procesador; analizando no pasa.
 

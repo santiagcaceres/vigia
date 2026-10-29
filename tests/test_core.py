@@ -49,14 +49,16 @@ def test_normales_no_alertan(name):
     assert run(engine(), name) == []
 
 
-def test_restringida_merodeo_horario_y_reglas_desactivadas():
+def test_restringida_horario_y_reglas_desactivadas():
     assert [e.type for e in run(engine(), "intruso_deposito")] == [ZONA_RESTRINGIDA]
-    assert MERODEO in [e.type for e in run(engine({"loiter_seconds": 3, "shelf_dwell_seconds": 99}), "hurto")]
+    # el merodeo ya no existe: lo que todavía mandan apps y servidores viejos se ignora, sin error
+    assert MERODEO not in [e.type for e in run(engine({"loiter_seconds": 3, "shelf_dwell_seconds": 99}), "hurto")]
     night = run(engine({"opening_hours": {"start": "09:00", "end": "21:00"}}), "pasa_de_largo",
                 wall=datetime(2026, 10, 16, 3, 0))
     assert FUERA_DE_HORARIO in [e.type for e in night]
     assert night[0].features["has_time"] == 1.0
-    assert run(engine({"enabled_rules": ["merodeo"]}), "hurto") == []
+    assert run(engine({"enabled_rules": ["merodeo"]}), "hurto") == []  # (sin reglas que quedan: nada)
+    assert run(engine({"enabled_rules": ["zona_restringida"]}), "hurto") == []
 
 
 def test_cooldown():
@@ -153,15 +155,16 @@ def test_el_clip_cubre_toda_la_estadia_de_la_persona():
             return [Detection((100, 100, 160, 300), "persona", 0.9)] if self.t < 40 else []
 
     det = Fija()
-    zones = [{"name": "g", "type": "shelf", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}]
-    a = Analyzer({"zones": zones, "rules": {"loiter_seconds": 20}}, det, clip_pre=2, clip_post=3, clip_max=60)
+    zones = [{"name": "g", "type": "restricted", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}]
+    rules = {"restricted_min_seconds": 20, "cooldown_seconds": {"zona_restringida": 100}}
+    a = Analyzer({"zones": zones, "rules": rules}, det, clip_pre=2, clip_post=3, clip_max=60)
     frame = np.zeros((360, 640, 3), np.uint8)
     found = []
     for i in range(50 * 5):  # 50 s a 5 fps
         det.t = i / 5
         found += a.process(frame, i / 5)
     clips = a.flush()
-    assert [f.type for f in found] == ["merodeo"] and 19 <= found[0].ts <= 22
+    assert [f.type for f in found] == ["zona_restringida"] and 19 <= found[0].ts <= 22
     c = clips[0]
     assert c.start_ts <= 1.0  # arrancó cuando apareció (0 s), no 2 s antes de la alerta (~18 s)
     assert 42 <= c.end_ts <= 44  # siguió hasta 3 s después de que se fue (40 s)

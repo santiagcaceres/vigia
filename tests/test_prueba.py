@@ -34,14 +34,14 @@ def test_evento_manual_con_clip(app):
         c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
         cid = c.post("/api/clients", json={"name": "Almacén"}).json()["id"]
         cam = c.post("/api/cameras", json={"client_id": cid, "name": "Góndola", "host": "h", "mode": "alarmas_equipo"}).json()
-        meta = {"camera_id": cam["id"], "type": "merodeo", "description": "Persona 20+ s en gondola", "zone": "gondola",
+        meta = {"camera_id": cam["id"], "type": "zona_restringida", "description": "Persona 20+ s en gondola", "zone": "gondola",
                 "occurred_at": "2026-10-20T10:00:00-03:00", "features": {"shelf_total_s": 22.5, "people_in_scene": 1, "x": 9},
                 "ext": "webm"}
         r = c.post("/api/events/manual", data={"meta": json.dumps(meta)},
                    files={"snapshot": ("s.jpg", b"\xff\xd8fake", "image/jpeg")})
         assert r.status_code == 201, r.text
         ev = r.json()
-        assert ev["source"] == "prueba" and ev["type"] == "merodeo" and ev["clip_url"] is None
+        assert ev["source"] == "prueba" and ev["type"] == "zona_restringida" and ev["clip_url"] is None
         assert ev["features"] == {"shelf_total_s": 22.5, "people_in_scene": 1.0}
         assert ev["upload_url"] and ev["content_type"] == "video/webm"
         # sin subir el clip no se acepta

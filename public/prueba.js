@@ -208,7 +208,7 @@ async function pruebaView(v) {
         const secs = +$("#p-secs").value || 20;
         if (P.zoneSince && (now - P.zoneSince) / 1000 >= secs && now - P.lastAlertAt > ALERT_COOLDOWN_MS) {
           P.lastAlertAt = now;
-          saveAlert(`Persona ${secs}+ s en «${$("#p-zone").value || "zona"}» (prueba desde la pantalla)`, "merodeo", (now - P.zoneSince) / 1000);
+          saveAlert(`Persona ${secs}+ s en «${$("#p-zone").value || "zona"}» (prueba desde la pantalla)`, "zona_restringida", (now - P.zoneSince) / 1000);
         }
       }
     } catch (e) { setStatus("Error del detector: " + e.message); }

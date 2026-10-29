@@ -32,7 +32,7 @@ Parameters:
     AllowedPattern: "^/[A-Za-z0-9_.\\-/]+$"
     Description: >-
       Nombre del parámetro de Systems Manager (Parameter Store, tipo SecureString) donde se guardó la clave de
-      máquinas que da la app (Administración → Clave para máquinas nuevas). Se crea a mano antes de la pila.
+      máquinas que da la app (Máquinas → Más → Clave para máquinas nuevas). Se crea a mano antes de la pila.
   ServidorVigia:
     Type: String
     Default: https://analitica-critica.vercel.app

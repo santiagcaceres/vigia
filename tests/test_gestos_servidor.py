@@ -131,7 +131,7 @@ def test_guardar_gestos_aparte_de_las_reglas(app, admin):
     assert ok.json()["gestures"] == saved
 
     # la app vieja manda solo zonas y reglas: los gestos no se borran
-    assert admin.put(url, json={"zones": zones, "rules": {"loiter_seconds": 30}}).status_code == 200
+    assert admin.put(url, json={"zones": zones, "rules": {"shelf_dwell_seconds": 30}}).status_code == 200
     assert admin.get(f"/api/cameras/{cam['id']}").json()["gestures"] == saved
 
     # inválidos: 422 con el motivo, y no se toca nada
@@ -147,7 +147,7 @@ def test_guardar_gestos_aparte_de_las_reglas(app, admin):
 
     # el agente recibe lo efectivo: los dos elegidos, con el tiempo cambiado y el resto por defecto
     t = tune(app, admin, cam["id"])
-    assert t["raw"]["gestures"] == saved and t["raw"]["rules"] == {"loiter_seconds": 30}
+    assert t["raw"]["gestures"] == saved and t["raw"]["rules"] == {"shelf_dwell_seconds": 30}
     eff = t["camera"]["analysis"]["gestures"]
     assert eff == {"enabled": ["mano_bolsillo", "mano_ropa"], "pocket_seconds": 0.8}
     assert GestureConfig.from_dict(eff).clothes_seconds == GestureConfig().clothes_seconds  # el resto, por defecto

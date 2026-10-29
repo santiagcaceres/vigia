@@ -626,6 +626,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     las 16:17 UTC la VM `vigia-analisis-1` quedó sin conexión: su `maquina.env` apunta al dominio viejo (borrado) y el
     código que lo corrige solo a sí mismo lo trae el `git pull` del arranque. El dueño la reinició («Restablecer») y a las
     22:47 UTC volvió en línea con las 5 cámaras de Minas.
+- **Sin merodeo (29 oct, decisión del dueño: «saquemos el merodeo como alerta, no lo quiero como parámetro ni como
+  métrica»; app 1.31.0).** Quedan las reglas salida sin pago, zona restringida y fuera de horario (`RULE_TYPES`), más los
+  gestos. `core/rules.py`: sin la regla ni `loiter_seconds`; `MERODEO` queda solo para leer alertas viejas
+  (`RETIRED_RULES`, y en `EVENT_TYPES` en el mismo lugar de siempre: de ese orden salen las variables de los modelos
+  entrenados). `clean_rules` saca el merodeo y su tiempo de lo guardado y de lo que mandan apps viejas (no da error) y
+  `RuleConfig.from_dict` lo ignora. El servidor manda **siempre** `enabled_rules` explícito (también en cámaras «general»):
+  una máquina sin actualizar, sin la lista, miraría merodeo. Las alertas viejas de merodeo (15 en producción, de Minas)
+  siguen en la base pero no se listan (salvo `?type=merodeo`) ni cuentan en estadísticas, reporte PDF ni «Alertas hoy».
+  La zona Góndola sigue sirviendo para «tomó algo» (salida sin pago) y los gestos.
 - **Pestaña «Máquinas»: ver y prender las máquinas virtuales desde la app (29 oct, pedido del dueño; app 1.31.0).**
   Solo admin. Una sola lista: cada máquina con lo que dice **Google Cloud** (prendida / apagada / arrancando, tipo,
   Spot, desde cuándo) y lo que dice **el sistema** (en línea, sin conexión desde HH:MM, qué analiza: máquina → cliente →
@@ -633,9 +642,11 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   reparto (antes en Administración, que quedó solo con usuarios). Consejos por estado (`vm_estado` en agent/oficina.py):
   «prendida pero sin conexión» → reiniciar (al arrancar hace `git pull`); «prendida · no analiza» = gasta créditos sin
   darse de alta. Sin Google conectado dice «sin conexión desde…» (no «apagada»: no se sabe).
-  - **Google Cloud** se conecta con la clave (.json) de una **cuenta de servicio** del proyecto (rol «Administrador de
-    instancias de Compute (v1)»; «Visualizador de Compute» solo para ver): Máquinas → «Google Cloud ▾» → «Conectar…» (y
-    «Cómo crear la clave», paso a paso). `PUT /api/cloud/credentials` la prueba y la guarda **cifrada**
+  - **Google Cloud** se conecta con la clave (.json) de una **cuenta de servicio** del proyecto con un **rol propio**
+    que solo tiene compute.instances.list/get/start/stop/reset/resume («Visualizador de Compute» solo para ver; NO
+    «Administrador de instancias»: si la clave se filtrara podrían borrar máquinas y discos): Máquinas → «Google Cloud ▾»
+    → «Conectar…» (y «Cómo crear la clave», paso a paso). `PUT /api/cloud/credentials` la prueba con un token nuevo
+    (`fresh`; el token se guarda por huella de la clave, no por cuenta) y la guarda **cifrada**
     (`app_settings.gcp_key_enc`, SecretBox); nunca vuelve a salir. `server/nube.py`: token con JWT RS256 firmado con
     `cryptography` (sin librerías de Google), `aggregated/instances` (todas las zonas, sin IPs), acciones
     `start`/`stop`/`reset`/`resume`; errores en castellano (sin permiso, API apagada, no existe). `GET /api/cloud` cruza

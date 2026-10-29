@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.gestos import GESTURE_TYPES, GestureConfig
 from core.metrics import empty_bucket, merge_bucket
-from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RULE_TYPES, SEVERITY, parse_config
+from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
@@ -291,7 +291,7 @@ METRICS_COUNT_FPS = 3.0
 # normal), en la puerta se pasa de largo y afuera no hay góndolas. `only_metrics`: nunca gestos, ni elegidos a mano.
 CAMERA_PROFILES = {
     "general": {"name": "General (todas las reglas)", "rules": None, "gestures": list(GESTURE_TYPES)},
-    "gondola": {"name": "Góndola / pasillo", "rules": ["merodeo", "salida_sin_pago", "zona_restringida", "fuera_de_horario"],
+    "gondola": {"name": "Góndola / pasillo", "rules": ["salida_sin_pago", "zona_restringida", "fuera_de_horario"],
                 "gestures": list(GESTURE_TYPES)},
     "caja": {"name": "Caja", "rules": ["zona_restringida", "fuera_de_horario"], "gestures": []},
     "entrada": {"name": "Entrada / puerta", "rules": ["salida_sin_pago", "fuera_de_horario"], "gestures": []},
@@ -314,7 +314,7 @@ def type_gestures(c: Camera) -> list[str]:
     zona (la cámara quedó solo para métricas antes de que hubiera gestos), ninguno: mirar posturas cuesta más
     (server/pool.py) y nadie lo pidió."""
     prof = camera_profile(c)
-    if prof.get("only_metrics") or (c.rules or {}).get("enabled_rules") == []:
+    if prof.get("only_metrics") or clean_rules(c.rules).get("enabled_rules") == []:
         return []
     return list(prof.get("gestures") or [])
 
@@ -792,7 +792,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def check_pool_key(s, key: str) -> None:
         stored = setting(s, "pool_key_hash")
         if not stored or not secrets.compare_digest(token_hash(key.strip()), stored):
-            raise HTTPException(401, "Clave de máquinas inválida (se crea en Administración → Máquinas de análisis)")
+            raise HTTPException(401, "Clave de máquinas inválida (se crea en la app: Máquinas → «Más» → «Clave para máquinas nuevas»)")
 
     def analysis_overview(s, apply_draining: bool = False) -> dict:
         now = utcnow()
@@ -834,7 +834,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def camera_dict(c: Camera, user: User, status: dict | None = None, ops: dict | None = None) -> dict:
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
-             "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": c.rules or {},
+             "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": clean_rules(c.rules),
              "gestures": c.gestures,  # lo elegido a mano, o None = los de su tipo (gestures_default)
              "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
              "live": bool(status and status.get("live")), "mode": c.mode or "vivo"}
@@ -1394,12 +1394,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         línea y qué analiza). Sin clave: solo lo del sistema."""
         overview = analysis_overview(s)
         out = {"provider": "google", "connected": False, "account": None, "project": None, "error": None,
-               "instances": [], "machines": overview["machines"]}
+               "instances": [], "machines": overview["machines"], "analysis": overview}
         try:
             gc = cloud_client(s)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, KeyError, TypeError) as exc:
             out["error"] = f"La clave guardada no se puede leer ({exc}): conectá Google Cloud de nuevo."
             return out
+        s.commit()  # no dejar la lectura abierta mientras se espera a Google
         if gc is None:
             return out
         out.update(connected=True, account=gc.account, project=gc.project)
@@ -1419,7 +1420,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         guarda cifrada; nunca se devuelve."""
         try:
             key = nube.parse_key(body.key)
-            nube.GoogleCloud(key).instances()
+            nube.GoogleCloud(key, fresh=True).instances()  # con un token nuevo: se prueba ESTA clave
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except nube.CloudError as exc:
@@ -1432,6 +1433,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/cloud/credentials")
     def delete_cloud_credentials(me_: User = Depends(admin_only), s=Depends(db)) -> dict:
+        try:
+            gc = cloud_client(s)
+            if gc is not None:
+                nube.forget(gc.key)  # el token de esta instancia del servidor, también
+        except (ValueError, RuntimeError, KeyError, TypeError):
+            pass
         set_setting(s, "gcp_key_enc", "")
         s.commit()
         log.info("%s desconectó Google Cloud", me_.username)
@@ -1443,7 +1450,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         par de minutos)."""
         try:
             gc = cloud_client(s)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, KeyError, TypeError) as exc:
             raise HTTPException(409, "La clave guardada de Google Cloud no se puede leer: conectala de nuevo.") from exc
         if gc is None:
             raise HTTPException(409, "Primero conectá Google Cloud (Máquinas → «Conectar Google Cloud…»).")
@@ -1599,7 +1606,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/cameras/{cam_id}/analysis")
     def update_analysis(cam_id: int, body: AnalysisIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
-        cfg = {"zones": [z.model_dump(exclude_none=True) for z in body.zones], "rules": body.rules}
+        # una app vieja todavía manda el tiempo de merodeo: se descarta
+        cfg = {"zones": [z.model_dump(exclude_none=True) for z in body.zones], "rules": clean_rules(body.rules)}
         try:
             parse_config(cfg)
             gestures = clean_gestures(body.gestures)
@@ -1838,9 +1846,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def camera_analysis(c: Camera, client: Client | None = None) -> dict:
         plans = list((client.plans if client is not None else None) or [])
         prof = camera_profile(c)
-        zones, rules = list(c.zones or []), dict(c.rules or {})
+        zones, rules = list(c.zones or []), clean_rules(c.rules)  # sin el merodeo (ya no existe)
         if prof["rules"] is not None and "enabled_rules" not in rules:  # lo elegido a mano manda
             rules["enabled_rules"] = list(prof["rules"])
+        elif "enabled_rules" not in rules:  # siempre explícitas: un agente viejo, sin la lista, también miraría merodeo
+            rules["enabled_rules"] = list(RULE_TYPES)
         whole = prof.get("whole_zone")
         if whole and not any((z or {}).get("type") == whole for z in zones):  # ej. depósito: toda la imagen
             zones.append({"name": prof["name"], "type": whole, "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]})
@@ -1929,7 +1939,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c = get_or_404(s, Camera, body.camera_id, "Cámara")
         client = s.get(Client, c.client_id)
         return {"camera": {**agent_camera_cfg(c, client), "filter_model": model_spec(s, c.client_id)},
-                "raw": {"zones": c.zones or [], "rules": c.rules or {}, "gestures": c.gestures},
+                "raw": {"zones": c.zones or [], "rules": clean_rules(c.rules), "gestures": c.gestures},
                 "tuning": c.tuning or "sin_ajustar", "tuning_notes": c.tuning_notes,
                 "analyzed": locations(s).get(c.id) == "servidores"}
 
@@ -2567,6 +2577,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conds.append(Event.camera_id == camera_id)
         if type:
             conds.append(Event.type == type)
+        else:
+            conds.append(Event.type.notin_(RETIRED_RULES))
         if label == "sin_etiqueta":
             conds.append(Event.label.is_(None))
         elif label:
@@ -2832,7 +2844,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             end = (d2 + timedelta(days=1)).replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
             labels = (s.query(Event.label, func.count(Event.id))
                       .filter(Event.client_id == client.id, Event.alert.is_(True),
-                              Event.source.in_(("vivo", "alarma", "prueba")),
+                              Event.source.in_(("vivo", "alarma", "prueba")), Event.type.notin_(RETIRED_RULES),
                               Event.occurred_at >= start, Event.occurred_at < end)
                       .group_by(Event.label).all())
             alerts = {(label or "sin_etiqueta"): n for label, n in labels}
@@ -2848,7 +2860,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Alertas por cámara y por cliente: hoy (desde la medianoche del local), últimos 7 días y sin revisar
         (sin etiqueta, últimos 60 días). Solo números: no baja fotos ni clips."""
         now = utcnow()
-        base = (Event.source.in_(("vivo", "alarma", "prueba")), Event.alert.is_(True))
+        base = (Event.source.in_(("vivo", "alarma", "prueba")), Event.alert.is_(True),
+                Event.type.notin_(RETIRED_RULES))
         cams: dict[int, dict] = {}
 
         def add(q, key: str) -> None:
@@ -2938,7 +2951,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client_id = scope_client(user, client_id)
         q = (select(Event.type, Event.label, Event.alert, Event.occurred_at, Camera.name)
              .join(Camera, Camera.id == Event.camera_id)
-             .where(Event.occurred_at >= utcnow() - timedelta(days=days), Event.source.in_(("vivo", "alarma", "prueba"))))
+             .where(Event.occurred_at >= utcnow() - timedelta(days=days), Event.source.in_(("vivo", "alarma", "prueba")),
+                    Event.type.notin_(RETIRED_RULES)))
         if client_id is not None:
             q = q.where(Event.client_id == client_id)
         rows = s.execute(q).all()

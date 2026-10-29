@@ -74,7 +74,7 @@ def test_alertas_por_cliente_y_camara_y_exportar_metricas(app):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with app.state.Session() as s:
         def ev(c, when, label=None, alert=True, source="vivo"):
-            s.add(Event(uuid=f"u{len(s.new)}-{c}-{when.timestamp()}", client_id=cl["id"], camera_id=c, type="merodeo",
+            s.add(Event(uuid=f"u{len(s.new)}-{c}-{when.timestamp()}", client_id=cl["id"], camera_id=c, type="salida_sin_pago",
                         severity="media", description="x", occurred_at=when, label=label, alert=alert, source=source))
         ev(c1["id"], now)
         ev(c1["id"], now - timedelta(days=3), label="normal")
@@ -122,7 +122,7 @@ def test_borrar_varias_camaras_y_sus_alertas(app):
     from server.db import ClientReport, Event
 
     with app.state.Session() as s:
-        e = Event(uuid="ev-borrar", client_id=cl["id"], camera_id=c2["id"], type="merodeo", severity="media",
+        e = Event(uuid="ev-borrar", client_id=cl["id"], camera_id=c2["id"], type="salida_sin_pago", severity="alta",
                   description="x", snapshot_path="c1/foto.jpg")
         s.add(e)
         s.flush()

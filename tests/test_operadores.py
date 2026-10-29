@@ -44,7 +44,9 @@ def test_admin_asigna_camaras_y_el_empleado_las_analiza_en_su_pc(app):
         by_name = {x["name"]: x for x in cfg["cameras"]}
         assert set(by_name) == {"Caja", "Góndola", "Calle"}
         assert by_name["Caja"]["analysis"]["rules"]["enabled_rules"] == ["zona_restringida", "fuera_de_horario"]
-        assert "enabled_rules" not in by_name["Góndola"]["analysis"]["rules"]  # general: todas
+        # general: todas, siempre explícitas (una máquina vieja sin la lista también miraría merodeo, que ya no existe)
+        assert by_name["Góndola"]["analysis"]["rules"]["enabled_rules"] == ["salida_sin_pago", "zona_restringida",
+                                                                            "fuera_de_horario"]
         assert by_name["Calle"]["analysis"]["vehicles"] is True
         # un empleado editando una cámara no le cambia la asignación
         e.put(f"/api/cameras/{c1['id']}", json={"client_id": cid, "name": "Caja 1", "brand": "ip", "host": "dvr",

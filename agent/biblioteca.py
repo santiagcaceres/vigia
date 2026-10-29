@@ -25,8 +25,8 @@ from core.gestos import GESTURE_TYPES
 log = logging.getLogger("vigia.biblioteca")
 
 KINDS = {"hurto": "Hurto", "normal": "Normal (sin hurto)", "": "Sin clasificar"}
-# una alerta «ve» un hurto marcado si sale hasta 20 s antes o hasta 90 s después: «merodeo» y «salida sin pago»
-# saltan después del momento del hurto (cuando la persona cumplió el tiempo o se fue)
+# una alerta «ve» un hurto marcado si sale hasta 20 s antes o hasta 90 s después: «salida sin pago» salta después del
+# momento del hurto (cuando la persona se va)
 MATCH_BEFORE = 20.0
 MATCH_AFTER = 90.0
 # los gestos de ocultamiento (mano al bolsillo, a la ropa o a la bolsa) saltan cuando se guarda algo: si se marcó el

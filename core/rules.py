@@ -38,23 +38,39 @@ VEHICLE_LABEL = "vehiculo"
 EDGE_SNAP = 0.03
 
 SALIDA_SIN_PAGO = "salida_sin_pago"
-MERODEO = "merodeo"
 ZONA_RESTRINGIDA = "zona_restringida"
 FUERA_DE_HORARIO = "fuera_de_horario"
-RULE_TYPES = (SALIDA_SIN_PAGO, MERODEO, ZONA_RESTRINGIDA, FUERA_DE_HORARIO)
+RULE_TYPES = (SALIDA_SIN_PAGO, ZONA_RESTRINGIDA, FUERA_DE_HORARIO)
+# «Merodeo» (tantos segundos frente a una góndola) ya no existe (29 oct, decisión del dueño): ni alerta, ni parámetro,
+# ni métrica. El nombre queda para leer alertas viejas y lo que todavía mandan agentes y apps sin actualizar: en
+# `rules` se ignora (`clean_rules`, `RuleConfig.from_dict`).
+MERODEO = "merodeo"
+RETIRED_RULES = (MERODEO,)
+RETIRED_KEYS = ("loiter_seconds",)
 # Alarma del DVR (llegada por Hik-Partner Pro) con persona, sin ninguna regla disparada en el clip.
 ALARMA_DVR = "alarma_dvr"
 # Los gestos (core/gestos.py) son tipos de evento pero NO reglas de `rules`: un agente viejo rechaza nombres que no
-# conoce en enabled_rules o cooldown_seconds. Se configuran aparte, en analysis["gestures"].
-EVENT_TYPES = RULE_TYPES + (ALARMA_DVR,) + GESTURE_TYPES
+# conoce en enabled_rules o cooldown_seconds. Se configuran aparte, en analysis["gestures"]. El orden es el de
+# siempre (con «merodeo» en su lugar): de él salen las variables de los modelos entrenados (core/scorer.py).
+EVENT_TYPES = (SALIDA_SIN_PAGO, MERODEO, ZONA_RESTRINGIDA, FUERA_DE_HORARIO, ALARMA_DVR) + GESTURE_TYPES
 # De más a menos grave: para elegir el tipo de un clip de alarma donde se disparan varias reglas.
-RULE_PRIORITY = (SALIDA_SIN_PAGO, MANO_ROPA, MANO_BOLSILLO, MANO_BOLSA, ZONA_RESTRINGIDA, MERODEO, FUERA_DE_HORARIO)
+RULE_PRIORITY = (SALIDA_SIN_PAGO, MANO_ROPA, MANO_BOLSILLO, MANO_BOLSA, ZONA_RESTRINGIDA, FUERA_DE_HORARIO)
 
 SEVERITY = {SALIDA_SIN_PAGO: "alta", ZONA_RESTRINGIDA: "alta", MERODEO: "media", FUERA_DE_HORARIO: "media",
             ALARMA_DVR: "baja", MANO_BOLSILLO: "alta", MANO_ROPA: "alta", MANO_BOLSA: "media"}
 BAG_LABELS = ("mochila", "cartera", "valija")  # objetos del detector (core/escena.py) que cuentan como bolsa
-DEFAULT_COOLDOWNS = {SALIDA_SIN_PAGO: 8.0, MERODEO: 30.0, ZONA_RESTRINGIDA: 15.0, FUERA_DE_HORARIO: 300.0}
-_NUMERIC_KEYS = ("shelf_dwell_seconds", "checkout_min_seconds", "loiter_seconds", "restricted_min_seconds")
+DEFAULT_COOLDOWNS = {SALIDA_SIN_PAGO: 8.0, ZONA_RESTRINGIDA: 15.0, FUERA_DE_HORARIO: 300.0}
+_NUMERIC_KEYS = ("shelf_dwell_seconds", "checkout_min_seconds", "restricted_min_seconds")
+
+
+def clean_rules(rules: dict | None) -> dict:
+    """Las reglas sin lo que ya no existe (el merodeo y su tiempo): lo que se guarda y lo que viaja a los agentes."""
+    out = {k: v for k, v in dict(rules or {}).items() if k not in RETIRED_KEYS}
+    if out.get("enabled_rules") is not None:
+        out["enabled_rules"] = [r for r in out["enabled_rules"] if r not in RETIRED_RULES]
+    if isinstance(out.get("cooldown_seconds"), dict):
+        out["cooldown_seconds"] = {k: v for k, v in out["cooldown_seconds"].items() if k not in RETIRED_RULES}
+    return out
 
 
 @dataclass(frozen=True)
@@ -72,7 +88,6 @@ class Zone:
 class RuleConfig:
     shelf_dwell_seconds: float = 3.0
     checkout_min_seconds: float = 1.0
-    loiter_seconds: float = 45.0
     restricted_min_seconds: float = 1.0
     cooldown_seconds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_COOLDOWNS))
     opening_hours: tuple[time, time] | None = None
@@ -84,7 +99,7 @@ class RuleConfig:
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "RuleConfig":
-        d = dict(d or {})
+        d = clean_rules(d)  # lo que mandan servidores, apps y configuraciones de antes (merodeo) se ignora
         cfg = cls()
         for k in _NUMERIC_KEYS:
             if k in d:
@@ -262,8 +277,6 @@ class RuleEngine:
                         st.pending_items, st.pending_zone, st.pending_dwell = True, name, dwell
                     elif st.pending_items and st.pending_zone == name:
                         st.pending_dwell = max(st.pending_dwell, dwell)
-                    if dwell >= self.cfg.loiter_seconds:
-                        emit(MERODEO, name, f"Persona #{t.id} lleva {dwell:.0f}s frente a «{name}»")
                 elif zone.type == "checkout":
                     if dwell >= self.cfg.checkout_min_seconds:
                         st.pending_items, st.pending_zone = False, None

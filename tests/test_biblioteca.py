@@ -130,7 +130,7 @@ def test_alertas_etiquetadas_van_al_entrenamiento_sin_llegarle_a_nadie(app):
                      ).json()["id"]
         cam = c.post("/api/cameras", json={"client_id": cid, "name": "Góndolas ventana", "brand": "ip",
                                            "host": "dvr.example", "password": "x"}).json()["id"]
-        meta = {"camera_id": cam, "uuid": "a" * 32, "type": "merodeo", "label": "hurto", "description": "45 s en góndola",
+        meta = {"camera_id": cam, "uuid": "a" * 32, "type": "salida_sin_pago", "label": "hurto", "description": "salió",
                 "features": {"dwell_shelf": 48.0, "otra_cosa": 3}, "track_id": 4, "video_ts": 95.0, "bbox": [1, 2, 3, 4],
                 "frame_size": [368, 416], "video": "VIDEO CAMARA 1.mp4"}
         r = c.post("/api/training/samples", data={"meta": json.dumps(meta)},

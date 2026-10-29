@@ -288,10 +288,11 @@ VM_STATUS = {"PROVISIONING": "Arrancando…", "STAGING": "Arrancando…", "STOPP
 BOOT_MINUTES = 6  # lo que tarda en arrancar, actualizarse (git pull) y conectarse
 
 
-def vm_estado(vm: dict | None, m: dict | None, now: datetime) -> tuple[str, str, str]:
+def vm_estado(vm: dict | None, m: dict | None, now: datetime, listed: bool = False) -> tuple[str, str, str]:
     """Estado de una máquina para la pestaña «Máquinas»: lo que dice Google Cloud (`vm`, None si no está ahí o
-    Google no está conectado) y lo que dice el sistema (`m`, None si nunca se dio de alta). Devuelve (texto, color,
-    consejo). Color: ok, warn, bad, busy, off."""
+    Google no está conectado) y lo que dice el sistema (`m`, None si nunca se dio de alta). `listed`: Google está
+    conectado y la lista anduvo (si no está en ella, no es de Google o la borraron). Devuelve (texto, color, consejo).
+    Color: ok, warn, bad, busy, off."""
     online = bool(m and m.get("online"))
     if vm is None:
         if m is None:
@@ -300,9 +301,12 @@ def vm_estado(vm: dict | None, m: dict | None, now: datetime) -> tuple[str, str,
             return "Se va (la nube la reclamó)", "warn", "La nube se la lleva (Spot): sus cámaras pasan a otra máquina."
         if online:
             return ("● En línea · " + ("vaciándose para apagar" if m.get("draining") else "analizando")), "ok", ""
-        return (f"Sin conexión {desde(m.get('last_seen'), now)}", "bad",
+        when = desde(m["last_seen"], now) if "last_seen" in m else ""
+        hint = ("No está en el proyecto de Google Cloud conectado: es de otra nube o la borraron. Si ya no existe, "
+                "sacala con «Más» → «Quitar del sistema»." if listed else
                 "El sistema no tiene noticias de esta máquina: puede estar apagada o sin internet. Conectá Google Cloud "
                 "(«Google Cloud ▾») para ver si está prendida y prenderla o reiniciarla desde acá.")
+        return f"Sin conexión {when}".strip(), "bad", hint
     status = vm.get("status")
     started = _when(vm.get("last_start"))
     booting = started is not None and now - started < timedelta(minutes=BOOT_MINUTES)
@@ -321,7 +325,8 @@ def vm_estado(vm: dict | None, m: dict | None, now: datetime) -> tuple[str, str,
         if booting:
             return ("● Prendida · arrancando el sistema", "busy",
                     "Al arrancar se actualiza sola: en unos minutos aparece en línea.")
-        return (f"● Prendida pero sin conexión {desde(m.get('last_seen'), now)}", "bad",
+        when = desde(m["last_seen"], now) if "last_seen" in m else ""
+        return (f"● Prendida pero sin conexión {when}".rstrip(), "bad",
                 "Está prendida (gasta créditos) pero no analiza: tocá «Reiniciar». Al arrancar se actualiza y se vuelve "
                 "a conectar.")
     text = VM_STATUS.get(status or "", status or "?")
@@ -508,7 +513,7 @@ class Oficina:
             iconic, tab = False, str(self.tab_clients)
         if not iconic and self.is_admin and tab == str(getattr(self, "tab_mq", "")):
             if time.monotonic() > self._mq_fast_until:  # (después de prender o apagar ya se mira cada 5 s)
-                self.load_machines()
+                self.load_machines(settings=False)
             self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
             return
         visible = not iconic and tab == str(self.tab_clients)
@@ -550,7 +555,12 @@ class Oficina:
             self._fill_alert_filters()
             if self.is_admin:  # después de los clientes: muestran sus nombres (antes salía «—» si llegaban primero)
                 self.load_users()
-                self.load_machines()
+                try:
+                    mq_visible = self.notebook.select() == str(self.tab_mq)
+                except Exception:  # noqa: BLE001
+                    mq_visible = False
+                if mq_visible:  # (le pregunta a Google: solo si se está mirando)
+                    self.load_machines()
         self.bg.run(load, done, self._net_fail)
         self.load_alerts()
 
@@ -1976,22 +1986,36 @@ class Oficina:
             m.add_separator()
             m.add_command(label="Desconectar Google Cloud…", command=self.cloud_disconnect)
 
-    def load_machines(self) -> None:
+    def load_machines(self, settings: bool = True) -> None:
+        """La pestaña «Máquinas». `settings`: también los campos del reparto (al entrar o después de guardar; los
+        refrescos automáticos no los tocan si el usuario los está cambiando)."""
+        self._mq_gen = getattr(self, "_mq_gen", 0) + 1
+        gen = self._mq_gen
+
         def load():
-            a, cameras, agents = (self.api.get("/api/analysis"), self.api.get("/api/cameras"),
-                                  self.api.get("/api/agents"))
+            cameras, agents = self.api.get("/api/cameras"), self.api.get("/api/agents")
             try:
-                cloud = self.api.get("/api/cloud")
-            except ApiError as exc:  # servidor sin actualizar: solo lo del sistema
-                cloud = {"connected": False, "instances": [], "error": None if exc.status == 404 else str(exc)}
+                cloud = self.api.get("/api/cloud")  # trae también el reparto («analysis»)
+            except ApiError as exc:
+                if exc.status != 404:
+                    raise
+                cloud = {"connected": False, "instances": [], "unsupported": True}  # servidor sin actualizar
+            a = cloud.get("analysis") or self.api.get("/api/analysis")
             return a, cameras, agents, cloud
 
         def done(res):
+            if gen != self._mq_gen:  # llegó tarde: ya hay un pedido más nuevo
+                return
             a, cameras, agents, cloud = res
             self.analysis, self.cloud = a, cloud
-            self.an_mode.set(ANALYSIS_MODES.get(a.get("mode"), ANALYSIS_MODES["pcs"]))
-            self.an_cap.set(str(int(a.get("capacity") or 30)))
-            self.an_spare.set(str(a.get("spare") or 0))
+            server = (ANALYSIS_MODES.get(a.get("mode"), ANALYSIS_MODES["pcs"]), str(int(a.get("capacity") or 30)),
+                      str(a.get("spare") or 0))
+            shown = (self.an_mode.get(), self.an_cap.get(), self.an_spare.get())
+            if settings or shown == getattr(self, "_an_server", shown) or not any(shown):
+                self.an_mode.set(server[0])
+                self.an_cap.set(server[1])
+                self.an_spare.set(server[2])
+            self._an_server = server
             p = a.get("plan") or {}
             if a.get("mode") == "servidores":
                 info = (f"Ahora: {a.get('cameras_active', 0)} de {a.get('cameras', 0)} cámaras para analizar "
@@ -2006,8 +2030,11 @@ class Oficina:
                     info += (f"  Ahora {a['cameras']} cámara(s) van a máquinas · carga {p.get('units', 0)} · hacen "
                              f"falta {p.get('desired', 0)} máquina(s) · {p.get('online', 0)} en línea.")
             self.an_info.set(info)
-            if cloud.get("connected"):
-                gi = (f"Google Cloud · proyecto {cloud.get('project')} · se ve con la cuenta {cloud.get('account')}.")
+            if cloud.get("unsupported"):
+                gi = ("El servidor todavía no tiene esta función (falta actualizarlo): se ve solo si el sistema tiene "
+                      "noticias de cada máquina.")
+            elif cloud.get("connected"):
+                gi = f"Google Cloud · proyecto {cloud.get('project')} · se ve con la cuenta {cloud.get('account')}."
             else:
                 gi = ("Google Cloud sin conectar: se ve solo si el sistema tiene noticias de cada máquina. Para ver si "
                       "están prendidas y prenderlas o apagarlas desde acá: «Google Cloud ▾» → «Conectar…».")
@@ -2022,35 +2049,52 @@ class Oficina:
         """Cada máquina (de Google Cloud y/o del sistema) con su estado, y lo que analiza: cliente → cámara."""
         tree = self.mq_tree
         prev = tree.selection()
-        opened = {i for i in tree.get_children() if tree.item(i, "open")}
+        opened = set()  # lo desplegado (máquinas y clientes) sigue desplegado después de refrescar
+        stack = list(tree.get_children())
+        while stack:
+            iid = stack.pop()
+            if tree.item(iid, "open"):
+                opened.add(iid)
+            stack.extend(tree.get_children(iid))
         tree.delete(*tree.get_children())
         self._mq_rows = {}
         now = datetime.now().astimezone()
+        cloud = cloud or {}
+        listed = bool(cloud.get("connected")) and not cloud.get("error")
         by_agent = {x["id"]: x for x in agents}
         machines = list(a.get("machines") or [])
         by_instance = {m["instance_id"]: m for m in machines if m.get("instance_id")}
         groups: list[tuple[str, str, tuple, str, set]] = []  # (fila, nombre, columnas, color, agentes)
         used: set[int] = set()
-        seen: set[str] = set()
-        for vm in (cloud or {}).get("instances") or []:
-            m = by_instance.get(vm["name"])
+        matched: set[str] = set()
+        # las prendidas primero: si hubiera dos con el mismo nombre en zonas distintas, la del sistema es la prendida
+        vms = sorted(cloud.get("instances") or [], key=lambda v: (v.get("status") != "RUNNING", v.get("name") or ""))
+        for vm in vms:
+            m = by_instance.pop(vm["name"], None)
             key = m["key"] if m else f"vm:{vm['zone']}/{vm['name']}"
-            seen.add(key)
-            text, tag, _hint = vm_estado(vm, m, now)
+            if key in self._mq_rows:  # (nombre repetido en otra zona)
+                key = f"vm:{vm['zone']}/{vm['name']}"
+            if m:
+                matched.add(m["key"])
+            text, tag, _hint = self._mq_state(key, vm, m, now, listed)
+            status = vm.get("status")
             tipo = vm.get("machine_type", "") + (" · Spot" if vm.get("spot") else "")
-            stamp = vm.get("last_start") if vm.get("status") == "RUNNING" else vm.get("last_stop")
-            desde = ("prendida " if vm.get("status") == "RUNNING" else "apagada ") + hace(stamp, now) if stamp else ""
+            when = {"RUNNING": ("prendida ", vm.get("last_start")), "TERMINATED": ("apagada ", vm.get("last_stop")),
+                    "STOPPED": ("apagada ", vm.get("last_stop")),
+                    "SUSPENDED": ("suspendida ", vm.get("last_suspend"))}.get(status)
+            since = (when[0] + hace(when[1], now)) if when and when[1] else ""
             carga = f"{m['load']} / {m['capacity']:.0f}" if m else "—"
-            groups.append((key, vm["name"], (text, "", carga, tipo, desde), tag, set(m["agent_ids"]) if m else set()))
+            groups.append((key, vm["name"], (text, "", carga, tipo, since), tag, set(m["agent_ids"]) if m else set()))
             self._mq_rows[key] = {"vm": vm, "m": m}
             used |= set(m["agent_ids"]) if m else set()
         for m in machines:  # las del sistema que no están en Google Cloud (otra nube, o Google sin conectar)
-            if m["key"] in seen:
+            if m["key"] in matched:
                 continue
             name = m["names"][0] if len(m["names"]) == 1 else (
                 m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
-            text, tag, _hint = vm_estado(None, m, now)
-            groups.append((m["key"], name, (text, "", f"{m['load']} / {m['capacity']:.0f}", m.get("instance_id") or "—",
+            text, tag, _hint = self._mq_state(m["key"], None, m, now, listed)
+            tipo = "otra nube" if (m.get("instance_id") or "").startswith("i-") else "—"
+            groups.append((m["key"], name, (text, "", f"{m['load']} / {m['capacity']:.0f}", tipo,
                                             ("visto " + hace(m.get("last_seen"), now)) if m.get("last_seen") else ""),
                            tag, set(m["agent_ids"])))
             self._mq_rows[m["key"]] = {"vm": None, "m": m}
@@ -2073,8 +2117,9 @@ class Oficina:
             for c in cams:
                 by_client.setdefault(c["client_id"], []).append(c)
             for cl_id, lst in sorted(by_client.items(), key=lambda kv: self.client_name(kv[0])):
-                cnode = tree.insert(node, "end", iid=f"{key}/c{cl_id}", text=self.client_name(cl_id),
-                                    values=("", len(lst), "", "", ""))
+                cid = f"{key}/c{cl_id}"
+                cnode = tree.insert(node, "end", iid=cid, text=self.client_name(cl_id),
+                                    values=("", len(lst), "", "", ""), open=cid in opened)
                 for c in sorted(lst, key=lambda x: x["name"]):
                     tree.insert(cnode, "end", iid=f"{key}/k{c['id']}", text=c["name"],
                                 values=(self._cam_state(c), "", "", "", ""))
@@ -2083,6 +2128,15 @@ class Oficina:
         elif not prev and self._mq_rows:  # la primera máquina elegida: así se ve su consejo y sus botones
             tree.selection_set(next(iter(self._mq_rows)))
         self._mq_buttons()
+
+    def _mq_state(self, key: str, vm: dict | None, m: dict | None, now: datetime, listed: bool) -> tuple[str, str, str]:
+        """`vm_estado`, más lo que se pidió desde acá hace poco (Google tarda: «Reiniciando…» hasta que se vea)."""
+        pend = getattr(self, "_mq_pending", {}).get(key)
+        if pend and time.monotonic() < pend["until"] and (vm or {}).get("status") == pend["status"]:
+            return pend["text"], "busy", pend["hint"]
+        if pend:
+            self._mq_pending.pop(key, None)
+        return vm_estado(vm, m, now, listed)
 
     def _mq_selected(self) -> tuple[str, dict | None]:
         sel = self.mq_tree.selection()
@@ -2093,17 +2147,19 @@ class Oficina:
 
     def _mq_buttons(self) -> None:
         """Botones según la máquina elegida y su estado en Google Cloud, y el consejo de qué hacer."""
-        _key, row = self._mq_selected()
+        key, row = self._mq_selected()
         vm = (row or {}).get("vm")
         status = (vm or {}).get("status")
-        can = bool(self.cloud.get("connected")) and vm is not None
+        pending = key in getattr(self, "_mq_pending", {})
+        can = bool(self.cloud.get("connected")) and vm is not None and not pending
         self.mq_start.configure(state="normal" if can and status in ("TERMINATED", "STOPPED", "SUSPENDED") else
                                 "disabled")
         self.mq_stop.configure(state="normal" if can and status == "RUNNING" else "disabled")
         self.mq_reset.configure(state="normal" if can and status == "RUNNING" else "disabled")
         hint = ""
         if row:
-            hint = vm_estado(vm, row.get("m"), datetime.now().astimezone())[2]
+            listed = bool(self.cloud.get("connected")) and not self.cloud.get("error")
+            hint = self._mq_state(key, vm, row.get("m"), datetime.now().astimezone(), listed)[2]
         self.mq_hint.set(hint)
 
     def cloud_action(self, action: str) -> None:
@@ -2117,7 +2173,7 @@ class Oficina:
             action = "resume"
         others = [x for x in (self.analysis.get("machines") or []) if x.get("online") and x is not m]
         if action in ("start", "resume"):
-            msg = (f"¿Prender «{name}»?\n\nDesde que arranca gasta créditos de Google Cloud. En unos 3 minutos se "
+            msg = (f"¿Prender «{name}»?\n\nDesde que arranca gasta créditos de Google Cloud. En unos minutos se "
                    "actualiza sola y empieza a analizar sus cámaras.")
         elif action == "stop":
             msg = f"¿Apagar «{name}»?\n\nDeja de gastar procesador (el disco sigue costando unos centavos por día)."
@@ -2126,30 +2182,39 @@ class Oficina:
                         f"\n\n⚠ Sus {cams} cámara(s) dejan de analizarse: no hay otra máquina en línea. Hasta que "
                         "la prendas, no habrá alertas ni métricas de esas cámaras.")
         else:
-            msg = (f"¿Reiniciar «{name}»?\n\nSe corta unos 3 minutos: al arrancar baja la última versión del sistema "
+            msg = (f"¿Reiniciar «{name}»?\n\nSe corta unos minutos: al arrancar baja la última versión del sistema "
                    "y vuelve a analizar sus cámaras. Sirve cuando está prendida pero sin conexión.")
         if not self.mb.askyesno(NOMBRE, msg):
             return
-        verb = {"start": "prendiendo", "resume": "prendiendo", "stop": "apagando", "reset": "reiniciando"}[action]
+        verb = {"start": "Prendiendo", "resume": "Prendiendo", "stop": "Apagando", "reset": "Reiniciando"}[action]
 
         def done(_res):
-            self.mq_hint.set(f"Google está {verb} «{name}»: la lista se actualiza sola cada 5 segundos.")
+            # Google tarda en mostrar el cambio (y al reiniciar ni cambia de estado): se dice hasta que se vea
+            self._mq_pending = getattr(self, "_mq_pending", {})
+            self._mq_pending[key] = {"status": vm.get("status"), "until": time.monotonic() + 180,
+                                     "text": f"{verb}… (pedido a las {datetime.now():%H:%M})",
+                                     "hint": f"Le pedimos a Google: {verb.lower()} «{name}». La lista se actualiza "
+                                             "sola cada 5 segundos."}
             self._mq_fast_until = time.monotonic() + 180
-            self._mq_fast()
+            self.load_machines(settings=False)
+            if not getattr(self, "_mq_fast_on", False):
+                self._mq_fast_on = True
+                self.v.root.after(5000, self._mq_fast)
         self.bg.run(lambda: self.api.post("/api/cloud/action", {"zone": vm["zone"], "name": name, "action": action}),
                     done, self.err)
 
     def _mq_fast(self) -> None:
         """Después de prender, apagar o reiniciar: la lista se refresca cada 5 s durante 3 minutos (con la pestaña a la
-        vista)."""
+        vista). Una sola cadena aunque se pidan varias cosas seguidas."""
         if time.monotonic() > self._mq_fast_until or not self.v.open:
+            self._mq_fast_on = False
             return
         try:
             visible = self.notebook.select() == str(self.tab_mq)
         except Exception:  # noqa: BLE001
             visible = False
         if visible:
-            self.load_machines()
+            self.load_machines(settings=False)
         self.v.root.after(5000, self._mq_fast)
 
     def cloud_connect(self) -> None:
@@ -2161,16 +2226,16 @@ class Oficina:
         if not path:
             return
         try:
+            if Path(path).stat().st_size > 20000:
+                return self.mb.showerror(NOMBRE, "Ese archivo es muy grande para ser una clave de Google Cloud.")
             text = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             return self.mb.showerror(NOMBRE, f"No se pudo leer el archivo: {exc}")
-        if len(text) > 20000:
-            return self.mb.showerror(NOMBRE, "Ese archivo es muy grande para ser una clave de Google Cloud.")
 
         def done(cloud):
             self.mb.showinfo(NOMBRE, f"Google Cloud conectado (proyecto {cloud.get('project')}): ya se ve qué máquinas "
-                                     "están prendidas.\n\nLa clave quedó guardada cifrada en el servidor: podés borrar "
-                                     f"el archivo de tu PC ({Path(path).name}).")
+                                     "están prendidas.\n\nLa clave quedó guardada cifrada en el servidor: borrá el "
+                                     f"archivo de tu PC ({Path(path).name}) y no se lo mandes a nadie.")
             self.load_machines()
         self.gc_info.set("Probando la clave con Google…")
         self.bg.run(lambda: self.api.put("/api/cloud/credentials", {"key": text}), done,
@@ -2192,18 +2257,23 @@ class Oficina:
         ttk = self.ttk
         top, frm = self._dialog("Conectar Google Cloud: cómo crear la clave", width=640)
         steps = (
-            "Se hace una sola vez (unos 3 minutos). La clave le permite a la app ver las máquinas y prenderlas, "
-            "apagarlas o reiniciarlas; no puede borrarlas ni crear otras.\n\n"
-            "1. Entrá a la consola de Google Cloud con tu cuenta (botón de abajo) y elegí el proyecto «vigia».\n"
-            "2. Menú ☰ → «IAM y administración» → «Cuentas de servicio» → «+ Crear cuenta de servicio».\n"
-            "3. Nombre: analitica-app → «Crear y continuar».\n"
-            "4. Rol: buscá «Administrador de instancias de Compute (v1)» (si solo querés ver, «Visualizador de "
-            "Compute») → «Continuar» → «Listo».\n"
-            "5. En la lista, tocá la cuenta analitica-app → pestaña «Claves» → «Agregar clave» → «Crear clave nueva» → "
-            "JSON → «Crear». Se baja un archivo .json.\n"
-            "6. Acá: «Google Cloud ▾» → «Conectar Google Cloud…» y elegí ese archivo.\n\n"
-            "La clave se guarda cifrada en el servidor y no vuelve a salir. Después borrá el archivo de Descargas y no "
-            "se lo mandes a nadie.")
+            "Se hace una sola vez (unos 5 minutos). La clave le permite a la app ver las máquinas y prenderlas, "
+            "apagarlas o reiniciarlas; con el rol de abajo no puede borrarlas, crearlas ni tocar sus discos.\n\n"
+            "1. Entrá a la consola de Google Cloud (botones de abajo) y elegí el proyecto «vigia».\n"
+            "2. El rol: menú ☰ → «IAM y administración» → «Roles» → «+ Crear rol». Título: «Analítica: prender y apagar "
+            "máquinas». «+ Agregar permisos», buscá y marcá estos 6: compute.instances.list, compute.instances.get, "
+            "compute.instances.start, compute.instances.stop, compute.instances.reset y compute.instances.resume → "
+            "«Agregar» → «Crear».\n"
+            "3. La cuenta: «IAM y administración» → «Cuentas de servicio» → «+ Crear cuenta de servicio». Nombre: "
+            "analitica-app → «Crear y continuar» → Rol: el que creaste («Analítica: prender y apagar máquinas») → "
+            "«Continuar» → «Listo».\n"
+            "4. La clave: tocá la cuenta analitica-app → pestaña «Claves» → «Agregar clave» → «Crear clave nueva» → JSON "
+            "→ «Crear». Se baja un archivo .json.\n"
+            "5. Acá: «Google Cloud ▾» → «Conectar Google Cloud…» y elegí ese archivo.\n\n"
+            "Solo para ver (sin prender ni apagar) alcanza el rol «Visualizador de Compute». No uses «Administrador de "
+            "instancias de Compute»: con ese rol, si la clave se filtrara, podrían borrar máquinas y discos.\n"
+            "La clave se guarda cifrada en el servidor y no vuelve a salir. Después borrá el archivo de Descargas y no se "
+            "lo mandes a nadie.")
         ttk.Label(frm, text=steps, wraplength=600, justify="left").grid(row=0, column=0, columnspan=3, sticky="w")
         b = ttk.Frame(frm)
         b.grid(row=1, column=0, columnspan=3, sticky="e", pady=(10, 0))
@@ -2215,6 +2285,9 @@ class Oficina:
         ttk.Button(b, text="Abrir cuentas de servicio",
                    command=lambda: webbrowser.open("https://console.cloud.google.com/iam-admin/serviceaccounts"
                                                    f"?project={project}")).pack(side="right")
+        ttk.Button(b, text="Abrir roles",
+                   command=lambda: webbrowser.open(f"https://console.cloud.google.com/iam-admin/roles?project={project}")
+                   ).pack(side="right", padx=6)
 
     def save_analysis(self) -> None:
         mode = next((k for k, t in ANALYSIS_MODES.items() if t == self.an_mode.get()), "pcs")
@@ -2729,8 +2802,7 @@ class TuneWindow:
     El motor está en agent/ajuste.py (`Tuner`)."""
 
     W, H = 640, 360  # el tamaño en que se guardan los cuadros: entra en una pantalla de 1366x768
-    TIMES = (("loiter_seconds", "Merodeo (góndola)", 45),
-             ("shelf_dwell_seconds", "Góndola p/ «tomó algo»", 3),
+    TIMES = (("shelf_dwell_seconds", "Góndola p/ «tomó algo»", 3),
              ("checkout_min_seconds", "Caja para «pagó»", 1),
              ("restricted_min_seconds", "Zona restringida", 1))
     # gestos (core/gestos.py) y la clave de sus segundos en GestureConfig
@@ -3021,7 +3093,8 @@ class TuneWindow:
                    "gestos de ocultamiento, los mira.")
         else:
             names = [TYPE_NAMES.get(r, r) for r in (enabled if enabled is not None else
-                                                     ("salida_sin_pago", "merodeo", "zona_restringida", "fuera_de_horario"))]
+                                                     ("salida_sin_pago", "zona_restringida", "fuera_de_horario"))
+                     if r != "merodeo"]  # (el merodeo ya no existe: lo que mande un servidor viejo no se muestra)
             prof = PROFILE_NAMES.get(self.analysis.get("profile") or "general", "").split(" (")[0]
             txt = f"Reglas de esta cámara (tipo {prof}): {', '.join(names).lower() or 'ninguna'}."
             gestures = (self.analysis.get("gestures") or {}).get("enabled") or []

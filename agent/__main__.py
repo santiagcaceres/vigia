@@ -811,7 +811,7 @@ def main() -> None:
                    help="Mostrar la ventana con las cámaras y los recuadros (en el .exe viene activada)")
     p.add_argument("--sin-ventana", dest="ventana", action="store_false", help="Sin ventana (servidor sin pantalla)")
     p.add_argument("--clave-maquinas", default=env.get("VIGIA_POOL_KEY"),
-                   help="Máquina de análisis: se da de alta sola con esta clave (Administración → Máquinas)")
+                   help="Máquina de análisis: se da de alta sola con esta clave (app: Máquinas → «Más» → «Clave para máquinas nuevas»)")
     p.add_argument("--capacidad", type=float, default=float(env.get("VIGIA_CAPACIDAD") or 0) or None,
                    help="Máquina de análisis: cuántas cámaras de hurto a 5 fps aguanta")
     p.add_argument("--proceso", default=env.get("VIGIA_PROCESO"),

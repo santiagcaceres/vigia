@@ -22,7 +22,7 @@ fi
 SERVIDOR=${VIGIA_SERVER:-https://analitica-critica.vercel.app}
 REPO=${VIGIA_REPO:-https://github.com/santiagcaceres/vigia.git}
 if [ -z "${VIGIA_POOL_KEY:-}" ] && [ -z "${VIGIA_POOL_KEY_SSM:-}" ]; then
-  echo "Falta VIGIA_POOL_KEY (se crea en la app: Administración → Máquinas de análisis)" >&2
+  echo "Falta VIGIA_POOL_KEY (se crea en la app: Máquinas → «Más» → «Clave para máquinas nuevas»)" >&2
   exit 1
 fi
 APT="apt-get -q -y -o DPkg::Lock::Timeout=600"  # al prender una máquina nueva, Ubuntu se actualiza solo un rato
