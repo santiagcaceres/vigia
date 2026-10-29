@@ -35,7 +35,8 @@ ellas la parte de Hik-Partner Pro queda apagada y el resto funciona igual.
 **Ya creado en la base:** cliente `Casa (prueba)` (id 1); agente `PC de casa` (id 1, de local);
 agente `PC central` (id 2, `client_id` NULL); cámara `Demo noticiero (video)` (id 1, deshabilitada,
 asignada al agente central, con zonas y reglas para probar con videos subidos). Usuarios: solo
-`admin` (faltan crear los otros 2 administradores y los empleados; lo hace un admin desde el panel).
+`admin` y **`GonzaloD`** (id 4, administrador, entra casi siempre por la web; creado el 29 oct a pedido del dueño, la
+clave la tiene el dueño y conviene que la cambie con «Mi clave»). Faltan los empleados (los crea un admin).
 Tablas `alarms` y columnas `cameras.mode/hpp_serial/alarm_cfg/brand`, `alarms.source` ya existen.
 `cameras.mode` se amplió a varchar(20) con migración manual (19 oct).
 En CAMARAS quedaron tablas de una app anterior (`profiles`, `videos`, `video_batches`,
@@ -105,7 +106,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Para probarla en la sesión cloud: `python3.12` del sistema con `python3-tk` (apt) + venv con
   `--system-site-packages` y `xvfb-run`; captura con `import -window root`.
 - **La gestión se hace en la app de escritorio (22 oct, decisión del dueño):** la web queda para los
-  **clientes** (su resumen, alertas, incidentes y cámaras). Admin y empleados que entran a la web ven "Usá la
+  **clientes** (su resumen, alertas, incidentes y cámaras) **y, desde el 29 oct, los administradores** (miran métricas
+  y datos de todos los clientes). Los empleados que entran a la web ven "Usá la
   app de escritorio" (con un link de emergencia "Entrar igual" que guarda `sessionStorage.vigia_web_staff`).
   La app (`VigiaAgente.exe`) entra con **usuario y clave** (`POST /api/login`, sesión Bearer guardada en
   `agente.env` como `VIGIA_SESSION`) y tiene pestañas (`agent/oficina.py`): **Clientes y cámaras** (alta,
@@ -533,6 +535,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     dio alerta y por qué) · «▶ Videos guardados» · «● En vivo»; videos de prueba con un menú «Video elegido» (marcar
     hurto/normal, quitar, abrir carpeta); «Zonas y tiempos de las reglas» (Zonas…, Probar estos tiempos); alertas de
     prueba; cómo anda la cámara. Abajo: Notas · Guardar · **✔ Aprobar y analizar** · Cerrar.
+- **Web con la marca y reporte de métricas en PDF (29 oct, pedido del dueño; app 1.29.0):**
+  - **Web:** paleta de la marca en `public/style.css` (fondo claro, azul #011b5d, botón principal azul; también
+    `aviso.html` y `guia.html`). Los administradores ya no ven «Usá la app de escritorio» (solo los empleados) y tienen
+    **Métricas** en el menú (`#/metricas`, con un selector de cliente arriba; sin `client_id` abre el primero).
+  - **Reporte PDF** (`GET /api/metrics/report.pdf?client_id&desde&hasta` o `&days=N`, por defecto 7 días): lo puede
+    bajar **cualquier usuario** (el cliente, solo el suyo; el staff tiene que decir el cliente, si no 422). Lo arma
+    `server/reporte.py` con **fpdf2** (Python puro, en `requirements.txt`; letras de base latin-1, por eso `latin()`
+    cambia los caracteres raros): banda azul con el ojo blanco (`server/logo.png`), Gente (cuadros + barras por hora si es
+    un día o por día), A dónde van (zonas), Estación, Por cámara, Alertas de posible hurto (plan hurto) y «Cómo se mide».
+    Usa `metrics_summary()` (main.py), lo mismo que `/api/metrics`. Web: botón «⬇ Descargar PDF» en Métricas y en el
+    Resumen del cliente (el período elegido). App: Clientes → Métricas → «Exportar (PDF o Excel)…» (PDF de un cliente,
+    o el CSV de antes, de uno o de todos).
 - **Detectores y pose (28 oct, pedido del dueño: «si hay algo hecho y gratis que sea mejor, lo usamos»; app 1.23.0):**
   - **Descartados** (investigación): BlazePose/MediaPipe (una persona, de frente, 2-4 m; su ficha excluye la
     vigilancia), repos Aisle Guard y Theft-Detection (zonas y tiempos como Vigía, con YOLOv8 AGPL, sin modelos de hurto),

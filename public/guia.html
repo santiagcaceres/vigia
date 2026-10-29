@@ -9,19 +9,16 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png">
 <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
 <style>
-  :root { --bg:#0e1116; --panel:#161b22; --line:#2a333f; --text:#e6edf3; --muted:#8b98a8; --accent:#e5484d; --warn:#e3a008; --ok:#2fb344;
-    --logo:url("/img/logo-blanco.png"); }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --bg:#f5f6f8; --panel:#fff; --line:#dde1e6; --text:#1b1f24; --muted:#5f6b7a;
-      --logo:url("/img/logo.png"); }
-  }
+  /* estilo de Analítica Crítica (como la web y la app): azul de la marca sobre fondo claro */
+  :root { --bg:#f3f5f9; --panel:#fff; --line:#d8dee9; --text:#1d2433; --muted:#667085; --accent:#c0392b; --warn:#b45309;
+    --ok:#2f8f46; --marca:#011b5d; --logo:url("/img/logo.png"); color-scheme: light; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
-  .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:20px; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:20px; color:var(--marca); }
   .mark { width:28px; height:28px; flex:none; background:var(--logo) center / contain no-repeat; }
-  h1 { font-size:26px; margin:18px 0 6px; }
-  h2 { font-size:20px; margin:36px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h1 { font-size:26px; margin:18px 0 6px; color:var(--marca); }
+  h2 { font-size:20px; margin:36px 0 10px; color:var(--marca); padding-top:18px; border-top:1px solid var(--line); }
   h3 { font-size:16px; margin:18px 0 6px; }
   .muted { color:var(--muted); }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:12px 0; }

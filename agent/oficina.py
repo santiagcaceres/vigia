@@ -916,24 +916,34 @@ class Oficina:
         ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
 
     def export_dialog(self) -> None:
-        """Métricas a un archivo CSV que abre Excel: por cliente (o todos), entre dos fechas, por día u hora."""
+        """Exportar métricas: en PDF (el reporte para leer o mandar, el mismo que baja la web) o para Excel (CSV, una
+        fila por cámara y día u hora). Entre dos fechas; el PDF es de un cliente, el Excel puede ser de todos."""
         tk, ttk = self.tk, self.ttk
         c = self._sel_client()
-        top, frm = self._dialog("Exportar métricas", width=460)
-        todos = "Todos los clientes"
+        top, frm = self._dialog("Exportar métricas", width=480)
+        todos = "Todos los clientes (solo Excel)"
+        formats = ("PDF: el reporte para leer o mandar", "Excel: una fila por cámara y día u hora")
+        fmt = tk.StringVar(value=formats[0])
         who = tk.StringVar(value=c["name"] if c else todos)
         today = datetime.now().date()
         d1 = tk.StringVar(value=(today - timedelta(days=6)).strftime("%d/%m/%Y"))
         d2 = tk.StringVar(value=today.strftime("%d/%m/%Y"))
         grp = tk.StringVar(value="Por día")
-        self._row(frm, 0, "Cliente", ttk.Combobox(frm, textvariable=who, state="readonly",
-                                                 values=[todos] + [x["name"] for x in self.clients]))
-        self._row(frm, 1, "Desde (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d1))
-        self._row(frm, 2, "Hasta (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d2))
-        self._row(frm, 3, "Agrupar", ttk.Combobox(frm, textvariable=grp, state="readonly", values=["Por día", "Por hora"]))
-        ttk.Label(frm, text="Se abre con Excel. Una fila por cámara y por día (u hora), en la hora del local: personas, "
-                            "tiempo promedio, ingresos, vehículos, surtidor y zonas.", foreground="#666",
-                  wraplength=420, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._row(frm, 0, "Formato", ttk.Combobox(frm, textvariable=fmt, state="readonly", values=formats, width=40))
+        self._row(frm, 1, "Cliente", ttk.Combobox(frm, textvariable=who, state="readonly",
+                                                 values=[x["name"] for x in self.clients] + [todos]))
+        self._row(frm, 2, "Desde (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d1))
+        self._row(frm, 3, "Hasta (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d2))
+        grp_box = ttk.Combobox(frm, textvariable=grp, state="readonly", values=["Por día", "Por hora"])
+        self._row(frm, 4, "Agrupar (Excel)", grp_box)
+        ttk.Label(frm, text="En la hora del local: personas, entradas y salidas, tiempo promedio, zonas, vehículos y "
+                            "alertas.", style="Suave.TLabel", wraplength=440, justify="left").grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        def fmt_changed(*_):
+            grp_box.configure(state="disabled" if fmt.get() == formats[0] else "readonly")
+        fmt.trace_add("write", fmt_changed)
+        fmt_changed()
 
         def go() -> None:
             try:
@@ -941,16 +951,25 @@ class Oficina:
                 b = datetime.strptime(d2.get().strip(), "%d/%m/%Y").date()
             except ValueError:
                 return self.mb.showwarning(NOMBRE, "Fechas con formato dd/mm/aaaa (por ejemplo 01/11/2026).", parent=top)
+            pdf = fmt.get() == formats[0]
             cl = next((x for x in self.clients if x["name"] == who.get()), None)
+            if pdf and cl is None:
+                return self.mb.showwarning(NOMBRE, "El PDF es de un cliente: elegilo en «Cliente».", parent=top)
             from tkinter import filedialog
 
             name = (cl["name"] if cl else "todos").replace(" ", "_")
-            path = filedialog.asksaveasfilename(parent=top, defaultextension=".csv", filetypes=[("CSV para Excel", "*.csv")],
-                                                initialfile=f"metricas_{name}_{a:%Y-%m-%d}_a_{b:%Y-%m-%d}.csv")
+            ext = ".pdf" if pdf else ".csv"
+            path = filedialog.asksaveasfilename(
+                parent=top, defaultextension=ext,
+                filetypes=[("PDF", "*.pdf")] if pdf else [("CSV para Excel", "*.csv")],
+                initialfile=f"metricas_{name}_{a:%Y-%m-%d}_a_{b:%Y-%m-%d}{ext}")
             if not path:
                 return
 
             def work():
+                if pdf:
+                    return self.api.get("/api/metrics/report.pdf", client_id=cl["id"], desde=a.isoformat(),
+                                        hasta=b.isoformat())
                 return self.api.get("/api/metrics/export", client_id=cl["id"] if cl else None, desde=a.isoformat(),
                                     hasta=b.isoformat(), agrupar="hora" if grp.get() == "Por hora" else "dia")
 
@@ -958,18 +977,12 @@ class Oficina:
                 Path(path).write_bytes(data if isinstance(data, bytes) else str(data).encode("utf-8"))
                 top.destroy()
                 if self.mb.askyesno(NOMBRE, f"Listo: {path}\n\n¿Abrirlo ahora?"):
-                    try:
-                        if sys.platform.startswith("win"):
-                            os.startfile(path)  # type: ignore[attr-defined]
-                        else:
-                            subprocess.Popen(["xdg-open", path])
-                    except Exception:  # noqa: BLE001
-                        pass
+                    open_file(path)
             self.bg.run(work, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
-        ttk.Button(bb, text="Exportar", command=go).pack(side="right", padx=6)
+        ttk.Button(bb, text="Exportar", style="Primario.TButton", command=go).pack(side="right", padx=6)
 
     def hikconnect_cameras(self, client: dict, pick: Callable[[list[dict]], None] | None, parent=None,
                            multi: bool = False) -> None:
@@ -1509,7 +1522,8 @@ class Oficina:
         txt.configure(state="disabled")
         bb = ttk.Frame(frm)
         bb.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
-        ttk.Button(bb, text="Exportar a Excel…", command=self.export_dialog).pack(side="left")
+        ttk.Button(bb, text="Exportar (PDF o Excel)…", style="Primario.TButton", command=self.export_dialog).pack(
+            side="left")
         ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="left", padx=(6, 0))
 
         def show(text: str) -> None:

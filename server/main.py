@@ -2611,14 +2611,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if client_id is None:
             raise HTTPException(422, "Falta client_id")
         client = get_or_404(s, Client, client_id, "Cliente")
-        tz = ZoneInfo(client.timezone)
-        today = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-        since = today - timedelta(days=days - 1)
-        q = s.query(CameraMetric).filter(CameraMetric.client_id == client_id, CameraMetric.bucket_start >= since)
+        today = datetime.now(ZoneInfo(client.timezone)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        return {**metrics_summary(s, client, today - timedelta(days=days - 1), today, camera_id), "days": days}
+
+    def metrics_summary(s, client: Client, since: datetime, until: datetime, camera_id: int | None = None) -> dict:
+        """Métricas de un cliente entre dos días (inclusive, hora del local): totales, por día, por hora y por
+        cámara. La usan /api/metrics y el reporte en PDF."""
+        q = s.query(CameraMetric).filter(CameraMetric.client_id == client.id, CameraMetric.bucket_start >= since,
+                                         CameraMetric.bucket_start < until + timedelta(days=1))
         if camera_id is not None:
             q = q.filter(CameraMetric.camera_id == camera_id)
         rows = q.all()
-        cams = {c.id: c.name for c in s.query(Camera).filter(Camera.client_id == client_id)}
+        cams = {c.id: c.name for c in s.query(Camera).filter(Camera.client_id == client.id)}
         total = empty_bucket()
         by_day: dict[str, dict] = {}
         by_hour: dict[int, dict] = {}
@@ -2629,12 +2633,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             by_day[d] = merge_bucket(by_day.get(d, empty_bucket()), r.data)
             by_hour[r.bucket_start.hour] = merge_bucket(by_hour.get(r.bucket_start.hour, empty_bucket()), r.data)
             by_cam[r.camera_id] = merge_bucket(by_cam.get(r.camera_id, empty_bucket()), r.data)
-        return {"client_id": client_id, "client_name": client.name, "plans": list(client.plans or ["hurto"]),
-                "days": days, "since": since.date().isoformat(), "until": today.date().isoformat(),
+        return {"client_id": client.id, "client_name": client.name, "plans": list(client.plans or ["hurto"]),
+                "since": since.date().isoformat(), "until": until.date().isoformat(),
                 "total": total,
                 "by_day": [{"date": d, **by_day[d]} for d in sorted(by_day)],
                 "by_hour": [{"hour": h, **by_hour[h]} for h in sorted(by_hour)],
                 "by_camera": [{"camera_id": cid, "name": cams.get(cid, f"Cámara {cid}"), **by_cam[cid]} for cid in sorted(by_cam)]}
+
+    @app.get("/api/metrics/report.pdf")
+    def metrics_report(client_id: int | None = None, desde: str | None = None, hasta: str | None = None,
+                       days: int | None = Query(None, ge=1, le=366), user: User = Depends(current_user),
+                       s=Depends(db)) -> Response:
+        """Reporte de métricas en PDF de un cliente (cualquier usuario: un cliente, solo el suyo). Período: `desde` y
+        `hasta` (AAAA-MM-DD) o los últimos `days` días; por defecto, los últimos 7."""
+        client_id = scope_client(user, client_id)
+        if client_id is None:
+            raise HTTPException(422, "Elegí un cliente")
+        client = get_or_404(s, Client, client_id, "Cliente")
+        today = datetime.now(ZoneInfo(client.timezone)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        try:
+            d2 = datetime.strptime(hasta, "%Y-%m-%d") if hasta else today
+            d1 = (datetime.strptime(desde, "%Y-%m-%d") if desde else
+                  d2 - timedelta(days=(days or 7) - 1))
+        except ValueError as exc:
+            raise HTTPException(422, "Fechas con formato AAAA-MM-DD") from exc
+        if d1 > d2:
+            d1, d2 = d2, d1
+        if (d2 - d1).days > 366:
+            raise HTTPException(422, "Como mucho un año por vez")
+        m = metrics_summary(s, client, d1, d2)
+        alerts = None
+        if "hurto" in (client.plans or ["hurto"]):
+            tz = ZoneInfo(client.timezone)
+            start = d1.replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+            end = (d2 + timedelta(days=1)).replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+            labels = (s.query(Event.label, func.count(Event.id))
+                      .filter(Event.client_id == client.id, Event.alert.is_(True),
+                              Event.source.in_(("vivo", "alarma", "prueba")),
+                              Event.occurred_at >= start, Event.occurred_at < end)
+                      .group_by(Event.label).all())
+            alerts = {(label or "sin_etiqueta"): n for label, n in labels}
+        from .reporte import metrics_pdf  # fpdf2 se carga solo cuando se pide un reporte
+        pdf = metrics_pdf(client.name, list(client.plans or ["hurto"]), d1.date(), d2.date(), m, alerts)
+        safe = "".join(ch if ch.isalnum() else "_" for ch in client.name).strip("_") or "cliente"
+        fname = f"metricas_{safe}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.pdf"
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
     @app.get("/api/stats/alerts")
     def alert_counts(_: User = Depends(staff), s=Depends(db)) -> dict:

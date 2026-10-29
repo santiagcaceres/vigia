@@ -316,3 +316,36 @@ def test_ajustar_cuenta_la_puerta_del_video_para_compararla_con_un_conteo_a_mano
         assert (d["entries"], d["exits"], d["door"]) == (*want, 1)
     t.set_analysis({"zones": synthetic.STORE_ZONES, "rules": {}})  # sin zona Entrada: no hay conteo de puerta
     assert t.stats()["door"] is None
+
+
+def test_reporte_de_metricas_en_pdf_para_todos_los_usuarios(app):
+    """El mismo PDF desde la web y la app: el personal elige el cliente; un cliente solo baja el de su local."""
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Kiosco Centro", "plans": ["comercio", "hurto"]}).json()["id"]
+        ag = c.post("/api/agents", json={"name": "central", "client_id": None}).json()
+        h = {"X-Agent-Token": ag["token"]}
+        cam = c.post("/api/cameras", json={"client_id": cid, "agent_id": ag["id"], "name": "Puerta", "host": "h",
+                                           "password": "x"}).json()
+        now = datetime.now().replace(minute=0, second=0, microsecond=0)
+        c.post("/api/agent/metrics", headers=h, json={"buckets": [
+            {"camera_id": cam["id"], "bucket_start": (now - timedelta(days=d)).isoformat(),
+             "data": {**empty_bucket(), "people": 10 + d, "people_dwell_s": 600, "people_max": 3, "entries": 7 + d,
+                      "exits": 6, "door": 1, "frames": 100,
+                      "zones": {"Góndola": {"type": "shelf", "visits": 4, "dwell_s": 120}}}} for d in range(3)]})
+        r = c.get("/api/metrics/report.pdf", params={"client_id": cid, "days": 7})
+        assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+        assert r.content.startswith(b"%PDF") and len(r.content) > 2000
+        assert "metricas_Kiosco_Centro_" in r.headers["content-disposition"]
+        one = c.get("/api/metrics/report.pdf", params={"client_id": cid, "desde": now.strftime("%Y-%m-%d"),
+                                                       "hasta": now.strftime("%Y-%m-%d")})
+        assert one.status_code == 200 and one.content.startswith(b"%PDF")
+        assert c.get("/api/metrics/report.pdf", params={"client_id": cid, "desde": "28-10-2026"}).status_code == 422
+        assert c.get("/api/metrics/report.pdf").status_code == 422  # el personal tiene que elegir el cliente
+        # un cliente: el de su local sí, otro no
+        c.post("/api/users", json={"username": "kiosco", "password": "clave-kiosco-1", "role": "cliente", "client_id": cid})
+        u = TestClient(app)
+        u.post("/api/login", json={"username": "kiosco", "password": "clave-kiosco-1"})
+        assert u.get("/api/metrics/report.pdf", params={"days": 30}).content.startswith(b"%PDF")
+        otro = c.post("/api/clients", json={"name": "Otro"}).json()["id"]
+        assert u.get("/api/metrics/report.pdf", params={"client_id": otro}).status_code == 403

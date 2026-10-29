@@ -92,10 +92,11 @@ async function boot() {
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#user-name").textContent = `${S.me.username} · ${ROLE_NAMES[S.me.role] || S.me.role}`;
-  // La gestión de la empresa se hace en la app de escritorio; la web es para los clientes.
+  // Los empleados trabajan en la app de escritorio; los clientes y los administradores (que miran métricas y datos
+  // de todos los clientes, p. ej. desde el celular) usan la web.
   let emergencia = false;
   try { emergencia = sessionStorage.getItem("vigia_web_staff") === "1"; } catch (_) {}
-  if (S.me.role !== "cliente" && !emergencia) {
+  if (S.me.role === "entrenador" && !emergencia) {
     $("#nav").innerHTML = "";
     $("#view").innerHTML = `<div class="panel" style="max-width:640px;margin:40px auto">
       <h1>Usá la app de escritorio</h1>
@@ -109,7 +110,7 @@ async function boot() {
   }
   const links = S.me.role === "cliente"
     ? [["#/resumen", "Resumen"], ["#/alertas", "Alertas"], ["#/avisos", "Incidentes"], ["#/camaras", "Cámaras"]]
-    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/alertas", "Alertas"]];
+    : [["#/resumen", "Resumen"], ["#/clientes", "Clientes"], ["#/metricas", "Métricas"], ["#/alertas", "Alertas"]];
   if (isAdmin()) links.push(["#/admin", "Administración"]);
   $("#nav").innerHTML = links.map(([h, t]) => `<a href="${h}">${t}</a>`).join("");
   route();
@@ -121,7 +122,7 @@ async function route() {
   S.timers.forEach(clearInterval); S.timers = []; S.keyHandler = null;
   const h = location.hash || "#/resumen";
   const section = h.startsWith("#/evento") || h.startsWith("#/revisar") || h.startsWith("#/alarmas") ? "#/alertas"
-    : isStaff() && (h.startsWith("#/camara") || h.startsWith("#/cliente") || h.startsWith("#/metricas")) ? "#/clientes" : h;
+    : isStaff() && (h.startsWith("#/camara") || h.startsWith("#/cliente")) ? "#/clientes" : h;
   $$("#nav a").forEach((a) => a.classList.toggle("active", section.startsWith(a.getAttribute("href"))));
   const old = $("#view"), v = old.cloneNode(false); // nodo nuevo: descarta listeners de la vista anterior
   old.replaceWith(v);
@@ -1047,23 +1048,27 @@ async function summaryView(v) {
 const fmtDur = (s) => { s = Math.round(s || 0); return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min` : s >= 90 ? `${Math.round(s / 60)} min` : `${s} s`; };
 const avg = (sum, n) => (n ? sum / n : 0);
 
+const fmtDay = (iso) => { const [y, m, d] = String(iso).split("-"); return d ? `${d}/${m}` : iso; };
+const fmtFull = (iso) => { const [y, m, d] = String(iso).split("-"); return d ? `${d}/${m}/${y}` : iso; };
+
 function barChart(items, key, label) {
   // gráfico de barras en SVG, sin librerías: items = [{hour|date, ...}]
   if (!items.length) return `<div class="empty">Sin datos en este período.</div>`;
   const vals = items.map((x) => +x[key] || 0), max = Math.max(1, ...vals);
-  const W = 720, H = 180, pad = 26, bw = Math.max(4, (W - pad * 2) / items.length - 4);
-  return `<svg viewBox="0 0 ${W} ${H + 30}" style="width:100%;max-width:${W}px;display:block">
+  const W = 720, H = 180, T = 16, pad = 26, bw = Math.max(4, (W - pad * 2) / items.length - 4);  // T: lugar para el número de arriba
+  return `<svg viewBox="0 0 ${W} ${H + 30 + T}" style="width:100%;max-width:${W}px;display:block">
     ${items.map((x, i) => { const v = vals[i], h = Math.round((H - 10) * v / max), xx = pad + i * ((W - pad * 2) / items.length);
-      return `<rect x="${xx}" y="${H - h}" width="${bw}" height="${h}" rx="3" fill="var(--accent)"><title>${esc(x.hour !== undefined ? x.hour + ":00" : x.date)}: ${v} ${label}</title></rect>
-        ${v ? `<text x="${xx + bw / 2}" y="${H - h - 4}" font-size="10" text-anchor="middle" fill="currentColor">${v}</text>` : ""}
-        <text x="${xx + bw / 2}" y="${H + 14}" font-size="10" text-anchor="middle" fill="var(--muted)">${esc(x.hour !== undefined ? x.hour + "h" : x.date.slice(5))}</text>`; }).join("")}
+      return `<rect x="${xx}" y="${T + H - h}" width="${bw}" height="${h}" rx="3" fill="var(--accent)"><title>${esc(x.hour !== undefined ? x.hour + ":00" : x.date)}: ${v} ${label}</title></rect>
+        ${v ? `<text x="${xx + bw / 2}" y="${T + H - h - 4}" font-size="10" text-anchor="middle" fill="currentColor">${v}</text>` : ""}
+        <text x="${xx + bw / 2}" y="${T + H + 14}" font-size="10" text-anchor="middle" fill="var(--muted)">${esc(x.hour !== undefined ? x.hour + "h" : fmtDay(x.date))}</text>`; }).join("")}
   </svg>`;
 }
 
 async function metricsView(v, clientId) {
   await loadClients();
+  if (!clientId && isStaff() && S.clients.length) clientId = S.clients[0].id;  // el primero, y se cambia arriba
   const client = S.clients.find((c) => c.id === clientId);
-  if (!client) { v.innerHTML = `<div class="empty">${isStaff() ? `Elegí un cliente: ${S.clients.map((c) => `<a href="#/metricas?client_id=${c.id}">${esc(c.name)}</a>`).join(" · ")}` : "Tu usuario no tiene un local asociado."}</div>`; return; }
+  if (!client) { v.innerHTML = `<div class="empty">${isStaff() ? "Todavía no hay clientes." : "Tu usuario no tiene un local asociado."}</div>`; return; }
   const q = new URLSearchParams(location.hash.split("?")[1] || "");
   const days = +(q.get("days") || 1);
   const [m, stats] = await Promise.all([
@@ -1075,10 +1080,13 @@ async function metricsView(v, clientId) {
   const period = (d) => `<a class="btn small ${days === d ? "primary" : ""}" href="#/${isStaff() ? "metricas?client_id=" + clientId + "&" : "resumen?"}days=${d}">${d === 1 ? "Hoy" : d + " días"}</a>`;
   const zones = Object.entries(t.zones || {}).sort((a, b) => b[1].visits - a[1].visits);
   const sinDatos = !t.frames;
+  const pdf = `/api/metrics/report.pdf?days=${days}` + (isStaff() ? `&client_id=${clientId}` : "");
   v.innerHTML = `
-    ${isStaff() ? `<div class="row"><a href="#/cliente/${clientId}">← Cámaras de ${esc(client.name)}</a></div>` : ""}
-    <div class="row"><h1>${isStaff() ? `Métricas · ${esc(client.name)}` : `Resumen de ${esc(client.name)}`}</h1><span class="spacer"></span>${period(1)}${period(7)}${period(30)}</div>
-    <p class="muted">${days === 1 ? `Hoy, ${m.until}` : `Del ${m.since} al ${m.until}`} · hora local del local · planes: ${plans.map((p) => esc(PLAN_NAMES[p] || p)).join(", ") || "ninguno"}</p>
+    <div class="row"><h1>${isStaff() ? "Métricas" : `Resumen de ${esc(client.name)}`}</h1>
+      ${isStaff() ? `<select id="m-client" class="inline-select">${options(S.clients.map((c) => [c.id, c.name]), clientId)}</select>` : ""}
+      <span class="spacer"></span>${period(1)}${period(7)}${period(30)}
+      <a class="btn small" href="${pdf}" download title="El reporte de este período en PDF, para guardarlo o mandarlo">⬇ Descargar PDF</a></div>
+    <p class="muted">${days === 1 ? `Hoy, ${fmtFull(m.until)}` : `Del ${fmtFull(m.since)} al ${fmtFull(m.until)}`} · hora del local · planes: ${plans.map((p) => esc(PLAN_NAMES[p] || p)).join(", ") || "ninguno"}</p>
     ${sinDatos ? `<div class="empty">Todavía no hay métricas en este período. Se generan mientras la PC central analiza las cámaras en modo "En vivo" (se envían cada 5 minutos).</div>` : ""}
     ${plans.includes("comercio") || (!plans.includes("estacion") && t.people) ? `
       <h2>Gente</h2>
@@ -1117,6 +1125,8 @@ async function metricsView(v, clientId) {
     ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Apariciones</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
       <tbody>${m.by_camera.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.people}</td><td>${fmtDur(avg(c.people_dwell_s, c.people))}</td>${plans.includes("estacion") ? `<td>${c.vehicles}</td>` : ""}<td>${c.people_max}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
     <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). En las demás cámaras, cada persona o vehículo que la IA sigue cuenta una vez desde que aparece hasta que se va; si sale del cuadro y vuelve, cuenta de nuevo. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
+  const sel = $("#m-client", v);
+  if (sel) sel.addEventListener("change", () => { location.hash = `#/metricas?client_id=${sel.value}&days=${days}`; });
 }
 
 // ------------------------------------------------------------------ clientes (administradores y empleados)
