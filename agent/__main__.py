@@ -516,7 +516,7 @@ class Agent:
         cam = build_camera(c["connection"])
         info = probe(cam)
         try:
-            video = test_stream(cam)
+            video = test_stream(cam, getattr(cam, "detect_stream", None) or "sub", explain=True)
         except Exception as exc:  # noqa: BLE001
             video = {"ok": False, "error": str(exc)}
         return {"http": info, "video": video, "rtsp_url": cam.redacted(cam.live_url())}

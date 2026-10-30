@@ -381,6 +381,8 @@ class CameraIn(BaseModel):
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
     # sin clave: usar la del grabador guardada en el cliente (Editar cliente → «Por IP y puertos»)
     client_password: bool = False
+    # al editar sin mandar `source_url` (el link no vuelve a la app: lleva la clave): dejar el que estaba
+    keep_source_url: bool = False
 
 
 class StreamUrlIn(BaseModel):
@@ -1563,7 +1565,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return camera_dict(c, user, agent_status_map(s).get(c.id), operator_map(s))
 
     def camera_fields(body: CameraIn) -> dict:
-        f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password"})
+        f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password", "keep_source_url"})
         if "agent_id" not in body.model_fields_set:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
         if f.get("off_hours") is None:
@@ -1662,7 +1664,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             c.password_enc = box.encrypt(body.password)
         elif body.client_password:
             c.password_enc = client_password(s, body) or c.password_enc
-        c.source_url_enc = box.encrypt(body.source_url) if body.source_url else None
+        if body.source_url:
+            c.source_url_enc = box.encrypt(body.source_url)
+        elif not body.keep_source_url:
+            c.source_url_enc = None
         bump_rev(s)
         s.commit()
         rebalance(s, force=True)

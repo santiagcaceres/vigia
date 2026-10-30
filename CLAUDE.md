@@ -166,6 +166,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   ese grabador (mismo host de antes) pasan solas a los datos nuevos (`set_client_ip`, la respuesta trae
   `cameras_updated`). «Probar conexión» de una cámara por IP ahora prueba desde la PC (`Agent.local_probe` pide la
   conexión con `/api/agent/view`), no desde Vercel (que solo mira la página HTTP). Prueba: `tests/test_cliente_por_ip.py`.
+  **App 1.34.0 (30 oct): cámara por link RTSP, como VLC.** Con Cristino el link abría en VLC y la app no: la app pedía
+  la calidad secundaria (`402`) y el canal cargado, el link era la principal (`401`) del canal 4. En el formulario de la
+  cámara, conexión **«Link RTSP, como en VLC (un link por cámara)»**: se pegan uno o varios (uno por línea = una cámara
+  cada uno); se guarda cifrado en `cameras.source_url_enc` (ya existía; `live_url` lo usa tal cual) y del link se leen
+  marca, dirección, canal y calidad. El link no vuelve a la app (`has_source_url`); al editar sin pegarlo,
+  `CameraIn.keep_source_url` lo deja. Con link no se baja el clip del grabador (el clip sale del vivo). Por IP y puertos
+  ahora se elige «Calidad del video» (secundaria/principal). **Por qué no abre** (`agent.cameras.rtsp_diagnose`, en
+  `BaseCamera.open_failure` y en «Probar»): nombre que no existe (DDNS), puerto que no contesta o rechaza (router),
+  no es RTSP, usuario o clave rechazados (o bloqueado por intentos), sin permiso, canal inexistente, la calidad pedida
+  no activada (prueba la otra), sin transmisiones libres, o el grabador entrega bien y la PC no lo lee (¿H.265?):
+  pedido DESCRIBE con Digest/Basic propio. «Probar desde esta PC» del cliente prueba el link pegado tal cual y, si no,
+  la secundaria y después la principal. Pruebas: `tests/test_diagnostico_rtsp.py`, `tests/test_cliente_por_ip.py`.
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

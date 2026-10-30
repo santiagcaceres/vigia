@@ -99,3 +99,29 @@ def test_hik_connect_sigue_igual(app):
     a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
     cl = a.post("/api/clients", json={"name": "Minas", "hc_app_key": "k", "hc_secret": "s"}).json()
     assert cl["cam_access"] == "hikconnect" and cl["ip_host"] is None  # (sin elegir: se deduce de la AppKey)
+
+
+def test_camara_por_link_como_vlc(app):
+    """Un link por cámara, usado tal cual (como VLC). Al editar sin volver a pegarlo, queda el que estaba."""
+    a = TestClient(app)
+    a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+    cl = a.post("/api/clients", json={"name": "Cristino"}).json()
+    d = parse_rtsp(LINK)
+    body = {"client_id": cl["id"], "name": "Canal 4", "brand": d["brand"], "host": d["host"],
+            "rtsp_port": d["rtsp_port"], "username": d["username"], "password": d["password"], "channel": d["channel"],
+            "source_url": LINK, "detect_stream": "main"}
+    cam = a.post("/api/cameras", json=body).json()
+    assert cam["has_source_url"] and LINK not in str(a.get("/api/cameras").json())  # el link (con la clave) no vuelve
+    pc = a.post("/api/agent/session").json()
+
+    def conn():
+        return a.post("/api/agent/view", headers={"X-Agent-Token": pc["token"]},
+                      json={"camera_ids": [cam["id"]]}).json()["cameras"][0]["connection"]
+    assert conn()["source_url"] == LINK
+    from agent.cameras import build_camera
+    assert build_camera(conn()).live_url() == LINK  # se abre exactamente ese link, como en VLC
+    edit = {**body, "name": "Caja", "source_url": None, "password": None, "keep_source_url": True}
+    assert a.put(f"/api/cameras/{cam['id']}", json=edit).json()["has_source_url"]
+    assert conn()["source_url"] == LINK and conn()["password"] == "Cl@ve-1"
+    # pasarla a «por IP y puertos» (sin link): se borra
+    assert not a.put(f"/api/cameras/{cam['id']}", json={**edit, "keep_source_url": False}).json()["has_source_url"]

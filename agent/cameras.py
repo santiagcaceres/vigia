@@ -79,7 +79,7 @@ class BaseCamera:
 
     def open_failure(self, url: str) -> str | None:
         """Por qué no abrió el video, si se puede averiguar (OpenCV no lo dice). None = no se sabe."""
-        return None
+        return rtsp_diagnose(url) if url.lower().startswith("rtsp://") else None
 
 
 @dataclass
@@ -181,18 +181,21 @@ def download_nvr_clip(cam: BaseCamera, start: datetime, end: datetime, out: str 
     return True
 
 
-def test_stream(cam: BaseCamera, stream: str = "sub") -> dict:
-    """Abre el RTSP y lee un cuadro. Sirve para verificar usuario, clave, puerto y canal."""
+def test_stream(cam: BaseCamera, stream: str = "sub", explain: bool = False) -> dict:
+    """Abre el RTSP y lee un cuadro. Sirve para verificar usuario, clave, puerto y canal. `explain`: si no anda,
+    averiguar por qué (`rtsp_diagnose`: tarda unos segundos más)."""
     import os
 
     import cv2
 
     os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
-    cap = cv2.VideoCapture(cam.live_url(stream), cv2.CAP_FFMPEG)
+    url = cam.live_url(stream)
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     try:
         ok, frame = cap.read()
         if not ok:
-            return {"ok": False, "error": "No se pudo leer video (revisar usuario, clave, puerto RTSP y canal)"}
+            why = cam.open_failure(url) if explain else None
+            return {"ok": False, "error": why or "No se pudo leer video (revisar usuario, clave, puerto RTSP y canal)"}
         return {"ok": True, "width": frame.shape[1], "height": frame.shape[0],
                 "fps": cap.get(cv2.CAP_PROP_FPS)}
     finally:
@@ -251,8 +254,9 @@ def parse_rtsp(url: str) -> dict:
 
 def probe_connection(cfg: dict) -> dict:
     """Probar un grabador por IP y puertos DESDE ESTA PC, antes de cargar sus cámaras: la página (modelo, canales; si
-    el puerto HTTP está abierto) y el video del canal. `cfg`: host, rtsp_port, http_port (None = no está abierto),
-    username, password, channel."""
+    el puerto HTTP está abierto) y el video del canal (la calidad secundaria y, si no anda, la principal). `cfg`: host,
+    rtsp_port, http_port (None = no está abierto), username, password, channel y, si se pegó, `source_url` (el link:
+    se prueba tal cual, como VLC)."""
     base = {"host": cfg["host"], "rtsp_port": int(cfg.get("rtsp_port") or 554),
             "http_port": int(cfg.get("http_port") or 80), "username": cfg.get("username") or "",
             "password": cfg.get("password") or "", "channel": int(cfg.get("channel") or 1)}
@@ -266,12 +270,156 @@ def probe_connection(cfg: dict) -> dict:
                 break
             http = res
     video: dict = {"ok": False, "error": "no se probó"}
-    for b in ([brand] if brand else ["hikvision", "dahua"]):
+    if cfg.get("source_url"):  # el link que pasaron, tal cual
+        link = parse_rtsp(cfg["source_url"])
         try:
-            video = test_stream(build_camera({**base, "brand": b}))
+            video = test_stream(build_camera({**base, "brand": link.get("brand") or "hikvision",
+                                              "source_url": cfg["source_url"]}), explain=True)
         except Exception as exc:  # noqa: BLE001
             video = {"ok": False, "error": str(exc)}
         if video.get("ok"):
-            brand = brand or b
-            break
+            video["quality"] = link.get("stream")
+            return {"http": http, "video": video, "brand": brand or link.get("brand")}
+    brands = [brand] if brand else ["hikvision", "dahua"]
+    for i, b in enumerate(brands):
+        cam = build_camera({**base, "brand": b})
+        for stream in ("sub", "main"):  # la secundaria (menos internet) y, si no anda, la principal
+            try:  # el porqué se averigua una vez (con la última marca): tarda unos segundos
+                video = test_stream(cam, stream, explain=i == len(brands) - 1 and stream == "main")
+            except Exception as exc:  # noqa: BLE001
+                video = {"ok": False, "error": str(exc)}
+            if video.get("ok"):
+                video["quality"] = stream
+                return {"http": http, "video": video, "brand": brand or b}
     return {"http": http, "video": video, "brand": brand}
+
+
+def _rtsp_request(host: str, port: int, method: str, url: str, headers: dict, timeout: float) -> tuple[int, dict] | None:
+    """Un pedido RTSP en una conexión propia: (código, cabeceras en minúscula; las repetidas, juntas). None = la otra
+    punta no contestó como RTSP."""
+    import socket
+
+    lines = [f"{method} {url} RTSP/1.0", "CSeq: 1", "Accept: application/sdp", "User-Agent: Vigia"]
+    lines += [f"{k}: {v}" for k, v in headers.items()]
+    with socket.create_connection((host, port), timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        data = b""
+        while b"\r\n\r\n" not in data and len(data) < 16384:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1", "replace").split("\r\n")
+    parts = head[0].split(" ", 2) if head else []
+    if len(parts) < 2 or not parts[0].upper().startswith("RTSP/") or not parts[1].isdigit():
+        return None
+    out: dict[str, str] = {}
+    for line in head[1:]:
+        k, _, v = line.partition(":")
+        key = k.strip().lower()
+        out[key] = (out[key] + "\n" if key in out else "") + v.strip()
+    return int(parts[1]), out
+
+
+def _authorization(challenges: str, user: str, password: str, method: str, uri: str) -> str | None:
+    """La cabecera Authorization para el desafío del grabador (Digest, si lo ofrece; si no, Basic)."""
+    import base64
+    import hashlib
+    import re
+    import secrets
+
+    digest = next((c for c in challenges.split("\n") if c.lower().startswith("digest")), None)
+    if digest:
+        p = dict(re.findall(r'(\w+)="?([^",]*)"?', digest[6:]))
+        md5 = lambda t: hashlib.md5(t.encode()).hexdigest()  # noqa: E731,S324 - lo pide el protocolo
+        ha1, ha2 = md5(f"{user}:{p.get('realm', '')}:{password}"), md5(f"{method}:{uri}")
+        nonce = p.get("nonce", "")
+        if "auth" in (p.get("qop") or "").split(","):
+            cnonce, nc = secrets.token_hex(8), "00000001"
+            resp = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}")
+            extra = f', qop=auth, nc={nc}, cnonce="{cnonce}"'
+        else:
+            resp, extra = md5(f"{ha1}:{nonce}:{ha2}"), ""
+        return (f'Digest username="{user}", realm="{p.get("realm", "")}", nonce="{nonce}", uri="{uri}", '
+                f'response="{resp}"' + (f', opaque="{p["opaque"]}"' if p.get("opaque") else "") + extra)
+    if challenges.lower().startswith("basic") or "\nbasic" in challenges.lower():
+        return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+    return None
+
+
+def _other_quality(url: str) -> str | None:
+    """El mismo canal en la otra calidad: Hikvision …/Channels/402 ↔ 401; Dahua subtype=1 ↔ 0."""
+    import re
+
+    m = re.search(r"(/Streaming/Channels/\d+)(0[12])(\b|$)", url, re.I)
+    if m:
+        return url[:m.start(2)] + ("01" if m.group(2) == "02" else "02") + url[m.end(2):]
+    if "subtype=1" in url:
+        return url.replace("subtype=1", "subtype=0")
+    if "subtype=0" in url:
+        return url.replace("subtype=0", "subtype=1")
+    return None
+
+
+def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
+    """Por qué no abre un video RTSP, en castellano (OpenCV solo dice que no pudo): el nombre no existe, el puerto no
+    contesta, no es un servidor de video, usuario o clave mal, ese canal o calidad no existe, sin permiso, sin
+    transmisiones libres, o el grabador entrega el video y lo que falla es leerlo en esta PC."""
+    import socket
+    from urllib.parse import unquote, urlsplit, urlunsplit
+
+    u = urlsplit(url)
+    host, port = u.hostname or "", u.port or 554
+    user, password = unquote(u.username or ""), unquote(u.password or "")
+    try:
+        socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        return (f"no se encuentra «{host}»: el DDNS no existe, venció o está mal escrito (o esta PC no tiene "
+                "internet)")
+
+    def ask(target: str) -> tuple[int, dict] | None:
+        clean = urlunsplit((u.scheme, f"{host}:{port}", urlsplit(target).path, urlsplit(target).query, ""))
+        res = _rtsp_request(host, port, "DESCRIBE", clean, {}, timeout)
+        if res and res[0] == 401 and user:
+            auth = _authorization(res[1].get("www-authenticate", ""), user, password, "DESCRIBE", clean)
+            if auth:
+                res = _rtsp_request(host, port, "DESCRIBE", clean, {"Authorization": auth}, timeout)
+        return res
+
+    try:
+        res = ask(url)
+    except (TimeoutError, socket.timeout):
+        return (f"{host} no contesta en el puerto {port}: no está abierto (o no está redirigido al grabador) en el "
+                "router del local, el DDNS apunta a otra IP, o el proveedor de internet del local no deja entrar")
+    except ConnectionRefusedError:
+        return (f"{host} rechaza la conexión en el puerto {port}: ese puerto no está redirigido al grabador en el "
+                "router del local")
+    except OSError as exc:
+        return (f"no se puede llegar a {host}:{port} ({exc.strerror or exc}): revisá el DDNS, el router del local y "
+                "el internet de esta PC")
+    if res is None:
+        return (f"{host}:{port} contesta pero no como video (RTSP): ¿ese es el puerto de video? (el 554 de adentro; "
+                "quizá se redirigió el de la página)")
+    code = res[0]
+    if code == 200:
+        return ("el grabador entrega el video (usuario, clave y canal están bien) pero esta PC no lo pudo leer: "
+                "¿video en H.265 o un códec raro? Probá poner el subflujo del grabador en H.264")
+    if code == 401:
+        return ("el grabador rechazó el usuario o la clave (o el usuario quedó bloqueado por intentos fallidos: "
+                "esperá unos 30 minutos)")
+    if code == 403:
+        return "el usuario no tiene permiso para ver ese canal: dale «vista en vivo» en el grabador"
+    if code in (404, 400, 454, 457):
+        other = _other_quality(url)
+        try:
+            alt = ask(other) if other else None
+        except OSError:
+            alt = None
+        if alt and alt[0] == 200:
+            return ("ese canal existe pero la calidad que se pide no está activada en el grabador (el subflujo): "
+                    "activalo, o elegí la calidad principal")
+        return "el grabador contesta pero no tiene ese canal: revisá el número de canal"
+    if code in (453, 503):
+        return "el grabador no da más transmisiones a la vez: cerrá otras (otra PC, el celular, la máquina de análisis)"
+    return f"el grabador respondió {code} al pedir el video"
