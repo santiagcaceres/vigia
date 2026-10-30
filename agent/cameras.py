@@ -294,22 +294,29 @@ def probe_connection(cfg: dict) -> dict:
     return {"http": http, "video": video, "brand": brand}
 
 
+class _NoReply(Exception):
+    """El grabador aceptó la conexión pero no contestó el pedido (no es lo mismo que un puerto que no contesta)."""
+
+
 def _rtsp_request(host: str, port: int, method: str, url: str, headers: dict, timeout: float) -> tuple[int, dict] | None:
     """Un pedido RTSP en una conexión propia: (código, cabeceras en minúscula; las repetidas, juntas). None = la otra
-    punta no contestó como RTSP."""
+    punta no contestó como RTSP. Si conecta pero no contesta a tiempo: `_NoReply`."""
     import socket
 
     lines = [f"{method} {url} RTSP/1.0", "CSeq: 1", "Accept: application/sdp", "User-Agent: Vigia"]
     lines += [f"{k}: {v}" for k, v in headers.items()]
     with socket.create_connection((host, port), timeout) as sock:
         sock.settimeout(timeout)
-        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         data = b""
-        while b"\r\n\r\n" not in data and len(data) < 16384:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+            while b"\r\n\r\n" not in data and len(data) < 16384:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except (TimeoutError, socket.timeout) as exc:
+            raise _NoReply from exc
     head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1", "replace").split("\r\n")
     parts = head[0].split(" ", 2) if head else []
     if len(parts) < 2 or not parts[0].upper().startswith("RTSP/") or not parts[1].isdigit():
@@ -389,9 +396,14 @@ def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
 
     try:
         res = ask(url)
+    except _NoReply:
+        return (f"{host}:{port} acepta la conexión pero no contesta el pedido de video: el grabador puede haber "
+                "bloqueado a esta PC por intentos fallidos (esperá unos 30 minutos) o la conexión es muy lenta")
     except (TimeoutError, socket.timeout):
-        return (f"{host} no contesta en el puerto {port}: no está abierto (o no está redirigido al grabador) en el "
-                "router del local, el DDNS apunta a otra IP, o el proveedor de internet del local no deja entrar")
+        return (f"{host} no contesta en el puerto {port} desde esta PC: no está abierto (o no está redirigido al "
+                "grabador) en el router del local, el DDNS apunta a otra IP, o el proveedor de internet del local no "
+                "deja entrar. Si VLC sí lo abre desde esta misma PC, es el firewall o el antivirus de Windows: "
+                "permitile a «Analítica Crítica» conectarse")
     except ConnectionRefusedError:
         return (f"{host} rechaza la conexión en el puerto {port}: ese puerto no está redirigido al grabador en el "
                 "router del local")

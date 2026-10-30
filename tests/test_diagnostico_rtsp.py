@@ -84,3 +84,15 @@ def test_puerto_cerrado_nombre_inexistente_y_otro_servicio():
     threading.Thread(target=http, daemon=True).start()
     assert "no como video" in rtsp_diagnose(f"rtsp://a:b@127.0.0.1:{web.getsockname()[1]}/Streaming/Channels/102")
     web.close()
+
+
+def test_acepta_la_conexion_pero_no_contesta():
+    """No es lo mismo que un puerto cerrado: el grabador (o algo en el medio) acepta y se queda callado."""
+    mudo = socket.socket()
+    mudo.bind(("127.0.0.1", 0))
+    mudo.listen(4)
+    conns = []
+    threading.Thread(target=lambda: conns.append(mudo.accept()), daemon=True).start()
+    msg = rtsp_diagnose(f"rtsp://a:b@127.0.0.1:{mudo.getsockname()[1]}/Streaming/Channels/102", timeout=1.0)
+    assert "acepta la conexión pero no contesta" in msg
+    mudo.close()
