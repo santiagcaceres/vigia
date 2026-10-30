@@ -644,6 +644,16 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   si la PC no da abasto analiza menos cuadros sin trabar el video. Dibuja con `ajuste.draw` (el mismo look que
   «Configurar…»). `/api/agent/view` trae `analysis` y `process_fps`. Sin la casilla, como antes (imagen de la máquina
   o video tal cual). Probado con el HLS del hurto de Minas: 4,8 cuadros/s y «mano en la bolsa».
+  **App 1.32.2 (30 oct):** en la Dell iba a 0,6 cuadros/s y «personas: 0» con dos personas a la vista. Causa: Hik-Connect
+  manda el video en ráfagas de 1-4 s y la vista elegía los cuadros con el reloj de la PC (de cada ráfaga quedaba uno; el
+  seguimiento pide 3 detecciones seguidas para confirmar a alguien y con un cuadro cada 1,6 s no llegaba). El mismo
+  problema que las máquinas resolvieron con `MediaClock` (24 oct); la prueba con HLS local era de un archivo, no en vivo.
+  Ahora `ViewWorker._read` elige los cuadros por el reloj del video y `Pacer` los muestra a su ritmo: colchón de 0,6 s
+  que se agranda solo si la red se atrasa, y al conectar salta la ráfaga inicial (segundos viejos). La IA analiza en
+  orden y saltea lo que quedó viejo si la PC no da abasto (el estado lo dice: «la PC no da abasto (N ms por cuadro)»); a
+  los 30 s deja una línea en el registro con cuadros/s, ms por cuadro y dónde corre el detector. Medido con un HLS en
+  vivo de segmentos de 2 s (ffmpeg `-re`): antes 0,4 cuadros/s y 0 personas; ahora 5, imagen nueva cada 0,2 s y «mano en
+  la bolsa». También mejora mirar sin IA. Prueba: `tests/test_ver_con_ia.py`.
 - **Sin merodeo (29 oct, decisión del dueño: «saquemos el merodeo como alerta, no lo quiero como parámetro ni como
   métrica»; app 1.31.0).** Quedan las reglas salida sin pago, zona restringida y fuera de horario (`RULE_TYPES`), más los
   gestos. `core/rules.py`: sin la regla ni `loiter_seconds`; `MERODEO` queda solo para leer alertas viejas
