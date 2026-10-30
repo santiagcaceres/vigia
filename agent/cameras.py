@@ -211,3 +211,67 @@ def probe(cam: BaseCamera) -> dict:
     else:
         from .hikvision import probe as _probe
     return _probe(cam)
+
+
+def parse_rtsp(url: str) -> dict:
+    """Los datos de un link RTSP como los que pasan los técnicos, para no copiarlos a mano:
+    rtsp://usuario:clave@host:puerto/Streaming/Channels/401 (Hikvision: canal 4, calidad principal; 402 secundaria) o
+    rtsp://usuario:clave@host:puerto/cam/realmonitor?channel=4&subtype=0 (Dahua). ValueError si no se entiende."""
+    import re
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    u = urlsplit((url or "").strip())
+    if u.scheme.lower() != "rtsp" or not u.hostname:
+        raise ValueError("No parece un link RTSP (tiene que empezar con rtsp://)")
+    try:
+        port = u.port or 554
+    except ValueError as exc:
+        raise ValueError("El puerto del link no es un número") from exc
+    out = {"host": u.hostname, "rtsp_port": port, "username": unquote(u.username or ""),
+           "password": unquote(u.password or ""), "channel": None, "brand": None, "stream": None}
+    path = u.path.rstrip("/")
+    m = re.search(r"/Streaming/(?:Channels|tracks)/(\d+)$", path, re.I)
+    if m and len(m.group(1)) >= 3:  # 401 = canal 4 · 01 principal / 02 secundaria
+        out.update(channel=int(m.group(1)[:-2]), brand="hikvision",
+                   stream="main" if m.group(1).endswith("01") else "sub")
+    elif m:
+        out.update(channel=int(m.group(1)), brand="hikvision")
+    elif re.search(r"/h26[45]/ch(\d+)/", path, re.I):  # Hikvision viejo: /h264/ch1/main/av_stream
+        mm = re.search(r"/h26[45]/ch(\d+)/(main|sub)", path, re.I)
+        out.update(channel=int(mm.group(1)) if mm else None, brand="hikvision",
+                   stream=(mm.group(2).lower() if mm else None))
+    elif "realmonitor" in path.lower():
+        q = parse_qs(u.query)
+        ch = (q.get("channel") or [None])[0]
+        sub = (q.get("subtype") or [None])[0]
+        out.update(channel=int(ch) if ch and ch.isdigit() else None, brand="dahua",
+                   stream=None if sub is None else ("main" if sub == "0" else "sub"))
+    return out
+
+
+def probe_connection(cfg: dict) -> dict:
+    """Probar un grabador por IP y puertos DESDE ESTA PC, antes de cargar sus cámaras: la página (modelo, canales; si
+    el puerto HTTP está abierto) y el video del canal. `cfg`: host, rtsp_port, http_port (None = no está abierto),
+    username, password, channel."""
+    base = {"host": cfg["host"], "rtsp_port": int(cfg.get("rtsp_port") or 554),
+            "http_port": int(cfg.get("http_port") or 80), "username": cfg.get("username") or "",
+            "password": cfg.get("password") or "", "channel": int(cfg.get("channel") or 1)}
+    http: dict = {"error": "puerto HTTP no indicado"}
+    brand = None
+    if cfg.get("http_port"):
+        for b in ("hikvision", "dahua"):
+            res = build_and_probe({**base, "brand": b})
+            if not res.get("error"):
+                http, brand = res, b
+                break
+            http = res
+    video: dict = {"ok": False, "error": "no se probó"}
+    for b in ([brand] if brand else ["hikvision", "dahua"]):
+        try:
+            video = test_stream(build_camera({**base, "brand": b}))
+        except Exception as exc:  # noqa: BLE001
+            video = {"ok": False, "error": str(exc)}
+        if video.get("ok"):
+            brand = brand or b
+            break
+    return {"http": http, "video": video, "brand": brand}

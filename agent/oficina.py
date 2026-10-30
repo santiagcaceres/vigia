@@ -45,6 +45,7 @@ from core.rules import snap_edge
 from core.schedule import DAY_NAMES, DAYS, open_hours_per_week
 
 from . import actualizar
+from .cameras import parse_rtsp, probe_connection
 from .marca import NOMBRE
 from .version import VERSION
 
@@ -73,6 +74,9 @@ OFF_HOURS_NAMES = {"apagada": "No mirar (ahorra todo: video, internet y análisi
 # formulario de cámara: Hikvision por la nube, o cualquier marca por IP y puertos (la marca se detecta sola)
 CONN_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
               "ip": "Por IP y puertos (Hikvision o Dahua: la marca se detecta sola)"}
+# cómo se conectan las cámaras de un cliente (Editar cliente)
+ACCESS_NAMES = {"hikconnect": "Hik-Connect (AppKey, sin abrir puertos)",
+                "ip": "Por IP y puertos (Hikvision o Dahua; link RTSP)"}
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador",
               **GESTURE_NAMES}  # gestos de ocultamiento (postura): «Mano al bolsillo», «Mano dentro de la ropa»…
@@ -116,6 +120,28 @@ def fmt_dur(s: float) -> str:
     if s >= 3600:
         return f"{s // 3600} h {round((s % 3600) / 60)} min"
     return f"{round(s / 60)} min" if s >= 90 else f"{s} s"
+
+
+def parse_channels(text: str) -> list[int]:
+    """«4», «1-8» o «1, 2, 5» → [canales]. ValueError (en castellano) si no se entiende."""
+    out: list[int] = []
+    for part in (text or "").replace(";", ",").split(","):
+        part = part.strip().replace(" a ", "-")
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        try:
+            a, b = int(lo), int(hi or lo)
+        except ValueError as exc:
+            raise ValueError(f"«{part}» no es un canal (ej. 4 · 1-8 · 1, 2, 5)") from exc
+        if not 1 <= a <= b <= 256:
+            raise ValueError(f"«{part}»: los canales van de 1 a 256")
+        out += [c for c in range(a, b + 1) if c not in out]
+    if not out:
+        raise ValueError("Falta el canal (ej. 4 · 1-8 · 1, 2, 5)")
+    if len(out) > 64:
+        raise ValueError("Como mucho 64 canales por vez")
+    return out
 
 
 def door_text(b: dict, staff: bool = False) -> str:
@@ -960,8 +986,16 @@ class Oficina:
         ttk.Label(wf, text=("Dejá la clave vacía para no cambiarla." if had_user else
                             "Mínimo 8 caracteres. Se la pasás al cliente por privado."),
                   foreground="#666").grid(row=2, column=0, columnspan=3, sticky="w")
-        hf = ttk.LabelFrame(right, text="Hik-Connect: video de Hikvision sin abrir puertos (opcional)", padding=6)
-        hf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        # cómo se conectan sus cámaras: Hik-Connect (AppKey) o IP y puertos (los datos del grabador, o el link RTSP)
+        cf = ttk.LabelFrame(right, text="Cómo se conectan sus cámaras", padding=6)
+        cf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        cf.columnconfigure(0, weight=1)
+        access0 = c.get("cam_access") or ("ip" if c.get("ip_host") and not c.get("hc_app_key") else "hikconnect")
+        access = tk.StringVar(value=ACCESS_NAMES[access0])
+        ttk.Combobox(cf, textvariable=access, values=list(ACCESS_NAMES.values()), state="readonly", width=44).grid(
+            row=0, column=0, sticky="w")
+        hf = ttk.Frame(cf)
+        hf.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         hf.columnconfigure(1, weight=1)
         hc_key = tk.StringVar(value=c.get("hc_app_key") or "")
         hc_secret = tk.StringVar()
@@ -978,6 +1012,106 @@ class Oficina:
         if c.get("id") and c.get("hc_app_key"):
             ttk.Button(hf, text="Probar: ver cámaras de Hik-Connect",
                        command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        # por IP y puertos: los datos del grabador; al agregar cámaras se eligen solo los canales
+        ipf = ttk.Frame(cf)
+        ipf.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ipf.columnconfigure(1, weight=1)
+        ip = {"link": tk.StringVar(), "host": tk.StringVar(value=c.get("ip_host") or ""),
+              "rtsp": tk.StringVar(value=str(c.get("ip_rtsp_port") or 554)),
+              "http": tk.StringVar(value=str(c.get("ip_http_port") or "")),
+              "user": tk.StringVar(value=c.get("ip_username") or ""), "pass": tk.StringVar()}
+        link_ch: dict = {}
+        ip_rows = (("Link RTSP (si te lo pasaron)", "link", ""), ("IP o DDNS del grabador", "host", ""),
+                   ("Puerto RTSP", "rtsp", ""), ("Puerto HTTP (opcional)", "http", ""), ("Usuario", "user", ""),
+                   ("Clave" + (" (vacía = no cambia)" if c.get("ip_has_password") else ""), "pass", "•"))
+        ip_entries = {}
+        for i, (lab, key, show) in enumerate(ip_rows):
+            ttk.Label(ipf, text=lab).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
+            ip_entries[key] = ttk.Entry(ipf, textvariable=ip[key], show=show)
+            ip_entries[key].grid(row=i, column=1, sticky="ew", pady=2)
+        ip_note = tk.StringVar()
+        ttk.Label(ipf, textvariable=ip_note, foreground="#666", justify="left", wraplength=400).grid(
+            row=7, column=0, columnspan=2, sticky="w")
+        pb = ttk.Frame(ipf)
+        pb.grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ip_result = tk.StringVar()
+        ttk.Label(ipf, textvariable=ip_result, justify="left", wraplength=400).grid(row=9, column=0, columnspan=2,
+                                                                                     sticky="w")
+
+        def link_changed(*_) -> None:
+            text = ip["link"].get().strip()
+            if not text:
+                return
+            try:
+                d = parse_rtsp(text)
+            except ValueError as exc:
+                return ip_result.set(f"⚠ {exc}")
+            ip["host"].set(d["host"])
+            ip["rtsp"].set(str(d["rtsp_port"]))
+            ip["user"].set(d["username"])
+            ip["pass"].set(d["password"])
+            link_ch.clear()
+            if d.get("channel"):
+                link_ch["channel"] = d["channel"]
+            ip_result.set("✔ Datos tomados del link" + (f" (canal {d['channel']})" if d.get("channel") else "")
+                          + ". El link no se guarda: queda la clave, cifrada.")
+            ip["link"].set("")
+
+        def ip_hint(*_) -> None:
+            user, port = ip["user"].get().strip().lower(), ip["rtsp"].get().strip()
+            warn = []
+            if user == "admin":
+                warn.append("usuario admin: mejor uno «vigia» que solo vea y reproduzca")
+            if port == "554" and ip["host"].get().strip() and not ip["host"].get().startswith(("192.168.", "10.")):
+                warn.append("puerto 554 de afuera: mejor uno alto (ej. 38554 → 554)")
+            ip_note.set(("⚠ " + " · ".join(warn).capitalize() + "." if warn else
+                         "Puerto HTTP vacío = la página del grabador no está abierta (el video anda igual; sin ella no "
+                         "se ven modelo y canales ni llegan las alarmas del grabador)."))
+        # el link se lee al pegarlo (o con Enter, o al salir del campo): mientras se escribe a mano no
+        ip_entries["link"].bind("<<Paste>>", lambda e: top.after(50, link_changed), add="+")
+        for ev in ("<Return>", "<FocusOut>"):
+            ip_entries["link"].bind(ev, lambda e: link_changed(), add="+")
+        for k in ("user", "rtsp", "host"):
+            ip[k].trace_add("write", ip_hint)
+        ip_hint()
+
+        def ip_probe() -> None:
+            host = ip["host"].get().strip()
+            if not host:
+                return ip_result.set("Falta la IP o el DDNS del grabador.")
+            if not ip["pass"].get() and c.get("ip_has_password"):
+                return ip_result.set("Escribí la clave para probar (la guardada no sale del servidor).")
+            try:
+                cfg = {"host": host, "rtsp_port": int(ip["rtsp"].get() or 554),
+                       "http_port": int(ip["http"].get()) if ip["http"].get().strip() else None,
+                       "username": ip["user"].get().strip(), "password": ip["pass"].get(),
+                       "channel": link_ch.get("channel", 1)}
+            except ValueError:
+                return ip_result.set("Los puertos tienen que ser números.")
+            ip_result.set(f"Probando desde esta PC el canal {cfg['channel']} (hasta 30 s)…")
+
+            def done(r: dict) -> None:
+                http, video = r["http"], r["video"]
+                lines = []
+                if cfg["http_port"]:
+                    lines.append(f"✘ Página del grabador: no responde ({http.get('error')})" if http.get("error") else
+                                 f"✔ Página del grabador: {http.get('model') or 'OK'}"
+                                 + (f" · {len(http['channels'])} canales" if http.get("channels") else ""))
+                lines.append(f"✔ Video del canal {cfg['channel']}: {video.get('width')}x{video.get('height')}"
+                             + (f" ({r['brand'].capitalize()})" if r.get("brand") else "") if video.get("ok") else
+                             f"✘ Video del canal {cfg['channel']}: {video.get('error') or 'no se pudo leer'} "
+                             "(revisá DDNS, puerto RTSP abierto en el router, usuario y clave)")
+                ip_result.set("\n".join(lines))
+            self.bg.run(lambda: probe_connection(cfg), done, lambda e: ip_result.set(f"✘ No se pudo probar: {e}"))
+        ttk.Button(pb, text="Probar desde esta PC", command=ip_probe).pack(side="left")
+
+        def access_changed(*_) -> None:
+            is_ip = next((k for k, t in ACCESS_NAMES.items() if t == access.get()), "hikconnect") == "ip"
+            (ipf if is_ip else hf).grid()
+            (hf if is_ip else ipf).grid_remove()
+        access.trace_add("write", access_changed)
+        access_changed()
         loc = tk.StringVar(value=LOCATION_NAMES.get(c.get("analysis_location") or "general"))
         if self.is_admin:
             lf = ttk.LabelFrame(right, text="Qué cámaras se analizan (en las máquinas)", padding=6)
@@ -1018,17 +1152,39 @@ class Oficina:
             if had_user and not user:
                 return self.mb.showwarning(NOMBRE, "El usuario para la web no puede quedar vacío.", parent=top)
             body["web_username"], body["web_password"] = user or None, pwd or None
-            body["hc_app_key"], body["hc_api_url"] = hc_key.get().strip() or None, hc_url.get().strip() or None
-            if hc_secret.get().strip():
-                body["hc_secret"] = hc_secret.get().strip()
-            elif body["hc_app_key"] and not c.get("hc_has_secret"):
-                return self.mb.showwarning(NOMBRE, "Falta el SecretKey de Hik-Connect.", parent=top)
+            body["cam_access"] = next((k for k, t in ACCESS_NAMES.items() if t == access.get()), "hikconnect")
+            if body["cam_access"] == "hikconnect":
+                body["hc_app_key"], body["hc_api_url"] = hc_key.get().strip() or None, hc_url.get().strip() or None
+                if hc_secret.get().strip():
+                    body["hc_secret"] = hc_secret.get().strip()
+                elif body["hc_app_key"] and not c.get("hc_has_secret"):
+                    return self.mb.showwarning(NOMBRE, "Falta el SecretKey de Hik-Connect.", parent=top)
+            else:
+                if ip["link"].get().strip():
+                    link_changed()
+                host = ip["host"].get().strip()
+                if not host:
+                    return self.mb.showwarning(NOMBRE, "Falta la IP o el DDNS del grabador (o pegá el link RTSP).",
+                                               parent=top)
+                try:
+                    body.update(ip_host=host, ip_rtsp_port=int(ip["rtsp"].get() or 554),
+                                ip_http_port=int(ip["http"].get()) if ip["http"].get().strip() else None,
+                                ip_username=ip["user"].get().strip() or None)
+                except ValueError:
+                    return self.mb.showwarning(NOMBRE, "Los puertos del grabador tienen que ser números.", parent=top)
+                if ip["pass"].get():
+                    body["ip_password"] = ip["pass"].get()
+                elif not c.get("ip_has_password"):
+                    return self.mb.showwarning(NOMBRE, "Falta la clave del grabador.", parent=top)
 
             def done(res):
                 top.destroy()
                 self.refresh_all()
                 if pwd:  # se creó el acceso o se cambió la clave: mostrar los datos para pasárselos
                     self.web_access_dialog(res.get("name") or body["name"], user, pwd)
+                if res.get("cameras_updated"):
+                    self.mb.showinfo(NOMBRE, f"Se actualizaron {res['cameras_updated']} cámara(s) de este grabador con "
+                                              "los datos nuevos.")
             self.bg.run(lambda: (self.api.put(f"/api/clients/{c['id']}", body) if c.get("id")
                                  else self.api.post("/api/clients", body)), done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
@@ -1187,16 +1343,22 @@ class Oficina:
         cam = cam or {}
         top, frm = self._dialog("Editar cámara" if cam.get("id") else f"Nueva cámara · {client['name']}", 600)
         owner = next((x for x in self.clients if x["id"] == (cam.get("client_id") or (client or {}).get("id"))), client)
-        default_brand = cam.get("brand") or ("hikconnect" if (owner or {}).get("hc_app_key") else "hikvision")
+        own = owner or {}
+        access = own.get("cam_access")
+        default_brand = cam.get("brand") or ("hikconnect" if access == "hikconnect" or (access is None and own.get("hc_app_key"))
+                                             else "ip")
+        # cámara nueva de un cliente con su grabador cargado por IP: los datos salen de ahí; solo se eligen los canales
+        from_client = not cam.get("id") and bool(own.get("ip_host"))
+        pre = (lambda key, d: own.get(key) or d) if from_client else (lambda key, d: d)  # noqa: E731
         v = {
             "name": tk.StringVar(value=cam.get("name", "")),
             "brand": tk.StringVar(value=CONN_NAMES["hikconnect" if default_brand == "hikconnect" else "ip"]),
             "mode": tk.StringVar(value=MODE_NAMES.get(cam.get("mode", "vivo"))),
-            "host": tk.StringVar(value=cam.get("host", "")),
-            "rtsp_port": tk.StringVar(value=str(cam.get("rtsp_port", 554))),
-            "http_port": tk.StringVar(value=str(cam.get("http_port", 80))),
+            "host": tk.StringVar(value=cam.get("host") or pre("ip_host", "")),
+            "rtsp_port": tk.StringVar(value=str(cam.get("rtsp_port") or pre("ip_rtsp_port", 554))),
+            "http_port": tk.StringVar(value=str(cam.get("http_port") or pre("ip_http_port", 80))),
             "channel": tk.StringVar(value=str(cam.get("channel", 1))),
-            "username": tk.StringVar(value=cam.get("username", "admin")),
+            "username": tk.StringVar(value=cam.get("username") or pre("ip_username", "admin")),
             "password": tk.StringVar(value=""),
             "profile": tk.StringVar(value=PROFILE_NAMES.get(cam.get("profile") or "general")),
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
@@ -1252,13 +1414,19 @@ class Oficina:
         row("ip", 5, "IP o DDNS del grabador", ttk.Entry(frm, textvariable=v["host"]))
         row("ip", 6, "Puerto RTSP", ttk.Entry(frm, textvariable=v["rtsp_port"]))
         row("ip", 7, "Puerto HTTP", ttk.Entry(frm, textvariable=v["http_port"]))
-        row("ip", 8, "Canal", ttk.Entry(frm, textvariable=v["channel"]))
+        row("ip", 8, "Canal" if cam.get("id") else "Canal(es): 4 · 1-8 · 1, 2, 5", ttk.Entry(frm, textvariable=v["channel"]))
         row("ip", 9, "Usuario del grabador", ttk.Entry(frm, textvariable=v["username"]))
-        row("ip", 10, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else ""),
+        row("ip", 10, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else
+                                              " (vacía = la del cliente)" if from_client and own.get("ip_has_password")
+                                              else ""),
             ttk.Entry(frm, textvariable=v["password"], show="•"))
         ip_hint = ttk.Label(frm, foreground="#666", justify="left",
-                            text="Misma red que la PC que la analiza: IP de adentro (192.168.x.x) y puertos 554/80.\n"
-                                 "Otra red: IP pública o DDNS y los puertos externos del router (ej. 38554/38080).")
+                            text=("Datos del grabador tomados del cliente (Editar cliente → «Cómo se conectan sus cámaras»).\n"
+                                  "Con varios canales se crea una cámara por canal («Canal 4»…): los nombres se cambian "
+                                  "después en «Nombres e imágenes»." if from_client else
+                                  "Misma red que la PC que la analiza: IP de adentro (192.168.x.x) y puertos 554/80.\n"
+                                  "Otra red: IP pública o DDNS y los puertos externos del router (ej. 38554/38080).\n"
+                                  "Si el cliente tiene un solo grabador, cargalo en Editar cliente → «Por IP y puertos»."))
         ip_hint.grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 6))
         cfg = cam.get("alarm_cfg") or {}
         al = {k: tk.BooleanVar(value=k in (cfg.get("event_types") or ["VMD", "fielddetection", "linedetection"])) for k in ALARM_TYPES}
@@ -1317,12 +1485,21 @@ class Oficina:
                 }
                 if brand != "hikconnect":
                     common.update(mode=inv(MODE_NAMES, v["mode"].get()) or "vivo", host=v["host"].get().strip(),
-                                  rtsp_port=int(v["rtsp_port"].get()), http_port=int(v["http_port"].get()),
-                                  channel=int(v["channel"].get()), username=v["username"].get().strip(),
+                                  rtsp_port=int(v["rtsp_port"].get()), http_port=int(v["http_port"].get() or 80),
+                                  username=v["username"].get().strip(),
                                   password=v["password"].get() or None, nvr_clips=nvr.get(),
                                   hpp_serial=cam.get("hpp_serial"))
             except ValueError:
-                return self.mb.showwarning(NOMBRE, "Puertos, canal y cuadros por segundo tienen que ser números.", parent=top)
+                return self.mb.showwarning(NOMBRE, "Puertos y cuadros por segundo tienen que ser números.", parent=top)
+            chans: list[int] = []
+            if brand != "hikconnect":
+                try:
+                    chans = parse_channels(v["channel"].get())
+                except ValueError as exc:
+                    return self.mb.showwarning(NOMBRE, str(exc), parent=top)
+                if cam.get("id") and len(chans) > 1:
+                    return self.mb.showwarning(NOMBRE, "Al editar, un solo canal.", parent=top)
+            skip: list[str] = []  # canales que ya estaban cargados (por IP): no se repiten
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
                     return self.mb.showwarning(NOMBRE, "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
@@ -1331,9 +1508,26 @@ class Oficina:
                            "hpp_serial": x["serial"], "channel": int(x.get("channel") or 1),
                            "hc_resource_id": x.get("id")} for x in hc_sel]
             else:
-                if not v["name"].get().strip() or not common["host"]:
-                    return self.mb.showwarning(NOMBRE, "Faltan el nombre o la IP del grabador.", parent=top)
-                bodies = [{**common, "name": v["name"].get().strip()}]
+                name = v["name"].get().strip()
+                if not common["host"]:
+                    return self.mb.showwarning(NOMBRE, "Falta la IP o el DDNS del grabador.", parent=top)
+                if cam.get("id") and not name:
+                    return self.mb.showwarning(NOMBRE, "Falta el nombre.", parent=top)
+                # sin clave escrita: la del grabador guardada en el cliente (si es el mismo grabador)
+                use_client = (not common["password"] and own.get("ip_has_password")
+                              and common["host"] == own.get("ip_host"))
+                if not cam.get("id"):  # los canales de ese grabador que ya están cargados no se repiten
+                    have = {(str(x.get("host") or "").lower(), x.get("rtsp_port"), x.get("channel")): x["name"]
+                            for x in self.cameras if x.get("client_id") == own.get("id")
+                            and x.get("brand") in ("ip", "hikvision", "dahua")}
+                    skip = [f"canal {ch} («{have[k]}»)" for ch in chans
+                            if (k := (common["host"].lower(), common["rtsp_port"], ch)) in have]
+                    chans = [ch for ch in chans if (common["host"].lower(), common["rtsp_port"], ch) not in have]
+                    if not chans:
+                        return self.mb.showinfo(NOMBRE, "Ya están cargados: " + ", ".join(skip) + ".", parent=top)
+                bodies = [{**common, "channel": ch, "client_password": bool(use_client),
+                           "name": (name if len(chans) == 1 and name else f"{name} {ch}" if name else f"Canal {ch}")}
+                          for ch in chans]
 
             def send():
                 if cam.get("id"):
@@ -1351,6 +1545,7 @@ class Oficina:
 
             def done(res):
                 added, repeated = res
+                repeated = repeated + skip
                 top.destroy()
                 self.config_saved()
                 if repeated:
@@ -1413,8 +1608,8 @@ class Oficina:
         if not cam:
             return self.mb.showinfo(NOMBRE, "Elegí una cámara.")
         self._info_locked = cam["id"]
-        local = self.local_probe is not None and cam.get("agent_id") is not None
-        self._set_info(f"Probando {cam['name']}" + (" desde esta PC (página del grabador y video, hasta 20 s)…"
+        local = self.local_probe is not None and cam.get("brand") != "hikconnect"
+        self._set_info(f"Probando {cam['name']}" + (" desde esta PC (página del grabador y video, hasta 30 s)…"
                                                     if local else " desde el servidor (hasta 10 s)…"))
 
         def run():

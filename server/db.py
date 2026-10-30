@@ -45,6 +45,14 @@ class Client(Base):
     hc_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     hc_api_url: Mapped[str | None] = mapped_column(String(255), nullable=True)  # vacío = se busca la región
     hc_code_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # código de cifrado de video de sus grabadores
+    # cómo se llega a sus grabadores: hikconnect (AppKey, sin abrir puertos) | ip (IP o DDNS y los puertos del router).
+    # Con «ip», los datos del grabador quedan acá: sus cámaras se cargan eligiendo solo los canales (30 oct)
+    cam_access: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    ip_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_rtsp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip_http_port: Mapped[int | None] = mapped_column(Integer, nullable=True)  # vacío = la página no está abierta
+    ip_username: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    ip_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -328,7 +336,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-10-29.1"
+SCHEMA_VERSION = "2026-10-30.1"
 
 
 class CameraMetric(Base):

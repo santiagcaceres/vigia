@@ -152,6 +152,20 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   usuario de rol `cliente` en la misma transacción; staff (admin y empleado) puede. `GET /api/clients` trae
   `web_username`. En la app: recuadro «Acceso a la web del cliente» (usuario sugerido del nombre, «Generar»
   clave) y al guardar muestra el texto para pasarle al cliente con «Copiar».
+- **Cliente por IP y puertos (30 oct, pedido del dueño; app 1.33.0):** en «Editar cliente», recuadro «Cómo se conectan
+  sus cámaras» con un selector: Hik-Connect (AppKey, como antes) o **Por IP y puertos**: link RTSP (se pega el que pasa el
+  técnico y llena solo dirección, puerto, usuario y clave: `agent.cameras.parse_rtsp`, Hikvision `/Streaming/Channels/401`
+  = canal 4, Dahua `realmonitor?channel=`; el link no se guarda), IP o DDNS, puerto RTSP, puerto HTTP (opcional), usuario
+  y clave (cifrada en `clients.ip_password_enc`, nunca sale del servidor), «Probar desde esta PC»
+  (`agent.cameras.probe_connection`: página si hay puerto HTTP y video del canal) y avisos si es el usuario admin o el
+  puerto 554 de afuera. Columnas `clients.cam_access`, `ip_host`, `ip_rtsp_port`, `ip_http_port`, `ip_username`,
+  `ip_password_enc` (`SCHEMA_VERSION` 2026-10-30.1); `client_hc()` las da al personal (`ip_has_password`), el rol cliente
+  no. «Agregar cámaras» de un cliente así viene completo: solo se ponen los canales («4», «1-8», «1, 2, 5»:
+  `oficina.parse_channels`; una cámara por canal, «Canal N»), sin clave usa la del cliente (`CameraIn.client_password`)
+  y saltea los canales de ese grabador que ya estaban. Si en el cliente cambian puerto, usuario o clave, sus cámaras de
+  ese grabador (mismo host de antes) pasan solas a los datos nuevos (`set_client_ip`, la respuesta trae
+  `cameras_updated`). «Probar conexión» de una cámara por IP ahora prueba desde la PC (`Agent.local_probe` pide la
+  conexión con `/api/agent/view`), no desde Vercel (que solo mira la página HTTP). Prueba: `tests/test_cliente_por_ip.py`.
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

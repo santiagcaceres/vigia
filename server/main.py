@@ -163,10 +163,19 @@ class ClientIn(BaseModel):
     hours: dict[str, str] | None = None
     # dónde se analizan sus cámaras: general (ajuste de Administración) | pcs | servidores. None = no cambia
     analysis_location: Literal["general", "pcs", "servidores"] | None = None
+    # cómo se conectan sus cámaras: hikconnect (AppKey) | ip (IP o DDNS y puertos). Con «ip», los datos del grabador:
+    # sus cámaras se cargan eligiendo los canales. Solo se tocan si vienen; la clave vacía deja la que estaba.
+    cam_access: Literal["hikconnect", "ip"] | None = None
+    ip_host: str | None = Field(None, max_length=255)
+    ip_rtsp_port: int | None = Field(None, ge=1, le=65535)
+    ip_http_port: int | None = Field(None, ge=1, le=65535)
+    ip_username: str | None = Field(None, max_length=80)
+    ip_password: str | None = Field(None, max_length=200)
 
     def client_fields(self) -> dict:
         return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url",
-                                        "hc_code", "hours", "analysis_location"})
+                                        "hc_code", "hours", "analysis_location", "cam_access", "ip_host",
+                                        "ip_rtsp_port", "ip_http_port", "ip_username", "ip_password"})
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
@@ -370,6 +379,8 @@ class CameraIn(BaseModel):
     # usuario que la ve y la analiza en su PC (lo elige el admin). None = no cambia; 0 = sin asignar
     operator_id: int | None = None
     alarm_cfg: AlarmCfgIn = Field(default_factory=AlarmCfgIn)
+    # sin clave: usar la del grabador guardada en el cliente (Editar cliente → «Por IP y puertos»)
+    client_password: bool = False
 
 
 class StreamUrlIn(BaseModel):
@@ -1030,9 +1041,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {**client_dict(c), "web_username": u.username if u else None, **client_hc(c)}
 
     def client_hc(c: Client) -> dict:
-        """Datos de Hik-Connect para el personal (el SecretKey nunca sale del servidor)."""
+        """Cómo se conectan sus cámaras, para el personal: Hik-Connect o IP y puertos (el SecretKey y la clave del
+        grabador nunca salen del servidor)."""
         return {"hc_app_key": c.hc_app_key, "hc_api_url": c.hc_api_url, "hc_has_secret": bool(c.hc_secret_enc),
-                "hc_has_code": bool(c.hc_code_enc)}
+                "hc_has_code": bool(c.hc_code_enc),
+                "cam_access": c.cam_access or ("hikconnect" if c.hc_app_key else "ip" if c.ip_host else None),
+                "ip_host": c.ip_host, "ip_rtsp_port": c.ip_rtsp_port, "ip_http_port": c.ip_http_port,
+                "ip_username": c.ip_username, "ip_has_password": bool(c.ip_password_enc)}
+
+    IP_BRANDS = ("ip", "hikvision", "dahua")
+
+    def set_client_ip(s, c: Client, body: ClientIn) -> int:
+        """Cómo se conectan sus cámaras y, con «ip», los datos del grabador. Si cambian (otro puerto, otra clave…),
+        las cámaras que estaban cargadas con los de antes (mismo grabador) pasan a los nuevos. Devuelve cuántas."""
+        sent = body.model_fields_set
+        if "cam_access" in sent and body.cam_access:
+            c.cam_access = body.cam_access
+        old = {"host": c.ip_host, "rtsp": c.ip_rtsp_port, "http": c.ip_http_port, "user": c.ip_username,
+               "pwd": c.ip_password_enc}
+        if "ip_host" in sent:
+            c.ip_host = (body.ip_host or "").strip() or None
+        if "ip_rtsp_port" in sent:
+            c.ip_rtsp_port = body.ip_rtsp_port
+        if "ip_http_port" in sent:
+            c.ip_http_port = body.ip_http_port
+        if "ip_username" in sent:
+            c.ip_username = (body.ip_username or "").strip() or None
+        if "ip_password" in sent and body.ip_password:
+            c.ip_password_enc = box.encrypt(body.ip_password)
+        new = {"host": c.ip_host, "rtsp": c.ip_rtsp_port, "http": c.ip_http_port, "user": c.ip_username,
+               "pwd": c.ip_password_enc}
+        if not c.id or not old["host"] or new == old:
+            return 0
+        cams = s.query(Camera).filter(Camera.client_id == c.id, Camera.brand.in_(IP_BRANDS),
+                                      Camera.host == old["host"]).all()
+        for cam in cams:  # solo lo que cambió: lo que se tocó a mano en una cámara (otro canal, etc.) queda
+            if new["host"] and new["host"] != old["host"]:
+                cam.host = new["host"]
+            if new["rtsp"] != old["rtsp"]:
+                cam.rtsp_port = new["rtsp"] or 554
+            if new["http"] != old["http"]:
+                cam.http_port = new["http"] or 80
+            if new["user"] and new["user"] != old["user"]:
+                cam.username = new["user"]
+            if new["pwd"] and new["pwd"] != old["pwd"]:
+                cam.password_enc = new["pwd"]
+        return len(cams)
 
     def set_client_hours(c: Client, body: ClientIn) -> None:
         if "hours" not in body.model_fields_set:
@@ -1100,6 +1154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c.analysis_location = body.analysis_location or "general"
         set_client_hours(c, body)
         set_client_hc(c, body)
+        set_client_ip(s, c, body)
         s.add(c)
         s.flush()
         set_client_web_user(s, c, body)  # si falla, no queda el cliente a medias
@@ -1119,13 +1174,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             c.analysis_location = body.analysis_location
         set_client_hours(c, body)
         set_client_hc(c, body)
+        moved = set_client_ip(s, c, body)
         set_client_web_user(s, c, body)
         s.flush()
         sync_locations(s, before)
         bump_rev(s)  # horario y planes cambian qué hacen sus cámaras
         s.commit()
         rebalance(s, force=True)
-        return client_out(s, c)
+        return {**client_out(s, c), "cameras_updated": moved}
 
     @app.delete("/api/clients/{cid}", status_code=204)
     def delete_client(cid: int, _: User = Depends(admin_only), s=Depends(db)) -> None:
@@ -1507,7 +1563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return camera_dict(c, user, agent_status_map(s).get(c.id), operator_map(s))
 
     def camera_fields(body: CameraIn) -> dict:
-        f = body.model_dump(exclude={"password", "source_url", "operator_id"})
+        f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password"})
         if "agent_id" not in body.model_fields_set:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
         if f.get("off_hours") is None:
@@ -1533,6 +1589,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c.operator_id = op.id
         if pcs:
             c.agent_id = user_agent(s, op).id
+
+    def client_password(s, body: CameraIn) -> str | None:
+        """La clave del grabador guardada en el cliente (cifrada igual que la de las cámaras), si se pidió usarla."""
+        if not body.client_password or body.brand == "hikconnect":
+            return None
+        cl = s.get(Client, body.client_id)
+        return cl.ip_password_enc if cl else None
 
     def check_camera_body(s, body: CameraIn) -> None:
         get_or_404(s, Client, body.client_id, "Cliente")
@@ -1575,7 +1638,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_camera(body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         check_camera_body(s, body)
         check_not_repeated(s, body)
-        c = Camera(**camera_fields(body), password_enc=box.encrypt(body.password),
+        c = Camera(**camera_fields(body), password_enc=box.encrypt(body.password) or client_password(s, body),
                    source_url_enc=box.encrypt(body.source_url))
         apply_operator(s, c, body, user)
         s.add(c)
@@ -1597,6 +1660,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         apply_operator(s, c, body, user)
         if body.password:
             c.password_enc = box.encrypt(body.password)
+        elif body.client_password:
+            c.password_enc = client_password(s, body) or c.password_enc
         c.source_url_enc = box.encrypt(body.source_url) if body.source_url else None
         bump_rev(s)
         s.commit()

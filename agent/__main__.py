@@ -501,9 +501,16 @@ class Agent:
         return info, self._detector(cam.get("detector") or "yolo", cam)
 
     def local_probe(self, cam_id: int) -> dict | None:
-        """Prueba la cámara DESDE ESTA PC (página del grabador + video). None si no la analiza esta PC."""
+        """Prueba la cámara DESDE ESTA PC (página del grabador + video). Las que no analiza esta PC (en la app, todas)
+        piden la conexión como para mirarlas. None = no se puede desde acá (Hik-Connect: la prueba el servidor)."""
         c = self._cams_cfg.get(cam_id)
-        if c is None:
+        if c is None and self.client is not None and hasattr(self.client, "view"):
+            try:
+                c = next((x for x in self.client.view([cam_id]) if x.get("id") == cam_id), None)
+            except Exception as exc:  # noqa: BLE001 - sin conexión: que la pruebe el servidor
+                log.debug("No se pudo pedir la conexión de la cámara %s: %s", cam_id, exc)
+                return None
+        if c is None or (c.get("connection") or {}).get("brand") == "hikconnect":
             return None
         from .cameras import build_camera, probe, test_stream
         cam = build_camera(c["connection"])
