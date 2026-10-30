@@ -1131,12 +1131,12 @@ async function metricsView(v, clientId) {
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
         ${t.door ? tile(t.entries, "Entraron", `${t.exits} salieron${t.staff ? ` · ${t.staff} de personal descontados` : ""}`)
           : t.entries ? tile(t.entries, "Pasaron por la entrada", "entrando o saliendo: falta marcar el sentido de entrada")
-          : tile(t.people_max, "Máximo al mismo tiempo", "")}
+          : tile("—", "Entraron", isStaff() ? "falta marcar la zona Entrada, con su sentido, en la cámara de la puerta" : "todavía no se cuenta la puerta")}
         ${tile(fmtDur(avg(t.people_dwell_s, t.people)), "Tiempo promedio en cámara", "")}
-        ${t.door || t.entries ? tile(t.people_max, "Máximo al mismo tiempo", "") : tile(t.people, "Apariciones en cámaras", "suma de todas las cámaras: la misma persona cuenta en cada una (para contar clientes, zona Entrada)")}
+        ${tile(t.people_max, "Máximo al mismo tiempo", "")}
         ${zones.length ? tile(esc(zones[0][0]), "Zona más visitada", `${zones[0][1].visits} visitas`) : ""}
       </div>
-      <div class="panel" style="margin-top:12px"><b>${t.door ? (days === 1 ? "Entraron por hora" : "Entraron por día") : (days === 1 ? "Apariciones por hora" : "Apariciones por día")}</b>${barChart(days === 1 ? m.by_hour : m.by_day, t.door ? "entries" : "people", t.door ? "ingresos" : "apariciones")}</div>
+      ${t.door || t.entries ? `<div class="panel" style="margin-top:12px"><b>${t.door ? "Entraron" : "Pasaron por la entrada"} ${days === 1 ? "por hora" : "por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "entries", t.door ? "entraron" : "pasaron")}</div>` : ""}
       ${zones.length ? `<div class="panel" style="margin-top:12px"><b>A dónde van</b><div class="table-wrap"><table><thead><tr><th>Zona</th><th>Tipo</th><th>Visitas</th><th>Tiempo promedio</th><th></th></tr></thead>
         <tbody>${zones.map(([name, z]) => `<tr><td>${esc(name)}</td><td>${esc(ZONE_NAMES[z.type] || z.type)}</td><td>${z.visits}</td><td>${fmtDur(avg(z.dwell_s, z.visits))}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * z.visits / Math.max(1, zones[0][1].visits))}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}` : ""}
     ${plans.includes("estacion") ? `
@@ -1150,7 +1150,7 @@ async function metricsView(v, clientId) {
         ${tile(t.vehicles_max, "Máximo de vehículos a la vez", "")}
       </div>
       <div class="panel" style="margin-top:12px"><b>${days === 1 ? "Vehículos por hora" : "Vehículos por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "vehicles", "vehículos")}</div>
-      ${!plans.includes("comercio") ? `<div class="panel" style="margin-top:12px"><b>Personas</b> ${t.people} vistas · promedio ${fmtDur(avg(t.people_dwell_s, t.people))} · máximo ${t.people_max} al mismo tiempo</div>` : ""}` : ""}
+      ${!plans.includes("comercio") ? `<div class="panel" style="margin-top:12px"><b>Personas</b> promedio ${fmtDur(avg(t.people_dwell_s, t.people))} en cámara · máximo ${t.people_max} al mismo tiempo</div>` : ""}` : ""}
     ${plans.includes("hurto") && stats ? `
       <h2>Alertas de hurto</h2>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
@@ -1160,9 +1160,9 @@ async function metricsView(v, clientId) {
         ${tile(stats.by_label.sin_etiqueta || 0, "Sin revisar todavía", "")}
       </div>
       <p><a class="btn" href="#/alertas?client_id=${clientId}">Ver las alertas</a></p>` : ""}
-    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Apariciones</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
-      <tbody>${m.by_camera.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.people}</td><td>${fmtDur(avg(c.people_dwell_s, c.people))}</td>${plans.includes("estacion") ? `<td>${c.vehicles}</td>` : ""}<td>${c.people_max}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
-    <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). En las demás cámaras, cada persona o vehículo que la IA sigue cuenta una vez desde que aparece hasta que se va; si sale del cuadro y vuelve, cuenta de nuevo. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
+    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
+      <tbody>${m.by_camera.map((c) => `<tr><td>${esc(c.name)}</td><td>${fmtDur(avg(c.people_dwell_s, c.people))}</td>${plans.includes("estacion") ? `<td>${c.vehicles}</td>` : ""}<td>${c.people_max}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+    <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). No se muestra una suma de personas de todas las cámaras: la misma persona aparece en varias y, si sale del cuadro y vuelve, cuenta de nuevo. "A dónde van" cuenta visitas: quien vuelve a una zona suma otra visita. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
   const sel = $("#m-client", v);
   if (sel) sel.addEventListener("change", () => { location.hash = `#/metricas?client_id=${sel.value}&days=${days}`; });
 }

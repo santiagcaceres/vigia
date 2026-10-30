@@ -118,6 +118,17 @@ def fmt_dur(s: float) -> str:
     return f"{round(s / 60)} min" if s >= 90 else f"{s} s"
 
 
+def door_text(b: dict, staff: bool = False) -> str:
+    """Cuánta gente entró, de un cubo de métricas (total, día u hora): lo cuenta la zona Entrada con su sentido."""
+    if b.get("door"):
+        return (f"Entraron {b.get('entries', 0)} · salieron {b.get('exits', 0)}"
+                + (f" · {b['staff_entries']} de personal descontados" if staff and b.get("staff_entries") else ""))
+    if b.get("entries"):
+        return f"Pasaron por la entrada {b['entries']} (entrando o saliendo: falta marcar el sentido de la puerta)"
+    return ("Todavía no se cuenta la gente que entra: marcá la zona Entrada, con su sentido, en la cámara de la "
+            "puerta.")
+
+
 # ------------------------------------------------------------------ API
 def make_password(n: int = 10) -> str:
     """Clave fácil de dictar: sin letras que se confunden (l/1, O/0)."""
@@ -1046,8 +1057,7 @@ class Oficina:
         self._row(frm, 3, "Hasta (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d2))
         grp_box = ttk.Combobox(frm, textvariable=grp, state="readonly", values=["Por día", "Por hora"])
         self._row(frm, 4, "Agrupar (Excel)", grp_box)
-        ttk.Label(frm, text="En la hora del local: personas, entradas y salidas, tiempo promedio, zonas, vehículos y "
-                            "alertas.", style="Suave.TLabel", wraplength=440, justify="left").grid(
+        ttk.Label(frm, text="En la hora del local: entradas y salidas, tiempo promedio, zonas, vehículos y alertas.", style="Suave.TLabel", wraplength=440, justify="left").grid(
             row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         def fmt_changed(*_):
@@ -1645,24 +1655,31 @@ class Oficina:
         def done(res):
             today, week = res
             t, w = today["total"], week["total"]
+            est = "estacion" in (c.get("plans") or [])
             zones = sorted((today["total"].get("zones") or {}).items(), key=lambda kv: -kv[1]["visits"])
-            lines = ["HOY"]
-            if t.get("door"):
-                lines.append(f"  Entraron {t.get('entries', 0)} · salieron {t.get('exits', 0)}"
-                             + (f" · {t['staff_entries']} de personal descontados" if t.get("staff_entries") else ""))
-            lines += [f"  Personas vistas: {t['people']}" + (f" · ingresos: {t['entries']}" if t.get("entries") and not t.get("door") else ""),
-                      f"  Tiempo promedio en cámara: {fmt_dur(t['people_dwell_s'] / t['people']) if t['people'] else '—'}",
-                      f"  Máximo al mismo tiempo: {t['people_max']}"]
-            if "estacion" in (c.get("plans") or []):
+            # Sin «personas vistas»: es la suma de todas las cámaras y la misma persona cuenta en cada una (y de nuevo
+            # si se pierde y vuelve). La cantidad de gente sale de la puerta: entraron / salieron.
+            lines = ["HOY", "  " + door_text(t, staff=True)]
+            if t.get("people"):
+                lines += [f"  Tiempo promedio en cámara: {fmt_dur(t['people_dwell_s'] / t['people'])}",
+                          f"  Máximo al mismo tiempo: {t['people_max']}"]
+            if est:
                 lines += [f"  Vehículos: {t['vehicles']} · espera hasta el pistero: "
                           f"{fmt_dur(t['pump_wait_s'] / t['pump_wait_n']) if t['pump_wait_n'] else '—'} · "
                           f"sin atención: {t['pump_unattended']} · bajaron a la tienda: {t['shop_visits']}"]
             if zones:
-                lines += ["", "  A dónde van:"] + [f"    {n}: {z['visits']} visitas, promedio {fmt_dur(z['dwell_s'] / max(1, z['visits']))}"
-                                                   for n, z in zones]
-            lines += ["", "ÚLTIMOS 7 DÍAS", f"  Personas: {w['people']} · vehículos: {w['vehicles']}"]
-            lines += [f"    {d['date']}: {d['people']} personas" + (f", {d['vehicles']} vehículos" if d.get("vehicles") else "")
-                      for d in week["by_day"]]
+                lines += ["", "  A dónde van (visitas a cada zona):"] + [
+                    f"    {n}: {z['visits']} visitas, promedio {fmt_dur(z['dwell_s'] / max(1, z['visits']))}"
+                    for n, z in zones]
+            lines += ["", "ÚLTIMOS 7 DÍAS"]
+            if w.get("door") or w.get("entries"):
+                lines.append("  " + door_text(w))
+            if est:
+                lines.append(f"  Vehículos: {w['vehicles']}")
+            for d in week["by_day"]:
+                day = door_text(d) if d.get("door") or d.get("entries") else "sin conteo de la puerta"
+                lines.append(f"    {d['date']}: {day[0].lower()}{day[1:]}"
+                             + (f", {d['vehicles']} vehículos" if est and d.get("vehicles") else ""))
             if not t.get("frames") and not w.get("frames"):
                 lines += ["", "Todavía no hay datos: las métricas salen de las cámaras que se analizan (llegan cada 5 "
                               "minutos)."]

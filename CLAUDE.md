@@ -459,6 +459,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     «Empleados». App: en «Zonas…», «Sentido (solo zona Entrada)» + «Aplicar» y flecha sobre la puerta; en «Ajustar…»,
     «Puerta: entraron N · salieron M → comparalo con tu conteo» (`Tuner.door`, recalcula sobre los recuadros guardados
     con `core.metrics.door_counts`). Las máquinas cuentan así recién al reiniciar (`git pull`).
+  - **Sin «personas vistas» (30 oct, pedido del dueño; app 1.32.1):** en Minas la app decía «Entraron 65 · Personas
+    vistas 935» (la suma de todas las cámaras: la misma persona cuenta en cada una y de nuevo si se pierde y vuelve). Ya
+    no se muestra en ningún lado (app, web, PDF ni la columna «Personas» del Excel): la cantidad de gente es la de la
+    puerta (entraron / salieron, también por día; los días sin puerta dicen «sin conteo de la puerta»). Quedan tiempo
+    promedio en cámara, máximo al mismo tiempo y visitas por zona. Vehículos solo con plan estación. `people` sigue en
+    los datos (sirve de denominador del tiempo promedio). `agent.oficina.door_text`.
   - **Siguiente (estaciones):** uniforme por color (clic en 3-4 pisteros en «Ajustar…»; el tracker ya tiene el histograma
     HSV) para la espera hasta el pistero real, «se bajó del vehículo» y «se bajó y fue a la tienda». Sin hacer.
 - **Zonas sobre datos: mapa de pisadas, sugerencias y editor nuevo (28 oct, pedido del dueño: «no están bien marcados

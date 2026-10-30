@@ -98,13 +98,14 @@ def test_alertas_por_cliente_y_camara_y_exportar_metricas(app):
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
     assert "metricas_Kiosco_Centro_2026-10-19_a_2026-10-21.csv" in r.headers["content-disposition"]
     lines = r.content.decode("utf-8-sig").strip().split("\r\n")
-    assert lines[0].startswith("Fecha;Cliente;Cámara;Personas;")
+    assert lines[0].startswith("Fecha;Cliente;Cámara;Tiempo promedio en escena (min);")
+    assert "Personas" not in lines[0]  # la suma de personas cuenta repetidas: no va
     # (egresos vacío: sin puerta con sentido; después empleados y vehículos)
-    assert lines[1].split(";")[:10] == ["20/10/2026", "Kiosco Centro", "Caja", "15", "1,7", "3", "7", "", "0", "0"]
+    assert lines[1].split(";")[:9] == ["20/10/2026", "Kiosco Centro", "Caja", "1,7", "3", "7", "", "0", "0"]
     assert "Góndola: 4 · 5,0" in lines[1]
     por_hora = a.get("/api/metrics/export", params={"client_id": cl["id"], "desde": "2026-10-20",
                                                     "hasta": "2026-10-20", "agrupar": "hora"}).content.decode("utf-8-sig")
-    assert por_hora.count("\r\n") == 3 and "20/10/2026;10:00;Kiosco Centro;Caja;10;2,0" in por_hora
+    assert por_hora.count("\r\n") == 3 and "20/10/2026;10:00;Kiosco Centro;Caja;2,0" in por_hora
     assert a.get("/api/metrics/export", params={"desde": "20-10-2026"}).status_code == 422
     # un cliente solo exporta lo suyo
     a.post("/api/users", json={"username": "kiosco", "password": "clave-kiosco-1", "role": "cliente",

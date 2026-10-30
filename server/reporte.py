@@ -217,29 +217,34 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
         elif t.get("entries"):
             first = (str(t["entries"]), "Pasaron por la entrada", "entrando o saliendo (falta marcar el sentido)")
         else:
-            first = (str(t["people"]), "Apariciones en cámaras", "la misma persona cuenta en cada cámara")
+            first = ("-", "Entraron", "falta la zona Entrada (con su sentido) en la cámara de la puerta")
         tiles = [first,
                  (dur(avg(t["people_dwell_s"], t["people"])), "Tiempo promedio", "en cámara, por persona"),
                  (str(t["people_max"]), "Máximo a la vez", "personas al mismo tiempo")]
         if zones:
             tiles.append((str(zones[0][1].get("visits", 0)), "Zona más visitada", zones[0][0]))
         pdf.tiles(tiles)
-        key, what = ("entries", "ingresos") if t.get("door") or t.get("entries") else ("people", "apariciones")
-        if one_day:
-            hours = {h["hour"]: h for h in m.get("by_hour") or []}
-            lo = min(hours, default=8)
-            hi = max(hours, default=20)
-            pdf.bars(f"{'Entraron' if key == 'entries' else 'Apariciones'} por hora",
-                     [(f"{h:02d}", float(hours.get(h, {}).get(key, 0))) for h in range(lo, hi + 1)], what)
-        else:
-            pdf.bars(f"{'Entraron' if key == 'entries' else 'Apariciones'} por día",
-                     [(fmt_day(d["date"]), float(d.get(key, 0))) for d in m.get("by_day") or []], what)
+        # Sin «apariciones» (suma de personas de todas las cámaras): la misma persona cuenta en cada una y de nuevo si
+        # se pierde y vuelve. Cuánta gente vino lo dice la puerta.
+        if t.get("door") or t.get("entries"):
+            title = "Entraron" if t.get("door") else "Pasaron por la entrada"
+            what = "ingresos" if t.get("door") else "pasadas"
+            if one_day:
+                hours = {h["hour"]: h for h in m.get("by_hour") or []}
+                lo = min(hours, default=8)
+                hi = max(hours, default=20)
+                pdf.bars(f"{title} por hora",
+                         [(f"{h:02d}", float(hours.get(h, {}).get("entries", 0))) for h in range(lo, hi + 1)], what)
+            else:
+                pdf.bars(f"{title} por día",
+                         [(fmt_day(d["date"]), float(d.get("entries", 0))) for d in m.get("by_day") or []], what)
         if not one_day and m.get("by_day"):
-            pdf.table(["Día", "Entraron", "Salieron", "Apariciones", "Tiempo promedio", "Máximo a la vez"],
-                      [[fmt_day(d["date"]), str(d.get("entries", 0)), str(d.get("exits", 0)) if d.get("door") else "-",
-                        str(d.get("people", 0)), dur(avg(d.get("people_dwell_s", 0), d.get("people", 0))),
+            pdf.table(["Día", "Entraron", "Salieron", "Tiempo promedio", "Máximo a la vez"],
+                      [[fmt_day(d["date"]), str(d.get("entries", 0)) if d.get("door") or d.get("entries") else "-",
+                        str(d.get("exits", 0)) if d.get("door") else "-",
+                        dur(avg(d.get("people_dwell_s", 0), d.get("people", 0))),
                         str(d.get("people_max", 0))] for d in m["by_day"]],
-                      [30, 26, 26, 30, 40, 30])
+                      [36, 32, 32, 44, 38])
         if zones:
             pdf.h2("A dónde van")
             pdf.table(["Zona", "Tipo", "Visitas", "Tiempo promedio"],
@@ -259,10 +264,10 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
     if len(m.get("by_camera") or []) > 1:
         pdf.h2("Por cámara")
         est = "estacion" in plans
-        pdf.table(["Cámara", "Apariciones", "Tiempo promedio", "Máximo a la vez"] + (["Vehículos"] if est else []),
-                  [[c["name"], str(c["people"]), dur(avg(c["people_dwell_s"], c["people"])), str(c["people_max"])]
+        pdf.table(["Cámara", "Tiempo promedio", "Máximo a la vez"] + (["Vehículos"] if est else []),
+                  [[c["name"], dur(avg(c["people_dwell_s"], c["people"])), str(c["people_max"])]
                    + ([str(c["vehicles"])] if est else []) for c in m["by_camera"]],
-                  [70, 30, 40, 32] + ([22] if est else []))
+                  [90, 44, 38] + ([22] if est else []))
     if "hurto" in plans and alerts is not None:
         pdf.h2("Alertas de posible hurto")
         total = sum(alerts.values())
@@ -274,7 +279,8 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
     if pdf.get_y() > 255:
         pdf.add_page()
     pdf.note("Cómo se mide: «Entraron» cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola "
-             "cámara, así nadie se cuenta dos veces). En las demás cámaras, cada persona que la IA sigue cuenta una vez "
-             "desde que aparece hasta que se va; si sale del cuadro y vuelve, cuenta de nuevo. Quien pisa la zona de "
+             "cámara, así nadie se cuenta dos veces). No se suma la gente de todas las cámaras: la misma persona aparece en "
+             "varias y, si sale del cuadro y vuelve, cuenta de nuevo. «A dónde van» cuenta visitas: quien vuelve a una "
+             "zona suma otra visita. Quien pisa la zona de "
              "personal o aparece con el local cerrado no cuenta como cliente. No se reconocen caras.")
     return bytes(pdf.output())

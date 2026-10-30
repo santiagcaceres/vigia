@@ -2931,7 +2931,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return f"{v:.{dec}f}".replace(".", ",")
 
         head = ["Fecha"] + (["Hora"] if agrupar == "hora" else []) + [
-            "Cliente", "Cámara", "Personas", "Tiempo promedio en escena (min)", "Máximo a la vez", "Ingresos",
+            "Cliente", "Cámara", "Tiempo promedio en escena (min)", "Máximo a la vez", "Ingresos",
             "Egresos", "Empleados", "Vehículos", "Vehículos en surtidor", "Espera promedio en surtidor (min)", "Surtidor sin atender",
             "Visitas a la tienda", "Zonas (visitas · minutos)"]
         lines = [";".join(head)]
@@ -2940,7 +2940,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             zones = " | ".join(f"{name}: {z.get('visits', 0)} · {num(z.get('dwell_s', 0) / 60)}"
                                for name, z in sorted((b.get("zones") or {}).items()))
             cells = [when.strftime("%d/%m/%Y")] + ([when.strftime("%H:00")] if agrupar == "hora" else []) + [
-                cls.get(cl_id, str(cl_id)), cams.get(cam_id, f"Cámara {cam_id}"), str(b["people"]),
+                cls.get(cl_id, str(cl_id)), cams.get(cam_id, f"Cámara {cam_id}"),
                 num(b["people_dwell_s"] / b["people"] / 60) if b["people"] else "", str(b["people_max"]),
                 str(b["entries"]), str(b["exits"]) if b.get("door") else "", str(b["staff"]), str(b["vehicles"]),
                 str(b["pump_vehicles"]),
