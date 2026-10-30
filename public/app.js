@@ -526,8 +526,8 @@ async function cameraView(v, id) {
   $("#probe").addEventListener("click", () => probeCamera(cam, $("#probe-out")));
   const del = $("#delcam");
   if (del) del.addEventListener("click", async () => {
-    if (!confirm(`¿Eliminar la cámara "${cam.name}"? Se borran también sus métricas. Si tiene alertas, no se puede: deshabilitala.`)) return;
-    try { await api("DELETE", "/api/cameras/" + cam.id); toast("Cámara eliminada"); S._camsAt = 0; location.hash = `#/cliente/${cam.client_id}`; } catch (e) { fail(e); }
+    if (!confirm(`¿Eliminar la cámara "${cam.name}"? Se borran también sus alertas, clips y métricas. No se puede deshacer.`)) return;
+    try { await api("DELETE", "/api/cameras/" + cam.id + "?con_alertas=true"); toast("Cámara eliminada"); S._camsAt = 0; location.hash = `#/cliente/${cam.client_id}`; } catch (e) { fail(e); }
   });
 }
 
@@ -1202,9 +1202,7 @@ async function clientsView(v) {
   $$("[data-edit]", v).forEach((b) => b.addEventListener("click", () => form(S.clients.find((c) => c.id === +b.dataset.edit))));
   $$("[data-delclient]", v).forEach((b) => b.addEventListener("click", async () => {
     const c = S.clients.find((x) => x.id === +b.dataset.delclient);
-    const typed = prompt(`Esto borra "${c.name}" con TODAS sus cámaras, alertas y clips, alarmas, métricas y usuarios. No se puede deshacer.\n\nEscribí el nombre del cliente para confirmar:`);
-    if (typed === null) return;
-    if (typed.trim() !== c.name) return toast("El nombre no coincide: no se borró nada", true);
+    if (!confirm(`¿Eliminar el cliente "${c.name}"? Se borran también TODAS sus cámaras, alertas y clips, alarmas, métricas y usuarios. No se puede deshacer.`)) return;
     try { await api("DELETE", "/api/clients/" + c.id); toast("Cliente eliminado"); S._clientsAt = 0; S._camsAt = 0; route(); } catch (e) { fail(e); }
   }));
   const editar = +(new URLSearchParams(location.hash.split("?")[1] || "").get("editar") || 0);

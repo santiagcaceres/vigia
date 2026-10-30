@@ -178,6 +178,11 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   no activada (prueba la otra), sin transmisiones libres, o el grabador entrega bien y la PC no lo lee (¿H.265?):
   pedido DESCRIBE con Digest/Basic propio. «Probar desde esta PC» del cliente prueba el link pegado tal cual y, si no,
   la secundaria y después la principal. Pruebas: `tests/test_diagnostico_rtsp.py`, `tests/test_cliente_por_ip.py`.
+  **App 1.34.2 (30 oct):** borrar cualquier cosa (cliente, cámaras, usuario, PC) es **un sí o no** (pedido del dueño: no
+  escribir el nombre; «No» viene elegido); cámaras con alertas se borran con todo en la misma pregunta (`con_alertas`).
+  Igual en la web. La marca de un grabador por IP se detecta también con la calidad principal (antes solo la
+  secundaria: si no estaba activada, decía «no se pudo detectar la marca» aunque el video anduviera) y con link no se
+  detecta (sale del link).
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

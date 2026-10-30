@@ -1328,14 +1328,11 @@ class Oficina:
         c = self._sel_client()
         if not c:
             return
-        from tkinter import simpledialog
-        typed = simpledialog.askstring("Eliminar cliente", f"Esto borra «{c['name']}» con TODAS sus cámaras, alertas y clips, "
-                                       "métricas y usuarios. No se puede deshacer.\n\nEscribí el nombre para confirmar:",
-                                       parent=self.v.root)
-        if typed is None:
+        # un sí o no (pedido del dueño, 30 oct: escribir el nombre era engorroso); «No» viene elegido
+        if not self.mb.askyesno(NOMBRE, f"¿Eliminar el cliente «{c['name']}»?\n\nSe borran también TODAS sus cámaras, "
+                                         "alertas y clips, métricas y usuarios. No se puede deshacer.",
+                                icon="warning", default="no"):
             return
-        if typed.strip() != c["name"]:
-            return self.mb.showwarning(NOMBRE, "El nombre no coincide: no se borró nada.")
         self.bg.run(lambda: self.api.delete(f"/api/clients/{c['id']}"), lambda _: self.refresh_all(), self.err)
 
     # ---------- diálogos de cámara ----------
@@ -1652,19 +1649,13 @@ class Oficina:
             return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Shift para varias).")
         names = ", ".join(c["name"] for c in cams[:5]) + (f" y {len(cams) - 5} más" if len(cams) > 5 else "")
         what = f"la cámara «{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras ({names})"
-        if not self.mb.askyesno(NOMBRE, f"¿Eliminar {what}?\n\nSe borran también sus métricas. No se puede deshacer."):
+        # una sola pregunta (antes, si tenía alertas, preguntaba dos veces)
+        if not self.mb.askyesno(NOMBRE, f"¿Eliminar {what}?\n\nSe borran también sus alertas, clips y métricas. "
+                                         "No se puede deshacer.", icon="warning", default="no"):
             return
-
-        def send(force: bool):
-            return self.api.post("/api/cameras/delete", {"camera_ids": [c["id"] for c in cams], "con_alertas": force})
-
-        def fail(exc: Exception) -> None:
-            if isinstance(exc, ApiError) and exc.status == 409:
-                if self.mb.askyesno(NOMBRE, f"{exc}\n\n¿Borrar también sus alertas, fotos y clips? No se puede deshacer."):
-                    self.bg.run(lambda: send(True), lambda _: self.config_saved(), self.err)
-                return
-            self.err(exc)
-        self.bg.run(lambda: send(False), lambda _: self.config_saved(), fail)
+        self.bg.run(lambda: self.api.post("/api/cameras/delete", {"camera_ids": [c["id"] for c in cams],
+                                                                  "con_alertas": True}),
+                    lambda _: self.config_saved(), self.err)
 
     def probe(self, cam: dict | None) -> None:
         if not cam:

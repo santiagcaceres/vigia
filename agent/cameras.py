@@ -92,7 +92,14 @@ class AutoCamera(BaseCamera):
 
     def resolve(self) -> BaseCamera:
         if self._impl is None:
-            self._impl = build_camera({**self.cfg, "brand": detect_brand(self.cfg)})
+            brand = None
+            if self.cfg.get("source_url"):  # con el link pegado la marca se lee del link: no hace falta probar
+                try:
+                    brand = parse_rtsp(self.cfg["source_url"]).get("brand")
+                except ValueError:
+                    brand = None
+                brand = brand or "hikvision"
+            self._impl = build_camera({**self.cfg, "brand": brand or detect_brand(self.cfg)})
         return self._impl
 
     def live_url(self, stream: str | None = None) -> str:
@@ -120,16 +127,22 @@ def detect_brand(cfg: dict) -> str:
         if not build_and_probe({**cfg, "brand": b}).get("error"):
             brand = b
             break
-    if brand is None:  # la página del equipo no contesta: probar el video de cada marca
-        for b in ("hikvision", "dahua"):
-            try:
-                if test_stream(build_camera({**cfg, "brand": b})).get("ok"):
-                    brand = b
-                    break
-            except Exception:  # noqa: BLE001
-                pass
+    if brand is None:  # la página del equipo no contesta: probar el video de cada marca, en las dos calidades (si el
+        # grabador no tiene activada la secundaria, con la principal igual se sabe la marca)
+        first = cfg.get("detect_stream") or "sub"
+        for stream in (first, "main" if first == "sub" else "sub"):
+            for b in ("hikvision", "dahua"):
+                try:
+                    if test_stream(build_camera({**cfg, "brand": b}), stream).get("ok"):
+                        brand = b
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+            if brand:
+                break
     if brand is None:
-        log.info("No se pudo detectar la marca de %s: se prueba como Hikvision", cfg.get("host"))
+        log.info("%s: desde esta PC no contestan ni la página del grabador ni el video, así que no se sabe si es "
+                 "Hikvision o Dahua: se prueba como Hikvision (el motivo, en el aviso que sigue)", cfg.get("host"))
         return "hikvision"  # no se guarda: se vuelve a intentar en la próxima conexión
     log.info("Marca detectada para %s: %s", cfg.get("host"), brand.capitalize())
     with _detect_lock:

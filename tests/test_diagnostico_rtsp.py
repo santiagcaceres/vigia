@@ -96,3 +96,26 @@ def test_acepta_la_conexion_pero_no_contesta():
     msg = rtsp_diagnose(f"rtsp://a:b@127.0.0.1:{mudo.getsockname()[1]}/Streaming/Channels/102", timeout=1.0)
     assert "acepta la conexión pero no contesta" in msg
     mudo.close()
+
+
+def test_con_link_la_marca_sale_del_link_sin_probar(monkeypatch):
+    import agent.cameras as cameras
+
+    monkeypatch.setattr(cameras, "detect_brand", lambda cfg: pytest.fail("no tenía que probar la marca"))
+    cam = cameras.build_camera({"brand": "ip", "host": "h", "channel": 3,
+                                "source_url": "rtsp://u:p@h:554/cam/realmonitor?channel=3&subtype=0"})
+    assert cam.resolve().brand == "dahua" and cam.live_url().endswith("subtype=0")
+
+
+def test_la_marca_se_detecta_aunque_no_este_la_calidad_secundaria(monkeypatch):
+    import agent.cameras as cameras
+
+    monkeypatch.setattr(cameras, "build_and_probe", lambda cfg: {"error": "sin página"})
+    pedidos = []
+
+    def test_stream(cam, stream="sub", explain=False):
+        pedidos.append((cam.brand, stream))
+        return {"ok": cam.brand == "hikvision" and stream == "main"}  # solo anda la principal
+    monkeypatch.setattr(cameras, "test_stream", test_stream)
+    assert cameras.detect_brand({"host": "solo-principal", "channel": 4}) == "hikvision"
+    assert pedidos == [("hikvision", "sub"), ("dahua", "sub"), ("hikvision", "main")]
