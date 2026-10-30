@@ -120,6 +120,8 @@ class Ventana:
         self.on_demand = False  # app de escritorio: lo elegido se abre en esta PC (ver Agent._demand_tick)
         self.selected_at = 0.0  # cuándo cambió la selección (para no avisar en cada clic con Shift)
         self._selected: set[int] | None = self._load_selection()  # None = todavía no hay cámaras
+        self._ai = self._load_ai()  # «Ver con la IA de esta PC» (casilla de «En vivo»)
+        self._ai_var = None
         self._tree_ids: dict[str, int] = {}  # id del árbol -> id de cámara
         self._cam_rows: dict[int, str] = {}
         self._client_rows: dict[str, str] = {}
@@ -275,21 +277,31 @@ class Ventana:
                          "en\n«Clientes»."
                          if on_demand else "Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.")
             ttk.Label(left, text=help_text, style="Suave.TLabel").pack(anchor="w", pady=(0, 6))
-            self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=18)
-            self.tree.heading("#0", text="Cámara")
-            self.tree.heading("estado", text="Estado")
-            self.tree.column("#0", width=210)
-            self.tree.column("estado", width=150)
-            self.tree.pack(fill="y", expand=True)
-            self.tree.bind("<<TreeviewSelect>>", self._on_select)
-            btns = ttk.Frame(left)
+            # abajo y fijos (antes que la lista, que ocupa lo que sobra): en pantallas de 768 de alto no quedan tapados
+            foot = ttk.Frame(left)
+            foot.pack(side="bottom", fill="x")
+            btns = ttk.Frame(foot)
             btns.pack(fill="x", pady=6)
             if not on_demand:  # a demanda no: abriría todas las cámaras de golpe
                 ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left", padx=(0, 4))
             ttk.Button(btns, text="Cerrar todas" if on_demand else "Ninguna",
                        command=self._select_none).pack(side="left")
-            self.info = ttk.Label(left, text="", style="Suave.TLabel", wraplength=340, justify="left")
+            if on_demand:  # mirar con la IA de esta PC: lo mismo que el análisis, sin guardar ni medir nada
+                self._ai_var = tk.BooleanVar(value=self._ai)
+                ttk.Checkbutton(foot, text="Ver con la IA de esta PC", variable=self._ai_var,
+                                command=self._on_ai).pack(anchor="w", pady=(2, 0))
+                ttk.Label(foot, text="Personas, postura, objetos, zonas y gestos, solo\npara ver cómo la capta: no "
+                                     "guarda ni mide\nnada. Abre el video del grabador (usa esta PC).",
+                          style="Suave.TLabel").pack(anchor="w")
+            self.info = ttk.Label(foot, text="", style="Suave.TLabel", wraplength=340, justify="left")
             self.info.pack(anchor="w", pady=(4, 0))
+            self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=10)
+            self.tree.heading("#0", text="Cámara")
+            self.tree.heading("estado", text="Estado")
+            self.tree.column("#0", width=210)
+            self.tree.column("estado", width=150)
+            self.tree.pack(fill="both", expand=True)
+            self.tree.bind("<<TreeviewSelect>>", self._on_select)
             right = tk.Frame(body, bg="#111")
             right.pack(side="right", fill="both", expand=True)
             self.canvas = tk.Label(right, bg="#111")
@@ -338,6 +350,22 @@ class Ventana:
         last = lines[-1].strip().splitlines()[0] if lines[-1].strip() else ""
         self.last_line.configure(text=last[:160])
 
+    def ai_view(self) -> bool:
+        """¿Las cámaras que se miran se abren con la IA de esta PC? (sin ventana o sin la casilla: no)"""
+        return bool(self._ai) and self._ai_var is not None
+
+    def _on_ai(self) -> None:
+        self._ai = bool(self._ai_var.get())
+        self._save_selection()
+
+    def _load_ai(self) -> bool:
+        try:
+            if self.state_file and self.state_file.exists():
+                return bool(json.loads(self.state_file.read_text(encoding="utf-8")).get("ia", True))
+        except Exception:
+            pass
+        return True  # pedido del dueño: por defecto se ve con la IA
+
     def _load_selection(self) -> set[int] | None:
         try:
             if self.state_file and self.state_file.exists():
@@ -348,11 +376,12 @@ class Ventana:
         return None
 
     def _save_selection(self) -> None:
-        if not self.state_file or self._selected is None:
+        if not self.state_file:
             return
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps({"camaras": sorted(self._selected)}), encoding="utf-8")
+            self.state_file.write_text(json.dumps({"camaras": sorted(self._selected or ()), "ia": bool(self._ai)}),
+                                       encoding="utf-8")
         except Exception as exc:
             log.debug("No se pudo guardar la selección de la ventana: %s", exc)
 

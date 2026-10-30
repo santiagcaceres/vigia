@@ -147,6 +147,8 @@ def test_elegir_que_se_analiza_y_mirar_cualquiera(app):
         vista = a.post("/api/agent/view", headers=h, json={"camera_ids": [ids[0], ids[2]]}).json()["cameras"]
         assert {v["id"]: v["analyzed"] for v in vista} == {ids[0]: True, ids[2]: False}
         assert all(v["connection"]["host"] == "10.0.0.1" for v in vista)
+        # para «Ver con la IA de esta PC»: lo que usa el análisis (zonas, reglas, gestos) y sus cuadros por segundo
+        assert all("zones" in v["analysis"] and "rules" in v["analysis"] and v["process_fps"] >= 5 for v in vista)
         assert a.get("/api/agent/config", headers=h).json()["cameras"] == []  # la PC no analiza nada
         # una PC vieja (sin usuario) no puede mirar
         vieja = a.post("/api/agents", json={"name": "PC vieja", "client_id": None}).json()

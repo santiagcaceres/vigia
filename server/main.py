@@ -1918,17 +1918,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/agent/view")
     def agent_view(body: UserCamerasIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         """«En vivo» de la app: las cámaras que el usuario quiere mirar, sin analizarlas. Las que analiza una
-        máquina se muestran con la imagen que sube la máquina (no se le pide otra transmisión al grabador)."""
+        máquina se pueden mostrar con la imagen que sube la máquina (no se le pide otra transmisión al grabador).
+        `analysis` y `process_fps` (como en /config): para «Ver con la IA de esta PC», que dibuja lo que vería el
+        análisis (zonas, personas, postura, gestos) sin guardar ni mandar nada."""
         watcher(s, ag)
         locs = locations(s)
         names = dict(s.query(Agent.id, Agent.name).all())
         cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids)), Camera.enabled.is_(True)).all()
         clients = {c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))} if cams else {}
-        return {"cameras": [{
-            "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": clients[c.client_id].name,
-            "analyzed": locs.get(c.id) == "servidores", "analyzer": names.get(c.agent_id) if c.agent_id else None,
-            "connection": camera_connection(c, clients[c.client_id]),
-        } for c in cams]}
+        out = []
+        for c in cams:
+            cfg = agent_camera_cfg(c, clients[c.client_id])
+            out.append({"id": c.id, "name": c.name, "client_id": c.client_id,
+                        "client_name": clients[c.client_id].name,
+                        "analyzed": locs.get(c.id) == "servidores",
+                        "analyzer": names.get(c.agent_id) if c.agent_id else None,
+                        "connection": cfg["connection"], "analysis": cfg["analysis"],
+                        "process_fps": cfg["process_fps"]})
+        return {"cameras": out}
 
     @app.post("/api/agent/tune")
     def agent_tune(body: TuneIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:

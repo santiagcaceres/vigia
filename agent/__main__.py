@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from core.detectors import Detector, build_detector
+from core.pose import build_pose
 from core.rules import parse_zones
 from core.schedule import is_open, next_open
 from core.scorer import Scorer
@@ -42,7 +43,7 @@ from .live import LiveWorker
 from .marca import NOMBRE
 from .outbox import Outbox, ServerClient, login_pc
 from .ventana import ESTADOS, Ventana, default_pc_name
-from .vista import RemoteView, ViewWorker
+from .vista import AIViewWorker, RemoteView, ViewWorker
 from .worker import METRICS_EVERY_SECONDS, CameraWorker, MetricsQueue
 
 log = logging.getLogger("vigia.agent")
@@ -146,6 +147,7 @@ class Agent:
         self.on_demand = on_demand and self.window is not None
         self.beat = beat  # latido «alguien mira» con la sesión del usuario (imagen de la máquina)
         self.viewers: dict[int, ViewWorker | RemoteView] = {}
+        self._ai_view: bool | None = None  # «Ver con la IA de esta PC» (casilla de «En vivo») con la que se abrieron
         self._view_ready: queue.Queue = queue.Queue()
         self._view_pending: set[int] = set()
         self._view_gone: set[int] = set()  # elegidas que el servidor no devolvió (borradas o deshabilitadas)
@@ -419,6 +421,12 @@ class Agent:
             self._watch_busy = True
             self.clip_pool.submit(self._send_watch, set())
         chosen = self.window.selected_ids() & {c["id"] for c in self._catalog} if self._catalog else set()
+        ai = bool(getattr(self.window, "ai_view", lambda: False)())
+        if ai != self._ai_view:  # se tocó la casilla: se vuelven a abrir las que se están mirando, con o sin IA
+            self._ai_view = ai
+            for v in self.viewers.values():
+                v.stop()
+            self.viewers.clear()
         while True:  # llegó cómo conectarse a cámaras elegidas
             try:
                 cfgs, asked = self._view_ready.get_nowait()
@@ -427,8 +435,7 @@ class Agent:
             self._view_gone |= asked - {c["id"] for c in cfgs}
             for cfg in cfgs:
                 if cfg["id"] in chosen and cfg["id"] not in self.viewers:
-                    remote = cfg.get("analyzed") and self.beat
-                    v = RemoteView(cfg, self.beat, self.server) if remote else ViewWorker(cfg)
+                    v = self._viewer(cfg, ai)
                     v.start()
                     self.viewers[cfg["id"]] = v
         for cid in list(self.viewers):
@@ -443,6 +450,15 @@ class Agent:
             self._viewing_shown = len(self.viewers)
             n = self._viewing_shown
             self.window.set_status("Conectado" + (f" · viendo {n} cámara{'s' if n != 1 else ''}" if n else ""))
+
+    def _viewer(self, cfg: dict, ai: bool):
+        """Cómo se mira una cámara: con la IA de esta PC (abre el video del grabador y le aplica YOLO, postura,
+        zonas y gestos sin guardar nada), con la imagen que sube la máquina que la analiza, o tal cual."""
+        if ai:
+            return AIViewWorker(cfg, lambda: self._detector("yolo", cfg), build_pose)
+        if cfg.get("analyzed") and self.beat:
+            return RemoteView(cfg, self.beat, self.server)
+        return ViewWorker(cfg)
 
     def _fetch_view(self, ids: set[int]) -> None:
         try:

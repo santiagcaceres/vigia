@@ -626,6 +626,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     las 16:17 UTC la VM `vigia-analisis-1` quedó sin conexión: su `maquina.env` apunta al dominio viejo (borrado) y el
     código que lo corrige solo a sí mismo lo trae el `git pull` del arranque. El dueño la reinició («Restablecer») y a las
     22:47 UTC volvió en línea con las 5 cámaras de Minas.
+- **«Ver con la IA de esta PC» en «En vivo» (30 oct, pedido del dueño: «que se le aplique el YOLO y la postura y todo
+  lo que tengamos, pero que no mida… ver la cámara de Hik con esas cosas, no lo de la PC virtual»; app 1.32.0).**
+  Casilla en «En vivo» (prendida por defecto, se recuerda en `ventana.json` como `ia`). Con ella, cada cámara que se
+  elige abre **el video del grabador** (aunque la analice una máquina: es otra transmisión; por Hik-Connect puede chocar
+  con el límite de transmisiones del grabador) y `AIViewWorker` (agent/vista.py) le aplica en la PC lo mismo que el
+  análisis: YOLO con objetos y bolsos (`ajuste.view_detect`, igual que «Configurar…»), seguimiento, **postura de todos**
+  (aunque la cámara no tenga gestos), zonas, segundos en cada zona y la marcha de los gestos según la configuración de la
+  cámara; si salta una regla o un gesto, cartel de prueba 3 s. **No guarda ni manda nada** (ni alertas, ni métricas, ni
+  imágenes). La IA corre en otro hilo sobre el último cuadro, a los cuadros por segundo de la cámara (como la máquina);
+  si la PC no da abasto analiza menos cuadros sin trabar el video. Dibuja con `ajuste.draw` (el mismo look que
+  «Configurar…»). `/api/agent/view` trae `analysis` y `process_fps`. Sin la casilla, como antes (imagen de la máquina
+  o video tal cual). Probado con el HLS del hurto de Minas: 4,8 cuadros/s y «mano en la bolsa».
 - **Sin merodeo (29 oct, decisión del dueño: «saquemos el merodeo como alerta, no lo quiero como parámetro ni como
   métrica»; app 1.31.0).** Quedan las reglas salida sin pago, zona restringida y fuera de horario (`RULE_TYPES`), más los
   gestos. `core/rules.py`: sin la regla ni `loiter_seconds`; `MERODEO` queda solo para leer alertas viejas

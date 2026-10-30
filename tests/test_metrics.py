@@ -1,6 +1,7 @@
 """Métricas por cliente: colector en la PC central, carga y consulta en el servidor, planes."""
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -86,7 +87,8 @@ def test_planes_carga_y_consulta_de_metricas(app):
         # el agente recibe que debe detectar vehículos (plan estación)
         cfg = c.get("/api/agent/config", headers=h).json()
         assert cfg["cameras"][0]["analysis"]["vehicles"] is True and "estacion" in cfg["cameras"][0]["analysis"]["plans"]
-        today = datetime.now().replace(minute=0, second=0, microsecond=0)
+        # los cubos van en hora del local (Montevideo), no en la de la máquina que corre las pruebas
+        today = datetime.now(ZoneInfo("America/Montevideo")).replace(minute=0, second=0, microsecond=0, tzinfo=None)
         b1 = {"camera_id": cam["id"], "bucket_start": today.isoformat(),
               "data": {"people": 5, "people_dwell_s": 100, "people_max": 2, "vehicles": 3, "pump_vehicles": 2,
                        "pump_wait_s": 30, "pump_wait_n": 2, "shop_visits": 1,
@@ -123,7 +125,8 @@ def test_borrar_cliente_con_todo(app):
         h = {"X-Agent-Token": ag["token"]}
         cam = c.post("/api/cameras", json={"client_id": cid, "agent_id": ag["id"], "name": "A", "host": "h", "password": "x"}).json()
         cam2 = c.post("/api/cameras", json={"client_id": keep, "agent_id": ag["id"], "name": "B", "host": "h", "password": "x"}).json()
-        now = datetime.now().replace(minute=0, second=0, microsecond=0).isoformat()
+        now = datetime.now(ZoneInfo("America/Montevideo")).replace(minute=0, second=0, microsecond=0,
+                                                                   tzinfo=None).isoformat()
         c.post("/api/agent/metrics", json={"buckets": [{"camera_id": cam["id"], "bucket_start": now, "data": {"people": 3}},
                                                        {"camera_id": cam2["id"], "bucket_start": now, "data": {"people": 1}}]}, headers=h)
         c.post("/api/users", json={"username": "dueno", "password": "clave-dueno-1", "role": "cliente", "client_id": cid})

@@ -135,6 +135,24 @@ def gestures_to_save(raw: dict | None, shown: dict, effective: dict | None, type
     return out if out != raw else None
 
 
+def view_detect(detector, frame: np.ndarray, gest: bool) -> tuple[list, list]:
+    """Personas y lo demás que ve YOLO, en una sola pasada («Configurar…» y «Ver con la IA de esta PC»). Con gestos,
+    los bolsos salen como en las máquinas (core/pose.detect_with_bags: la clase de más puntaje entre mochila, cartera y
+    valija, desde 0,3) y lo demás aparte, desde 0,45: así «mano en la bolsa» ve acá los mismos bolsos que en la
+    máquina. Un detector sin objetos (movimiento) da solo personas."""
+    if not hasattr(detector, "detect_also"):
+        return detector.detect(frame), []
+    extra = dict(COCO_ES)
+    if gest and hasattr(detector, "detect_groups"):
+        rest = {c: n for c, n in extra.items() if c not in BAG_CLASSES}
+        dets, (objs, bags) = detector.detect_groups(frame, [(rest, OBJECT_CONF), (BAG_CLASSES, BAG_CONF)])
+        return dets, objs + bags
+    dets, objs = detector.detect_also(frame, extra, BAG_CONF if gest else OBJECT_CONF)
+    if gest:  # un detector sin grupos: los bolsos con la confianza de las máquinas; lo demás, como siempre
+        objs = [o for o in objs if o.conf >= OBJECT_CONF or o.label in BAG_LABELS]
+    return dets, objs
+
+
 @dataclass
 class Sample:
     """Un cuadro analizado: lo necesario para volver a pasar las reglas y para mostrarlo."""
@@ -421,19 +439,7 @@ class Tuner:
         return self.pose
 
     def _detect(self, frame: np.ndarray, gest: bool) -> tuple[list, list]:
-        """Personas y lo demás que ve YOLO, en una sola pasada. Con gestos, los bolsos salen como en las máquinas
-        (core/pose.detect_with_bags: la clase de más puntaje entre mochila, cartera y valija, desde 0,3) y lo demás
-        aparte, desde 0,45: así «mano en la bolsa» ve acá los mismos bolsos que en la máquina."""
-        if not self.extra:
-            return self.detector.detect(frame), []
-        if gest and hasattr(self.detector, "detect_groups"):
-            rest = {c: n for c, n in self.extra.items() if c not in BAG_CLASSES}
-            dets, (objs, bags) = self.detector.detect_groups(frame, [(rest, OBJECT_CONF), (BAG_CLASSES, BAG_CONF)])
-            return dets, objs + bags
-        dets, objs = self.detector.detect_also(frame, self.extra, BAG_CONF if gest else OBJECT_CONF)
-        if gest:  # un detector sin grupos: los bolsos con la confianza de las máquinas; lo demás, como siempre
-            objs = [o for o in objs if o.conf >= OBJECT_CONF or o.label in BAG_LABELS]
-        return dets, objs
+        return view_detect(self.detector, frame, gest) if self.extra else (self.detector.detect(frame), [])
 
     def _analyze(self, frame: np.ndarray, ts: float, wall: datetime | None, seg: int) -> None:
         gest = self.gestures_on
