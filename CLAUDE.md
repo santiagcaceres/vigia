@@ -183,6 +183,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Igual en la web. La marca de un grabador por IP se detecta también con la calidad principal (antes solo la
   secundaria: si no estaba activada, decía «no se pudo detectar la marca» aunque el video anduviera) y con link no se
   detecta (sale del link).
+  **App 1.35.0 (30 oct, pedido del dueño): en el cliente no va nada de cámaras; la marca se elige en la cámara.**
+  «Editar cliente» = datos, planes, horario, acceso web y dónde se analiza (sale «Cómo se conectan sus cámaras»; las
+  columnas `clients.ip_*` y `cam_access` quedan en la base, la app ya no las carga). Formulario de la cámara: **Marca**
+  (`BRAND_SEL`: Hikvision · Dahua · Hikvision por Hik-Connect) y, para Hikvision/Dahua, **Link RTSP** (el de VLC; varios =
+  uno por línea): al pegarlo completa dirección, puerto, usuario, clave, canal y calidad (editables). Si el link tiene la
+  forma de la marca elegida se guardan esos datos (sin link: se puede cambiar canal o calidad); si no (otra forma u otra
+  marca), se guarda y usa tal cual (`source_url`). Puerto HTTP, modo y alarmas del grabador van en «Más opciones». Las
+  cámaras viejas con marca «ip» (adivinada) se pasan a la que se elija al editarlas. La clave de Hik-Connect del
+  cliente se carga desde la cámara («Clave de Hik-Connect…», `PUT /api/clients/{id}/hikconnect`, no toca el resto).
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

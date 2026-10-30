@@ -178,6 +178,13 @@ class ClientIn(BaseModel):
                                         "ip_rtsp_port", "ip_http_port", "ip_username", "ip_password"})
 
 
+class HikConnectKeyIn(BaseModel):
+    """La clave de Hik-Connect for Teams de un cliente (se carga desde la cámara; el SecretKey vacío deja el que estaba)."""
+    hc_app_key: str = Field(min_length=1, max_length=128)
+    hc_secret: str | None = Field(None, max_length=256)
+    hc_api_url: str | None = Field(None, max_length=255)
+
+
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
 
 
@@ -1184,6 +1191,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         rebalance(s, force=True)
         return {**client_out(s, c), "cameras_updated": moved}
+
+    @app.put("/api/clients/{cid}/hikconnect")
+    def set_client_hikconnect(cid: int, body: HikConnectKeyIn, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """Solo la clave de Hik-Connect del cliente (la app la carga desde el formulario de la cámara: en el del cliente
+        no va nada de cámaras). No toca el resto del cliente."""
+        c = get_or_404(s, Client, cid, "Cliente")
+        c.hc_app_key = body.hc_app_key.strip()
+        if (body.hc_secret or "").strip():
+            c.hc_secret_enc = box.encrypt(body.hc_secret.strip())
+        elif not c.hc_secret_enc:
+            raise HTTPException(422, "Falta el SecretKey de Hik-Connect")
+        c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+        bump_rev(s)
+        s.commit()
+        return client_out(s, c)
 
     @app.delete("/api/clients/{cid}", status_code=204)
     def delete_client(cid: int, _: User = Depends(admin_only), s=Depends(db)) -> None:

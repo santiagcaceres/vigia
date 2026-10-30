@@ -125,3 +125,17 @@ def test_camara_por_link_como_vlc(app):
     assert conn()["source_url"] == LINK and conn()["password"] == "Cl@ve-1"
     # pasarla a «por IP y puertos» (sin link): se borra
     assert not a.put(f"/api/cameras/{cam['id']}", json={**edit, "keep_source_url": False}).json()["has_source_url"]
+
+
+def test_clave_de_hik_connect_desde_la_camara(app):
+    """La clave de Hik-Connect se carga sola (desde el formulario de la cámara) sin tocar el resto del cliente."""
+    a = TestClient(app)
+    a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+    cl = a.post("/api/clients", json={"name": "Minas", "timezone": "America/Montevideo", "plans": ["comercio"],
+                                      "hours": {"lun": "08:00-19:00"}}).json()
+    assert a.put(f"/api/clients/{cl['id']}/hikconnect", json={"hc_app_key": "k"}).status_code == 422  # falta el secreto
+    r = a.put(f"/api/clients/{cl['id']}/hikconnect", json={"hc_app_key": " k ", "hc_secret": "s"}).json()
+    assert r["hc_app_key"] == "k" and r["hc_has_secret"] and "hc_secret" not in r  # el SecretKey no vuelve
+    assert (r["timezone"], r["plans"], r["hours"]["lun"]) == ("America/Montevideo", ["comercio"], "08:00-19:00")
+    r = a.put(f"/api/clients/{cl['id']}/hikconnect", json={"hc_app_key": "k2"}).json()  # sin secreto: queda el que estaba
+    assert r["hc_app_key"] == "k2" and r["hc_has_secret"]

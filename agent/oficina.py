@@ -45,7 +45,7 @@ from core.rules import snap_edge
 from core.schedule import DAY_NAMES, DAYS, open_hours_per_week
 
 from . import actualizar
-from .cameras import parse_rtsp, probe_connection
+from .cameras import parse_rtsp
 from .marca import NOMBRE
 from .version import VERSION
 
@@ -72,13 +72,9 @@ OFF_HOURS_NAMES = {"apagada": "No mirar (ahorra todo: video, internet y análisi
                    "alarmas": "Escuchar solo las alarmas del grabador (por IP y puertos)",
                    "vivo": "Seguir analizando igual (24 h, gasta todo)"}
 # formulario de cámara: Hikvision por la nube, o cualquier marca por IP y puertos (la marca se detecta sola)
-CONN_NAMES = {"hikconnect": "Hikvision por Hik-Connect (recomendado, sin puertos)",
-              "ip": "Por IP y puertos (Hikvision o Dahua: la marca se detecta sola)",
-              "link": "Link RTSP, como en VLC (un link por cámara)"}
+# marca de la cámara (la elige el usuario: ya no se adivina). Hikvision y Dahua se cargan con el link RTSP
+BRAND_SEL = {"hikvision": "Hikvision", "dahua": "Dahua", "hikconnect": "Hikvision por Hik-Connect (sin abrir puertos)"}
 STREAM_NAMES = {"sub": "Secundaria (recomendada: menos internet)", "main": "Principal (más resolución y más internet)"}
-# cómo se conectan las cámaras de un cliente (Editar cliente)
-ACCESS_NAMES = {"hikconnect": "Hik-Connect (AppKey, sin abrir puertos)",
-                "ip": "Por IP y puertos (Hikvision o Dahua; link RTSP)"}
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador",
               **GESTURE_NAMES}  # gestos de ocultamiento (postura): «Mano al bolsillo», «Mano dentro de la ropa»…
@@ -971,7 +967,8 @@ class Oficina:
 
         # acceso a la web: con esto el dueño del comercio entra y ve sus hurtos, alertas y métricas
         had_user = bool(c.get("web_username"))
-        # segunda columna (web y Hik-Connect): así la ventana entra en la pantalla de una notebook
+        # segunda columna (acceso web y dónde se analiza): así la ventana entra en la pantalla de una notebook.
+        # Nada de cámaras acá (pedido del dueño, 30 oct): la conexión se carga en cada cámara
         right = ttk.Frame(frm)
         right.grid(row=0, column=2, rowspan=15, sticky="n", padx=(16, 0))
         right.columnconfigure(0, weight=1, minsize=420)
@@ -988,140 +985,10 @@ class Oficina:
         ttk.Label(wf, text=("Dejá la clave vacía para no cambiarla." if had_user else
                             "Mínimo 8 caracteres. Se la pasás al cliente por privado."),
                   foreground="#666").grid(row=2, column=0, columnspan=3, sticky="w")
-        # cómo se conectan sus cámaras: Hik-Connect (AppKey) o IP y puertos (los datos del grabador, o el link RTSP)
-        cf = ttk.LabelFrame(right, text="Cómo se conectan sus cámaras", padding=6)
-        cf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        cf.columnconfigure(0, weight=1)
-        access0 = c.get("cam_access") or ("ip" if c.get("ip_host") and not c.get("hc_app_key") else "hikconnect")
-        access = tk.StringVar(value=ACCESS_NAMES[access0])
-        ttk.Combobox(cf, textvariable=access, values=list(ACCESS_NAMES.values()), state="readonly", width=44).grid(
-            row=0, column=0, sticky="w")
-        hf = ttk.Frame(cf)
-        hf.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        hf.columnconfigure(1, weight=1)
-        hc_key = tk.StringVar(value=c.get("hc_app_key") or "")
-        hc_secret = tk.StringVar()
-        hc_url = tk.StringVar(value=c.get("hc_api_url") or "")
-        for i, (lab, var, show) in enumerate((("AppKey", hc_key, ""), ("SecretKey", hc_secret, "•"),
-                                              ("Servidor (opcional)", hc_url, ""))):
-            ttk.Label(hf, text=lab).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
-            ttk.Entry(hf, textvariable=var, show=show).grid(row=i, column=1, sticky="ew", pady=2)
-        ttk.Label(hf, text=("Portal de Hik-Connect → Team Management → API Integration."
-                            + (" SecretKey vacío = no cambia." if c.get("hc_has_secret") else "")
-                            + "\nServidor vacío = se busca solo (o pegá la dirección del portal, ej. isa.hikcentralconnect.com)."
-                            + "\nImportante: apagá el cifrado de video de los grabadores (con cifrado, Hik-Connect no entrega el video)."),
-                  foreground="#666", justify="left", wraplength=400).grid(row=4, column=0, columnspan=2, sticky="w")
-        if c.get("id") and c.get("hc_app_key"):
-            ttk.Button(hf, text="Probar: ver cámaras de Hik-Connect",
-                       command=lambda: self.hikconnect_cameras(c, None, parent=top)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
-
-        # por IP y puertos: los datos del grabador; al agregar cámaras se eligen solo los canales
-        ipf = ttk.Frame(cf)
-        ipf.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        ipf.columnconfigure(1, weight=1)
-        ip = {"link": tk.StringVar(), "host": tk.StringVar(value=c.get("ip_host") or ""),
-              "rtsp": tk.StringVar(value=str(c.get("ip_rtsp_port") or 554)),
-              "http": tk.StringVar(value=str(c.get("ip_http_port") or "")),
-              "user": tk.StringVar(value=c.get("ip_username") or ""), "pass": tk.StringVar()}
-        link_ch: dict = {}
-        ip_rows = (("Link RTSP (si te lo pasaron)", "link", ""), ("IP o DDNS del grabador", "host", ""),
-                   ("Puerto RTSP", "rtsp", ""), ("Puerto HTTP (opcional)", "http", ""), ("Usuario", "user", ""),
-                   ("Clave" + (" (vacía = no cambia)" if c.get("ip_has_password") else ""), "pass", "•"))
-        ip_entries = {}
-        for i, (lab, key, show) in enumerate(ip_rows):
-            ttk.Label(ipf, text=lab).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
-            ip_entries[key] = ttk.Entry(ipf, textvariable=ip[key], show=show)
-            ip_entries[key].grid(row=i, column=1, sticky="ew", pady=2)
-        ip_note = tk.StringVar()
-        ttk.Label(ipf, textvariable=ip_note, foreground="#666", justify="left", wraplength=400).grid(
-            row=7, column=0, columnspan=2, sticky="w")
-        pb = ttk.Frame(ipf)
-        pb.grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ip_result = tk.StringVar()
-        ttk.Label(ipf, textvariable=ip_result, justify="left", wraplength=400).grid(row=9, column=0, columnspan=2,
-                                                                                     sticky="w")
-
-        def link_changed(*_) -> None:
-            text = ip["link"].get().strip()
-            if not text:
-                return
-            try:
-                d = parse_rtsp(text)
-            except ValueError as exc:
-                return ip_result.set(f"⚠ {exc}")
-            ip["host"].set(d["host"])
-            ip["rtsp"].set(str(d["rtsp_port"]))
-            ip["user"].set(d["username"])
-            ip["pass"].set(d["password"])
-            link_ch.clear()
-            link_ch["url"] = text  # solo en memoria, para «Probar» tal cual (no se guarda)
-            if d.get("channel"):
-                link_ch["channel"] = d["channel"]
-            ip_result.set("✔ Datos tomados del link" + (f" (canal {d['channel']})" if d.get("channel") else "")
-                          + ". El link no se guarda: queda la clave, cifrada.")
-            ip["link"].set("")
-
-        def ip_hint(*_) -> None:
-            user, port = ip["user"].get().strip().lower(), ip["rtsp"].get().strip()
-            warn = []
-            if user == "admin":
-                warn.append("usuario admin: mejor uno «vigia» que solo vea y reproduzca")
-            if port == "554" and ip["host"].get().strip() and not ip["host"].get().startswith(("192.168.", "10.")):
-                warn.append("puerto 554 de afuera: mejor uno alto (ej. 38554 → 554)")
-            ip_note.set(("⚠ " + " · ".join(warn).capitalize() + "." if warn else
-                         "Puerto HTTP vacío = la página del grabador no está abierta (el video anda igual; sin ella no "
-                         "se ven modelo y canales ni llegan las alarmas del grabador)."))
-        # el link se lee al pegarlo (o con Enter, o al salir del campo): mientras se escribe a mano no
-        ip_entries["link"].bind("<<Paste>>", lambda e: top.after(50, link_changed), add="+")
-        for ev in ("<Return>", "<FocusOut>"):
-            ip_entries["link"].bind(ev, lambda e: link_changed(), add="+")
-        for k in ("user", "rtsp", "host"):
-            ip[k].trace_add("write", ip_hint)
-        ip_hint()
-
-        def ip_probe() -> None:
-            host = ip["host"].get().strip()
-            if not host:
-                return ip_result.set("Falta la IP o el DDNS del grabador.")
-            if not ip["pass"].get() and c.get("ip_has_password"):
-                return ip_result.set("Escribí la clave para probar (la guardada no sale del servidor).")
-            try:
-                cfg = {"host": host, "rtsp_port": int(ip["rtsp"].get() or 554),
-                       "http_port": int(ip["http"].get()) if ip["http"].get().strip() else None,
-                       "username": ip["user"].get().strip(), "password": ip["pass"].get(),
-                       "channel": link_ch.get("channel", 1), "source_url": link_ch.get("url")}
-            except ValueError:
-                return ip_result.set("Los puertos tienen que ser números.")
-            ip_result.set(f"Probando desde esta PC el canal {cfg['channel']} (hasta 30 s)…")
-
-            def done(r: dict) -> None:
-                http, video = r["http"], r["video"]
-                lines = []
-                if cfg["http_port"]:
-                    lines.append(f"✘ Página del grabador: no responde ({http.get('error')})" if http.get("error") else
-                                 f"✔ Página del grabador: {http.get('model') or 'OK'}"
-                                 + (f" · {len(http['channels'])} canales" if http.get("channels") else ""))
-                lines.append(f"✔ Video del canal {cfg['channel']}: {video.get('width')}x{video.get('height')}"
-                             + (f" ({r['brand'].capitalize()})" if r.get("brand") else "")
-                             + (" · solo en calidad principal (la secundaria no está activada)"
-                                if video.get("quality") == "main" and not cfg.get("source_url") else "")
-                             if video.get("ok") else
-                             f"✘ Video del canal {cfg['channel']}: {video.get('error') or 'no se pudo leer'} "
-                             "(revisá DDNS, puerto RTSP abierto en el router, usuario y clave)")
-                ip_result.set("\n".join(lines))
-            self.bg.run(lambda: probe_connection(cfg), done, lambda e: ip_result.set(f"✘ No se pudo probar: {e}"))
-        ttk.Button(pb, text="Probar desde esta PC", command=ip_probe).pack(side="left")
-
-        def access_changed(*_) -> None:
-            is_ip = next((k for k, t in ACCESS_NAMES.items() if t == access.get()), "hikconnect") == "ip"
-            (ipf if is_ip else hf).grid()
-            (hf if is_ip else ipf).grid_remove()
-        access.trace_add("write", access_changed)
-        access_changed()
         loc = tk.StringVar(value=LOCATION_NAMES.get(c.get("analysis_location") or "general"))
         if self.is_admin:
             lf = ttk.LabelFrame(right, text="Qué cámaras se analizan (en las máquinas)", padding=6)
-            lf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+            lf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
             ttk.Combobox(lf, textvariable=loc, values=list(LOCATION_NAMES.values()), state="readonly",
                          width=40).pack(anchor="w")
             ttk.Label(lf, text="Lo normal es marcar cámara por cámara con «✔ Analizar». «Todas sus cámaras» pasa "
@@ -1158,39 +1025,12 @@ class Oficina:
             if had_user and not user:
                 return self.mb.showwarning(NOMBRE, "El usuario para la web no puede quedar vacío.", parent=top)
             body["web_username"], body["web_password"] = user or None, pwd or None
-            body["cam_access"] = next((k for k, t in ACCESS_NAMES.items() if t == access.get()), "hikconnect")
-            if body["cam_access"] == "hikconnect":
-                body["hc_app_key"], body["hc_api_url"] = hc_key.get().strip() or None, hc_url.get().strip() or None
-                if hc_secret.get().strip():
-                    body["hc_secret"] = hc_secret.get().strip()
-                elif body["hc_app_key"] and not c.get("hc_has_secret"):
-                    return self.mb.showwarning(NOMBRE, "Falta el SecretKey de Hik-Connect.", parent=top)
-            else:
-                if ip["link"].get().strip():
-                    link_changed()
-                host = ip["host"].get().strip()
-                if not host:
-                    return self.mb.showwarning(NOMBRE, "Falta la IP o el DDNS del grabador (o pegá el link RTSP).",
-                                               parent=top)
-                try:
-                    body.update(ip_host=host, ip_rtsp_port=int(ip["rtsp"].get() or 554),
-                                ip_http_port=int(ip["http"].get()) if ip["http"].get().strip() else None,
-                                ip_username=ip["user"].get().strip() or None)
-                except ValueError:
-                    return self.mb.showwarning(NOMBRE, "Los puertos del grabador tienen que ser números.", parent=top)
-                if ip["pass"].get():
-                    body["ip_password"] = ip["pass"].get()
-                elif not c.get("ip_has_password"):
-                    return self.mb.showwarning(NOMBRE, "Falta la clave del grabador.", parent=top)
 
             def done(res):
                 top.destroy()
                 self.refresh_all()
                 if pwd:  # se creó el acceso o se cambió la clave: mostrar los datos para pasárselos
                     self.web_access_dialog(res.get("name") or body["name"], user, pwd)
-                if res.get("cameras_updated"):
-                    self.mb.showinfo(NOMBRE, f"Se actualizaron {res['cameras_updated']} cámara(s) de este grabador con "
-                                              "los datos nuevos.")
             self.bg.run(lambda: (self.api.put(f"/api/clients/{c['id']}", body) if c.get("id")
                                  else self.api.post("/api/clients", body)), done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
@@ -1337,8 +1177,11 @@ class Oficina:
 
     # ---------- diálogos de cámara ----------
     def camera_dialog(self, cam: dict | None = None) -> None:
-        """Alta o edición de cámaras. Hikvision entra por Hik-Connect (sin IP ni puertos; se eligen una o
-        varias cámaras de la lista de la API). Dahua, y Hikvision sin Hik-Connect, por IP y puertos."""
+        """Alta o edición de cámaras (pedido del dueño, 30 oct: en el cliente no va nada de cámaras). Se elige la marca:
+        Hikvision o Dahua → se pega el link RTSP que pasa el técnico (el mismo que abre en VLC) y se completan solos
+        dirección, puerto, usuario, clave, canal y calidad; varios links (uno por línea) = una cámara por link. O
+        Hikvision por Hik-Connect (sin abrir puertos): se eligen de la lista de la API y la clave de Hik-Connect del
+        cliente se carga acá. La marca la dice el selector: no se adivina."""
         tk, ttk = self.tk, self.ttk
         client = self._sel_client()
         if cam is None and client is None:
@@ -1347,16 +1190,15 @@ class Oficina:
         top, frm = self._dialog("Editar cámara" if cam.get("id") else f"Nueva cámara · {client['name']}", 600)
         owner = next((x for x in self.clients if x["id"] == (cam.get("client_id") or (client or {}).get("id"))), client)
         own = owner or {}
-        access = own.get("cam_access")
-        default_brand = cam.get("brand") or ("hikconnect" if access == "hikconnect" or (access is None and own.get("hc_app_key"))
-                                             else "ip")
-        # cámara nueva de un cliente con su grabador cargado por IP: los datos salen de ahí; solo se eligen los canales
+        brand0 = cam.get("brand") or ("hikconnect" if own.get("hc_app_key") and own.get("cam_access") != "ip"
+                                      else "hikvision")
+        brand0 = brand0 if brand0 in BRAND_SEL else "hikvision"  # las viejas «ip» (marca adivinada): se elige acá
+        # cámara nueva de un cliente que tenía cargado su grabador (app 1.33): esos datos de arranque
         from_client = not cam.get("id") and bool(own.get("ip_host"))
         pre = (lambda key, d: own.get(key) or d) if from_client else (lambda key, d: d)  # noqa: E731
         v = {
             "name": tk.StringVar(value=cam.get("name", "")),
-            "brand": tk.StringVar(value=CONN_NAMES["link" if cam.get("has_source_url") else
-                                                   "hikconnect" if default_brand == "hikconnect" else "ip"]),
+            "brand": tk.StringVar(value=BRAND_SEL[brand0]),
             "stream": tk.StringVar(value=STREAM_NAMES.get(cam.get("detect_stream") or "sub", STREAM_NAMES["sub"])),
             "mode": tk.StringVar(value=MODE_NAMES.get(cam.get("mode", "vivo"))),
             "host": tk.StringVar(value=cam.get("host") or pre("ip_host", "")),
@@ -1371,10 +1213,11 @@ class Oficina:
         }
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
+        inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
         # cámaras elegidas de Hik-Connect: [{id, name, serial, channel}]
         hc_sel: list[dict] = ([{"id": cam.get("hc_resource_id"), "name": cam.get("name"), "serial": cam.get("hpp_serial"),
                                 "channel": cam.get("channel")}] if cam.get("brand") == "hikconnect" else [])
-        hc_text = tk.StringVar()
+        hc_text, hc_key_text = tk.StringVar(), tk.StringVar()
 
         def show_sel() -> None:
             if not hc_sel:
@@ -1384,6 +1227,8 @@ class Oficina:
                 hc_text.set(f"{x.get('name') or '—'} · serie {x.get('serial') or '—'} · canal {x.get('channel') or '?'}")
             else:
                 hc_text.set(f"{len(hc_sel)} cámaras (se crea una por cada una)")
+            hc_key_text.set("Clave de Hik-Connect del cliente: cargada ✔" if own.get("hc_app_key") else
+                            "Falta la clave de Hik-Connect del cliente (AppKey y SecretKey)")
         show_sel()
 
         def picked(items: list[dict]) -> None:
@@ -1392,7 +1237,12 @@ class Oficina:
                 v["name"].set(hc_sel[0]["name"])
             show_sel()
 
-        rows: dict[str, list] = {"hc": [], "ip": [], "link": []}
+        def choose_hc() -> None:
+            if not own.get("hc_app_key"):  # sin clave no se puede listar: primero la clave, después la lista
+                return self.hc_key_dialog(own, top, lambda: (show_sel(), choose_hc()))
+            self.hikconnect_cameras(owner, picked, parent=top, multi=not cam.get("id"))
+
+        rows: dict[str, list] = {"hc": [], "ip": [], "adv": []}
 
         def row(kind: str | None, r: int, label: str, widget) -> None:
             lab = ttk.Label(frm, text=label)
@@ -1401,109 +1251,134 @@ class Oficina:
             if kind:
                 rows[kind] += [lab, widget]
 
-        row(None, 0, "Conexión", ttk.Combobox(frm, textvariable=v["brand"], values=list(CONN_NAMES.values()), state="readonly"))
+        row(None, 0, "Marca", ttk.Combobox(frm, textvariable=v["brand"], values=list(BRAND_SEL.values()), state="readonly"))
         row(None, 1, "Nombre", ttk.Entry(frm, textvariable=v["name"]))
+        # --- Hikvision por Hik-Connect
         hc_box = ttk.Frame(frm)
         ttk.Label(hc_box, textvariable=hc_text).pack(side="left", fill="x", expand=True)
-        ttk.Button(hc_box, text="Elegir de Hik-Connect…",
-                   command=lambda: self.hikconnect_cameras(owner, picked, parent=top, multi=not cam.get("id"))
-                   ).pack(side="left", padx=(6, 0))
+        ttk.Button(hc_box, text="Elegir de Hik-Connect…", command=choose_hc).pack(side="left", padx=(6, 0))
         row("hc", 2, "Cámara(s)", hc_box)
+        key_box = ttk.Frame(frm)
+        ttk.Label(key_box, textvariable=hc_key_text, style="Suave.TLabel").pack(side="left", fill="x", expand=True)
+        ttk.Button(key_box, text="Clave de Hik-Connect…",
+                   command=lambda: self.hc_key_dialog(own, top, show_sel)).pack(side="left", padx=(6, 0))
+        key_box.grid(row=3, column=0, columnspan=2, sticky="ew", pady=3)
         hc_hint = ttk.Label(frm, foreground="#666", justify="left",
-                            text="Sin IP ni puertos: el video llega por la nube de Hik-Connect (en vivo, en el horario del local).\n"
-                                 "El grabador tiene que tener APAGADO el cifrado de video.\n"
-                                 "Al agregar se pueden elegir varias cámaras a la vez (Ctrl o Shift).")
-        hc_hint.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 6))
-        rows["hc"].append(hc_hint)
-        # por link: se usa tal cual, como VLC (uno por cámara; al agregar, varios = uno por línea)
-        link_txt = tk.Text(frm, height=1 if cam.get("id") else 3, width=60, wrap="none", relief="solid", borderwidth=1,
+                            text="Sin IP ni puertos: el video llega por la nube de Hik-Connect (en el horario del local).\n"
+                                 "El grabador tiene que tener APAGADO el cifrado de video. Se pueden elegir varias a la vez.")
+        hc_hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 6))
+        rows["hc"] += [key_box, hc_hint]
+        # --- Hikvision o Dahua: el link (el de VLC) completa todo lo de abajo
+        link_txt = tk.Text(frm, height=1 if cam.get("id") else 2, width=60, wrap="none", relief="solid", borderwidth=1,
                            font=("Segoe UI", 9))
-        row("link", 2, "Link RTSP" + (" (vacío = el que estaba)" if cam.get("has_source_url") else
-                                      "" if cam.get("id") else "\n(uno por línea: una\ncámara por link)"), link_txt)
-        link_hint = ttk.Label(frm, foreground="#666", justify="left", wraplength=560,
-                              text="Se usa tal cual, como en VLC (la marca y el canal se leen del link). Ej. "
-                                   "rtsp://usuario:clave@local.ddns.net:554/Streaming/Channels/401 = canal 4, calidad "
-                                   "principal; con 402 (la secundaria, si está activada) gasta menos internet del local.")
-        link_hint.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 6))
-        rows["link"] = rows.get("link", []) + [link_hint]
-        row("ip", 4, "Modo", ttk.Combobox(frm, textvariable=v["mode"], values=list(MODE_NAMES.values()), state="readonly"))
-        row("ip", 5, "IP o DDNS del grabador", ttk.Entry(frm, textvariable=v["host"]))
-        row("ip", 6, "Puerto RTSP", ttk.Entry(frm, textvariable=v["rtsp_port"]))
-        row("ip", 7, "Puerto HTTP", ttk.Entry(frm, textvariable=v["http_port"]))
-        row("ip", 8, "Canal" if cam.get("id") else "Canal(es): 4 · 1-8 · 1, 2, 5", ttk.Entry(frm, textvariable=v["channel"]))
-        row("ip", 9, "Usuario del grabador", ttk.Entry(frm, textvariable=v["username"]))
-        row("ip", 19, "Calidad del video", ttk.Combobox(frm, textvariable=v["stream"], values=list(STREAM_NAMES.values()),
-                                                        state="readonly"))
-        row("ip", 10, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else
+        row("ip", 5, "Link RTSP (el de VLC)" if cam.get("id") else "Link RTSP (el de VLC;\nvarios = uno por línea)",
+            link_txt)
+        link_note = tk.StringVar(value="Pegá el link y se completa todo lo de abajo." if not cam.get("id") else
+                                 "Pegá un link nuevo solo si cambió." + (" Ahora usa un link tal cual."
+                                                                        if cam.get("has_source_url") else ""))
+        link_lbl = ttk.Label(frm, textvariable=link_note, foreground="#666", justify="left", wraplength=560)
+        link_lbl.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        rows["ip"].append(link_lbl)
+        row("ip", 7, "IP o DDNS del grabador", ttk.Entry(frm, textvariable=v["host"]))
+        row("ip", 8, "Puerto RTSP", ttk.Entry(frm, textvariable=v["rtsp_port"]))
+        row("ip", 9, "Canal" if cam.get("id") else "Canal(es): 4 · 1-8 · 1, 2, 5", ttk.Entry(frm, textvariable=v["channel"]))
+        row("ip", 10, "Usuario del grabador", ttk.Entry(frm, textvariable=v["username"]))
+        row("ip", 11, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else
                                               " (vacía = la del cliente)" if from_client and own.get("ip_has_password")
                                               else ""),
             ttk.Entry(frm, textvariable=v["password"], show="•"))
-        ip_hint = ttk.Label(frm, foreground="#666", justify="left",
-                            text=("Datos del grabador tomados del cliente (Editar cliente → «Cómo se conectan sus cámaras»).\n"
-                                  "Con varios canales se crea una cámara por canal («Canal 4»…): los nombres se cambian "
-                                  "después en «Nombres e imágenes»." if from_client else
-                                  "Misma red que la PC que la analiza: IP de adentro (192.168.x.x) y puertos 554/80.\n"
-                                  "Otra red: IP pública o DDNS y los puertos externos del router (ej. 38554/38080).\n"
-                                  "Si el cliente tiene un solo grabador, cargalo en Editar cliente → «Por IP y puertos»."))
-        ip_hint.grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 6))
+        row("ip", 12, "Calidad del video", ttk.Combobox(frm, textvariable=v["stream"], values=list(STREAM_NAMES.values()),
+                                                        state="readonly"))
+        adv_open = tk.BooleanVar(value=(cam.get("mode") or "vivo") != "vivo")
+        adv_btn = ttk.Checkbutton(frm, text="Más opciones (puerto HTTP, alarmas del grabador)", variable=adv_open,
+                                  command=lambda: layout())
+        adv_btn.grid(row=13, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        rows["ip"].append(adv_btn)
+        row("adv", 14, "Puerto HTTP (la página)", ttk.Entry(frm, textvariable=v["http_port"]))
+        row("adv", 15, "Modo", ttk.Combobox(frm, textvariable=v["mode"], values=list(MODE_NAMES.values()), state="readonly"))
         cfg = cam.get("alarm_cfg") or {}
         al = {k: tk.BooleanVar(value=k in (cfg.get("event_types") or ["VMD", "fielddetection", "linedetection"])) for k in ALARM_TYPES}
         af = ttk.LabelFrame(frm, text="Alarmas del grabador que se analizan (modos de alarma)", padding=6)
-        af.grid(row=12, column=0, columnspan=2, sticky="ew", pady=4)
+        af.grid(row=16, column=0, columnspan=2, sticky="ew", pady=4)
         for i, (k, t) in enumerate(ALARM_TYPES.items()):
             ttk.Checkbutton(af, text=t, variable=al[k]).grid(row=i // 3, column=i % 3, sticky="w", padx=4)
         nvr_cb = ttk.Checkbutton(frm, text="Bajar el clip de la grabación del grabador (si tiene disco)", variable=nvr)
-        nvr_cb.grid(row=13, column=0, columnspan=2, sticky="w")
-        rows["ip"] += [ip_hint, af, nvr_cb]
-        row(None, 14, "Tipo de cámara (qué mira)", ttk.Combobox(frm, textvariable=v["profile"],
+        nvr_cb.grid(row=17, column=0, columnspan=2, sticky="w")
+        rows["adv"] += [af, nvr_cb]
+        row(None, 18, "Tipo de cámara (qué mira)", ttk.Combobox(frm, textvariable=v["profile"],
                                                                   values=list(PROFILE_NAMES.values()), state="readonly"))
         off_cb = ttk.Combobox(frm, textvariable=v["off_hours"], values=list(OFF_HOURS_NAMES.values()), state="readonly")
-        row(None, 15, "Con el local cerrado", off_cb)
-        hours_txt = ("Horario del local: se carga en el cliente (Editar cliente)." if not (owner or {}).get("hours") else
-                     "Horario del local: " + " · ".join(f"{d[:2].capitalize()} {(owner['hours'].get(d) or 'cerrado')}"
+        row(None, 19, "Con el local cerrado", off_cb)
+        hours_txt = ("Horario del local: se carga en el cliente (Editar cliente)." if not own.get("hours") else
+                     "Horario del local: " + " · ".join(f"{d[:2].capitalize()} {(own['hours'].get(d) or 'cerrado')}"
                                                        for d in DAYS))
         ttk.Label(frm, text=hours_txt, foreground="#666", wraplength=560, justify="left").grid(
-            row=16, column=0, columnspan=2, sticky="w")
-        row(None, 17, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
-        if "hurto" not in ((owner or {}).get("plans") or ["hurto"]):
+            row=20, column=0, columnspan=2, sticky="w")
+        row(None, 21, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
+        if "hurto" not in (own.get("plans") or ["hurto"]):
             ttk.Label(frm, text="Este cliente es solo de métricas: la cámara usa 2-3 cuadros por segundo y no guarda "
                                 "clips (lo de arriba no se aplica).", foreground="#666", wraplength=560,
-                      justify="left").grid(row=20, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=21, column=0, columnspan=2, sticky="w")
+                      justify="left").grid(row=22, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=23, column=0, columnspan=2, sticky="w")
 
-        inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
+        filled: dict = {"line": None}
+
+        def links() -> list[str]:
+            return [line.strip() for line in link_txt.get("1.0", "end").splitlines() if line.strip()]
+
+        def fill_from_link(*_) -> None:
+            """El primer link completa los campos (una sola vez por link: después se pueden corregir a mano)."""
+            lines = links()
+            if not lines:
+                return
+            try:
+                d = parse_rtsp(lines[0])
+            except ValueError as exc:
+                return link_note.set(f"⚠ {exc}")
+            if filled["line"] != lines[0]:
+                filled["line"] = lines[0]
+                v["host"].set(d["host"])
+                v["rtsp_port"].set(str(d["rtsp_port"]))
+                v["username"].set(d["username"])
+                v["password"].set(d["password"])
+                if d.get("channel"):
+                    v["channel"].set(str(d["channel"]))
+                if d.get("stream"):
+                    v["stream"].set(STREAM_NAMES[d["stream"]])
+            sel = inv(BRAND_SEL, v["brand"].get())
+            if len(lines) > 1:
+                msg = f"✔ {len(lines)} links: se crea una cámara por link (abajo, los datos del primero)."
+            elif not d.get("brand") or not d.get("channel"):
+                msg = "✔ Link de otra forma: se va a usar tal cual, como en VLC."
+            else:
+                msg = (f"✔ Datos tomados del link: canal {d['channel']}, calidad "
+                       f"{'principal' if d.get('stream') == 'main' else 'secundaria'}.")
+                if sel in ("hikvision", "dahua") and d["brand"] != sel:
+                    msg += f" ⚠ El link tiene la forma de {d['brand'].capitalize()}: se va a usar tal cual."
+            link_note.set(msg)
+        link_txt.bind("<<Paste>>", lambda e: top.after(50, fill_from_link), add="+")
+        link_txt.bind("<FocusOut>", fill_from_link, add="+")
+        link_txt.bind("<KeyRelease>", lambda e: top.after(400, fill_from_link) if e.keysym in ("Return", "v", "V") else None,
+                      add="+")
 
         def layout(*_) -> None:
-            kind = inv(CONN_NAMES, v["brand"].get()) or "ip"
-            hc = kind == "hikconnect"
+            kind = "hc" if inv(BRAND_SEL, v["brand"].get()) == "hikconnect" else "ip"
             for k, ws in rows.items():
+                show = k == kind or (k == "adv" and kind == "ip" and adv_open.get())
                 for w in ws:
-                    w.grid() if k == kind else w.grid_remove()
+                    w.grid() if show else w.grid_remove()
             # por Hik-Connect todavía no llegan las alarmas del grabador: con el local cerrado, mirar o no mirar
-            opts = [t for k, t in OFF_HOURS_NAMES.items() if not (hc and k == "alarmas")]
+            opts = [t for k, t in OFF_HOURS_NAMES.items() if not (kind == "hc" and k == "alarmas")]
             off_cb.configure(values=opts)
             if v["off_hours"].get() not in opts:
                 v["off_hours"].set(OFF_HOURS_NAMES["apagada"])
+            if links():
+                fill_from_link()  # (para el aviso de marca distinta)
         v["brand"].trace_add("write", layout)
         layout()
 
         def save() -> None:
-            brand = inv(CONN_NAMES, v["brand"].get()) or "ip"
-            if brand == "ip" and cam.get("brand") in ("hikvision", "dahua"):
-                brand = cam["brand"]  # cámara vieja con la marca ya conocida: se respeta
-            links: list[tuple[str, dict]] = []
-            if brand == "link":  # cada link se lee (marca, dirección, canal) y se guarda tal cual, cifrado
-                for line in link_txt.get("1.0", "end").splitlines():
-                    if line.strip():
-                        try:
-                            links.append((line.strip(), parse_rtsp(line.strip())))
-                        except ValueError as exc:
-                            return self.mb.showwarning(NOMBRE, f"Link {len(links) + 1}: {exc}", parent=top)
-                if not links and not cam.get("has_source_url"):
-                    return self.mb.showwarning(NOMBRE, "Pegá el link RTSP de la cámara (el mismo que abre en VLC).",
-                                               parent=top)
-                if cam.get("id") and len(links) > 1:
-                    return self.mb.showwarning(NOMBRE, "Al editar, un solo link.", parent=top)
+            brand = inv(BRAND_SEL, v["brand"].get()) or "hikvision"
             try:
                 common = {
                     "client_id": cam.get("client_id") or client["id"], "brand": brand,
@@ -1515,23 +1390,9 @@ class Oficina:
                     "playback_time": cam.get("playback_time", "local"),
                     "alarm_cfg": {**cfg, "event_types": [k for k, var in al.items() if var.get()]},
                 }
-                if brand != "hikconnect":
-                    common.update(mode=inv(MODE_NAMES, v["mode"].get()) or "vivo", host=v["host"].get().strip(),
-                                  rtsp_port=int(v["rtsp_port"].get()), http_port=int(v["http_port"].get() or 80),
-                                  username=v["username"].get().strip(),
-                                  password=v["password"].get() or None, nvr_clips=nvr.get(),
-                                  hpp_serial=cam.get("hpp_serial"))
             except ValueError:
-                return self.mb.showwarning(NOMBRE, "Puertos y cuadros por segundo tienen que ser números.", parent=top)
-            chans: list[int] = []
-            if brand not in ("hikconnect", "link"):
-                try:
-                    chans = parse_channels(v["channel"].get())
-                except ValueError as exc:
-                    return self.mb.showwarning(NOMBRE, str(exc), parent=top)
-                if cam.get("id") and len(chans) > 1:
-                    return self.mb.showwarning(NOMBRE, "Al editar, un solo canal.", parent=top)
-            skip: list[str] = []  # canales que ya estaban cargados (por IP): no se repiten
+                return self.mb.showwarning(NOMBRE, "Los cuadros por segundo tienen que ser un número.", parent=top)
+            skip: list[str] = []  # canales que ya estaban cargados: no se repiten
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
                     return self.mb.showwarning(NOMBRE, "Elegí la cámara con «Elegir de Hik-Connect…».", parent=top)
@@ -1539,54 +1400,74 @@ class Oficina:
                            "name": (v["name"].get().strip() if len(hc_sel) == 1 else "") or x.get("name") or "Cámara",
                            "hpp_serial": x["serial"], "channel": int(x.get("channel") or 1),
                            "hc_resource_id": x.get("id")} for x in hc_sel]
-            elif brand == "link":
-                name = v["name"].get().strip()
-                if cam.get("id") and not name:
-                    return self.mb.showwarning(NOMBRE, "Falta el nombre.", parent=top)
-                if not links:  # editar sin tocar el link: queda el que estaba
-                    bodies = [{**common, "brand": cam.get("brand") or "hikvision", "mode": "vivo", "name": name,
-                               "host": cam.get("host") or "", "rtsp_port": cam.get("rtsp_port") or 554,
-                               "channel": cam.get("channel") or 1, "username": cam.get("username") or "",
-                               "password": None, "keep_source_url": True}]
-                else:
-                    if not cam.get("id"):  # una cámara ya cargada con el mismo grabador y canal no se repite
-                        have = {(str(x.get("host") or "").lower(), x.get("rtsp_port"), x.get("channel")): x["name"]
-                                for x in self.cameras if x.get("client_id") == own.get("id")
-                                and x.get("brand") in ("ip", "hikvision", "dahua")}
-                        key = lambda d: (d["host"].lower(), d["rtsp_port"], d["channel"] or 1)  # noqa: E731
-                        skip = [f"canal {d['channel'] or 1} («{have[key(d)]}»)" for _l, d in links if key(d) in have]
-                        links = [(line, d) for line, d in links if key(d) not in have]
-                        if not links:
-                            return self.mb.showinfo(NOMBRE, "Ya están cargados: " + ", ".join(skip) + ".", parent=top)
-                    bodies = [{**common, "brand": d["brand"] or "hikvision", "mode": "vivo", "source_url": line,
-                               "host": d["host"], "rtsp_port": d["rtsp_port"], "http_port": 80,
-                               "username": d["username"], "password": d["password"] or None,
-                               "channel": d["channel"] or 1,
-                               "detect_stream": "main" if d.get("stream") == "main" else "sub",
-                               "name": (name if len(links) == 1 and name else
-                                        f"{name} {i + 1}" if name else f"Canal {d['channel'] or i + 1}")}
-                              for i, (line, d) in enumerate(links)]
             else:
+                lines = links()
+                parsed: list[tuple[str, dict]] = []
+                for line in lines:
+                    try:
+                        parsed.append((line, parse_rtsp(line)))
+                    except ValueError as exc:
+                        return self.mb.showwarning(NOMBRE, f"Link {len(parsed) + 1}: {exc}", parent=top)
+                if cam.get("id") and len(parsed) > 1:
+                    return self.mb.showwarning(NOMBRE, "Al editar, un solo link.", parent=top)
+                if parsed:
+                    fill_from_link()
+                # un link con la forma de la marca elegida se arma igual que el original (y se puede cambiar el canal o
+                # la calidad); uno de otra forma (u otra marca) se guarda y se usa tal cual, como VLC
+                std = lambda d: d.get("brand") == brand and bool(d.get("channel"))  # noqa: E731
                 name = v["name"].get().strip()
+                try:
+                    common.update(mode=inv(MODE_NAMES, v["mode"].get()) or "vivo", host=v["host"].get().strip(),
+                                  rtsp_port=int(v["rtsp_port"].get()), http_port=int(v["http_port"].get() or 80),
+                                  username=v["username"].get().strip(), password=v["password"].get() or None,
+                                  nvr_clips=nvr.get(), hpp_serial=cam.get("hpp_serial"))
+                except ValueError:
+                    return self.mb.showwarning(NOMBRE, "Los puertos tienen que ser números.", parent=top)
                 if not common["host"]:
-                    return self.mb.showwarning(NOMBRE, "Falta la IP o el DDNS del grabador.", parent=top)
+                    return self.mb.showwarning(NOMBRE, "Pegá el link RTSP (o escribí la IP o el DDNS del grabador).",
+                                               parent=top)
                 if cam.get("id") and not name:
                     return self.mb.showwarning(NOMBRE, "Falta el nombre.", parent=top)
-                # sin clave escrita: la del grabador guardada en el cliente (si es el mismo grabador)
-                use_client = (not common["password"] and own.get("ip_has_password")
-                              and common["host"] == own.get("ip_host"))
-                if not cam.get("id"):  # los canales de ese grabador que ya están cargados no se repiten
-                    have = {(str(x.get("host") or "").lower(), x.get("rtsp_port"), x.get("channel")): x["name"]
-                            for x in self.cameras if x.get("client_id") == own.get("id")
-                            and x.get("brand") in ("ip", "hikvision", "dahua")}
+                have = {(str(x.get("host") or "").lower(), x.get("rtsp_port"), x.get("channel")): x["name"]
+                        for x in self.cameras if x.get("client_id") == own.get("id") and not cam.get("id")
+                        and x.get("brand") in ("ip", "hikvision", "dahua")}
+                if len(parsed) > 1:  # varios links: una cámara por link, cada una con sus datos
+                    key = lambda d: (d["host"].lower(), d["rtsp_port"], d["channel"] or 1)  # noqa: E731
+                    skip = [f"canal {d['channel'] or 1} («{have[key(d)]}»)" for _l, d in parsed if key(d) in have]
+                    parsed = [(line, d) for line, d in parsed if key(d) not in have]
+                    if not parsed:
+                        return self.mb.showinfo(NOMBRE, "Ya están cargados: " + ", ".join(skip) + ".", parent=top)
+                    bodies = [{**common, "host": d["host"], "rtsp_port": d["rtsp_port"], "username": d["username"],
+                               "password": d["password"] or None, "channel": d["channel"] or 1,
+                               "detect_stream": d.get("stream") or common["detect_stream"],
+                               "source_url": None if std(d) else line,
+                               "name": f"{name} {i + 1}" if name else f"Canal {d['channel'] or i + 1}"}
+                              for i, (line, d) in enumerate(parsed)]
+                else:
+                    try:
+                        chans = parse_channels(v["channel"].get())
+                    except ValueError as exc:
+                        return self.mb.showwarning(NOMBRE, str(exc), parent=top)
+                    if cam.get("id") and len(chans) > 1:
+                        return self.mb.showwarning(NOMBRE, "Al editar, un solo canal.", parent=top)
+                    source = parsed[0][0] if parsed and not std(parsed[0][1]) else None
+                    if source and len(chans) > 1:
+                        return self.mb.showwarning(NOMBRE, "Ese link se usa tal cual: una cámara por link.", parent=top)
+                    # editar sin pegar un link nuevo ni tocar la conexión: si usaba un link tal cual, lo sigue usando
+                    same = (common["host"] == (cam.get("host") or "") and common["rtsp_port"] == cam.get("rtsp_port")
+                            and chans == [cam.get("channel")] and not common["password"])
+                    keep = bool(cam.get("has_source_url")) and not parsed and same
+                    use_client = (not common["password"] and own.get("ip_has_password")
+                                  and common["host"] == own.get("ip_host"))
                     skip = [f"canal {ch} («{have[k]}»)" for ch in chans
                             if (k := (common["host"].lower(), common["rtsp_port"], ch)) in have]
                     chans = [ch for ch in chans if (common["host"].lower(), common["rtsp_port"], ch) not in have]
                     if not chans:
                         return self.mb.showinfo(NOMBRE, "Ya están cargados: " + ", ".join(skip) + ".", parent=top)
-                bodies = [{**common, "channel": ch, "client_password": bool(use_client),
-                           "name": (name if len(chans) == 1 and name else f"{name} {ch}" if name else f"Canal {ch}")}
-                          for ch in chans]
+                    bodies = [{**common, "channel": ch, "client_password": bool(use_client), "source_url": source,
+                               "keep_source_url": keep,
+                               "name": (name if len(chans) == 1 and name else f"{name} {ch}" if name else f"Canal {ch}")}
+                              for ch in chans]
 
             def send():
                 if cam.get("id"):
@@ -1614,11 +1495,48 @@ class Oficina:
                     self.mb.showinfo(NOMBRE, f"Se agregaron {len(added)} cámaras.")
             self.bg.run(send, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=22, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=24, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
         ttk.Label(bb, text="Qué se analiza se elige con «Analizar» en la lista; zonas y tiempos, en «Configurar…».",
                   style="Suave.TLabel").pack(side="left")
+
+    def hc_key_dialog(self, c: dict, parent, done: Callable[[], None] | None = None) -> None:
+        """La clave de Hik-Connect del cliente (AppKey y SecretKey de su equipo en Hik-Connect for Teams). Se carga
+        desde la cámara: en el cliente no va nada de cámaras. El SecretKey no vuelve a salir del servidor."""
+        tk, ttk = self.tk, self.ttk
+        top, frm = self._dialog(f"Clave de Hik-Connect · {c.get('name', '')}", 520)
+        top.transient(parent)
+        key, secret, url = (tk.StringVar(value=c.get("hc_app_key") or ""), tk.StringVar(),
+                            tk.StringVar(value=c.get("hc_api_url") or ""))
+        self._row(frm, 0, "AppKey", ttk.Entry(frm, textvariable=key))
+        self._row(frm, 1, "SecretKey" + (" (vacío = no cambia)" if c.get("hc_has_secret") else ""),
+                  ttk.Entry(frm, textvariable=secret, show="•"))
+        self._row(frm, 2, "Servidor (opcional)", ttk.Entry(frm, textvariable=url))
+        ttk.Label(frm, text="Portal de Hik-Connect → Team Management → API Integration. Servidor vacío = se busca solo.\n"
+                            "Importante: el cifrado de video de los grabadores tiene que estar apagado.",
+                  style="Suave.TLabel", wraplength=480, justify="left").grid(row=3, column=0, columnspan=2, sticky="w",
+                                                                              pady=(4, 0))
+
+        def save() -> None:
+            body = {"hc_app_key": key.get().strip(), "hc_secret": secret.get().strip() or None,
+                    "hc_api_url": url.get().strip() or None}
+            if not body["hc_app_key"]:
+                return self.mb.showwarning(NOMBRE, "Falta el AppKey.", parent=top)
+            if not body["hc_secret"] and not c.get("hc_has_secret"):
+                return self.mb.showwarning(NOMBRE, "Falta el SecretKey.", parent=top)
+
+            def ok(res: dict) -> None:
+                c.update({k: res.get(k) for k in ("hc_app_key", "hc_api_url", "hc_has_secret")})
+                top.destroy()
+                if done:
+                    done()
+            self.bg.run(lambda: self.api.put(f"/api/clients/{c['id']}/hikconnect", body), ok,
+                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
+        bb = ttk.Frame(frm)
+        bb.grid(row=4, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
+        ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
     def set_analyze(self, analyze: bool | None) -> None:
         """Elegir qué cámaras se analizan: las marcadas van a las máquinas de análisis; las demás solo se miran
