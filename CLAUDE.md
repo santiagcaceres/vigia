@@ -917,9 +917,11 @@ datos pero ya no se ofrecen).
 
 ### Roles
 - **admin** (habrá 3: Santiago, el socio y uno más): crean usuarios y agentes, conectan HPP.
-- **entrenador** (en el panel se llama **"Empleado"**; el valor interno sigue siendo `entrenador`):
-  revisan y etiquetan, **crean clientes y configuran cámaras** (alta, edición, zonas). No borran
-  cámaras ni ven usuarios/agentes.
+- **entrenador** (en la app y la web se llama **«Operador»** desde el 2 nov, app 1.37.1; antes «Empleado»; el valor
+  interno sigue siendo `entrenador`): en la app ven todo menos las pestañas **Máquinas** y **Administración** (En vivo,
+  Clientes, Alertas; crean clientes y cámaras, zonas, en vivo, clips, aprobar, analizar, métricas, entrenamiento,
+  nombres, bajar grabación). No borran clientes ni cámaras (403) ni ven usuarios/agentes. Probado de punta a punta el
+  2 nov: el admin lo crea en Administración → «Nuevo usuario» → Rol «Operador»; el operador entra y hace todo eso.
 - **cliente**: el dueño del comercio, solo ve lo suyo.
 
 ### Flujo de aviso al cliente (clave del producto)

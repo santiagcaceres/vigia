@@ -1075,7 +1075,7 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
         ventana.messagebox.showerror(NOMBRE, f"No se pudo preparar el análisis de cámaras: {exc}")
         return
     user = api.user or {}
-    title = f"{user.get('username')} ({'administrador' if user.get('role') == 'admin' else 'empleado'})"
+    title = f"{user.get('username')} ({'administrador' if user.get('role') == 'admin' else 'operador'})"
     ventana.on_logout = logout
     ventana.build_main(title, analyze=True, on_demand=True)
     holder: dict = {}

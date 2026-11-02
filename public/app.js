@@ -21,7 +21,7 @@ const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", s
 const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
 const REPORT_STATUS = { enviado: ["ok", "Enviado"], parcial: ["warn", "Enviado en parte"], error: ["bad", "No se pudo enviar"] };
 
-const ROLE_NAMES = { admin: "Administrador", entrenador: "Empleado", cliente: "Cliente" };
+const ROLE_NAMES = { admin: "Administrador", entrenador: "Operador", cliente: "Cliente" };
 const S = { me: null, clients: [], cameras: [], lastList: [], timers: [], keyHandler: null };
 
 // ------------------------------------------------------------------ utilidades
@@ -1218,7 +1218,7 @@ async function adminView(v) {
     <h1>Administración</h1>
     <h2>Usuarios</h2>
     <p class="muted"><b>Administradores</b> (${admins} activos): crean usuarios y agentes y conectan Hik-Partner Pro.
-      <b>Empleados</b>: revisan y etiquetan los clips, crean clientes y configuran sus cámaras.
+      <b>Operadores</b>: usan la app de escritorio para todo menos Máquinas y Administración: clientes, cámaras, zonas, en vivo, clips, alertas y entrenamiento (no borran clientes ni cámaras).
       <b>Clientes</b>: el dueño del comercio; solo ve lo suyo.</p>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Usuario</th><th>Rol</th><th>Cliente</th><th>Activo</th><th></th></tr></thead>
       <tbody>${users.map((u) => `<tr><td>${esc(u.username)}${u.id === S.me.id ? ` <span class="chip">vos</span>` : ""}</td><td>${ROLE_NAMES[u.role]}</td><td>${u.client_id ? esc(clientName(u.client_id)) : "—"}</td><td>${u.active ? "Sí" : `<span class="chip bad">No</span>`}</td>

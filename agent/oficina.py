@@ -53,7 +53,7 @@ from .version import VERSION
 log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
-ROLE_NAMES = {"admin": "Administrador", "entrenador": "Empleado", "cliente": "Cliente"}
+ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cliente"}  # (operador = «entrenador» por dentro)
 # qué cámaras analizan las máquinas (server/pool.py): las elegidas en «Clientes» o todas
 ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
                   "servidores": "Todas las cámaras"}
