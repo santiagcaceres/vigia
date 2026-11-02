@@ -34,12 +34,12 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from core.analyzer import annotate
+from core.analyzer import ZONE_COLORS, annotate
 from core.detectors import Detection, Detector
 from core.escena import COCO_ES, OBJECT_CONF, light
 from core.gestos import (GESTURE_NAMES, GESTURE_OF, GESTURE_TYPES, GestureConfig, MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA,
                          REF_HEIGHT, REGION_OF, body_of)
-from core.metrics import door_counts
+from core.metrics import MetricsCollector, door_counts
 from core.pisadas import FootMap
 from core.pose import BAG_CLASSES, build_pose, look
 from core.pose import draw as draw_pose
@@ -60,6 +60,9 @@ MAX_VIDEO_SECONDS = 30 * 60  # tope entre todos los videos de una prueba
 SHORT_TRACK_SECONDS = 2.0
 SMALL_PERSON = 0.10  # persona de menos del 10 % del alto de la imagen: el detector falla más
 BANNER_SECONDS = 2.0  # cuánto se ve el cartel de una alerta de prueba
+VIDEO_ORIGIN = datetime(2000, 1, 1, 12)  # videos sin hora real: la hora es esta + segundos (el horario no se aplica)
+CLIP_BEFORE = 60.0  # «⚑ Marcar hurto» en vivo: el clip va de 1 minuto antes del momento marcado...
+CLIP_AFTER = 30.0  # ...hasta 30 s después (lo que haya)
 ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restricted": "restringida",
              "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal",
              "aisle": "pasillo"}
@@ -78,6 +81,16 @@ SUPPRESS_TEXT = {"sin toma vista antes": "no se vio que tomara algo antes",
                  "en la caja (pagar)": "estaba en la caja (pagar)",
                  "zona de personal": "estaba en la zona de personal"}
 _KEEP = object()
+
+
+def clip_name(client: str, camera: str, wall: datetime | None, what: str = "hurto") -> str:
+    """«Minas - Pasillo bebidas - 2026-11-02 11.50.26 hurto.mp4» (sin caracteres que Windows no acepta)."""
+    import re
+
+    def clean(text: str) -> str:
+        return re.sub(r"[\\/:*?\"<>|]+", "-", text or "").strip(" .") or "camara"
+    stamp = (wall or datetime.now()).strftime("%Y-%m-%d %H.%M.%S")
+    return " - ".join(x for x in (clean(client) if client else "", clean(camera)) if x) + f" - {stamp} {what}.mp4"
 
 
 def gestures_blocked(analysis: dict) -> str | None:
@@ -136,7 +149,7 @@ def gestures_to_save(raw: dict | None, shown: dict, effective: dict | None, type
 
 
 def view_detect(detector, frame: np.ndarray, gest: bool) -> tuple[list, list]:
-    """Personas y lo demás que ve YOLO, en una sola pasada («Configurar…» y «Ver con la IA de esta PC»). Con gestos,
+    """Personas y lo demás que ve YOLO, en una sola pasada (la ventana de la cámara y «Ver con la IA de esta PC»). Con gestos,
     los bolsos salen como en las máquinas (core/pose.detect_with_bags: la clase de más puntaje entre mochila, cartera y
     valija, desde 0,3) y lo demás aparte, desde 0,45: así «mano en la bolsa» ve acá los mismos bolsos que en la
     máquina. Un detector sin objetos (movimiento) da solo personas."""
@@ -203,6 +216,10 @@ class Tuner:
         self._lock = threading.RLock()
         self.samples: list[Sample] = []
         self.marks: list[dict] = []  # por cuadro: zonas y segundos de cada persona (RuleEngine.progress)
+        # por cuadro: cuántas personas entraron a cada zona hasta ese momento y cuántas hay (MetricsCollector.live_counts,
+        # las mismas reglas que las métricas de las máquinas); cada video cuenta de cero
+        self.counts: list[dict] = []
+        self._mc: MetricsCollector | None = None
         self.base = 0  # número del primer cuadro guardado (en vivo se descartan los viejos)
         self.alerts: list[TestAlert] = []
         # lo medido de los gestos de cada persona ((video, número) → GestureEngine.summary), para explicar
@@ -285,17 +302,34 @@ class Tuner:
             return self.gestures_on and not self.pose_missing and any(not s.posed for s in self.samples)
 
     def _reevaluate(self) -> None:
-        engine, seg = None, None
+        engine, seg, mc = None, None, None
         alerts: list[TestAlert] = []
         marks: list[dict] = []
+        counts: list[dict] = []
         gsum: dict[tuple[int, int], dict] = {}
         for i, s in enumerate(self.samples):
             if s.seg != seg:  # cada video empieza de cero
-                engine, seg = RuleEngine(self.zones, self.rule_cfg), s.seg
+                engine, seg, mc = RuleEngine(self.zones, self.rule_cfg), s.seg, self._collector()
             alerts += self._feed(engine, s, self.base + i, marks, gsum)
+            counts.append(self._count(mc, s))
         self.engine = engine or RuleEngine(self.zones, self.rule_cfg)
+        self._mc = mc or self._collector()
         self._engine_seg = seg if seg is not None else -1
-        self.alerts, self.marks, self.gsum = alerts, marks, gsum
+        self.alerts, self.marks, self.counts, self.gsum = alerts, marks, counts, gsum
+
+    def _collector(self) -> MetricsCollector:
+        """Quién cuenta las personas que entran a cada zona (en vivo, con el horario del local para descontar al
+        personal que llega con el local cerrado, como las máquinas; en un video no se sabe la hora)."""
+        return MetricsCollector(self.zones, self.rule_cfg.schedule if self.live else None)
+
+    @staticmethod
+    def _count(mc: MetricsCollector, s: Sample) -> dict:
+        wall = s.wall or VIDEO_ORIGIN + timedelta(seconds=s.ts)
+        mc.update(s.tracks, s.ts, s.size, wall)
+        out = mc.live_counts()
+        if s.wall is None:
+            out["since"] = None
+        return out
 
     def _feed(self, engine: RuleEngine, s: Sample, index: int, marks: list[dict],
               gsum: dict[tuple[int, int], dict]) -> list[TestAlert]:
@@ -474,8 +508,10 @@ class Tuner:
                 self._pose_ok += well
             if seg != self._engine_seg or self.engine is None:
                 self.engine, self._engine_seg = RuleEngine(self.zones, self.rule_cfg), seg
+                self._mc = self._collector()
             self.samples.append(sample)
             self.alerts += self._feed(self.engine, sample, self.base + len(self.samples) - 1, self.marks, self.gsum)
+            self.counts.append(self._count(self._mc, sample))
             if self.live:
                 self._trim()
 
@@ -486,6 +522,7 @@ class Tuner:
         cut = next(i for i, s in enumerate(self.samples) if last - s.ts <= self.keep_seconds)
         del self.samples[:cut]
         del self.marks[:cut]
+        del self.counts[:cut]
         self.base += cut
         self.alerts = [a for a in self.alerts if a.index >= self.base]
         if self.gsum:
@@ -538,9 +575,66 @@ class Tuner:
                 return None
             i = len(self.samples) - 1 if index is None else min(max(index - self.base, 0), len(self.samples) - 1)
             s, mark, zones, cfg = self.samples[i], self.marks[i], self.zones, self.rule_cfg
+            counts = self.counts[i] if i < len(self.counts) else None
             hot = [a for a in self.alerts if a.seg == s.seg and 0 <= s.ts - a.ts <= BANNER_SECONDS]
         img = cv2.imdecode(np.frombuffer(s.jpg, np.uint8), cv2.IMREAD_COLOR)
-        return None if img is None else draw(img, s, mark, zones, cfg, hot, self.clock_text(s), objects)
+        return None if img is None else draw(img, s, mark, zones, cfg, hot, self.clock_text(s), objects, counts)
+
+    def counts_at(self, index: int | None = None) -> dict | None:
+        """Cuántas personas entraron a cada zona hasta el cuadro `index` (o el último) y cuántas había en ese momento
+        (`MetricsCollector.live_counts`). En vivo se cuenta lo que se recuerda (los últimos 10 minutos); en un video,
+        desde su comienzo. None si todavía no hay cuadros."""
+        with self._lock:
+            if not self.counts:
+                return None
+            i = len(self.counts) - 1 if index is None else min(max(index - self.base, 0), len(self.counts) - 1)
+            return self.counts[i]
+
+    def export_clip(self, path: Path, index: int | None = None, before: float = CLIP_BEFORE,
+                    after: float = CLIP_AFTER) -> tuple[Path, float, float]:
+        """«⚑ Marcar hurto» en vivo: guarda como video (`path`, MP4) el pedazo alrededor del cuadro `index` (o el
+        último), desde `before` segundos antes hasta `after` después (lo que haya), con los cuadros tal cual los vio el
+        análisis (sin dibujos, píxeles cuadrados, 640 de ancho) a los cuadros por segundo del análisis: así ese clip se
+        vuelve a analizar igual que en vivo. Devuelve (archivo, segundo del clip en que está el momento marcado,
+        duración del clip). ValueError si no hay video o no se puede escribir."""
+        from .grabacion import open_writer
+        with self._lock:
+            if not self.samples:
+                raise ValueError("Todavía no hay video para guardar.")
+            i = len(self.samples) - 1 if index is None else min(max(index - self.base, 0), len(self.samples) - 1)
+            center = self.samples[i]
+            chosen = [s for s in self.samples
+                      if s.seg == center.seg and center.ts - before <= s.ts <= center.ts + after and s.jpg]
+            fps = self.process_fps
+        if not chosen:
+            raise ValueError("Todavía no hay video para guardar.")
+        first = cv2.imdecode(np.frombuffer(chosen[0].jpg, np.uint8), cv2.IMREAD_COLOR)
+        if first is None:
+            raise ValueError("No se pudo leer el video guardado en memoria.")
+        size = (first.shape[1], first.shape[0])
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        writer, _codec = open_writer(path, fps, size)
+        if writer is None:
+            raise ValueError("Esta PC no puede escribir videos MP4 (OpenCV sin códec).")
+        start, end = chosen[0].ts, chosen[-1].ts
+        n = int(round((end - start) * fps)) + 1
+        j, shown, img = 0, -1, first
+        try:
+            # a ritmo parejo: cada cuadro se repite hasta que toca el siguiente (en vivo pueden llegar disparejos)
+            for f in range(n):
+                t = start + f / fps
+                while j + 1 < len(chosen) and chosen[j + 1].ts <= t + 1e-6:
+                    j += 1
+                if j != shown:
+                    shown = j
+                    dec = cv2.imdecode(np.frombuffer(chosen[j].jpg, np.uint8), cv2.IMREAD_COLOR)
+                    if dec is not None:
+                        img = dec if (dec.shape[1], dec.shape[0]) == size else cv2.resize(dec, size)
+                writer.write(img)
+        finally:
+            writer.release()
+        return path, center.ts - start, (n - 1) / fps
 
     def clock_text(self, s: Sample | TestAlert) -> str:
         if s.wall is not None:
@@ -610,7 +704,7 @@ class Tuner:
             if key == old or (old and key[2:] == old[2:] and time.monotonic() - self._door_at < 2.0):
                 return self._door  # (en vivo crece a cada cuadro: como mucho cada 2 s)
             samples = list(self.samples)
-        origin = datetime(2000, 1, 1, 12)  # videos sin hora real: el horario del local no se aplica
+        origin = VIDEO_ORIGIN  # videos sin hora real: el horario del local no se aplica
         out = {"entries": 0, "exits": 0, "staff": 0, "staff_entries": 0, "door": 0, "people": 0}
         for seg in sorted({s.seg for s in samples}):
             frames = [(s.tracks, s.ts, s.size, s.wall or origin + timedelta(seconds=s.ts)) for s in samples if s.seg == seg]
@@ -623,7 +717,7 @@ class Tuner:
     def explain(self, seg: int, top: int = 3) -> list[str]:
         """Por qué un video dio (o no) alertas con la configuración de ahora: qué midió de cada persona (segundos a la
         vista, en cada zona y si «tomó algo»; con gestos, la postura, las tomas y la mano en el bolsillo, la ropa o la
-        bolsa contra lo que pide, y por qué se descartó) contra lo que pide cada regla. Para «Probar clip»."""
+        bolsa contra lo que pide, y por qué se descartó) contra lo que pide cada regla. Para «🎞 Clips»."""
         with self._lock:
             rows = [(s, m) for s, m in zip(self.samples, self.marks) if s.seg == seg]
             alerts = [a for a in self.alerts if a.seg == seg]
@@ -659,7 +753,7 @@ class Tuner:
         if not people:
             return ["No se vio a nadie más de 2 s: no hay nada que medir."]
         if not zones:
-            out.append("La cámara no tiene zonas: ninguna regla puede saltar. Dibujalas en «Zonas…»."
+            out.append("La cámara no tiene zonas: ninguna regla puede saltar. Dibujalas con «✎ Marcar zonas»."
                        + (" Los gestos sí miran sin zonas." if g.enabled else ""))
         for tid in people:
             secs = seen[tid][1] - seen[tid][0]
@@ -691,7 +785,7 @@ class Tuner:
                 out.append("En esta PC no está el modelo de postura: los gestos no se probaron (actualizá la app).")
             elif any(not s.posed for s, _m in rows):
                 out.append("Este video se analizó sin mirar la postura: para ver los gestos, volvé a analizarlo "
-                           "(«▶ Videos guardados»).")
+                           "(«▶ Analizar todos de nuevo»).")
             elif not any((gsum.get(tid) or {}).get("frames") for tid in people):
                 out.append("No se le vio la postura a nadie (chicas, tapadas, de espaldas o cortadas por el borde): los "
                            "gestos no pueden ver nada en este video. Mirá «Cómo anda la cámara».")
@@ -710,12 +804,12 @@ class Tuner:
         out: list[str] = []
         if any(z.type == "entrance" and not z.direction for z in self.zones):
             out.append("La zona Entrada no tiene sentido: cuenta igual a los que entran y a los que salen. Marcá hacia "
-                       "dónde caminan los que entran en «Zonas…» → «Sentido».")
+                       "dónde caminan los que entran en «✎ Marcar zonas» → «Sentido».")
         if self.metrics_only or (not rules and not g.enabled):
             out.append("Esta cámara no da alertas: es «solo métricas» (el cliente no tiene el plan de hurto o el tipo de "
                        "cámara no usa reglas).")
         elif not self.zones:
-            out.append("No hay zonas: no se puede disparar ninguna regla. Dibujá góndolas, caja y salida con «Zonas…»."
+            out.append("No hay zonas: no se puede disparar ninguna regla. Dibujá góndolas, caja y salida con «✎ Marcar zonas»."
                        + (" Los gestos sí miran sin zonas (con las góndolas marcadas dan menos falsas alarmas)."
                           if g.enabled else ""))
         else:
@@ -824,14 +918,52 @@ def ascii_text(text: str) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 
+def count_text(z: Zone, counts: dict | None) -> str | None:
+    """Lo contado en una zona, corto para dibujarlo debajo de su nombre (sin tildes: OpenCV no las dibuja): la puerta
+    con sentido, entraron y salieron; las demás, cuántas personas entraron y cuántas hay ahora."""
+    if not counts:
+        return None
+    c = (counts.get("zones") or {}).get(z.name)
+    if c is None:
+        return None
+    if z.type == "staff":
+        return f"personal {counts.get('staff', 0)}"
+    if z.type == "entrance" and z.direction:
+        return f"entraron {counts.get('entries', 0)}  salieron {counts.get('exits', 0)}"
+    text = f"{'pasaron' if z.type == 'entrance' else 'entraron'} {c['visits']}"
+    return text + (f"  ahora {c['now']}" if c.get("now") else "")
+
+
+def draw_counts(out: np.ndarray, zones: list[Zone], counts: dict | None) -> None:
+    """Debajo del nombre de cada zona, cuántas personas entraron (y cuántas hay ahora): se ve contar en la imagen."""
+    h, w = out.shape[:2]
+    thick = max(1, w // 640)
+    for z in zones:
+        text = count_text(z, counts)
+        if not text:
+            continue
+        color = ZONE_COLORS.get(z.type, (200, 200, 200))
+        x = int(min(p[0] for p in z.polygon) * w) + 4
+        y = int(min(p[1] for p in z.polygon) * h) + 16 * thick + 20 * thick  # debajo del nombre
+        y = min(max(y, 14), h - 26)
+        size = 0.5 * thick
+        tw, th = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0]
+        x = max(2, min(x, w - tw - 6))
+        cv2.rectangle(out, (x - 3, y - th - 4), (x + tw + 3, y + 4), (0, 0, 0), -1)
+        cv2.putText(out, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, thick, cv2.LINE_AA)
+
+
 def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleConfig, hot: list[TestAlert],
-         clock: str, objects: bool = True) -> np.ndarray:
+         clock: str, objects: bool = True, counts: dict | None = None) -> np.ndarray:
+    """El cuadro con zonas, personas (número, segundos en cada zona, gestos), lo demás que ve YOLO, el cartel de la
+    alerta de prueba y, con `counts` (`MetricsCollector.live_counts`), cuántas personas entraron a cada zona."""
     h, w = img.shape[:2]
     k = w / s.size[0] if s.size[0] else 1.0
     # el esqueleto se dibuja aparte, escalado como los recuadros (los puntos están en la escala del cuadro original)
     tracks = [replace(t, bbox=tuple(v * k for v in t.bbox), kpts=None) for t in s.tracks]
     ev = SimpleNamespace(track_id=hot[-1].track_id, type=hot[-1].type) if hot else None
     out = annotate(img, zones, tracks, ev)  # zonas, recuadros, #número y el cartel de la alerta
+    draw_counts(out, zones, counts)
     for t in s.tracks:
         if t.kpts is None or not t.visible:
             continue

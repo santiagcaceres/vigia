@@ -152,6 +152,9 @@ class Agent:
         self._view_pending: set[int] = set()
         self._view_gone: set[int] = set()  # elegidas que el servidor no devolvió (borradas o deshabilitadas)
         self._view_retry_at = 0.0
+        # se guardaron zonas o reglas en la app: las cámaras que se miran con la IA las toman sin volver a abrirse
+        self._views_stale = False
+        self._view_updates: queue.Queue = queue.Queue()
         self._viewing_shown = -1
         self._catalog: list[dict] = []
         self._catalog_at = -1e9
@@ -397,9 +400,11 @@ class Agent:
         self.shutdown()
 
     def refresh_config(self) -> None:
-        """Pedir ya la configuración (se guardaron cámaras, zonas o reglas en la app)."""
+        """Pedir ya la configuración (se guardaron cámaras, zonas o reglas en la app). Las cámaras que se están mirando
+        con la IA de esta PC («En vivo») toman las zonas nuevas enseguida y empiezan a contar con ellas."""
         self._force_config = True
         self._catalog_at = -1e9
+        self._views_stale = True
 
     # ---- «En vivo» de la app: mirar sin analizar ----
     def _demand_tick(self, now: float) -> None:
@@ -441,6 +446,7 @@ class Agent:
         for cid in list(self.viewers):
             if cid not in chosen:
                 self.viewers.pop(cid).stop()  # no se espera: la ventana sigue respondiendo
+        self._refresh_views()
         self._view_gone &= chosen
         missing = chosen - set(self.viewers) - self._view_pending - self._view_gone
         if missing and now >= self._view_retry_at and now - self.window.selected_at >= 0.5:
@@ -450,6 +456,31 @@ class Agent:
             self._viewing_shown = len(self.viewers)
             n = self._viewing_shown
             self.window.set_status("Conectado" + (f" · viendo {n} cámara{'s' if n != 1 else ''}" if n else ""))
+
+    def _refresh_views(self) -> None:
+        """Zonas y reglas nuevas para las cámaras que se miran con la IA (se guardaron en la app): se piden de nuevo y
+        se aplican sin cortar el video."""
+        while True:
+            try:
+                cfgs = self._view_updates.get_nowait()
+            except queue.Empty:
+                break
+            for cfg in cfgs:
+                v = self.viewers.get(cfg.get("id"))
+                if isinstance(v, AIViewWorker):
+                    v.set_analysis(cfg.get("analysis") or {}, cfg.get("process_fps"))
+        if not self._views_stale:
+            return
+        self._views_stale = False
+        ids = sorted(cid for cid, v in self.viewers.items() if isinstance(v, AIViewWorker))
+        if ids:
+            self.clip_pool.submit(self._fetch_view_update, ids)
+
+    def _fetch_view_update(self, ids: list[int]) -> None:
+        try:
+            self._view_updates.put(self.client.view(ids))
+        except httpx.HTTPError as exc:
+            log.warning("No se pudieron traer las zonas nuevas de las cámaras que se miran (%s)", exc)
 
     def _viewer(self, cfg: dict, ai: bool):
         """Cómo se mira una cámara: con la IA de esta PC (abre el video del grabador y le aplica YOLO, postura,

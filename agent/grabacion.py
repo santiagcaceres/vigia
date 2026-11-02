@@ -1,5 +1,5 @@
 """«Bajar grabación…» (Clientes): tramos de la grabación de una cámara (el disco del grabador) a archivos MP4 en esta
-PC, para probarlos con «Probar clip» o en «Ajustar…», o para guardarlos.
+PC, para probarlos en «🎞 Clips» o para guardarlos.
 
 - Sin ffmpeg (en las PCs con Windows no suele estar): OpenCV abre el link de reproducción y escribe el MP4. Por
   Hik-Connect el link lo da el servidor (HLS, `type` 3 de la API: la grabación del grabador); por IP y puertos es el

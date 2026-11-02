@@ -213,19 +213,16 @@ class AIViewWorker(ViewWorker):
 
     def __init__(self, cfg: dict, detector_factory: Callable[[], object], pose_factory: Callable[[], object] | None):
         super().__init__(cfg)
-        from core.rules import parse_config
         from core.tracker import CentroidTracker
 
-        self.analysis = dict(cfg.get("analysis") or {})
-        self.zones, self.rule_cfg = parse_config(self.analysis)
-        if self.analysis.get("metrics_only"):  # como en la máquina: solo métricas no mira gestos ni reglas
-            from core.gestos import GestureConfig
-            self.rule_cfg.gestures = GestureConfig()
+        self._cfg_lock = threading.Lock()  # zonas y reglas nuevas llegan desde otro hilo (`set_analysis`)
+        self.engine = None
+        self.metrics = None
+        self._set(cfg.get("analysis") or {})
         self.target_fps = max(1.0, float(cfg.get("process_fps") or 5.0))
         self._detector_factory, self._pose_factory = detector_factory, pose_factory
         self.detector = self.pose = None
         self.tracker = CentroidTracker()
-        self.engine = None
         self.ai_fps = 0.0
         self.ai_ms = 0.0  # lo que tarda la IA por cuadro (promedio de los últimos)
         self.people = 0
@@ -238,6 +235,34 @@ class AIViewWorker(ViewWorker):
         self._done: list[float] = []
         self._took: deque = deque(maxlen=20)
         self.ai_thread = threading.Thread(target=self._ai_loop, name=f"ver-ia-{self.id}", daemon=True)
+
+    def _set(self, analysis: dict) -> None:
+        """Zonas y reglas con que se mira; el conteo por zona y las reglas empiezan de cero (ValueError si están mal)."""
+        from core.metrics import MetricsCollector
+        from core.rules import RuleEngine, parse_config
+
+        analysis = dict(analysis or {})
+        zones, rule_cfg = parse_config(analysis)
+        if analysis.get("metrics_only"):  # como en la máquina: solo métricas no mira gestos ni reglas
+            from core.gestos import GestureConfig
+            rule_cfg.gestures = GestureConfig()
+        with self._cfg_lock:
+            self.analysis, self.zones, self.rule_cfg = analysis, zones, rule_cfg
+            # quién cuenta las personas que entran a cada zona (las mismas reglas que las métricas de las máquinas)
+            self.metrics = MetricsCollector(zones, rule_cfg.schedule)
+            if self.engine is not None:  # (si la IA todavía no arrancó, el motor lo arma ella)
+                self.engine = RuleEngine(zones, rule_cfg)
+
+    def set_analysis(self, analysis: dict, process_fps: float | None = None) -> None:
+        """Se guardaron zonas o reglas (en la app): se aplican enseguida, sin volver a abrir el video. El conteo por
+        zona empieza de cero con las zonas nuevas."""
+        try:
+            self._set(analysis)
+        except ValueError as exc:
+            log.warning("[%s] Ver con la IA: las zonas nuevas tienen un error (%s); siguen las de antes", self.name, exc)
+            return
+        if process_fps:
+            self.target_fps = max(1.0, float(process_fps))
 
     def start(self) -> None:
         super().start()
@@ -283,7 +308,8 @@ class AIViewWorker(ViewWorker):
             log.warning("[%s] Ver con la IA: no se pudo cargar el detector (%s)", self.name, exc)
             self.ai_error = str(exc)
             return
-        self.engine = RuleEngine(self.zones, self.rule_cfg)
+        with self._cfg_lock:
+            self.engine = RuleEngine(self.zones, self.rule_cfg)
         while not self._stop.is_set():
             self._new.wait(1.0)
             self._new.clear()
@@ -331,17 +357,20 @@ class AIViewWorker(ViewWorker):
         from .ajuste import WIDTH, Sample, TestAlert, draw, view_detect
 
         h, w = frame.shape[:2]
-        gest = bool(self.rule_cfg.gestures.enabled)
+        with self._cfg_lock:  # las zonas pueden cambiar mientras tanto (`set_analysis`): se usan las de este cuadro
+            zones, rule_cfg, engine, metrics = self.zones, self.rule_cfg, self.engine, self.metrics
+        gest = bool(rule_cfg.gestures.enabled)
         dets, objs = view_detect(self.detector, frame, gest)
         tracks = self.tracker.update(dets, ts, frame)
         posed = self.pose is not None
         if posed:  # la postura de cada persona, aunque la cámara no tenga gestos: para ver cómo la capta
-            look(self.pose, frame, tracks, self.rule_cfg.gestures.min_height(h))
+            look(self.pose, frame, tracks, rule_cfg.gestures.min_height(h))
         else:
             for t in tracks:
                 t.kpts = None
         bags = [Detection(o.bbox, o.label) for o in objs if o.label in ("mochila", "cartera", "valija")]
-        events = self.engine.update(tracks, ts, (w, h), wall, bags)
+        events = engine.update(tracks, ts, (w, h), wall, bags)
+        metrics.update(tracks, ts, (w, h), wall)  # cuántas personas entran a cada zona (solo se muestra)
         for e in events:  # no se guardan ni se mandan: solo el cartel en la imagen
             self._hot.append(TestAlert(0, 0, ts, wall, e.type, e.description, e.track_id))
         self._hot = [a for a in self._hot if ts - a.ts <= 3.0]
@@ -350,8 +379,8 @@ class AIViewWorker(ViewWorker):
         sample = Sample(0, ts, wall, b"", (w, h), [replace(t, hist=None) for t in tracks],
                         [(o.label, o.conf, o.bbox) for o in objs], posed)
         small = frame if w <= WIDTH else cv2.resize(frame, (WIDTH, int(h * WIDTH / w)), interpolation=cv2.INTER_AREA)
-        return draw(small, sample, self.engine.progress(ts), self.zones, self.rule_cfg, self._hot,
-                    f"{wall:%H:%M:%S}  IA en esta PC (no guarda nada)")
+        return draw(small, sample, engine.progress(ts), zones, rule_cfg, self._hot,
+                    f"{wall:%H:%M:%S}  IA en esta PC (no guarda nada)", counts=metrics.live_counts())
 
 
 class RemoteView:

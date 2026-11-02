@@ -118,10 +118,14 @@ class MetricsCollector:
         self._pump: dict[str, list[_PumpWait]] = {}  # zona surtidor -> esperas abiertas
         self._buckets: dict[datetime, dict] = {}
         self._dirty: set[datetime] = set()
+        self._now: dict[str, int] = {}  # zona -> personas a la vista con los pies adentro en el último cuadro
+        self.since: datetime | None = None  # hora del primer cuadro contado (para decir «desde las HH:MM»)
 
     # ---------------- por cuadro ----------------
     def update(self, tracks: list[Track], ts: float, frame_size: tuple[int, int], wall: datetime) -> None:
         w, h = frame_size
+        if self.since is None:
+            self.since = wall
         b = self._bucket(wall)
         b["frames"] += 1
         if self.doors:
@@ -129,6 +133,7 @@ class MetricsCollector:
         live_ids = {t.id for t in tracks}
         visible_people = visible_vehicles = 0
         people_in_pump: dict[str, bool] = {}
+        now_counts: dict[str, int] = {}
         for t in tracks:
             v = self._visits.get(t.id)
             if v is None:
@@ -166,6 +171,7 @@ class MetricsCollector:
                         b["pump_vehicles"] += 1
             if t.label != VEHICLE_LABEL:
                 for name in now_in:
+                    now_counts[name] = now_counts.get(name, 0) + 1
                     if any(z.name == name and z.type == "pump" for z in self.zones):
                         people_in_pump[name] = True
         # espera hasta el pistero: la primera persona que pisa el surtidor atiende a los vehículos que esperan
@@ -176,6 +182,7 @@ class MetricsCollector:
                         pw.attended = True
                         b["pump_wait_s"] += ts - pw.since_ts
                         b["pump_wait_n"] += 1
+        self._now = now_counts
         b["people_max"] = max(b["people_max"], visible_people)
         b["vehicles_max"] = max(b["vehicles_max"], visible_vehicles)
         # visitas terminadas: el tracker dejó de informar el track
@@ -223,6 +230,36 @@ class MetricsCollector:
             z["visits"] += 1
             z["dwell_s"] += secs
         self._dirty.add(bucket_start(v.wall_first))
+
+    def live_counts(self) -> dict:
+        """Lo contado hasta ahora, para mostrarlo en vivo sin esperar a que se cierren las visitas: por zona, cuántas
+        personas entraron (con las mismas reglas que las métricas que guardan las máquinas: visitas de 2 s o más, sin
+        el personal) y cuántas hay ahora; la puerta (entraron / salieron) y el personal descontado.
+        `{"zones": {nombre: {"type", "visits", "now"}}, "entries", "exits", "door", "staff", "since"}`."""
+        zones = {z.name: {"type": z.type, "visits": 0, "now": self._now.get(z.name, 0)} for z in self.zones}
+        entrance_plain = {z.name for z in self.by_type.get("entrance", []) if not z.direction}
+        out = {"zones": zones, "entries": 0, "exits": 0, "door": bool(self.doors), "staff": 0, "since": self.since}
+        for b in self._buckets.values():  # visitas ya terminadas
+            for name, z in (b.get("zones") or {}).items():
+                if name in zones:
+                    zones[name]["visits"] += z.get("visits", 0)
+            for k in ("entries", "exits", "staff"):
+                out[k] += b.get(k, 0)
+        for v in self._visits.values():  # las que siguen abiertas (la persona sigue a la vista o recién se perdió)
+            if v.label == VEHICLE_LABEL or (v.last_ts - v.first_ts < MIN_VISIT_SECONDS and not v.crossings):
+                continue
+            if self.is_staff(v):
+                out["staff"] += 1
+                continue
+            for name in v.zone_dwell:
+                if name in zones:
+                    zones[name]["visits"] += 1
+            if v.crossings:
+                out["entries"] += sum(1 for c in v.crossings if c > 0)
+                out["exits"] += sum(1 for c in v.crossings if c < 0)
+            elif entrance_plain & set(v.zone_dwell):
+                out["entries"] += 1  # puerta sin sentido: cuenta a todos los que la pisaron (como `_finish`)
+        return out
 
     def is_staff(self, v: _Visit) -> bool:
         if sum(v.zone_dwell.get(n, 0.0) for n in self._staff_names) >= STAFF_MIN_SECONDS:
