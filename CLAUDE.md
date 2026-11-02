@@ -221,23 +221,29 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     botones «1 Hurto · 2 Sospechoso · 3 Normal · 4 Falsa alarma» y «Mandar a entrenar», y abajo dos pestañas: «Tiempos y
     gestos (segundos)» y «Cómo anda la cámara». Entra en 1366×768 (medido en Linux: 1316×633 en vivo, 1316×667 clips).
   - **Conteo por zona** (`MetricsCollector.live_counts`: lo de las métricas de las máquinas sin esperar a que se cierren
-    las visitas: 2 s o más, sin el personal; `since`): el `Tuner` guarda un conteo por cuadro (`counts`, `counts_at`,
-    cada video de cero) y se recalcula al cambiar zonas o tiempos, así que **al guardar las zonas ya cuenta** (también
-    lo ya analizado: en vivo, los últimos 10 min). La imagen lo muestra debajo del nombre de cada zona («entraron 6
+    las visitas: personas vistas 2 s o más que pisaron la zona, sin el personal; cada puerta con sentido y cada zona de
+    personal con lo suyo, `door_of`/`_door_done`/`_staff_done`; `since`): el `Tuner` guarda un conteo por cuadro
+    (`counts`, `counts_at`, cada video de cero) y se recuenta al cambiar las zonas, así que **al guardar las zonas ya
+    cuenta** (también lo ya analizado: en vivo, los últimos 10 min). Probar otros tiempos o gestos no lo toca
+    (`_count_key`, `_reevaluate(recount=False)`). La imagen lo muestra debajo del nombre de cada zona («entraron 6
     ahora 1», `ajuste.draw_counts`). «Ver con la IA» (pestaña En vivo) también cuenta y **toma las zonas nuevas sin
-    reabrir el video** (`AIViewWorker.set_analysis`; `Agent.refresh_config` → `_refresh_views` pide `/api/agent/view`).
+    reabrir el video** (`AIViewWorker.set_analysis`, que no hace nada si no cambió; `Agent.refresh_config` →
+    `_refresh_views` pide `/api/agent/view`). Zonas guardadas con la ventana todavía preparándose se piden al terminar
+    (`_reload`); las guardadas en otro editor conservan los tiempos que se estaban probando (`zones_saved(external=True)`).
     Guardar zonas desde la barra con la cámara cerrada la abre sola en «● En vivo», contando. En las máquinas ya
     contaba (métricas «A dónde van»).
   - **Entrenar en vivo:** «⚑ Marcar hurto» guarda el pedazo que se está viendo (1 min antes a 30 s después, lo que haya;
-    `Tuner.export_clip`, a los cuadros por segundo del análisis, 640 px, píxeles cuadrados) en Descargas\VIGIA como clip
+    `Tuner.export_clip(at=(video, segundo))`, a los cuadros por segundo del análisis, 640 px, píxeles cuadrados; si ese
+    momento ya se descartó lo dice, y si la PC analizó pocos cuadros por segundo avisa que el clip quedó con menos) en Descargas\VIGIA como clip
     de la cámara marcado hurto en ese momento (`clip_name`); las alertas de prueba de ese momento quedan «hurto?»
-    (`live_marks` en `label_of`) para «Mandar a entrenar». El modelo del cliente aprende a descartar falsas alarmas con
+    (`live_marks` en `label_of`, se vacían con cada vivo nuevo) para «Mandar a entrenar». El modelo del cliente aprende a descartar falsas alarmas con
     las alertas etiquetadas (las reales, en Alertas, y estas): un hurto que no dio alerta no lo enseña; para eso se
     prueban zonas, tiempos y gestos con ese clip en «🎞 Clips».
   - Probado con servidor local y la app en Xvfb con un HLS en vivo (ffmpeg `-re`) del hurto de Minas: sin zonas → zonas
     guardadas desde la ventana → «Pasillo: entraron 6» → ⚑ → clip de 64 s marcado a los 0:35 → «🎞 Clips» lo analiza
     (Pasillo 5). Ojo al probar con un archivo como «vivo»: se lee de golpe y se reconecta cada 2 s (nadie llega a 2 s
-    en la zona). Prueba: `tests/test_conteo_zonas.py`.
+    en la zona). Revisión adversarial (workflow, 6 agentes): 11 defectos confirmados, todos arreglados. Prueba:
+    `tests/test_conteo_zonas.py`.
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

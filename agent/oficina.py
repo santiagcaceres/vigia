@@ -1715,7 +1715,7 @@ class Oficina:
         analizado y empieza a contar con las zonas nuevas). `source`: la que ya se entera por su cuenta."""
         for w in list(self._tune_windows):
             if not w.closed and w.cam["id"] == cam_id and w.zones_saved != source:
-                w.zones_saved(body)
+                w.zones_saved(body, external=True)
 
     def _one_camera(self, cam: dict | None, what: str) -> bool:
         if not cam:
@@ -3165,6 +3165,7 @@ class TuneWindow:
         self.app, self.cam = app, cam
         self.mode = "clips" if clips else (mode if mode in ("vivo", "clips") else "vivo")
         self.live_marks: list[tuple[int, float]] = []  # hurtos marcados en vivo (video, segundo): etiquetan alertas
+        self._reload = False  # se guardaron zonas antes de terminar de preparar la ventana
         tk, ttk = app.tk, app.ttk
         self.agent = app.agent_of() if app.agent_of else None
         self.clips = clips
@@ -3416,6 +3417,9 @@ class TuneWindow:
             self._fill_times()
             if self.tuner is None:
                 self.set_mode(self.mode)  # arranca lo del modo elegido (en vivo, o los clips)
+            if self._reload:  # se guardaron zonas mientras se preparaba: lo bajado ya es viejo, se pide de nuevo
+                self._reload = False
+                self.zones_saved({})
 
         def fail(exc):
             self.state_lbl.configure(text=f"No se pudo preparar la cámara: {exc}")
@@ -3546,14 +3550,15 @@ class TuneWindow:
     # ---------- qué se analiza ----------
     def _start(self, videos: list[str] | None = None, library: list | None = None) -> None:
         """Arranca el análisis: en vivo (sin `videos`), con videos sueltos o con los de la biblioteca (`library`)."""
-        if self.info is None:
-            return
+        if self.info is None or self.detector is None:
+            return  # todavía se está preparando: arranca solo al terminar (`load`)
         from .ajuste import Tuner
         self._note = ""
         if self.tuner is not None:
             self.tuner.stop()
         self.run_videos = library
-        self.labels, self._results, self._results_key = {}, {}, None
+        # las marcas «⚑» son del vivo en que se hicieron (cada vivo cuenta los segundos de cero)
+        self.labels, self._results, self._results_key, self.live_marks = {}, {}, None, []
         if library is not None:
             videos = [v.path for v in library]
         cfg = {**self.info["camera"], "analysis": self.analysis}
@@ -3594,7 +3599,7 @@ class TuneWindow:
         if not start or self.info is None:
             return
         if mode == "vivo":
-            if self.tuner is None or not self.tuner.live:
+            if self.tuner is None or not self.tuner.live or self.tuner.state in ("error", "detenido"):
                 self.start_live()
             return
         if self.tuner is not None and not self.tuner.live:
@@ -3608,7 +3613,7 @@ class TuneWindow:
 
     def back_to_live(self) -> None:
         """«● Volver al vivo»: deja de mirar para atrás y sigue el último cuadro (si no estaba en vivo, se conecta)."""
-        if self.tuner is None or not self.tuner.live:
+        if self.tuner is None or not self.tuner.live or self.tuner.state in ("error", "detenido"):
             return self.set_mode("vivo")
         self.follow()
 
@@ -3810,7 +3815,7 @@ class TuneWindow:
             if hits:
                 a = hits[0]
                 msg += (f"La IA dio alerta ({TYPE_NAMES.get(a.type, a.type).lower()}, {t.clock_text(a)}): quedó marcada "
-                        "como hurto en «Alertas de prueba». Tocá «Mandar al entrenamiento» para que el modelo del "
+                        "como hurto en «Alertas de prueba». Tocá «Mandar a entrenar» para que el modelo del "
                         "cliente aprenda de este caso.")
             else:
                 msg += ("Por ahora la IA no dio alerta en ese momento (una alerta de «salida sin pago» puede llegar "
@@ -3822,7 +3827,7 @@ class TuneWindow:
                         "clip quedó con menos cuadros que el video real y los gestos pueden no verse. Para probarlos, "
                         "mejor bajar ese momento del grabador («Más» → «Bajar grabación…»).")
             self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
-        self.app.bg.run(lambda: t.export_clip(path, idx), done,
+        self.app.bg.run(lambda: t.export_clip(path, at=(smp.seg, smp.ts)), done,
                         lambda e: self.app.mb.showerror(NOMBRE, f"No se pudo guardar el clip: {e}", parent=self.top))
 
     def _clip_verdict(self, t) -> None:
@@ -3874,7 +3879,7 @@ class TuneWindow:
             return self.send_training(ask=False)
         if not labeled:
             if any(v.kind == "hurto" and not v.marks for v in self.run_videos) and t.alerts:
-                msg += ("\n\nPara mandarlo al entrenamiento falta decir en qué momento del clip pasa el hurto: «Video "
+                msg += ("\n\nPara mandarlo al entrenamiento falta decir en qué momento del clip pasa el hurto: «Clip "
                         "elegido» → «Hurto en el momento que se ve» (con la imagen parada en ese momento).")
             self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
 
@@ -4008,13 +4013,8 @@ class TuneWindow:
     def _apply(self, times: dict[str, float], gestures: dict) -> None:
         """Tiempos y gestos al análisis de esta ventana y al motor: se recalcula todo sin volver a detectar ni a mirar
         la postura. Si lo analizado no tenía la postura (los gestos estaban apagados), se vuelve a analizar."""
-        from .ajuste import with_gestures
-        # lo que no se toca acá (take_window, min_person_px…) sigue como rige en la cámara (o como está guardado)
-        raw = {k: v for k, v in ((self.info or {}).get("raw", {}).get("gestures") or {}).items() if k != "enabled"}
-        gestures = {**(self.analysis.get("gestures") or raw), **gestures}
         try:
-            analysis = with_gestures({**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}},
-                                     gestures)
+            analysis = self._merged(times, gestures)
         except ValueError as exc:
             return self.app.mb.showerror(NOMBRE, f"Los gestos tienen un error: {exc}", parent=self.top)
         if analysis == self.analysis:
@@ -4025,6 +4025,14 @@ class TuneWindow:
             t = self.tuner
             self.app.bg.run(lambda: t.set_times(times, gestures=gestures), lambda need: self._after_apply(t, need),
                             lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
+
+    def _merged(self, times: dict[str, float], gestures: dict) -> dict:
+        """El análisis de esta ventana con estos tiempos y gestos (ValueError si los gestos están mal)."""
+        from .ajuste import with_gestures
+        # lo que no se toca acá (take_window, min_person_px…) sigue como rige en la cámara (o como está guardado)
+        raw = {k: v for k, v in ((self.info or {}).get("raw", {}).get("gestures") or {}).items() if k != "enabled"}
+        gestures = {**(self.analysis.get("gestures") or raw), **gestures}
+        return with_gestures({**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}}, gestures)
 
     def _after_apply(self, t, needs_pose: bool) -> None:
         """Ya se recalculó. Con gestos nuevos sobre algo analizado sin mirar la postura: los videos se vuelven a
@@ -4111,8 +4119,17 @@ class TuneWindow:
         ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved, confirm=self._confirm_live(), footmap=feet,
                     note=note)
 
-    def zones_saved(self, _body: dict) -> None:
-        """Se guardaron zonas (y tiempos) en el editor: traer la configuración nueva y recalcular."""
+    def zones_saved(self, _body: dict, external: bool = False) -> None:
+        """Se guardaron zonas (y tiempos) en el editor: traer la configuración nueva y recalcular. `external`: las
+        guardó otro editor (el de la barra), que no trae los tiempos y gestos que se están probando acá: esos se
+        conservan."""
+        if self.info is None or self.detector is None:
+            self._reload = True  # todavía se está preparando: al terminar se vuelve a pedir
+            return
+        tested = None
+        if external and self.dirty:  # lo que se estaba probando acá (tiempos y gestos), para no perderlo
+            tested = (self._times_raw(), self._tested)
+
         def done(info):
             if self.closed:
                 return
@@ -4120,6 +4137,8 @@ class TuneWindow:
             self.analysis = info["camera"].get("analysis") or {}
             self._fill_times()  # lo guardado (con los tiempos y gestos que se estaban probando)
             self._counts_key = None
+            if tested is not None:
+                self._restore_times(*tested)  # (cambia `self.analysis`: abajo se aplica junto con las zonas)
             if self.tuner is not None:
                 if self.tuner.live:
                     self._note = "zonas guardadas: ya cuenta con ellas"
@@ -4133,6 +4152,29 @@ class TuneWindow:
                                 lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
         self.app.bg.run(lambda: self.agent.client.tune(self.cam["id"]), done,
                         lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
+
+    def _times_raw(self) -> tuple:
+        """Lo escrito en las casillas de tiempos y gestos (tal cual, para volver a ponerlo)."""
+        return ({k: v.get() for k, v in self.tv.items()}, {k: v.get() for k, v in self.gv.items()},
+                {k: v.get() for k, v in self.gs.items()}, self.g_take.get())
+
+    def _restore_times(self, raw: tuple, tested: bool) -> None:
+        """Vuelve a poner en las casillas lo que se estaba probando y lo aplica al análisis (sin guardarlo)."""
+        tv, gv, gs, take = raw
+        for k, val in tv.items():
+            self.tv[k].set(val)
+        for k, val in gv.items():
+            self.gv[k].set(val)
+        for k, val in gs.items():
+            self.gs[k].set(val)
+        self.g_take.set(take)
+        self._tested = tested
+        self._show_dirty()
+        times, gestures = self._times(), self._gestures_body(warn=False)
+        merged = self._merged(times, gestures) if times is not None and gestures is not None else None
+        if merged is not None:
+            self.analysis = merged
+            self._rules_text()
 
     # ---------- aprobar y cerrar ----------
     def approve(self) -> None:
@@ -4312,14 +4354,14 @@ class TuneWindow:
         for z in zones:
             zc = (c.get("zones") or {}).get(z.name) or {"visits": 0, "now": 0}
             if z.type == "entrance" and z.direction:
-                entered = f"{c.get('entries', 0)} · salieron {c.get('exits', 0)}"
+                entered = f"{zc.get('entries', 0)} · salieron {zc.get('exits', 0)}"
             elif z.type == "staff":
-                entered = f"personal: {c.get('staff', 0)}"
+                entered = f"personal: {zc.get('staff', 0)}"
             else:
                 entered = str(zc.get("visits", 0))
             self.ztree.insert("", "end", text=z.name, values=(ZONE_NAMES.get(z.type, z.type).split(" (")[0], entered,
                                                                zc.get("now") or ""))
-        rule = "2 s o más en la zona, sin el personal: como las métricas"
+        rule = "personas vistas 2 s o más que pisaron la zona, sin el personal: como las métricas"
         if not c:
             cap = "Esperando video…"
         elif t.live:

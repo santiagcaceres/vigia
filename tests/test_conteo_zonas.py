@@ -176,3 +176,78 @@ def test_al_guardar_zonas_la_app_se_las_pasa_a_las_camaras_que_se_miran_con_la_i
     assert asked == [[7]]  # solo las que se miran con la IA
     a._refresh_views()
     assert got == [({"zones": ["nuevas"]}, 5)]
+
+
+def test_cada_puerta_y_cada_zona_de_personal_cuentan_lo_suyo():
+    zones = parse_zones([
+        {"name": "Calle", "type": "entrance", "direction": "abajo", "polygon": [[0, 0], [0.4, 0], [0.4, 0.3], [0, 0.3]]},
+        {"name": "Depósito", "type": "entrance", "direction": "abajo",
+         "polygon": [[0.6, 0], [1, 0], [1, 0.3], [0.6, 0.3]]},
+        {"name": "Mostrador", "type": "staff", "polygon": [[0, 0.7], [0.4, 0.7], [0.4, 1], [0, 1]]},
+        {"name": "Caja", "type": "staff", "polygon": [[0.6, 0.7], [1, 0.7], [1, 1], [0.6, 1]]},
+    ])
+    m = MetricsCollector(zones)
+    wall0 = datetime(2026, 11, 2, 11, 0, 0)
+    for i in range(30):
+        ts = i / 2
+        tracks = [person(1, 200, min(50 + ts * 60, 500), 0.0, ts)]  # entra por la calle y se queda en el medio
+        if ts >= 2:
+            tracks.append(person(2, 800, 850, 2.0, ts))  # empleada en la caja
+        m.update(tracks, ts, (W, H), wall0 + timedelta(seconds=ts))
+    c = m.live_counts()
+    assert (c["zones"]["Calle"]["entries"], c["zones"]["Calle"]["exits"]) == (1, 0)
+    assert (c["zones"]["Depósito"]["entries"], c["zones"]["Depósito"]["exits"]) == (0, 0)  # por ahí no pasó nadie
+    assert c["zones"]["Caja"]["staff"] == 1 and c["zones"]["Mostrador"]["staff"] == 0
+    assert c["entries"] == 1 and c["staff"] == 1
+    m.update([], 16, (W, H), wall0 + timedelta(seconds=16))  # se fueron: lo mismo con las visitas ya cerradas
+    c = m.live_counts()
+    assert c["zones"]["Calle"]["entries"] == 1 and c["zones"]["Depósito"]["entries"] == 0
+    assert c["zones"]["Caja"]["staff"] == 1
+
+
+def test_en_vivo_probar_otros_tiempos_no_borra_lo_contado(tmp_path):
+    from agent.ajuste import Tuner
+
+    frames = synthetic.render("hurto", lead_seconds=2, tail_seconds=40)  # (se recorta de a 30 s pasados los 3)
+    cfg = {"id": 7, "name": "Góndola 1", "process_fps": synthetic.FPS, "connection": {},
+           "analysis": {"zones": synthetic.STORE_ZONES, "rules": {}}}
+    t = Tuner(cfg, MotionDetector(), keep_seconds=3.0)  # en vivo, recordando solo 3 s
+    assert t.live
+    wall0 = datetime(2026, 11, 2, 11, 0, 0)
+    for i, frame in enumerate(frames):
+        ts = i / synthetic.FPS
+        t._analyze(frame, ts, wall0 + timedelta(seconds=ts), 0)
+    assert len(t.counts) == len(t.samples) < len(frames)  # se recortó (y el conteo, alineado con los cuadros)
+    before = t.counts_at()
+    assert before["zones"]["gondola"]["visits"] == 1 and before["since"] == wall0
+    t.set_times({"checkout_min_seconds": 9})  # otros tiempos: el conteo sigue desde que se abrió
+    after = t.counts_at()
+    assert after["zones"]["gondola"]["visits"] == 1 and after["since"] == wall0
+    # zonas nuevas: se recuenta con lo que se recuerda (y lo dice la hora de «desde»)
+    t.set_analysis({"zones": [{"name": "Todo", "type": "aisle", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}],
+                    "rules": {}})
+    assert list(t.counts_at()["zones"]) == ["Todo"] and t.counts_at()["since"] > wall0
+
+
+def test_marcar_hurto_de_un_momento_que_ya_se_descarto_avisa(tmp_path):
+    import pytest
+
+    t = _tuner(tmp_path)
+    first, end = t.bounds()
+    s = t.sample_at(end - 1)
+    path, mark, _dur = t.export_clip(tmp_path / "a.mp4", at=(s.seg, s.ts), before=2.0, after=2.0)
+    assert path.is_file() and abs(mark - 2.0) < 0.3
+    with pytest.raises(ValueError, match="descartó"):
+        t.export_clip(tmp_path / "b.mp4", at=(s.seg, t.sample_at(first).ts - 30))
+
+
+def test_ver_con_la_ia_no_pierde_lo_contado_si_se_guarda_otra_cosa():
+    from agent.vista import AIViewWorker
+
+    cfg = {"id": 7, "name": "Pasillo", "process_fps": 5, "connection": {"brand": "ip", "host": "dvr", "channel": 1},
+           "analysis": {"zones": [{"name": "Góndola", "type": "shelf", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}],
+                        "rules": {}}}
+    w = AIViewWorker(cfg, lambda: None, None)
+    collector = w.metrics
+    w.set_analysis(dict(cfg["analysis"]), 5)  # llega lo mismo (se guardó otra cámara): nada cambia
+    assert w.metrics is collector

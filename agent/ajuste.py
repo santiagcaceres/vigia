@@ -269,14 +269,21 @@ class Tuner:
         metrics_only = bool(analysis.get("metrics_only"))
         if metrics_only:  # como en las máquinas (Analyzer sin clips): solo métricas no mira gestos
             rule_cfg.gestures = GestureConfig()
+        # qué decide el conteo por zona: si no cambia (se prueban otros tiempos o gestos), en vivo el conteo sigue
+        # como venía (desde que se abrió) en lugar de rehacerse solo con los últimos 10 minutos que se recuerdan
+        count_key = (tuple((z.name, z.type, tuple(map(tuple, z.polygon)), z.direction) for z in zones),
+                     repr(rule_cfg.schedule))
         with self._lock:
+            keep = (self.live and count_key == getattr(self, "_count_key", None)
+                    and len(self.counts) == len(self.samples) and self._mc is not None)
+            self._count_key = count_key
             self.analysis = analysis
             self.zones, self.rule_cfg = zones, rule_cfg
             self.metrics_only = metrics_only
             if rule_cfg.gestures.enabled and not metrics_only:
                 # con gestos la máquina analiza a 5 cuadros por segundo o más (camera_fps del servidor): probar igual
                 self.process_fps = max(MIN_GESTURE_FPS, self.process_fps)
-            self._reevaluate()
+            self._reevaluate(recount=not keep)
 
     def set_times(self, times: dict[str, float], gestures=_KEEP) -> bool:
         """Probar otros tiempos («tomó algo», caja, restringida) sin guardarlos; con `gestures`, también otros
@@ -301,7 +308,9 @@ class Tuner:
         with self._lock:
             return self.gestures_on and not self.pose_missing and any(not s.posed for s in self.samples)
 
-    def _reevaluate(self) -> None:
+    def _reevaluate(self, recount: bool = True) -> None:
+        """Vuelve a pasar las reglas por todo lo guardado (sin detectar de nuevo). Con `recount`, también el conteo por
+        zona (cambiaron las zonas); si no, el conteo queda como estaba."""
         engine, seg, mc = None, None, None
         alerts: list[TestAlert] = []
         marks: list[dict] = []
@@ -309,13 +318,17 @@ class Tuner:
         gsum: dict[tuple[int, int], dict] = {}
         for i, s in enumerate(self.samples):
             if s.seg != seg:  # cada video empieza de cero
-                engine, seg, mc = RuleEngine(self.zones, self.rule_cfg), s.seg, self._collector()
+                engine, seg = RuleEngine(self.zones, self.rule_cfg), s.seg
+                mc = self._collector() if recount else None
             alerts += self._feed(engine, s, self.base + i, marks, gsum)
-            counts.append(self._count(mc, s))
+            if recount:
+                counts.append(self._count(mc, s))
         self.engine = engine or RuleEngine(self.zones, self.rule_cfg)
-        self._mc = mc or self._collector()
+        if recount:
+            self._mc = mc or self._collector()
+            self.counts = counts
         self._engine_seg = seg if seg is not None else -1
-        self.alerts, self.marks, self.counts, self.gsum = alerts, marks, counts, gsum
+        self.alerts, self.marks, self.gsum = alerts, marks, gsum
 
     def _collector(self) -> MetricsCollector:
         """Quién cuenta las personas que entran a cada zona (en vivo, con el horario del local para descontar al
@@ -591,18 +604,27 @@ class Tuner:
             return self.counts[i]
 
     def export_clip(self, path: Path, index: int | None = None, before: float = CLIP_BEFORE,
-                    after: float = CLIP_AFTER) -> tuple[Path, float, float]:
+                    after: float = CLIP_AFTER, at: tuple[int, float] | None = None) -> tuple[Path, float, float]:
         """«⚑ Marcar hurto» en vivo: guarda como video (`path`, MP4) el pedazo alrededor del cuadro `index` (o el
         último), desde `before` segundos antes hasta `after` después (lo que haya), con los cuadros tal cual los vio el
         análisis (sin dibujos, píxeles cuadrados, 640 de ancho) a los cuadros por segundo del análisis: así ese clip se
         vuelve a analizar igual que en vivo. Devuelve (archivo, segundo del clip en que está el momento marcado,
-        duración del clip). ValueError si no hay video o no se puede escribir."""
+        duración del clip). `at` = (video, segundo) del momento: mejor que el índice, porque en vivo, mientras se
+        confirma, se siguen descartando los cuadros más viejos. ValueError si no hay video, si ese momento ya se
+        descartó o si no se puede escribir."""
         from .grabacion import open_writer
         with self._lock:
             if not self.samples:
                 raise ValueError("Todavía no hay video para guardar.")
-            i = len(self.samples) - 1 if index is None else min(max(index - self.base, 0), len(self.samples) - 1)
-            center = self.samples[i]
+            if at is not None:
+                seg, ts = at
+                same = [s for s in self.samples if s.seg == seg]
+                if not same or ts < same[0].ts - 1.0:
+                    raise ValueError("ese momento ya se descartó (en vivo se recuerdan los últimos 10 minutos)")
+                center = min(same, key=lambda s: abs(s.ts - ts))
+            else:
+                i = len(self.samples) - 1 if index is None else min(max(index - self.base, 0), len(self.samples) - 1)
+                center = self.samples[i]
             chosen = [s for s in self.samples
                       if s.seg == center.seg and center.ts - before <= s.ts <= center.ts + after and s.jpg]
             fps = self.process_fps
@@ -927,9 +949,9 @@ def count_text(z: Zone, counts: dict | None) -> str | None:
     if c is None:
         return None
     if z.type == "staff":
-        return f"personal {counts.get('staff', 0)}"
+        return f"personal {c.get('staff', 0)}"
     if z.type == "entrance" and z.direction:
-        return f"entraron {counts.get('entries', 0)}  salieron {counts.get('exits', 0)}"
+        return f"entraron {c.get('entries', 0)}  salieron {c.get('exits', 0)}"
     text = f"{'pasaron' if z.type == 'entrance' else 'entraron'} {c['visits']}"
     return text + (f"  ahora {c['now']}" if c.get("now") else "")
 

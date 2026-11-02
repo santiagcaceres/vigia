@@ -85,6 +85,7 @@ class _Visit:
     last_pos: tuple[float, float] | None = None
     door_from: dict[str, tuple[float, float]] = field(default_factory=dict)  # puerta -> dónde estaba antes de pisarla
     crossings: list[int] = field(default_factory=list)  # +1 entró, -1 salió
+    door_of: list[str] = field(default_factory=list)  # por qué puerta fue cada cruce (para contar cada puerta aparte)
 
 
 @dataclass
@@ -119,6 +120,10 @@ class MetricsCollector:
         self._buckets: dict[datetime, dict] = {}
         self._dirty: set[datetime] = set()
         self._now: dict[str, int] = {}  # zona -> personas a la vista con los pies adentro en el último cuadro
+        # lo ya terminado por zona que el cubo no separa (para mostrar en vivo): cruces de cada puerta y personal de
+        # cada zona de personal
+        self._door_done: dict[str, list[int]] = {}  # puerta -> [entraron, salieron]
+        self._staff_done: dict[str, int] = {}  # zona de personal -> personas
         self.since: datetime | None = None  # hora del primer cuadro contado (para decir «desde las HH:MM»)
 
     # ---------------- por cuadro ----------------
@@ -160,6 +165,7 @@ class MetricsCollector:
                         c = crossing(z, v.door_from.pop(z.name), (nx, ny))
                         if c:
                             v.crossings.append(c)
+                            v.door_of.append(z.name)
                 v.last_pos = (nx, ny)
             entered = now_in - v.inside
             v.inside = now_in
@@ -196,6 +202,7 @@ class MetricsCollector:
             z = next((z for z in self.doors if z.name == name), None)
             if z is not None and v.last_pos is not None and (c := crossing(z, start, v.last_pos)):
                 v.crossings.append(c)
+                v.door_of.append(name)
         v.door_from = {}
         if dur < MIN_VISIT_SECONDS and not v.crossings:  # (cruzar la puerta lleva poco: ese sí cuenta)
             return
@@ -214,6 +221,8 @@ class MetricsCollector:
         if self.is_staff(v):
             b["staff"] += 1
             b["staff_entries"] += sum(1 for c in v.crossings if c > 0)
+            for name in self._staff_names & set(v.zone_dwell):
+                self._staff_done[name] = self._staff_done.get(name, 0) + 1
             self._dirty.add(bucket_start(v.wall_first))
             return
         b["people"] += 1
@@ -221,6 +230,9 @@ class MetricsCollector:
         if v.crossings:
             b["entries"] += sum(1 for c in v.crossings if c > 0)
             b["exits"] += sum(1 for c in v.crossings if c < 0)
+            for name, c in zip(v.door_of, v.crossings):
+                tally = self._door_done.setdefault(name, [0, 0])
+                tally[0 if c > 0 else 1] += 1
         elif any(zone_type.get(n) == "entrance" and not self._is_door(n) for n in v.zone_dwell):
             b["entries"] += 1  # puerta sin sentido (zonas viejas): cuenta a todos los que la pisaron
         if any(zone_type.get(n) == "shop" for n in v.zone_dwell):
@@ -232,11 +244,17 @@ class MetricsCollector:
         self._dirty.add(bucket_start(v.wall_first))
 
     def live_counts(self) -> dict:
-        """Lo contado hasta ahora, para mostrarlo en vivo sin esperar a que se cierren las visitas: por zona, cuántas
-        personas entraron (con las mismas reglas que las métricas que guardan las máquinas: visitas de 2 s o más, sin
-        el personal) y cuántas hay ahora; la puerta (entraron / salieron) y el personal descontado.
-        `{"zones": {nombre: {"type", "visits", "now"}}, "entries", "exits", "door", "staff", "since"}`."""
+        """Lo contado hasta ahora, para mostrarlo en vivo sin esperar a que se cierren las visitas, con las mismas
+        reglas que las métricas que guardan las máquinas (personas vistas 2 s o más, sin el personal): por zona,
+        cuántas la pisaron (`visits`) y cuántas hay ahora (`now`); cada puerta con sentido, cuántos entraron y salieron
+        por ella (`entries`, `exits`); cada zona de personal, cuántos empleados (`staff`). Y los totales de la cámara.
+        `{"zones": {nombre: {"type", "visits", "now", ...}}, "entries", "exits", "door", "staff", "since"}`."""
         zones = {z.name: {"type": z.type, "visits": 0, "now": self._now.get(z.name, 0)} for z in self.zones}
+        for z in self.doors:
+            done = self._door_done.get(z.name, [0, 0])
+            zones[z.name].update(entries=done[0], exits=done[1])
+        for name in self._staff_names:
+            zones[name]["staff"] = self._staff_done.get(name, 0)
         entrance_plain = {z.name for z in self.by_type.get("entrance", []) if not z.direction}
         out = {"zones": zones, "entries": 0, "exits": 0, "door": bool(self.doors), "staff": 0, "since": self.since}
         for b in self._buckets.values():  # visitas ya terminadas
@@ -250,6 +268,8 @@ class MetricsCollector:
                 continue
             if self.is_staff(v):
                 out["staff"] += 1
+                for name in self._staff_names & set(v.zone_dwell):
+                    zones[name]["staff"] += 1
                 continue
             for name in v.zone_dwell:
                 if name in zones:
@@ -257,6 +277,9 @@ class MetricsCollector:
             if v.crossings:
                 out["entries"] += sum(1 for c in v.crossings if c > 0)
                 out["exits"] += sum(1 for c in v.crossings if c < 0)
+                for name, c in zip(v.door_of, v.crossings):
+                    if name in zones and "entries" in zones[name]:
+                        zones[name]["entries" if c > 0 else "exits"] += 1
             elif entrance_plain & set(v.zone_dwell):
                 out["entries"] += 1  # puerta sin sentido: cuenta a todos los que la pisaron (como `_finish`)
         return out

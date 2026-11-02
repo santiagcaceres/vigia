@@ -255,14 +255,18 @@ class AIViewWorker(ViewWorker):
 
     def set_analysis(self, analysis: dict, process_fps: float | None = None) -> None:
         """Se guardaron zonas o reglas (en la app): se aplican enseguida, sin volver a abrir el video. El conteo por
-        zona empieza de cero con las zonas nuevas."""
+        zona empieza de cero con las zonas nuevas. Si no cambió nada (se guardó otra cámara u otra cosa), sigue igual:
+        no se pierde lo contado."""
+        if process_fps:
+            self.target_fps = max(1.0, float(process_fps))
+        with self._cfg_lock:
+            same = dict(analysis or {}) == self.analysis
+        if same:
+            return
         try:
             self._set(analysis)
         except ValueError as exc:
             log.warning("[%s] Ver con la IA: las zonas nuevas tienen un error (%s); siguen las de antes", self.name, exc)
-            return
-        if process_fps:
-            self.target_fps = max(1.0, float(process_fps))
 
     def start(self) -> None:
         super().start()
