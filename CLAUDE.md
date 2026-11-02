@@ -192,6 +192,20 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   marca), se guarda y usa tal cual (`source_url`). Puerto HTTP, modo y alarmas del grabador van en «Más opciones». Las
   cámaras viejas con marca «ip» (adivinada) se pasan a la que se elija al editarlas. La clave de Hik-Connect del
   cliente se carga desde la cámara («Clave de Hik-Connect…», `PUT /api/clients/{id}/hikconnect`, no toca el resto).
+  **App 1.36.0 (2 nov, para la reunión con los dos empleados que cargan clientes, cámaras, zonas y entrenan; pedido
+  del dueño: «al entrar a cada cliente y marcar la cámara, que estén los botones de subir clip y marcar qué fue, y uno
+  claro de marcar zonas»).** Barra de la cámara en el orden de la puesta a punto: **«✎ Marcar zonas»** y **«⬆ Subir
+  clip…»** (los dos principales) · Configurar… · Analizar · Editar · Más, con una línea de «Pasos con cada cámara» debajo.
+  `Oficina.zones_dialog`: el `ZonesEditor` sobre la última imagen de la cámara o, si no tiene, sobre un cuadro del clip
+  más nuevo subido en esta PC (`_clip_frame`, con píxeles cuadrados); sin ninguno, dice que se suba un clip.
+  `Oficina.upload_clip` → `pick_clips` → «¿Qué pasó?» (Un hurto **en el momento** mm:ss · Nada raro · No sé;
+  `parse_moment`) → `TuneWindow(clips=…)` → al terminar, el resultado y **«¿Mandar al entrenamiento?»** en el mismo
+  mensaje (`send_training(ask=False)`: las alertas se etiquetan solas por lo dicho del clip; un hurto sin momento no se
+  etiqueta y el mensaje lo explica). «Entrenar modelo…» a la vista en el cliente (salió de «Más»). El detalle muestra
+  el cuadro del clip si la cámara no tiene imagen y la puesta a punto por pasos («zonas ✔ · 1 clip ✔ · falta aprobar»).
+  Probado de punta a punta con servidor local y la app en Xvfb (cámara por link → zonas sin imagen → clip del hurto de
+  Minas en 0:06 → «✔ vio el hurto (mano en la bolsa 0:06)» → 1 ejemplo «hurto» en el entrenamiento → zonas sobre el
+  cuadro del clip guardadas).
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

@@ -120,6 +120,21 @@ def fmt_dur(s: float) -> str:
     return f"{round(s / 60)} min" if s >= 90 else f"{s} s"
 
 
+def parse_moment(text: str) -> float:
+    """«0:16», «1:05», «16» o «1:05.5» → segundos del clip. ValueError (en castellano) si no se entiende."""
+    t = (text or "").strip().replace(",", ".")
+    try:
+        parts = [float(x) for x in t.split(":")]
+    except ValueError as exc:
+        raise ValueError(f"«{text}» no es un momento: escribilo como minutos:segundos (ej. 0:16)") from exc
+    if not parts or len(parts) > 3 or any(p < 0 for p in parts):
+        raise ValueError(f"«{text}» no es un momento: escribilo como minutos:segundos (ej. 0:16)")
+    sec = 0.0
+    for p in parts:
+        sec = sec * 60 + p
+    return sec
+
+
 def parse_channels(text: str) -> list[int]:
     """«4», «1-8» o «1, 2, 5» → [canales]. ValueError (en castellano) si no se entiende."""
     out: list[int] = []
@@ -634,16 +649,16 @@ class Oficina:
         ch.pack(fill="x")
         self.cl_title = ttk.Label(ch, text="Elegí un cliente", style="Titulo.TLabel")
         self.cl_title.pack(side="left")
-        more = ttk.Menubutton(ch, text="Más", width=6)
-        self.cl_menu = tk.Menu(more, tearoff=False)
-        self.cl_menu.add_command(label="Entrenamiento del modelo…", command=self.training_dialog)
         if self.is_admin:
-            self.cl_menu.add_separator()
+            more = ttk.Menubutton(ch, text="Más", width=6)
+            self.cl_menu = tk.Menu(more, tearoff=False)
             self.cl_menu.add_command(label="Eliminar cliente…", command=self.delete_client)
-        more["menu"] = self.cl_menu
-        more.pack(side="right")
-        ttk.Button(ch, text="Métricas", command=self.metrics_dialog).pack(side="right", padx=6)
-        ttk.Button(ch, text="Editar cliente", command=lambda: self.client_dialog(self._sel_client())).pack(side="right")
+            more["menu"] = self.cl_menu
+            more.pack(side="right")
+        ttk.Button(ch, text="Entrenar modelo…", command=self.training_dialog).pack(side="right", padx=6)
+        ttk.Button(ch, text="Métricas", command=self.metrics_dialog).pack(side="right")
+        ttk.Button(ch, text="Editar cliente", command=lambda: self.client_dialog(self._sel_client())).pack(side="right",
+                                                                                                         padx=6)
         self.cl_sub = ttk.Label(right, text="", style="Suave.TLabel")
         self.cl_sub.pack(anchor="w", pady=(0, 10))
 
@@ -665,20 +680,29 @@ class Oficina:
         self.cam_tree.bind("<Double-1>", lambda e: self.camera_dialog(self._sel_camera()))
         self.cam_tree.bind("<Button-3>", self._camera_menu)
         self.cam_tree.bind("<Control-a>", lambda e: self.cam_tree.selection_set(self.cam_tree.get_children()))
-        # UNA barra para la cámara elegida; lo de menos uso, en «Más» (y con clic derecho en la lista)
+        # UNA barra para la cámara elegida, en el orden en que se pone a punto (pedido del dueño, 2 nov: «al entrar a cada
+        # cliente y marcar la cámara, que estén los botones de subir clip y marcar qué fue, y uno claro de marcar
+        # zonas»); lo de menos uso, en «Más» (y con clic derecho en la lista)
         bar = ttk.Frame(right)
         bar.pack(fill="x", pady=(8, 0))
-        ttk.Button(bar, text="Configurar…", style="Primario.TButton",
-                   command=lambda: self.tune_dialog(self._sel_camera())).pack(side="left")
-        ttk.Button(bar, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left", padx=6)
+        ttk.Button(bar, text="✎ Marcar zonas", style="Primario.TButton",
+                   command=lambda: self.zones_dialog(self._sel_camera())).pack(side="left")
+        ttk.Button(bar, text="⬆ Subir clip…", style="Primario.TButton",
+                   command=lambda: self.upload_clip(self._sel_camera())).pack(side="left", padx=6)
+        ttk.Button(bar, text="Configurar…", command=lambda: self.tune_dialog(self._sel_camera())).pack(side="left")
         self.an_btn = ttk.Button(bar, text="Analizar", command=lambda: self.set_analyze(None))
-        self.an_btn.pack(side="left")
+        self.an_btn.pack(side="left", padx=6)
+        ttk.Button(bar, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left")
         cmore = ttk.Menubutton(bar, text="Más", width=6)
         self.cam_menu = tk.Menu(cmore, tearoff=False)
         self._fill_camera_menu(self.cam_menu, full=False)
         cmore["menu"] = self.cam_menu
         cmore.pack(side="left", padx=6)
-        ttk.Label(bar, text="Clic derecho: más opciones", style="Suave.TLabel").pack(side="right")
+        ttk.Label(right, style="Suave.TLabel", wraplength=900, justify="left",
+                  text="Pasos con cada cámara: 1) ✎ Marcar zonas (góndolas, caja, salida, entrada)  ·  2) ⬆ Subir clips "
+                       "de esa cámara (hurtos y ratos normales) y decir qué pasó  ·  3) Configurar…: tiempos, gestos y "
+                       "✔ Aprobar  ·  4) Analizar. Clic derecho en la lista: todas las opciones.").pack(anchor="w",
+                                                                                                  pady=(4, 0))
         # detalle de la cámara elegida: su imagen y sus datos
         det = ttk.Frame(right)
         det.pack(fill="both", expand=True, pady=(10, 0))
@@ -696,9 +720,11 @@ class Oficina:
         """Opciones de la cámara: en «Más» van las de menos uso; con clic derecho, todas."""
         sel = self._sel_camera
         if full:
+            menu.add_command(label="✎ Marcar zonas…", command=lambda: self.zones_dialog(sel()))
+            menu.add_command(label="⬆ Subir clip…", command=lambda: self.upload_clip(sel()))
             menu.add_command(label="Configurar…", command=lambda: self.tune_dialog(sel()))
-            menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
             menu.add_command(label=self._analyze_label(), command=lambda: self.set_analyze(None))
+            menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
             menu.add_separator()
         menu.add_command(label="Probar conexión", command=lambda: self.probe(sel()))
         menu.add_command(label="Bajar grabación…", command=self.recording_dialog)
@@ -835,7 +861,7 @@ class Oficina:
         self._info_locked = None
         st = cam.get("status") or {}
         zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])})" for z in cam.get("zones") or []) or \
-            "ninguna (sin zonas no hay alertas: se dibujan en «Configurar…»)"
+            "ninguna (sin zonas no hay alertas: «✎ Marcar zonas»)"
         conn = (f"Hik-Connect · grabador {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
                 if cam.get("brand") == "hikconnect" else
                 f"{BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · canal {cam.get('channel')} · RTSP "
@@ -856,6 +882,11 @@ class Oficina:
         if not cam or not cam.get("has_preview"):
             self._cam_photo = None
             self.cam_img.configure(image="", text="Sin imagen" if cam else "", width=40, height=10)
+            if cam:  # todavía sin imagen propia: la de un clip suyo subido en esta PC, si hay
+                frame = self._clip_frame(cam)
+                if frame is not None:
+                    self._cam_photo = ppm_photo(self.tk, frame, 320, 180)
+                    self.cam_img.configure(image=self._cam_photo, text="", width=320, height=180)
             return
         key = (cam["id"], cam.get("preview_at"))
         if key in self._previews:
@@ -875,11 +906,18 @@ class Oficina:
         self._cam_photo = ppm_photo(self.tk, img, 320, 180)
         self.cam_img.configure(image=self._cam_photo, text="", width=320, height=180)
 
-    @staticmethod
-    def _tuning_text(cam: dict) -> str:
+    def _tuning_text(self, cam: dict) -> str:
+        """Cómo va la puesta a punto, en los pasos de la barra: zonas, clips subidos en esta PC y aprobación."""
         t = cam.get("tuning") or "sin_ajustar"
         if t == "sin_ajustar":
-            return "falta («Configurar…»: zonas, tiempos y prueba con clips o en vivo)"
+            try:
+                clips = [v for v in self.library().videos(cam["id"]) if v.exists()]
+            except Exception:  # noqa: BLE001 - sin carpeta de datos: no se sabe
+                clips = []
+            steps = ["zonas ✔" if cam.get("zones") else "falta ✎ Marcar zonas",
+                     f"{len(clips)} clip{'s' if len(clips) != 1 else ''} ✔" if clips else "falta ⬆ Subir clips",
+                     "falta aprobar en «Configurar…»"]
+            return " · ".join(steps)
         txt = {"en_ajuste": "en ajuste", "aprobada": "aprobada"}.get(t, t)
         if cam.get("tuned_by"):
             txt += f" por {cam['tuned_by']} el {fmt_date(cam.get('tuned_at'))}"
@@ -1640,9 +1678,64 @@ class Oficina:
             return self.mb.showinfo(NOMBRE, "La app todavía está arrancando el analizador. Probá en unos segundos.")
         TuneWindow(self, cam, clips=clips)
 
+    def _one_camera(self, cam: dict | None, what: str) -> bool:
+        if not cam:
+            self.mb.showinfo(NOMBRE, "Elegí una cámara en la lista.")
+            return False
+        if len(self.cam_tree.selection()) > 1:
+            self.mb.showinfo(NOMBRE, f"«{what}» es de a una cámara: elegí solo una.")
+            return False
+        return True
+
+    def zones_dialog(self, cam: dict | None) -> None:
+        """«✎ Marcar zonas»: el editor sobre la última imagen de la cámara o, si todavía no tiene (nadie la abrió), sobre
+        un cuadro de un clip suyo subido en esta PC."""
+        if not self._one_camera(cam, "Marcar zonas"):
+            return
+        confirm = ("Esta cámara ya se analiza en las máquinas: las zonas nuevas rigen enseguida (alertas reales). "
+                   "¿Guardar?") if cam.get("analyzed") else None
+        if cam.get("has_preview"):
+            return ZonesEditor(self, cam, confirm=confirm)
+        frame = self._clip_frame(cam)
+        if frame is not None:
+            return ZonesEditor(self, cam, image=frame, confirm=confirm, note="Imagen de un clip de esta cámara")
+        ZonesEditor(self, cam, confirm=confirm)
+
+    def _clip_frame(self, cam: dict):
+        """Un cuadro (del medio) del clip más nuevo de la cámara subido en esta PC, con píxeles cuadrados. None si no
+        hay o no se puede leer."""
+        from core.imagen import pixel_aspect, square_pixels
+        for v in reversed(self.library().videos(cam["id"])):
+            if not v.exists():
+                continue
+            cap = cv2.VideoCapture(v.path)
+            try:
+                n = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+                if n > 2:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(n // 2))
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    sar = pixel_aspect(cap)
+                    return square_pixels(frame, sar) if sar else frame
+            finally:
+                cap.release()
+        return None
+
+    def upload_clip(self, cam: dict | None) -> None:
+        """«⬆ Subir clip…»: se eligen videos de esa cámara, se dice qué pasó (hurto y en qué momento, o nada raro) y se
+        analizan enseguida con su configuración; al final dice si dio alerta y por qué, y ofrece mandarlo a entrenar."""
+        if not self._one_camera(cam, "Subir clip"):
+            return
+        if self.agent_of is None or self.agent_of() is None:
+            return self.mb.showinfo(NOMBRE, "La app todavía está arrancando el analizador. Probá en unos segundos.")
+        clips = self.pick_clips(cam, self.v.root)
+        if clips:
+            TuneWindow(self, cam, clips=clips)
+
     def pick_clips(self, cam: dict, parent) -> list | None:
-        """«Probar clip» (en «Configurar…»): se eligen videos de esa cámara (por ejemplo, un hurto que pasó) y qué se ve
-        en ellos; quedan en los videos de prueba de la cámara. Devuelve esos videos (None si se canceló)."""
+        """«Subir clip» (en la barra de la cámara y en «Configurar…»): se eligen videos de esa cámara (por ejemplo, un
+        hurto que pasó) y qué se ve en ellos; quedan en los videos de prueba de la cámara. Devuelve esos videos (None si
+        se canceló)."""
         from tkinter import filedialog
 
         from .biblioteca import VIDEO_TYPES, default_folder
@@ -1651,43 +1744,60 @@ class Oficina:
                                             filetypes=[VIDEO_TYPES, ("Todos los archivos", "*.*")])
         if not paths:
             return None
-        kind = self._ask_clip_kind(cam, len(paths))
-        if kind is None:
+        answer = self._ask_clip_kind(cam, len(paths))
+        if answer is None:
             return None
+        kind, marks = answer
         lib = self.library()
         lib.add(cam["id"], list(paths))
         wanted = {os.path.normcase(os.path.abspath(p)) for p in paths}
         clips = [v for v in lib.videos(cam["id"]) if os.path.normcase(os.path.abspath(v.path)) in wanted]
         for v in clips:
-            if v.kind != kind:
-                v.kind = kind
-                if kind != "hurto":
-                    v.marks = []
+            new_marks = marks if kind == "hurto" and marks else (v.marks if kind == "hurto" else [])
+            if v.kind != kind or v.marks != new_marks:
+                v.kind, v.marks = kind, new_marks
                 lib.update(cam["id"], v)
         return clips
 
-    def _ask_clip_kind(self, cam: dict, n: int) -> str | None:
-        """Qué hay en el clip: «hurto», «normal» o «» (no se sabe). None = cancelar."""
-        ttk = self.ttk
-        top, frm = self._dialog(f"Probar clip · {cam['name']}", 420)
+    def _ask_clip_kind(self, cam: dict, n: int) -> tuple[str, list[float]] | None:
+        """Qué pasó en el clip: «hurto» (y, con un solo clip, en qué momento), «normal» o «» (no se sabe). None =
+        cancelar. El momento sirve para saber si la alerta vio ESE hurto y para etiquetarla sola al entrenar."""
+        tk, ttk = self.tk, self.ttk
+        top, frm = self._dialog(f"Subir clip · {cam['name']}", 460)
         top.grab_set()
-        choice: list[str | None] = [None]
-        ttk.Label(frm, text=f"¿Qué se ve en {'el clip' if n == 1 else f'los {n} clips'}?", font=("Segoe UI", 10, "bold")
-                  ).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(frm, foreground="#666", wraplength=390, justify="left", text=(
-            "Sirve para decir si la cámara acertó: un hurto tendría que dar alerta y un rato normal no.")).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
+        out: list = [None]
+        kind = tk.StringVar(value="hurto")
+        moment = tk.StringVar()
+        ttk.Label(frm, text=f"¿Qué pasó en {'el clip' if n == 1 else f'los {n} clips'}?",
+                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(frm, foreground="#666", wraplength=430, justify="left", text=(
+            "Así se sabe si la cámara acertó: un hurto tiene que dar alerta y un rato normal no. Con eso también se "
+            "entrena el modelo.")).grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 8))
+        ttk.Radiobutton(frm, text="Un hurto", variable=kind, value="hurto").grid(row=2, column=0, sticky="w")
+        if n == 1:
+            ttk.Label(frm, text="en el momento").grid(row=2, column=1, sticky="e", padx=(12, 4))
+            ttk.Entry(frm, textvariable=moment, width=8).grid(row=2, column=2, sticky="w")
+            ttk.Label(frm, text="minutos:segundos del clip (ej. 0:16). Si no lo sabés, dejalo vacío.",
+                      style="Suave.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", padx=(22, 0))
+        ttk.Radiobutton(frm, text="Nada raro (no tendría que dar alerta)", variable=kind, value="normal").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Radiobutton(frm, text="No sé", variable=kind, value="").grid(row=5, column=0, columnspan=3, sticky="w")
 
-        def pick(value: str | None) -> None:
-            choice[0] = value
+        def ok() -> None:
+            marks: list[float] = []
+            if kind.get() == "hurto" and moment.get().strip():
+                try:
+                    marks = [parse_moment(moment.get())]
+                except ValueError as exc:
+                    return self.mb.showwarning(NOMBRE, str(exc), parent=top)
+            out[0] = (kind.get(), marks)
             top.destroy()
-        for i, (value, text) in enumerate((("hurto", "Un hurto"), ("normal", "Nada raro (no tendría que dar alerta)"),
-                                           ("", "No sé"))):
-            ttk.Button(frm, text=text, command=lambda v=value: pick(v)).grid(row=2 + i, column=0, columnspan=2,
-                                                                             sticky="we", pady=2)
-        ttk.Button(frm, text="Cancelar", command=lambda: pick(None)).grid(row=5, column=1, sticky="e", pady=(8, 0))
+        bb = ttk.Frame(frm)
+        bb.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
+        ttk.Button(bb, text="Analizar", style="Primario.TButton", command=ok).pack(side="right", padx=6)
         top.wait_window()
-        return choice[0]
+        return out[0]
 
     def training_dialog(self) -> None:
         """Entrenar el modelo de un cliente: cuántos ejemplos etiquetados tiene (alertas revisadas y los que se mandaron
@@ -2648,7 +2758,8 @@ class ZonesEditor:
     HANDLE = 9  # radio en píxeles para agarrar un punto
 
     def __init__(self, app: Oficina, cam: dict, image: np.ndarray | None = None,
-                 on_saved: Callable[[dict], None] | None = None, confirm: str | None = None, footmap=None):
+                 on_saved: Callable[[dict], None] | None = None, confirm: str | None = None, footmap=None,
+                 note: str | None = None):
         """`image`: dibujar sobre esa imagen (la del ajuste) en vez de bajar la última de la cámara. `on_saved`
         recibe lo guardado (zonas y reglas). `confirm`: pregunta antes de guardar (cámara que ya se analiza).
         `footmap`: el mapa de pisadas de lo analizado en «Configurar…». Si `cam` trae "save_gestures" (los gestos que
@@ -2737,7 +2848,7 @@ class ZonesEditor:
         self.refresh_list()
         if image is not None:
             self.base = cv2.resize(image, (self.W, self.H), interpolation=cv2.INTER_AREA)
-            self.info.configure(text="Imagen del ajuste (lo que se está analizando)")
+            self.info.configure(text=note or "Imagen del ajuste (lo que se está analizando)")
             self.draw()
         else:
             self.draw()
@@ -2746,8 +2857,8 @@ class ZonesEditor:
     # ---------- imagen ----------
     def load_image(self) -> None:
         if not self.cam.get("has_preview"):
-            self.info.configure(text="Todavía no hay imagen: la PC central la manda al conectarse a la cámara. "
-                                     "Podés dibujar igual sobre el fondo negro.")
+            self.info.configure(text="Todavía no hay imagen de esta cámara: subí un clip suyo («⬆ Subir clip…») o "
+                                     "abrila en «En vivo», y volvé a «✎ Marcar zonas». Podés dibujar igual sobre el negro.")
             return
 
         def done(data):
@@ -3083,7 +3194,7 @@ class TuneWindow:
         right.grid(row=0, column=1, sticky="nsew")
         src = ttk.Frame(right)  # qué se analiza (sin recuadro: la ventana tiene que entrar en 768 de alto)
         src.pack(fill="x")
-        ttk.Button(src, text="Probar clip…", style="Primario.TButton", command=self.probar_clip).pack(side="left")
+        ttk.Button(src, text="⬆ Subir clip…", style="Primario.TButton", command=self.probar_clip).pack(side="left")
         ttk.Button(src, text="▶ Videos guardados", command=self.run_library).pack(side="left", padx=6)
         ttk.Button(src, text="● En vivo", command=self.start_live).pack(side="left")
         self.bar = ttk.Progressbar(src, length=90, mode="determinate", maximum=100)
@@ -3519,7 +3630,19 @@ class TuneWindow:
                     "elige. Una alerta es un indicio para revisar, nunca una prueba.")
         if all_ok:
             msg += "\n\nSi está bien: «✔ Aprobar y analizar» la pasa a una máquina de análisis."
-        self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
+        # entrenar en un clic: las alertas que se etiquetan solas por lo que se dijo del clip (hurto en su momento →
+        # hurto; clip normal → falsa alarma)
+        labeled = [a for a in list(t.alerts) if self.label_of(a)[0]]
+        if labeled and self.app.mb.askyesno(
+                NOMBRE, msg + f"\n\n¿Mandar {'esta alerta' if len(labeled) == 1 else f'estas {len(labeled)} alertas'} "
+                              "al entrenamiento del modelo del cliente, con lo que dijiste del clip? No le llega a nadie.",
+                parent=self.top):
+            return self.send_training(ask=False)
+        if not labeled:
+            if any(v.kind == "hurto" and not v.marks for v in self.run_videos) and t.alerts:
+                msg += ("\n\nPara mandarlo al entrenamiento falta decir en qué momento del clip pasa el hurto: «Video "
+                        "elegido» → «Hurto en el momento que se ve» (con la imagen parada en ese momento).")
+            self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
 
     def _library_results(self, t) -> None:
         """Cruza las alertas de prueba de cada video con lo marcado (hurto/normal) y lo guarda como «última prueba»."""
@@ -3571,9 +3694,9 @@ class TuneWindow:
         self._show_alerts(self.tuner)
         self.alist.selection_set(sel[0])
 
-    def send_training(self) -> None:
+    def send_training(self, ask: bool = True) -> None:
         """Manda las alertas de prueba etiquetadas como ejemplos para entrenar el modelo del cliente (no le llegan a
-        nadie). Si una ya se había mandado, se actualiza su etiqueta."""
+        nadie). Si una ya se había mandado, se actualiza su etiqueta. `ask=False`: ya se preguntó (al terminar un clip)."""
         t = self.tuner
         if t is None:
             return
@@ -3586,7 +3709,7 @@ class TuneWindow:
         counts = ", ".join(f"{n} {LABEL_NAMES.get(k, k).lower()}" for k, n in
                            sorted(Counter(lab for _a, lab in rows).items()))
         client = self.info["camera"].get("client_name") if self.info else ""
-        if not self.app.mb.askyesno(NOMBRE, f"¿Mandar {len(rows)} alerta(s) etiquetada(s) al entrenamiento del modelo "
+        if ask and not self.app.mb.askyesno(NOMBRE, f"¿Mandar {len(rows)} alerta(s) etiquetada(s) al entrenamiento del modelo "
                                             f"de {client or 'este cliente'}? ({counts})\n\nNo le llegan a nadie y no se "
                                             "ven en la web del cliente: solo sirven para que el modelo aprenda qué es "
                                             "hurto y qué no en sus cámaras.", parent=self.top):
@@ -3623,7 +3746,7 @@ class TuneWindow:
         def done(sent):
             self.app.mb.showinfo(NOMBRE, f"Listo: {sent} ejemplo(s) para entrenar. Cuando haya suficientes (al menos 30, "
                                          "con 8 hurtos o sospechosos y 8 normales o falsas alarmas), entrená el modelo "
-                                         "desde «Entrenamiento…» en Clientes.", parent=self.top)
+                                         "con «Entrenar modelo…» (arriba, en el cliente).", parent=self.top)
         self.train_btn.configure(text="Mandando…")
         self.app.bg.run(work, lambda n: (self.train_btn.configure(text="Mandar al entrenamiento"), done(n)),
                         lambda e: (self.train_btn.configure(text="Mandar al entrenamiento"),
