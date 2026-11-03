@@ -2780,8 +2780,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conds = []
         if client_id is not None:
             conds.append(Event.client_id == client_id)
-        if user.role == "entrenador":  # un empleado ve las alertas de las cámaras que le asignaron
-            conds.append(Event.camera_id.in_(assigned_camera_ids(s, user) or [-1]))
+        # (el operador ve las alertas de todos los clientes, como el admin: desde la app 1.18 ya no se le asignan
+        # cámaras, y con el filtro de «sus cámaras» la pestaña Alertas le quedaba vacía)
         if camera_id is not None:
             conds.append(Event.camera_id == camera_id)
         if type:

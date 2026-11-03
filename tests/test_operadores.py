@@ -81,3 +81,35 @@ def test_deposito_marca_toda_la_imagen_como_restringida(app):
         an = TestClient(app).get("/api/agent/config", headers={"X-Agent-Token": tok}).json()["cameras"][0]["analysis"]
         assert cam["profile"] == "deposito"
         assert [z["type"] for z in an["zones"]] == ["restricted"]
+
+
+def test_el_operador_ve_las_alertas_de_todos_los_clientes(app):
+    """Desde la app 1.18 no se asignan cámaras a los usuarios: un operador ve todas las alertas, como el admin (antes
+    veía solo las de «sus» cámaras y la pestaña Alertas le quedaba vacía)."""
+    import json
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cams = []
+        for name in ("Minas", "Cristino"):
+            cid = a.post("/api/clients", json={"name": name}).json()["id"]
+            cams.append(a.post("/api/cameras", json={"client_id": cid, "name": "Caja", "brand": "ip", "host": "dvr",
+                                                     "password": "x"}).json())
+        tok = a.post("/api/agent/session").json()["token"]
+        a.put("/api/agent/watch", json={"camera_ids": [c["id"] for c in cams]},
+              headers={"X-Agent-Token": tok})
+        for i, c in enumerate(cams):
+            meta = {"uuid": f"op{i}", "camera_id": c["id"], "type": "salida_sin_pago", "description": "prueba",
+                    "track_id": 1, "occurred_at": "2026-11-02T11:00:00-03:00"}
+            r = TestClient(app).post("/api/agent/events", headers={"X-Agent-Token": tok},
+                                     data={"meta": json.dumps(meta)},
+                                     files={"snapshot": ("s.jpg", b"\xff\xd8fakejpg", "image/jpeg")})
+            assert r.status_code == 201, r.text
+        a.post("/api/users", json={"username": "ana", "password": "clave-ana-123", "role": "entrenador"})
+        e = login(app, "ana", "clave-ana-123")
+        res = e.get("/api/events").json()
+        assert res["total"] == 2 and {x["client_name"] for x in res["items"]} == {"Minas", "Cristino"}
+        assert e.get("/api/events", params={"client_id": cams[1]["client_id"]}).json()["total"] == 1
+        # y los abre (foto) y los etiqueta
+        ev = res["items"][0]
+        assert e.get(f"/api/events/{ev['id']}").status_code == 200
+        assert e.patch(f"/api/events/{ev['id']}", json={"label": "normal"}).json()["label"] == "normal"

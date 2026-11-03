@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guía para operadores · Analítica Crítica</title>
+<style>
+  @page { size: A4; margin: 15mm 14mm 15mm 14mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#011b5d; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 10.8pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 26pt; margin: 0 0 2px; letter-spacing: -0.3px; color: var(--accent); }
+  h2 { font-size: 15pt; margin: 20px 0 8px; padding-top: 8px; border-top: 2px solid var(--accent); color: var(--accent);
+       page-break-after: avoid; }
+  h2 .n { display: inline-block; min-width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 50%;
+          background: var(--accent); color: #fff; font-size: 12.5pt; margin-right: 8px; }
+  h3 { font-size: 12pt; margin: 14px 0 5px; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ol, ul { margin: 5px 0 5px 22px; padding: 0; }
+  li { margin: 3px 0; }
+  b.m { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-weight: 600; white-space: nowrap; }
+  b.p { background: var(--accent); color: #fff; border-radius: 4px; padding: 0 6px; font-weight: 600; white-space: nowrap; }
+  kbd { font-family: Consolas, monospace; font-size: 9.5pt; border: 1px solid #b8c0cc; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: #fff; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 9.5pt; }
+  table { border-collapse: collapse; width: 100%; margin: 7px 0; font-size: 9.8pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  td.k { width: 28%; font-weight: 600; }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 7px 12px; margin: 9px 0; border-radius: 6px; page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .box.bad { border-left-color: var(--bad); }
+  .muted { color: var(--muted); }
+  .small { font-size: 9.3pt; }
+  figure { margin: 8px 0 10px; page-break-inside: avoid; text-align: center; }
+  figure img { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  figure.m img { max-width: 78%; }
+  figure.s img { max-width: 56%; }
+  figure.xs img { max-width: 42%; }
+  figcaption { font-size: 9pt; color: var(--muted); margin-top: 3px; }
+  .cover { display: flex; align-items: center; gap: 18px; border-bottom: 3px solid var(--accent); padding-bottom: 12px; margin-bottom: 12px; }
+  .cover img { width: 78px; height: 78px; }
+  .brand { font-size: 10.5pt; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .sub { font-size: 13pt; color: var(--muted); margin-top: 2px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; }
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0; page-break-inside: avoid; }
+  .steps div { border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 6px; padding: 6px 9px; font-size: 9.6pt; }
+  .steps b { display: block; color: var(--accent); font-size: 10.5pt; margin-bottom: 2px; }
+  .toc { columns: 2; column-gap: 26px; margin-left: 20px; }
+  .toc li { margin: 1px 0; }
+  .pb { page-break-before: always; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--bad); font-weight: 700; }
+  .foot { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 8.8pt; color: var(--muted); }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.25); }
+  blockquote { margin: 7px 0; padding: 6px 12px; background: var(--bg); border-radius: 6px; font-family: Consolas, monospace; font-size: 9.2pt; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <img src="guia-operadores/logo.png" alt="">
+  <div>
+    <div class="brand">Analítica Crítica</div>
+    <h1>Guía para operadores</h1>
+    <div class="sub">Todo lo que hace un operador en la app de escritorio</div>
+    <p class="muted small">App versión 1.38 · 3 de noviembre de 2026 · Las imágenes son de una cuenta de prueba (clientes y
+    cámaras inventados; las caras, tapadas).</p>
+  </div>
+</div>
+
+<div class="box ok">
+  <b>Qué hace un operador.</b> Carga y mantiene los clientes y sus cámaras, deja cada cámara a punto (zonas, prueba en vivo
+  y con clips), revisa las alertas y las etiqueta, avisa al cliente cuando corresponde y entrena el modelo de cada
+  cliente. Trabaja en la <b>app de escritorio</b> («Analítica Crítica.exe»); la web queda para los clientes y los
+  administradores.
+</div>
+
+<h3>Qué puede y qué no puede hacer</h3>
+<table>
+  <tr><th style="width:50%">El operador <span class="yes">sí</span></th><th>Solo un administrador</th></tr>
+  <tr><td>
+    <ul>
+      <li>Mirar cualquier cámara en vivo, con o sin la IA.</li>
+      <li>Crear y editar clientes (planes, horario, acceso web).</li>
+      <li>Agregar y editar cámaras y elegir qué mide cada una.</li>
+      <li>Marcar zonas, probar en vivo y con clips, aprobar.</li>
+      <li>Mandar cámaras a analizar o dejar de analizarlas.</li>
+      <li>Revisar y etiquetar las alertas de todos los clientes y avisar al cliente.</li>
+      <li>Ver y exportar métricas (PDF o Excel), entrenar el modelo, cambiar nombres, bajar grabaciones.</li>
+    </ul></td>
+    <td><ul>
+      <li>Pestaña <b>Máquinas</b>: las máquinas de análisis en la nube (prender, apagar, reparto).</li>
+      <li>Pestaña <b>Administración</b>: usuarios y claves.</li>
+      <li><b>Borrar</b> clientes, cámaras, usuarios o PCs.</li>
+    </ul>
+    <p class="small muted">Si necesitás algo de esta columna, pedíselo a un administrador.</p></td></tr>
+</table>
+
+<h3>Contenido</h3>
+<ol class="toc">
+  <li>Instalar, entrar y actualizar</li>
+  <li>La ventana: tres pestañas</li>
+  <li>En vivo: mirar cámaras</li>
+  <li>Clientes: la lista y el cliente</li>
+  <li>Cliente nuevo o editar cliente</li>
+  <li>Agregar o editar cámaras</li>
+  <li>Poner a punto una cámara (4 pasos)</li>
+  <li>Paso 1 · Marcar zonas</li>
+  <li>Paso 2 · En vivo con la IA</li>
+  <li>Paso 3 · Clips</li>
+  <li>Paso 4 · Aprobar y analizar</li>
+  <li>Alertas: revisar y etiquetar</li>
+  <li>Avisar al cliente</li>
+  <li>Métricas y reportes</li>
+  <li>Entrenar el modelo</li>
+  <li>Nombres e imágenes · Bajar grabación</li>
+  <li>Atajos</li>
+  <li>Problemas comunes y límites</li>
+</ol>
+
+<h2><span class="n">1</span>Instalar, entrar y actualizar</h2>
+<ul>
+  <li><b>Instalar:</b> el administrador te pasa el archivo <code>AnaliticaCritica-windows.zip</code> (o lo bajás desde la web con
+    «Descargar la app»). Descomprimilo en una carpeta tuya (por ejemplo, Documentos) y abrí <b>Analítica Crítica.exe</b>. No
+    hace falta instalar nada más.</li>
+  <li><b>Entrar:</b> con el usuario y la clave que te dio el administrador. La app recuerda la sesión: la próxima vez abre
+    directo.</li>
+  <li><b>Una sola app por PC.</b> Si ya está abierta, la app te lo dice: usá esa ventana (fijate en la barra de tareas).</li>
+  <li><b>Tu usuario, en una PC a la vez.</b> Si entrás con el mismo usuario en otra PC, la primera te pide entrar de nuevo.</li>
+</ul>
+<div class="two">
+  <figure><img src="guia-operadores/01_entrar.jpg" alt=""><figcaption>Pantalla para entrar.</figcaption></figure>
+  <div>
+    <p><b>Arriba de todo</b> (en todas las pestañas):</p>
+    <ul>
+      <li><b>● Conectado</b> en verde: la app habla con el servidor. En rojo, «sin conexión»: revisá internet (se reintenta sola).</li>
+      <li><b class="p">★ Actualizar a X</b> aparece solo cuando hay una versión nueva. Un clic: se baja, se reemplaza y se
+        vuelve a abrir sola, con tu sesión.</li>
+      <li><b>Tu usuario ▾</b> (a la derecha): «Buscar actualización», la versión instalada y «Cerrar sesión».</li>
+      <li><b>Registro ▴</b> (abajo a la derecha): lo que va pasando. Si algo falla, el detalle está ahí.</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="n">2</span>La ventana: tres pestañas</h2>
+<table>
+  <tr><td class="k">En vivo</td><td>Para <b>mirar</b> cámaras (con la IA de tu PC si querés). Mirar no analiza ni guarda nada.</td></tr>
+  <tr><td class="k">Clientes</td><td>Donde se trabaja: clientes, sus cámaras, la puesta a punto, analizar o no, métricas,
+    entrenamiento.</td></tr>
+  <tr><td class="k">Alertas</td><td>Las alertas de posible hurto de todos los clientes, para revisarlas, etiquetarlas y,
+    si corresponde, avisar al cliente.</td></tr>
+</table>
+<p class="small muted">Las pestañas se actualizan solas al entrar y cada 30 segundos: no hay botones «Actualizar».</p>
+
+<h2><span class="n">3</span>En vivo: mirar cámaras</h2>
+<figure><img src="guia-operadores/02_envivo.jpg" alt=""><figcaption>«En vivo» con «Ver con la IA de esta PC»: personas con número,
+  esqueleto, zonas y cuántas personas hay en cada una.</figcaption></figure>
+<ul>
+  <li>A la izquierda están <b>todas las cámaras</b>, agrupadas por cliente. <b>Clic</b> en una para verla; con <kbd>Ctrl</kbd> o
+    <kbd>Mayús</kbd> elegís varias (se ven en mosaico). <b class="m">Cerrar todas</b> deja de mirarlas.</li>
+  <li><b>Ver con la IA de esta PC</b> (tildado): tu PC le aplica a la imagen lo mismo que el análisis — personas con su número
+    (<code>#3</code>), postura, objetos, zonas, segundos en cada zona y cuántas entran — <b>solo para ver cómo la capta</b>. No
+    guarda alertas ni métricas ni le avisa a nadie.</li>
+  <li>Sin tildar: si una máquina ya analiza la cámara, ves la imagen que sube la máquina (1 por segundo, con recuadros); si no,
+    el video tal cual.</li>
+  <li><b>Estado</b> (columna de la derecha): «Viendo · N fps», «IA · 4 personas · 5 de 5 cuadros/s», «Se analiza · máquina»,
+    «No disponible»…</li>
+</ul>
+<div class="box warn">
+  <b>Ojo con Hik-Connect.</b> Mirar con la IA abre otra transmisión del grabador. Los grabadores por Hik-Connect dan pocas a la
+  vez: si una cámara no abre, cerrá las que no estés mirando. Y si la PC no da abasto, el estado lo dice («la PC no da
+  abasto»): la imagen sigue, pero se analizan menos cuadros.
+</div>
+
+<h2><span class="n">4</span>Clientes: la lista y el cliente</h2>
+<figure><img src="guia-operadores/03_clientes.jpg" alt=""><figcaption>«Clientes»: a la izquierda los clientes; a la derecha el
+  cliente elegido, sus cámaras, la barra de la cámara y su imagen.</figcaption></figure>
+<ul>
+  <li><b>Lista de clientes</b> (izquierda): «Por revisar» = alertas sin etiquetar. <b class="m">＋ Nuevo</b> crea uno; doble clic
+    lo edita.</li>
+  <li><b>El cliente</b> (arriba a la derecha): nombre, planes, horario, acceso web y alertas (hoy · 7 días · por revisar), y los
+    botones <b class="m">Editar cliente</b> · <b class="m">Métricas</b> · <b class="m">Entrenar modelo…</b>.</li>
+  <li><b>Sus cámaras</b>, con columnas: <b>Estado</b> (en línea, sin conexión, local cerrado…), <b>Se analiza</b> (sí y en
+    qué máquina, o no), <b>Mide</b> (lo que mide de lo que contrató el cliente; «(todo)» = como el cliente), <b>Puesta a
+    punto</b> (en ajuste / ✔ aprobada) y <b>Alertas hoy</b>. <b class="m">＋ Agregar cámaras</b> suma cámaras; doble clic edita
+    una.</li>
+  <li><b>La barra de la cámara elegida</b>: <b class="p">✎ Marcar zonas</b> <b class="p">● En vivo</b> <b class="p">🎞 Clips</b>
+    (los tres de la puesta a punto) · <b class="m">Analizar</b> / <b class="m">Dejar de analizar</b> · <b class="m">Editar</b> ·
+    <b class="m">Más ▾</b> (Qué mide…, Probar conexión, Bajar grabación…, Nombres e imágenes de todas…, Elegir todas).</li>
+  <li><b>Clic derecho</b> en una cámara: todas las opciones juntas (también «⬆ Subir un clip nuevo…»).
+    <kbd>Ctrl</kbd>+<kbd>A</kbd> elige todas; con <kbd>Ctrl</kbd>/<kbd>Mayús</kbd> elegís varias para «Analizar», «Qué
+    mide…» o «Bajar grabación…».</li>
+  <li><b>Abajo:</b> la última imagen de la cámara y sus datos, con lo que le falta para estar a punto («falta ✎ Marcar zonas ·
+    falta ⬆ Subir clips · falta ✔ Aprobar»).</li>
+</ul>
+
+<h2><span class="n">5</span>Cliente nuevo o editar cliente</h2>
+<figure class="m"><img src="guia-operadores/04_cliente.jpg" alt=""><figcaption>El formulario del cliente.</figcaption></figure>
+<table>
+  <tr><td class="k">Nombre y zona horaria</td><td>La zona horaria es la del local (Uruguay: <code>America/Montevideo</code>). De ella
+    salen las horas de las alertas y las métricas.</td></tr>
+  <tr><td class="k">WhatsApp, email, Telegram</td><td>Opcionales: por dónde le llega el aviso al cliente cuando decidís avisarle (el
+    portal web va siempre).</td></tr>
+  <tr><td class="k">Planes contratados</td><td><b>Detección de hurtos</b> (alertas), <b>Métricas de comercio</b> (gente que entra,
+    a dónde va, cuánto se queda), <b>Estación de servicio</b> (vehículos y surtidores). Al menos uno. Sin «Detección de hurtos»
+    las cámaras quedan en «solo métricas»: más baratas, sin alertas ni clips.</td></tr>
+  <tr><td class="k">Horario del local</td><td>Un horario por día: <code>09:00-17:00</code>, cortado <code>09:00-13:00,
+    16:00-20:00</code>, vacío = cerrado. Se mira desde 15 min antes de abrir hasta 15 min después de cerrar; con el local
+    cerrado no se gasta video ni análisis. <b class="m">Martes a viernes = lunes</b> copia el lunes. Sin horario = 24 h.</td></tr>
+  <tr><td class="k">Acceso a la web del cliente</td><td>Usuario y clave con los que el dueño del local entra a la web
+    (analitica-critica.vercel.app) a ver su resumen, alertas y métricas. <b class="m">Generar</b> inventa una clave; al guardar,
+    la app te muestra el texto para pasarle con <b class="m">Copiar</b>. Clave vacía = no se cambia.</td></tr>
+</table>
+
+<h2><span class="n">6</span>Agregar o editar cámaras</h2>
+<figure><img src="guia-operadores/05_camara.jpg" alt=""><figcaption>Cámara nueva: al pegar el link RTSP se completan solos la
+  dirección, el puerto, el usuario, la clave, el canal y la calidad.</figcaption></figure>
+<ul>
+  <li><b>Marca:</b> <b>Hikvision</b> o <b>Dahua</b> (por IP y puertos del router), o <b>Hikvision por Hik-Connect</b> (por la nube,
+    sin abrir puertos).</li>
+  <li><b>Hikvision o Dahua:</b> pegá el <b>link RTSP</b> que te pasa el técnico (el mismo que abre en VLC). Varios links = una
+    cámara por línea. Sin link, escribí los datos: IP o DDNS, puerto RTSP, canal(es) (<code>4</code>, <code>1-8</code> o
+    <code>1, 2, 5</code>: una cámara por canal), usuario y clave del grabador, calidad (secundaria = menos internet).</li>
+  <li><b>Hik-Connect:</b> <b class="m">Elegir de Hik-Connect…</b> lista las cámaras que ve la cuenta del cliente (se pueden
+    elegir varias). Si el cliente todavía no tiene su clave cargada: <b class="m">Clave de Hik-Connect…</b> (AppKey y
+    SecretKey; nunca sale del servidor). Si dice «cifrado de video», hay que apagar el cifrado en el grabador.</li>
+  <li><b>Qué mide esta cámara</b> (derecha): de los planes del cliente, cuáles mide. Ver punto 6.1.</li>
+  <li><b>Tipo de cámara</b>: decide qué alertas se buscan. General = todas · Góndola / pasillo = salida sin pago, restringida,
+    fuera de horario y gestos · Caja = restringida y fuera de horario · Entrada / puerta = salida sin pago y fuera de horario ·
+    Depósito = toda la imagen es zona restringida · Calle / exterior y Surtidor = vehículos · Solo métricas = sin
+    alertas.</li>
+  <li><b>Con el local cerrado</b>: no mirar (lo normal, ahorra todo), escuchar solo las alarmas del grabador, o seguir analizando
+    24 h.</li>
+  <li><b>Cuadros por segundo</b>: 5 (mínimo para hurto) a 15. Más cuadros = más costo; 5 alcanza.</li>
+  <li><b>Más opciones</b>: puerto HTTP y alarmas del grabador (casi nunca hace falta).</li>
+  <li>Una cámara nueva <b>no se analiza</b> hasta que la mandes (paso 4). Para saber si llega al grabador: <b class="m">Más ▾ →
+    Probar conexión</b> (explica por qué no abre: nombre DDNS, puerto, usuario o clave, canal, calidad…).</li>
+</ul>
+
+<h3>6.1 Qué mide cada cámara</h3>
+<div class="two">
+  <figure><img src="guia-operadores/06_que_mide.jpg" alt=""><figcaption>«Más ▾ → Qué mide…», para una o varias cámaras.</figcaption></figure>
+  <div>
+    <p>El cliente contrata planes; <b>cada cámara mide los que le elijas</b>, y los números se suman por cliente. Ejemplo
+    en una estación: la cámara de la playa mide solo «Estación» (vehículos), la de la tienda «Hurto» y «Comercio».</p>
+    <p>Todas tildadas = como el cliente (si se le suma un plan, también lo mide). Sin «Detección de hurtos» la cámara no da
+    alertas. Si el cliente deja un plan que tenía elegido una cámara, la lista lo dice («nada: elegilo en Editar»).</p>
+  </div>
+</div>
+
+<h2><span class="n">7</span>Poner a punto una cámara (4 pasos)</h2>
+<p>Antes de que una cámara se analice de verdad, se prepara en tu PC. Son cuatro pasos, en este orden (también están escritos
+debajo de la barra de la cámara):</p>
+<div class="steps">
+  <div><b>1 · ✎ Marcar zonas</b>Dibujar pasillos, góndolas, caja, salida y entrada. Al guardar empieza a contar.</div>
+  <div><b>2 · ● En vivo</b>Mirar cómo la IA ve a las personas y las cuenta, y qué alertas daría.</div>
+  <div><b>3 · 🎞 Clips</b>Subir videos de hurtos y de ratos normales y ver si da alerta y por qué.</div>
+  <div><b>4 · ✔ Aprobar y analizar</b>La cámara pasa a las máquinas de análisis.</div>
+</div>
+<p class="small muted">«● En vivo» y «🎞 Clips» abren la <b>misma ventana de la cámara</b> (una por cámara), con los dos modos
+arriba: se cambia de uno a otro con un clic y <b class="m">✎ Marcar zonas</b> está siempre a la vista.</p>
+
+<h2><span class="n">8</span>Paso 1 · Marcar zonas</h2>
+<figure><img src="guia-operadores/07_zonas.jpg" alt=""><figcaption>El editor de zonas: «Vereda» (pasillo) y «Puerta» (entrada, la
+  flecha dice hacia dónde caminan los que entran).</figcaption></figure>
+<ol>
+  <li><b class="m">＋ Zona nueva</b> y clics en el <b>piso</b> para marcar los puntos; doble clic (o <b class="m">Cerrar zona</b>)
+    para cerrarla. <b class="m">Deshacer punto</b> borra el último.</li>
+  <li>Poné el <b>nombre</b> (ej. «Góndola bebidas»), el <b>tipo</b> y, si es una entrada, el <b>sentido</b>, y
+    <b class="m">Aplicar nombre, tipo y sentido a la elegida</b>.</li>
+  <li>Para corregir: clic en una zona y arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra;
+    <b class="m">Borrar zona elegida</b>.</li>
+  <li><b class="p">Guardar zonas</b>. Desde ahí la cámara <b>cuenta cuántas personas entran a cada zona</b> (en «● En vivo» y,
+    si se analiza, en las métricas). Si la cámara ya se analiza, las zonas nuevas rigen enseguida.</li>
+</ol>
+<table class="small">
+  <tr><th style="width:22%">Tipo</th><th>Qué se marca</th><th style="width:30%">Para qué sirve</th></tr>
+  <tr><td><span class="sw" style="background:#ffc800"></span> Góndola</td><td>El <b>piso frente al estante</b>, donde la gente se
+    para a elegir (no el estante).</td><td>«Tomó algo» (salida sin pago) y gestos.</td></tr>
+  <tr><td><span class="sw" style="background:#78ffff"></span> Pasillo</td><td>Por donde camina la gente.</td><td>Solo métricas: a
+    dónde va la gente. No da alertas.</td></tr>
+  <tr><td><span class="sw" style="background:#00c800"></span> Caja</td><td>El piso donde el cliente paga, de su lado del
+    mostrador.</td><td>Saber si pasó por la caja.</td></tr>
+  <tr><td><span class="sw" style="background:#0096ff"></span> Salida</td><td>El piso junto a la puerta, del lado de
+    adentro.</td><td>Salida sin pago: tomó algo y salió sin pasar por la caja.</td></tr>
+  <tr><td><span class="sw" style="background:#ff3030"></span> Restringida</td><td>Donde un cliente no debería entrar.</td><td>Alerta
+    apenas alguien entra.</td></tr>
+  <tr><td><span class="sw" style="background:#c800ff"></span> Entrada (conteo)</td><td>La puerta, con el <b>sentido</b>: hacia
+    dónde caminan en la imagen los que entran.</td><td>Cuántos entraron y cuántos salieron (la cifra de gente del
+    cliente).</td></tr>
+  <tr><td><span class="sw" style="background:#8a8a8a"></span> Personal</td><td>Detrás del mostrador o el depósito.</td><td>Quien la
+    pisa se toma como empleado y no se cuenta como cliente.</td></tr>
+  <tr><td><span class="sw" style="background:#ff7800"></span> Surtidor · <span class="sw" style="background:#00c8c8"></span>
+    Tienda</td><td>Donde para el vehículo a cargar · el piso de la tienda de la estación.</td><td>Métricas de estación.</td></tr>
+</table>
+<div class="box">
+  <b>Consejos.</b> Marcá siempre el <b>piso</b>: la IA mira dónde están los pies. Un punto a menos del 3 % del borde se pega solo al
+  borde (así no queda afuera alguien con los pies cortados). Si la cámara todavía no tiene imagen, abrila en «● En vivo» o subí
+  un clip y volvé a «✎ Marcar zonas» (se puede dibujar sobre el negro igual).
+</div>
+
+<h2><span class="n">9</span>Paso 2 · En vivo con la IA</h2>
+<figure><img src="guia-operadores/08_vivo.jpg" alt=""><figcaption>La ventana de la cámara en «● En vivo»: arriba los dos modos y
+  «✎ Marcar zonas»; a la derecha, personas por zona, alertas de prueba y tiempos.</figcaption></figure>
+<ul>
+  <li>La cámara se analiza <b>en tu PC, igual que en las máquinas</b>: recuadro y número de cada persona, esqueleto, segundos en
+    cada zona («pasillo 44s»), «TOMÓ ALGO», gestos («BOLSILLO 0.4/0.6s»). Casillas <b>Objetos</b> (otras cosas que ve YOLO:
+    mochilas, botellas…) y <b>Pisadas</b> (dónde camina y dónde se para la gente).</li>
+  <li><b>Personas por zona</b>: cuántas entraron a cada zona y cuántas hay ahora (la entrada, cuántos entraron y salieron).
+    Cuenta igual que las métricas: personas vistas 2 s o más, sin el personal.</li>
+  <li><b>La barra</b> vuelve hasta 10 minutos atrás; <b class="m">▶</b> reproduce; <b class="m">Último ▸▸</b> vuelve al
+    momento actual.</li>
+  <li><b>Alertas de prueba</b>: las que daría la cámara con estas zonas y tiempos. <b>No le llegan a nadie.</b> Clic en una =
+    ir a ese momento.</li>
+</ul>
+<h3>Entrenar desde el vivo</h3>
+<ul>
+  <li>¿Viste un hurto? Volvé con la barra a ese momento y tocá <b class="p">⚑ Marcar hurto en este momento</b>: el pedazo de 1
+    minuto antes a 30 segundos después queda guardado como <b>clip de esa cámara, marcado como hurto</b> (en
+    <code>Descargas\VIGIA</code>), listo para probarlo en «🎞 Clips». <b class="m">● Volver al vivo</b> retoma el tiempo real.</li>
+  <li>Etiquetá las alertas de prueba con <b class="m">1 Hurto</b> <b class="m">2 Sospechoso</b> <b class="m">3 Normal</b>
+    <b class="m">4 Falsa alarma</b> y <b class="m">Mandar a entrenar</b>: así el modelo del cliente aprende a separar hurtos de
+    falsas alarmas. Las alertas de prueba del momento que marcaste con ⚑ ya quedan como «hurto?».</li>
+</ul>
+<h3>Tiempos y gestos · Cómo anda la cámara</h3>
+<ul>
+  <li><b>Tiempos y gestos (segundos)</b>: cuánto tiene que estar alguien frente a la góndola para «tomó algo», en la caja para
+    «pagó», en la zona restringida; qué gestos se buscan (mano al bolsillo, en la ropa, en la bolsa) y cuántos segundos.
+    <b class="m">Probar estos tiempos</b> recalcula al instante todo lo ya analizado (no hace falta esperar otro hurto).</li>
+  <li><b>Cómo anda la cámara</b>: tamaño de las personas, confianza de la IA, cuadros por segundo, cortes y avisos («personas
+    muy chicas», «falta zona Salida», «imagen de noche»…).</li>
+  <li>Abajo: <b>Notas</b>, <b class="m">Guardar</b> (guarda tiempos y gestos; la cámara queda «en ajuste») y <b class="p">✔ Aprobar
+    y analizar</b> (paso 4).</li>
+</ul>
+
+<h2><span class="n">10</span>Paso 3 · Clips</h2>
+<p>Los clips son videos <b>de esa cámara</b>: un hurto, o un rato normal (gente comprando sin problema). Sirven para probar si la
+cámara da la alerta cuando tiene que darla y no la da cuando no, y para entrenar el modelo.</p>
+<ol>
+  <li><b class="p">🎞 Clips</b> en la barra (o <b class="m">⬆ Subir clips…</b> dentro de la ventana). Elegí uno o varios videos
+    (MP4 o AVI). Se consiguen con <b class="m">Más ▾ → Bajar grabación…</b> (punto 16), con ⚑ en el vivo o exportándolos del
+    grabador. Un <code>.dav</code> o <code>.264</code> que no abra: exportalo como MP4.</li>
+  <li><b>¿Qué pasó en el clip?</b> Un hurto <b>en el momento</b> <code>mm:ss</code> (si no lo sabés, dejalo vacío) · Nada raro ·
+    No sé. → <b class="m">Analizar</b>.</li>
+  <li>La IA lo analiza con <b>la configuración guardada de la cámara</b> (zonas, tiempos, tipo, gestos y el modelo del cliente) y
+    al terminar te dice si acertó y <b>por qué</b>. Por ejemplo:
+    <blockquote>Frente del local - tarde.mp4 (normal (sin hurto)): ✔ sin alertas, bien
+  · Persona #1: 24 s a la vista; 24 s seguidos en «Vereda». Gestos: postura bien vista
+    en el 100 % de los cuadros; no se la vio tomar algo…</blockquote>
+    o «✘ no vio el hurto de 1:00» con la explicación (no pisó la zona, le faltó tiempo, no hay zona Salida…).</li>
+  <li>En el mismo mensaje: <b>«¿Mandar al entrenamiento?»</b>. Con «Sí», las alertas de ese clip se etiquetan solas según lo que
+    dijiste (un hurto sin momento no se etiqueta: el mensaje lo explica).</li>
+</ol>
+<div class="two">
+  <figure><img src="guia-operadores/09_que_paso.jpg" alt=""><figcaption>Al subir un clip: qué pasó.</figcaption></figure>
+  <div class="small">
+    <p><b>En la ventana, modo «🎞 Clips»:</b></p>
+    <ul>
+      <li>La lista de clips de la cámara con lo que pasó y el resultado de la IA.</li>
+      <li><b class="m">▶ Analizar todos de nuevo</b>: después de cambiar zonas o tiempos, para ver si mejoró.</li>
+      <li><b class="m">Clip elegido ▾</b>: marcarlo como hurto en el momento que se ve, normal o sin clasificar; quitarlo de la lista;
+        abrir la carpeta de clips.</li>
+      <li>Misma tabla de personas por zona, alertas de prueba (1-4 y «Mandar a entrenar») y tiempos que en el vivo.</li>
+    </ul>
+  </div>
+</div>
+<figure><img src="guia-operadores/10_clips.jpg" alt=""><figcaption>Modo «🎞 Clips» con un clip normal analizado: «✔ sin alertas,
+  bien» y las 4 personas contadas en la Vereda.</figcaption></figure>
+
+<h2><span class="n">11</span>Paso 4 · Aprobar y analizar</h2>
+<ul>
+  <li><b class="p">✔ Aprobar y analizar</b> (abajo en la ventana de la cámara): guarda quién la aprobó y cuándo, con tus notas, y
+    <b>manda la cámara a las máquinas de análisis</b>. El mensaje dice en qué máquina quedó (o que no hay ninguna en línea:
+    avisale a un administrador).</li>
+  <li>Desde ahí la cámara da alertas reales (le llegan a la pestaña Alertas) y guarda métricas.</li>
+  <li>En la barra, <b class="m">Analizar</b> / <b class="m">Dejar de analizar</b> hace lo mismo sin aprobar (sirve para varias a la
+    vez). Si alguna no está aprobada, la app pregunta antes; para dejar de analizar, también.</li>
+  <li><b>Cambiar una cámara que ya se analiza</b> (zonas, tiempos, gestos): la ventana avisa y pide confirmación, porque rige
+    enseguida en la máquina.</li>
+</ul>
+<div class="box warn"><b>Antes de aprobar, fijate:</b> que se vean bien las personas en el vivo (no muy chicas, de día), que
+  las zonas estén en el piso, que haya Salida y Caja si se busca «salida sin pago», y que los clips normales no den falsas
+  alarmas. Los cuadros por segundo en 5 (más es más caro).</div>
+
+<h2><span class="n">12</span>Alertas: revisar y etiquetar</h2>
+<figure><img src="guia-operadores/11_alertas.jpg" alt=""><figcaption>La pestaña Alertas: la lista, la foto, el clip, las etiquetas
+  y «Avisar al cliente…».</figcaption></figure>
+<ul>
+  <li><b>Mostrar:</b> Sin revisar (lo normal) · Todas · Hurto · Sospechoso · Normal · Falso positivo. <b>Cliente:</b> todos o
+    uno.</li>
+  <li>Clic en una alerta: tipo, cliente, cámara, hora, descripción y la foto. <b class="m">▶ Reproducir clip</b> lo pasa en la app;
+    <b class="m">Abrir en el reproductor</b> lo abre en el de Windows.</li>
+  <li><b>Etiquetala</b> con los botones o las teclas <kbd>1</kbd>–<kbd>4</kbd>:
+    <table class="small">
+      <tr><td class="k">1 · Hurto</td><td>Se ve el hurto.</td></tr>
+      <tr><td class="k">2 · Sospechoso</td><td>Raro, pero no se llega a ver que se lleve algo.</td></tr>
+      <tr><td class="k">3 · Normal</td><td>Una persona comprando o trabajando normalmente.</td></tr>
+      <tr><td class="k">4 · Falso positivo</td><td>No hay nada: la IA se equivocó (una sombra, un reflejo, un empleado).</td></tr>
+    </table></li>
+  <li>Cada etiqueta <b>entrena el modelo de ese cliente</b> (punto 15). Etiquetá todas, también las falsas alarmas: son las que
+    más le enseñan.</li>
+</ul>
+<p class="small muted">Tipos de alerta: Salida sin pago · Zona restringida · Fuera de horario · Mano al bolsillo · Mano dentro de la
+ropa · Mano en la bolsa · Alarma del grabador.</p>
+
+<h2><span class="n">13</span>Avisar al cliente</h2>
+<div class="two">
+  <figure><img src="guia-operadores/12_avisar.jpg" alt=""><figcaption>«Avisar al cliente…»: el mensaje se puede cambiar.</figcaption></figure>
+  <div>
+    <ul>
+      <li><b>Nunca es automático.</b> Lo decide una persona después de ver el clip.</li>
+      <li>El mensaje habla de «<b>posible hurto</b>», nunca acusa. Podés cambiarlo.</li>
+      <li><b class="m">Enviar aviso</b>: le llega por el portal web (siempre) y por WhatsApp, email o Telegram si el cliente
+        los tiene cargados. La app copia al portapapeles un <b>link privado al clip</b> que vence en 14 días.</li>
+    </ul>
+  </div>
+</div>
+<div class="box bad"><b>Regla de oro:</b> si no se ve claro en el clip, no se avisa (se etiqueta «Sospechoso»). Un aviso por una
+  falsa alarma le hace perder la confianza al cliente y puede acusar a un inocente.</div>
+
+<h2><span class="n">14</span>Métricas y reportes</h2>
+<div class="two">
+  <figure><img src="guia-operadores/13_metricas.jpg" alt=""><figcaption>«Métricas» del cliente.</figcaption></figure>
+  <div>
+    <ul>
+      <li><b>Entraron · salieron</b>: lo cuenta la <b>zona Entrada con sentido</b>. Sin esa zona no hay cifra de gente
+        («sin conteo de la puerta»). Se descuenta el personal.</li>
+      <li>Tiempo promedio en cámara, máximo de personas al mismo tiempo y <b>a dónde van</b> (visitas y tiempo en cada zona).</li>
+      <li><b>Por cámara</b>: cada una suma solo lo que mide.</li>
+      <li>Con plan estación: vehículos, espera hasta el pistero, vehículos sin atender, visitas a la tienda.</li>
+      <li><b class="p">Exportar (PDF o Excel)…</b>: el reporte en PDF de un cliente (el mismo que baja el cliente en la web), o
+        el Excel por cámara y día u hora, de uno o de todos.</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="n">15</span>Entrenar el modelo</h2>
+<div class="two">
+  <figure><img src="guia-operadores/14_entrenar.jpg" alt=""><figcaption>«Entrenar modelo…» de un cliente.</figcaption></figure>
+  <div>
+    <p>Cada cliente tiene su modelo, que aprende de <b>las alertas etiquetadas</b> (las reales de la pestaña Alertas y las de prueba
+    mandadas desde «● En vivo» y «🎞 Clips») a <b>descartar falsas alarmas</b>.</p>
+    <ul>
+      <li>Hacen falta <b>al menos 30 ejemplos, 8 de cada lado</b> (hurto o sospechoso / normal o falsa alarma).</li>
+      <li><b class="m">Entrenar ahora</b> arma un modelo nuevo; la tabla dice cuántos hurtos deja pasar y cuántas falsas alarmas
+        saca. <b class="m">Activar / desactivar</b> elige cuál se usa.</li>
+    </ul>
+    <div class="box warn small">El modelo solo filtra alertas que ya salieron: <b>no le enseña a ver un hurto que no dio
+      alerta</b>. Para eso se ajustan zonas, tiempos y gestos con clips (pasos 1-3).</div>
+  </div>
+</div>
+
+<h2><span class="n">16</span>Nombres e imágenes · Bajar grabación</h2>
+<figure><img src="guia-operadores/15_nombres.jpg" alt=""><figcaption>«Más ▾ → Nombres e imágenes de todas…»: cada cámara con su
+  imagen, nombre y tipo.</figcaption></figure>
+<ul>
+  <li><b>Nombres e imágenes</b>: ponele a cada cámara un nombre que diga qué muestra («Caja 1», «Heladeras», «Puerta») y su
+    tipo. Debajo, lo que ve la IA y una <b>sugerencia</b> (botón «Usar»): es una pista, puede equivocarse. <b class="m">Traer
+    imágenes nuevas</b> las actualiza; <b class="m">Guardar nombres</b>. Renombrar no corta el video ni cambia nada en el
+    grabador.</li>
+</ul>
+<div class="two">
+  <figure><img src="guia-operadores/16_grabacion.jpg" alt=""><figcaption>«Bajar grabación…».</figcaption></figure>
+  <div>
+    <p><b>Bajar grabación</b>: elegí una o varias cámaras → <b class="m">Más ▾ → Bajar grabación…</b>.</p>
+    <ul>
+      <li>Día, desde, hasta y tramos (de 30 min: un archivo por tramo).</li>
+      <li>Carpeta: <code>Descargas\VIGIA</code>. El archivo se llama «Cliente - Cámara - fecha hora.mp4».</li>
+      <li>Con <b>«Sumarlos a los clips de cada cámara»</b> quedan listos para «🎞 Clips».</li>
+      <li>No cambia nada en el grabador ni en Hik-Connect. Por Hik-Connect puede tardar lo mismo que dura el video.</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="n">17</span>Atajos</h2>
+<table class="small">
+  <tr><td class="k">Clic derecho en una cámara</td><td>Todas sus opciones.</td></tr>
+  <tr><td class="k">Doble clic</td><td>Edita el cliente o la cámara.</td></tr>
+  <tr><td class="k"><kbd>Ctrl</kbd>/<kbd>Mayús</kbd> + clic · <kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>Elegir varias cámaras · todas.</td></tr>
+  <tr><td class="k"><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></td><td>Etiquetar la alerta elegida (Alertas).</td></tr>
+  <tr><td class="k">Una ventana por cámara</td><td>Volver a tocar «● En vivo» o «🎞 Clips» la trae al frente en ese modo.</td></tr>
+  <tr><td class="k">Registro ▴</td><td>Qué pasó y por qué falló algo.</td></tr>
+</table>
+
+<h2><span class="n">18</span>Problemas comunes y límites</h2>
+<table class="small">
+  <tr><th style="width:34%">Lo que ves</th><th>Qué hacer</th></tr>
+  <tr><td>«Sin conexión» / «No disponible» en una cámara</td><td><b class="m">Más ▾ → Probar conexión</b>: dice si es el nombre
+    DDNS, el puerto del router, el usuario o la clave, el canal o la calidad. Si el local está cerrado dice «Local cerrado ·
+    vuelve HH:MM» (es normal).</td></tr>
+  <tr><td>Hik-Connect: «cifrado de video» (EVZ60019)</td><td>El grabador tiene el cifrado prendido: el cliente o el técnico lo
+    apaga (ver el tutorial de Hikvision).</td></tr>
+  <tr><td>Hik-Connect: una cámara abre y otra no</td><td>Límite de transmisiones del grabador: cerrá las que no mires (también
+    «Ver con la IA»).</td></tr>
+  <tr><td>«La PC no da abasto»</td><td>Mirá menos cámaras con la IA a la vez. El análisis real lo hacen las máquinas, no tu
+    PC.</td></tr>
+  <tr><td>La IA no ve a nadie de noche</td><td>Con infrarrojo (imagen en blanco y negro) la IA ve mucho peor. Probá con clips de
+    día.</td></tr>
+  <tr><td>«La sesión venció» / «Tu usuario entró en otra PC»</td><td>Entrá de nuevo. Usá tu usuario en una sola PC.</td></tr>
+  <tr><td>Falta «Máquinas», «Administración» o «Eliminar»</td><td>Es lo esperado: son de administrador.</td></tr>
+</table>
+<div class="box warn">
+  <b>Límites, para decírselos al cliente con honestidad:</b>
+  <ul class="small">
+    <li>Cada alerta es un <b>indicio para revisar</b>, no una prueba. La precisión todavía no se midió con muchos hurtos reales.</li>
+    <li>Los gestos (mano al bolsillo, en la ropa, en la bolsa) fallan con cámaras desde arriba u ojo de pez, de noche, con
+      personas chicas o de espaldas; la bolsa propia o el celular pueden dar falsas alarmas.</li>
+    <li>No reconoce caras. Una persona que se pierde detrás de algo y vuelve puede contarse dos veces.</li>
+    <li>Las cámaras en modo alarmas (solo escuchan al grabador) no miden métricas.</li>
+  </ul>
+</div>
+
+<div class="foot">Analítica Crítica · Guía para operadores · App 1.38 · 3 de noviembre de 2026. Dudas o algo que no anda como dice
+  acá: avisale a un administrador con una captura y la hora.</div>
+
+</body>
+</html>

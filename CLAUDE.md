@@ -278,7 +278,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   la crea `user_agent()` sola), `POST /api/agent/session` (staff; rota el token: si el mismo usuario entra en otra
   PC, la anterior deja de analizar), `PUT /api/users/{id}/cameras`, `CameraIn.operator_id` (None = no cambia,
   0 = sin asignar; solo admin), `camera_dict.operator_id/operator_name`, `GET /api/users` trae `camera_ids`.
-  **Un empleado ve en Alertas solo las de sus cámaras** (`list_events`). «Clientes y cámaras» sigue mostrando todo.
+  ~~Un empleado ve en Alertas solo las de sus cámaras~~: **desde el 3 nov el operador ve las alertas de todos** (con
+  el filtro, como ya nadie asigna cámaras, la pestaña Alertas le quedaba vacía). «Clientes y cámaras» sigue mostrando todo.
   `/api/agent/login` (admin + nombre de PC) queda para el agente sin ventana.
 - **Tipo de cámara (24 oct):** `cameras.profile` = general | gondola | caja | entrada | deposito | exterior | surtidor
   (`CAMERA_PROFILES` en `server/main.py`). Decide qué reglas se aplican si en «Zonas y reglas» no se eligieron a
@@ -949,6 +950,16 @@ datos pero ya no se ofrecen).
   Clientes, Alertas; crean clientes y cámaras, zonas, en vivo, clips, aprobar, analizar, métricas, entrenamiento,
   nombres, bajar grabación). No borran clientes ni cámaras (403) ni ven usuarios/agentes. Probado de punta a punta el
   2 nov: el admin lo crea en Administración → «Nuevo usuario» → Rol «Operador»; el operador entra y hace todo eso.
+  **Ven las alertas de todos los clientes** (3 nov: `list_events` todavía filtraba por `operator_id`, de cuando se
+  asignaban cámaras, y a un operador la pestaña Alertas le salía vacía; `test_el_operador_ve_las_alertas_de_todos_los_clientes`).
+  **Guía para operadores (3 nov, pedido del dueño):** `docs/guia-operadores.html` + `.pdf` (16 páginas) + capturas en
+  `docs/guia-operadores/` (app 1.38 en Xvfb con servidor local y datos inventados: «Almacén Demo», usuaria «lucia»; la
+  «cámara» es `bus.jpg` de Ultralytics con las caras pixeladas, servida como HLS con ffmpeg `-re`; **nunca video de
+  clientes: el repo es público**). PDF con Playwright como las otras guías. Rehacerla si cambian botones o pantallas.
+  Al armarla salieron: (1) el editor de zonas de una cámara sin imagen era más ancho que 1366 (el aviso largo no se
+  cortaba) → app 1.38.1; (2) caso de borde: «Ver con la IA» y el vivo de la ventana de la cámara eligen cuadros con el
+  reloj de la PC salvo Hik-Connect, así que un link **HLS** (http …m3u8) en una cámara Hikvision/Dahua se ve a 0,6
+  cuadros/s; con RTSP no pasa (llega parejo). Sin arreglar.
 - **cliente**: el dueño del comercio, solo ve lo suyo.
 
 ### Flujo de aviso al cliente (clave del producto)

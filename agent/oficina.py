@@ -3015,7 +3015,10 @@ class ZonesEditor:
         left.grid(row=0, column=0, sticky="n")
         self.canvas = tk.Canvas(left, width=self.W, height=self.H, bg="#111", highlightthickness=0, cursor="crosshair")
         self.canvas.pack()
-        self.info = ttk.Label(left, text="Cargando la imagen de la cámara…", foreground="#666")
+        # (con el ancho de la imagen: un aviso largo, como «Todavía no hay imagen…», ensanchaba la ventana más que una
+        # pantalla de 1366 y los botones de la derecha quedaban afuera)
+        self.info = ttk.Label(left, text="Cargando la imagen de la cámara…", foreground="#666", wraplength=self.W,
+                              justify="left")
         self.info.pack(anchor="w", pady=(4, 0))
         ttk.Label(left, text="Zona nueva: «＋ Zona nueva» y clics en el piso, doble clic para cerrarla. Corregir: clic en "
                              "una zona, arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",

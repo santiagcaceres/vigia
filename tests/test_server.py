@@ -151,9 +151,8 @@ def test_entrenador_etiqueta(app, admin):
     post_event(app, ag["token"], cam["id"])
     lucia = admin.post("/api/users", json={"username": "lucia", "password": "entrena-123", "role": "entrenador"}).json()
     t = login(app, "lucia", "entrena-123")
-    # un empleado ve solo las alertas de las cámaras que le asignan
-    assert t.get("/api/events", params={"label": "sin_etiqueta"}).json()["total"] == 0
-    admin.put(f"/api/users/{lucia['id']}/cameras", json={"camera_ids": [cam["id"]]})
+    # un operador ve las alertas de todos los clientes, sin que le asignen cámaras (desde la app 1.18 no se asignan)
+    assert lucia["role"] == "entrenador"
     ev = t.get("/api/events", params={"label": "sin_etiqueta"}).json()["items"][0]
     r = t.patch(f"/api/events/{ev['id']}", json={"label": "hurto", "note": "se ve el bolsillo"})
     assert r.status_code == 200 and r.json()["label"] == "hurto"
