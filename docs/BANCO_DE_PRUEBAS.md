@@ -4,8 +4,8 @@ Idea: usar estos equipos como si fueran un cliente más y correr Vigía (agente 
 Estado: **solo anotado, sin hacer nada todavía** (pedido del usuario, 2026-10-17).
 
 ## Equipos (confirmados por etiqueta)
-- **Grabador DVR Hikvision DS-7104HGHI-M1/T** (SN FZ4798546): 4 canales Turbo HD, hasta 1080p, H.265, 1 bahía de disco, HDMI, compatible con Hik-Connect. Híbrido "5 en 1" (IP / HDTVI / HDCVI / AHD / CVBS).
-- **Cámara Hikvision DS-2CE16D0T-LFS 2.8 mm** (SN GK5172281): bullet **analógica Turbo HD (HDTVI)** 2 MP, Smart Hybrid Light (IR 30 m + luz blanca 20 m), IP67, 12 V 275 mA. **No es IP**: va al DVR por coaxial o por UTP con balun; el agente lee el canal desde el DVR.
+- **Grabador DVR Hikvision DS-7104HGHI-M1/T**: 4 canales Turbo HD, hasta 1080p, H.265, 1 bahía de disco, HDMI, compatible con Hik-Connect. Híbrido "5 en 1" (IP / HDTVI / HDCVI / AHD / CVBS).
+- **Cámara Hikvision DS-2CE16D0T-LFS 2.8 mm**: bullet **analógica Turbo HD (HDTVI)** 2 MP, Smart Hybrid Light (IR 30 m + luz blanca 20 m), IP67, 12 V 275 mA. **No es IP**: va al DVR por coaxial o por UTP con balun; el agente lee el canal desde el DVR.
 - **Baluns de video pasivos** (CYGNUS BP-01B, par) y un **conector de alimentación DC** (hembra de tornillo).
 - **Cable UTP Cat6** en rollo (para pasar video con los baluns o para la red).
 - Aplicación del cliente: **Hik-Connect** (móvil), además de iVMS-4200 en la PC.

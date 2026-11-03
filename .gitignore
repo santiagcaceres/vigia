@@ -7,3 +7,12 @@ agent_data/
 .env
 *.zip
 .vercel
+# datos de una PC o de una prueba local: sesiones, tokens y claves (el repo es público)
+agente.env
+*.env
+!.env.example
+token-maquina*
+secret.key
+admin_password.txt
+*.db
+*.sqlite

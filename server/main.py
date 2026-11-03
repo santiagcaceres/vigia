@@ -32,8 +32,8 @@ from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
 from . import hikconnect, hpp, nube, pool, probe, training
-from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident,
-                 LoginFailure, SessionToken, User,
+from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, CredentialAccess, Event,
+                 FilterModel, Incident, LoginFailure, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, needs_rehash, new_token, password_problem, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
@@ -48,6 +48,7 @@ CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/onnxr
        "media-src 'self' blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/; "
        "worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; "
        "frame-ancestors 'none'")
+MAX_CREDENTIAL_CAMERAS = 300  # cámaras distintas por hora que una PC puede abrir (con la clave del grabador)
 MAX_IMAGE = 2 * 1024 * 1024  # foto de una alerta o imagen de una cámara (una de 640 px pesa ~50 KB)
 MAX_LIVE_FRAME = 512 * 1024  # cuadro en vivo (~30 KB)
 MAX_EVENTS_PER_HOUR = 120  # alertas de una cámara por hora
@@ -1292,6 +1293,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # las demás sesiones abiertas con la clave vieja se cierran (esta sigue)
         mine = token_hash(request_token(request) or "")
         s.query(SessionToken).filter(SessionToken.user_id == u.id, SessionToken.token_hash != mine).delete()
+        # y la PC: quien se llevó la cuenta con la clave vieja no sigue bajando claves de grabadores con ese token (la
+        # app de este usuario vuelve a pedir el suyo con «Entrá de nuevo»)
+        s.query(Agent).filter(Agent.user_id == u.id).update({"token_hash": token_hash(new_token())},
+                                                            synchronize_session=False)
         s.commit()
         return {"ok": True}
 
@@ -2460,6 +2465,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         m = active_model(s, client_id)
         return dict(m.spec, id=m.id) if m else None
 
+    def log_credentials(s, ag: Agent, user: User | None, cam_ids: list[int], what: str, request: Request) -> None:
+        """Deja registro de que esta PC recibió los datos (con clave) de estas cámaras y frena a quien pide las de
+        muchísimas cámaras en poco tiempo (un operador malintencionado o una sesión robada que se lleva las claves de
+        todos los grabadores): más de MAX_CREDENTIAL_CAMERAS cámaras distintas en una hora → 429."""
+        if not cam_ids:
+            return
+        since = utcnow() - timedelta(hours=1)
+        seen = {cid for (cid,) in s.query(CredentialAccess.camera_id).filter(
+            CredentialAccess.agent_id == ag.id, CredentialAccess.at >= since).distinct()}
+        if len(seen | set(cam_ids)) > MAX_CREDENTIAL_CAMERAS:
+            log.error("FRENO: la PC %s (%s) pidió los datos de %d cámaras en una hora", ag.id,
+                      user.username if user else "-", len(seen | set(cam_ids)))
+            raise HTTPException(429, "Se pidieron demasiadas cámaras en poco tiempo: esperá una hora o pedí menos")
+        ip = client_ip(request)
+        for cid in cam_ids:
+            s.add(CredentialAccess(agent_id=ag.id, user_id=user.id if user else None, camera_id=cid, ip=ip, what=what))
+        s.commit()
+        log.info("Datos de %d cámara(s) a la PC %s de %s (%s, %s): %s", len(cam_ids), ag.id,
+                 user.username if user else "-", what, ip, ",".join(map(str, cam_ids[:50])))
+
     def watcher(s, ag: Agent) -> User:
         """La PC de un usuario activo del equipo (admin o empleado): la que abre cámaras a demanda."""
         u = s.get(User, ag.user_id) if ag.user_id else None
@@ -2482,15 +2507,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         } for c in cams]}
 
     @app.post("/api/agent/view")
-    def agent_view(body: UserCamerasIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+    def agent_view(body: UserCamerasIn, request: Request, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         """«En vivo» de la app: las cámaras que el usuario quiere mirar, sin analizarlas. Las que analiza una
         máquina se pueden mostrar con la imagen que sube la máquina (no se le pide otra transmisión al grabador).
         `analysis` y `process_fps` (como en /config): para «Ver con la IA de esta PC», que dibuja lo que vería el
         análisis (zonas, personas, postura, gestos) sin guardar ni mandar nada."""
-        watcher(s, ag)
+        u = watcher(s, ag)
         locs = locations(s)
         names = dict(s.query(Agent.id, Agent.name).all())
         cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids)), Camera.enabled.is_(True)).all()
+        log_credentials(s, ag, u, [c.id for c in cams], "view", request)
         clients = {c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))} if cams else {}
         out = []
         for c in cams:
@@ -2504,14 +2530,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"cameras": out}
 
     @app.post("/api/agent/tune")
-    def agent_tune(body: TuneIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+    def agent_tune(body: TuneIn, request: Request, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         """«Ajustar» en la app: la configuración completa de UNA cámara para analizarla en la PC del usuario (en vivo
         o con un video), con alertas de prueba que no salen de la app. `raw` son las zonas y reglas tal como se
         guardan (sin lo que agrega el tipo de cámara), para volver a guardarlas."""
-        watcher(s, ag)
+        u = watcher(s, ag)
         c = get_or_404(s, Camera, body.camera_id, "Cámara")
         client = s.get(Client, c.client_id)
-        return {"camera": {**agent_camera_cfg(c, client), "filter_model": model_spec(s, c.client_id)},
+        cfg = agent_camera_cfg(c, client)
+        if c.enabled:
+            log_credentials(s, ag, u, [c.id], "tune", request)
+        else:  # deshabilitada: se puede ajustar con clips, sin la clave del grabador
+            cfg = {**cfg, "connection": {k: v for k, v in (cfg.get("connection") or {}).items()
+                                         if k not in ("password", "source_url")}}
+        return {"camera": {**cfg, "filter_model": model_spec(s, c.client_id)},
                 "raw": {"zones": c.zones or [], "rules": clean_rules(c.rules), "gestures": c.gestures},
                 "tuning": c.tuning or "sin_ajustar", "tuning_notes": c.tuning_notes,
                 "analyzed": locations(s).get(c.id) == "servidores"}
@@ -2616,14 +2648,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"server": api.server, "cameras": cams}
 
     @app.post("/api/agent/cameras/{cam_id}/stream-url")
-    def agent_stream_url(cam_id: int, body: StreamUrlIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
+    def agent_stream_url(cam_id: int, body: StreamUrlIn, request: Request, ag: Agent = Depends(current_agent),
+                         s=Depends(db)) -> dict:
         """La PC central pide un link de video nuevo (las cámaras por Hik-Connect no tienen IP ni puertos)."""
         c = get_or_404(s, Camera, cam_id, "Cámara")
         if not agent_owns(ag, c):
             try:
-                watcher(s, ag)  # la app de un usuario del equipo puede mirar cualquier cámara
+                u = watcher(s, ag)  # la app de un usuario del equipo puede mirar cualquier cámara
             except HTTPException:
                 raise HTTPException(403, "La cámara no es de esta PC") from None
+            log_credentials(s, ag, u, [c.id], "stream", request)
         if c.brand != "hikconnect":
             raise HTTPException(422, "La cámara no está configurada por Hik-Connect")
         try:
@@ -3884,7 +3918,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not st.cron_secret or not secrets.compare_digest(authorization, f"Bearer {st.cron_secret}"):
             raise HTTPException(401, "No autorizado")
         cutoff = utcnow() - timedelta(days=st.retention_days)
-        old = (s.query(Event).filter(Event.source.in_(("vivo", "alarma", "prueba")), Event.received_at < cutoff)
+        # también los videos subidos para entrenar («importado») y los ejemplos de «Configurar…» («ajuste»): son fotos
+        # de personas y la Ley 18.331 pide no guardarlas más de lo necesario (los etiquetados conservan sus datos)
+        old = (s.query(Event).filter(Event.source.in_(("vivo", "alarma", "prueba", "importado", "ajuste")),
+                                     Event.received_at < cutoff)
                .order_by(Event.id).limit(2000).all())
         unlabeled = [e for e in old if not e.label]
         labeled = [e for e in old if e.label and (e.snapshot_path or e.clip_path)]
@@ -3897,6 +3934,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # alarmas sin evento (sin persona, sin cámara, error): solo sirven de estadística, se guardan 14 días
         s.query(Alarm).filter(Alarm.event_id.is_(None), Alarm.status != "procesando",
                               Alarm.received_at < utcnow() - timedelta(days=14)).delete(synchronize_session=False)
+        # los videos subidos para entrenar, ya analizados: el archivo se borra (quedan la fila, sus incidentes y eventos)
+        done = (s.query(VideoImport).filter(VideoImport.status.notin_(("subiendo", "procesando")),
+                                            VideoImport.created_at < cutoff, VideoImport.storage_path != "")
+                .limit(200).all())
+        storage.remove([i.storage_path for i in done if i.storage_path])
+        for i in done:
+            i.storage_path = ""
+        s.query(CredentialAccess).filter(CredentialAccess.at < utcnow() - timedelta(days=90)).delete(
+            synchronize_session=False)
         s.query(SessionToken).filter(SessionToken.expires_at < utcnow()).delete()
         # intentos fallidos viejos (y las IPs conocidas vencidas): la tabla no crece sin fin
         s.query(LoginFailure).filter(LoginFailure.first_at < utcnow() - timedelta(days=1),
@@ -3915,7 +3961,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if gone:
             rebalance(s, force=True)
         return {"deleted": len(unlabeled), "media_removed": len(labeled), "retention_days": st.retention_days,
-                "machines_removed": len(gone)}
+                "machines_removed": len(gone), "videos_removed": len(done)}
 
     # cabeceras de seguridad: en Vercel las pone vercel.json (también a public/, que sirve su CDN); acá, cuando el servidor
     # sirve la web (local o Docker). Las respuestas de la API no se guardan en ningún caché (traen datos de clientes),

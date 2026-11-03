@@ -11,7 +11,8 @@ import cv2
 import numpy as np
 
 log = logging.getLogger("vigia.clips")
-_CREDENTIALS = re.compile(r"(\w+://)[^@/\s]+@")
+# hasta el último «@» antes del host (una clave con «@» sin codificar, como «Abc@2024», no queda a la vista)
+_CREDENTIALS = re.compile(r"(\w+://)[^/\s]*@")
 
 
 def redact(text: str) -> str:

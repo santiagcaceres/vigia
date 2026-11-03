@@ -214,11 +214,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     40 máquinas (`VIGIA_MAX_MAQUINAS_SERVIDOR`), reportes de más de 60.000 horas-cámara y Excel por hora de más de
     20.000 filas piden menos días, la consulta de versiones a GitHub se guarda 5 min, el link del aviso firma por 5 min y
     va con el token en `#t=` (los viejos `?t=` siguen andando).
+  - **Segunda tanda (secretos):** cada vez que la PC de un usuario recibe los datos para abrir una cámara (con la clave
+    del grabador: «En vivo», «Configurar…», links de Hik-Connect) queda registrado quién, qué cámara, desde qué IP y cuándo
+    (tabla `credential_access`, `SCHEMA_VERSION` 2026-11-03.2, se borra a los 90 días) y más de 300 cámaras distintas en
+    una hora da 429 (`MAX_CREDENTIAL_CAMERAS`); una cámara deshabilitada se ajusta sin la clave. «Mi clave» también
+    corta el token de la PC. La limpieza diaria borra las fotos y videos de entrenamiento («importado», «ajuste» y los
+    videos subidos) pasados los `RETENTION_DAYS` (los etiquetados conservan sus datos para entrenar; Ley 18.331).
+    `redact` tapa la clave aunque tenga «@» sin codificar. `.gitignore` con `agente.env`, `*.env`, `token-maquina*`,
+    `secret.key`, `*.db`. El LEEME ya no sugiere `C:\`. **CI:** el armado del .exe corre con permiso de solo lectura,
+    sin el token en `.git/config` y con `pyinstaller==6.22.3`; publica otro trabajo con `gh release create` (sin
+    acciones de terceros).
   - **Lo que queda (a mano o de diseño):** reglas de límite en el Firewall de Vercel (`/api/login`, `/api/agent/login`,
     `/api/agent/enroll`, `/api/r/*`); tope de gasto en Vercel y Supabase; `file_size_limit` del bucket; `GITHUB_TOKEN`
     de solo lectura; no cargar las claves de HPP sin revisar; cualquier operador puede ver las claves de las cámaras que
     abre (la PC las necesita para abrir el video: sacarlo pide un servidor de video intermedio); retención de métricas y
-    avisos sin definir; los nombres de los admins y series de grabadores están en este archivo público.
+    avisos sin definir; los nombres de los admins y series de grabadores están en este archivo público; la IP pública de
+    la casa del dueño quedó en la historia del repo (commits del 21 al 23 oct): cerrar esos reenvíos si no se usan o
+    forzar otra IP; la sesión de la app queda en claro en `agente.env` (cifrarla con DPAPI de Windows, sin probar);
+    versiones fijas en `requirements-servidor*.txt` (las máquinas instalan lo último al prender) y proteger `main`.
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
@@ -1182,9 +1195,9 @@ python -m agent.dahua     --host IP --user vigia --password ****             # p
 7. Consulta a Hikvision por la clave VSaaS / HPNetSDK (requisitos, costo, Uruguay).
 8. Si el contrato con los clientes permite usar sus videos para entrenar.
 
-**Hecho el 21 oct (equipo propio de Santiago, cliente "Prueba"):** DVR DS-7104HGHI-M1/T en
-192.168.1.6 (reservada por MAC en el ZTE F6600 de Antel), reenvío TCP 38554→554 y 38080→80,
-IP pública de Antel real (sin CG-NAT, PPPoE, puede cambiar: falta DDNS), RTSP verificado en VLC
+**Hecho el 21 oct (equipo propio de Santiago, cliente "Prueba"):** un DVR Hikvision de 4 canales con IP fija
+(reservada por MAC en el ZTE F6600 de Antel) y dos puertos externos altos reenviados a 554 y 80 (el detalle no va en
+este archivo público: lo sabe el dueño), IP pública de Antel real (sin CG-NAT, PPPoE, puede cambiar: falta DDNS), RTSP verificado en VLC
 desde datos móviles y otra red, cámara "Habitacion" cargada en modo **vivo** (el DVR no tiene
 disco) y "Probar conexión" devuelve modelo y 4 canales. Agente `vigia` (id 3) corriendo como
 `VigiaAgente.exe` en la PC de Santiago: cámara en línea a 4 fps y vista previa recibida.

@@ -14,21 +14,27 @@ on:
   push:
     tags: ["agente-v*"]
 
+# solo lectura: lo que se instala para compilar (pip) no puede tocar el repo ni las versiones publicadas; publicar
+# lo hace otro trabajo aparte, el único con permiso de escritura, sin acciones de terceros
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false  # (el token no queda en .git/config al alcance de los paquetes)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-agent.txt pyinstaller
+          pip install -r requirements-agent.txt pyinstaller==6.22.3
           # en Windows, la versión con DirectML usa la placa de video (NVIDIA, AMD o Intel) y si no hay, el procesador
           pip uninstall -y onnxruntime
           pip install onnxruntime-directml
@@ -58,12 +64,23 @@ jobs:
           name: AnaliticaCritica-windows
           path: dist\AnaliticaCritica-windows.zip
           retention-days: 30
-      - name: Publicar en Releases
-        if: startsWith(github.ref, 'refs/tags/agente-v') || inputs.version != ''
-        uses: softprops/action-gh-release@v2
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/agente-v') || inputs.version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/AnaliticaCritica-windows.zip
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
-          name: Agente ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
-          make_latest: true
-          body: "App de escritorio de Analítica Crítica para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe (queda como «Analítica Crítica.exe»). Para actualizar: botón «Buscar actualización» dentro de la app; agente.env se conserva."
+          name: AnaliticaCritica-windows
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/agente-v') && github.ref_name || format('agente-v{0}', inputs.version) }}
+          NOTES: "App de escritorio de Analítica Crítica para Windows. Primera vez: descomprimir y abrir VigiaAgente.exe (queda como «Analítica Crítica.exe»). Para actualizar: botón «Buscar actualización» dentro de la app; agente.env se conserva."
+        run: |
+          ls -la AnaliticaCritica-windows.zip
+          gh release create "$TAG" AnaliticaCritica-windows.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Agente $TAG" --notes "$NOTES" --latest

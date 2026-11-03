@@ -1,7 +1,9 @@
 ANALÍTICA CRÍTICA - APP DE ESCRITORIO PARA WINDOWS
 ==================================================
 
-1. Descomprimí esta carpeta donde quieras (por ejemplo en el Escritorio o en C:\AnaliticaCritica).
+1. Descomprimí esta carpeta en una carpeta tuya (por ejemplo en el Escritorio o en Documentos), no en C:\:
+   ahí otros usuarios de la PC podrían leer tu sesión o cambiar el programa. No le pases a nadie la
+   carpeta con el archivo agente.env adentro: tiene tu sesión (cada uno entra con su usuario).
 2. Abrí VigiaAgente.exe. La primera vez se renombra solo a «Analítica Crítica.exe» (con el logo):
    de ahí en adelante abrí ese.
 3. Entrá con tu usuario y clave (administrador o empleado). La sesión queda guardada en agente.env,

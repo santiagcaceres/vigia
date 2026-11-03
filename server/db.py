@@ -86,6 +86,20 @@ class LoginFailure(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class CredentialAccess(Base):
+    """Registro de cada vez que la PC de un usuario recibió los datos para abrir una cámara (con la clave del grabador):
+    para saber quién bajó qué y frenar a quien pide las de todos los clientes de golpe (server/main.py
+    `log_credentials`). Se borra a los 90 días."""
+    __tablename__ = "credential_access"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    camera_id: Mapped[int] = mapped_column(Integer)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    what: Mapped[str] = mapped_column(String(12))  # view | tune | stream
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class Agent(Base):
     """PC que corre el análisis. Con client_id es el agente de un local; con client_id NULL es
     un agente *central* (la PC de la empresa) que atiende las cámaras que se le asignen, de
@@ -350,7 +364,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-03.1"
+SCHEMA_VERSION = "2026-11-03.2"
 
 
 class CameraMetric(Base):

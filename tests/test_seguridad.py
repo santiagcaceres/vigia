@@ -247,3 +247,59 @@ def test_cabeceras_de_seguridad(tmp_path, db_url):
 def test_webhook_de_hpp_sin_la_clave_no_firma(app):
     r = TestClient(app).get("/api/hpp/webhook", headers={"X-Hook-Batch-Id": "a", "X-Hook-Timestamp": "1"})
     assert r.status_code == 404 and "x-hook-signature" not in r.headers
+
+
+# ------------------------------------------------------------------ secretos (tanda 2)
+def test_queda_registro_de_quien_baja_claves_y_hay_tope(app, monkeypatch):
+    import server.main as sm
+    a, o, tok, cam_a, cam_b, oper, _ = setup(app)
+    r = TestClient(app).post("/api/agent/view", headers=tok, json={"camera_ids": [cam_a["id"], cam_b["id"]]})
+    assert r.status_code == 200
+    from server.db import CredentialAccess
+    with app.state.Session() as s:
+        rows = s.query(CredentialAccess).all()
+    assert {r.camera_id for r in rows} >= {cam_a["id"], cam_b["id"]} and all(r.user_id == oper["id"] for r in rows)
+    # quien pide las de muchísimas cámaras en una hora queda frenado
+    monkeypatch.setattr(sm, "MAX_CREDENTIAL_CAMERAS", 1)
+    r = TestClient(app).post("/api/agent/view", headers=tok, json={"camera_ids": [cam_a["id"], cam_b["id"]]})
+    assert r.status_code == 429
+
+
+def test_mi_clave_corta_el_token_de_la_pc(app):
+    a, o, tok, *_ = setup(app)
+    assert TestClient(app).get("/api/agent/config", headers=tok).status_code == 200
+    r = o.post("/api/me/password", json={"current": "clave-oper-123", "new": "otra-clave-larga-2026"})
+    assert r.status_code == 200
+    assert TestClient(app).get("/api/agent/config", headers=tok).status_code == 401
+    assert o.get("/api/me").status_code == 200  # la sesión con la que se cambió sigue
+
+
+def test_las_claves_no_quedan_a_la_vista_en_los_mensajes():
+    from core.clips import redact
+    msg = redact("No se pudo abrir rtsp://admin:Abc@2024@dvr.ddns.net:554/Streaming/Channels/101")
+    assert "2024" not in msg and "Abc" not in msg and "dvr.ddns.net:554" in msg
+
+
+def test_la_limpieza_borra_fotos_viejas_de_entrenamiento(app, tmp_path):
+    import os
+    a, o, tok, cam_a, *_ = setup(app)
+    meta = {"uuid": "viejo1", "camera_id": cam_a["id"], "type": "zona_restringida", "source": "importado",
+            "description": "x"}
+    from server.db import Event, VideoImport
+    with app.state.Session() as s:
+        s.add(Event(uuid="ajuste1", client_id=cam_a["client_id"], camera_id=cam_a["id"], source="ajuste",
+                    type="zona_restringida", severity="alta", label="hurto", snapshot_path="c1/x.jpg", description="",
+                    received_at=datetime.utcnow() - timedelta(days=400), alert=False))
+        s.add(VideoImport(client_id=cam_a["client_id"], camera_id=cam_a["id"], filename="v.mp4",
+                          storage_path="imports/1/v.mp4", status="listo",
+                          created_at=datetime.utcnow() - timedelta(days=400)))
+        s.commit()
+    os.environ["CRON_SECRET"] = "x" * 20
+    app.state.settings.cron_secret = "x" * 20
+    r = TestClient(app).get("/api/cron/cleanup", headers={"Authorization": "Bearer " + "x" * 20})
+    assert r.status_code == 200, r.text
+    with app.state.Session() as s:
+        ev = s.query(Event).filter_by(uuid="ajuste1").one()
+        assert ev.snapshot_path is None and ev.label == "hurto"  # se va la foto, queda lo que entrena
+        assert s.query(VideoImport).one().storage_path == ""
+    assert meta
