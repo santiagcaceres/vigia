@@ -36,6 +36,8 @@ VEHICLE_LABEL = "vehiculo"
 # borde, el punto de los pies cae pegado al borde (Pasillo bebidas de Minas, 28 oct: la zona llegaba al 98 % del alto,
 # la señora pisaba en el 99 % y nunca «estuvo» en la zona)
 EDGE_SNAP = 0.03
+# tipos de zona donde no se mide espera: el personal no espera y en el surtidor esperan vehículos (ya se mide aparte)
+NO_WAIT_TYPES = ("staff", "pump")
 
 SALIDA_SIN_PAGO = "salida_sin_pago"
 ZONA_RESTRINGIDA = "zona_restringida"
@@ -79,6 +81,8 @@ class Zone:
     type: str
     polygon: tuple[Point, ...]
     direction: str | None = None  # solo entrance: hacia dónde se entra (DIRECTIONS)
+    # medir el tiempo de espera de los clientes en esta zona (caja, mostrador, fila): métricas, no reglas
+    wait: bool = False
 
     def contains(self, nx: float, ny: float) -> bool:
         return point_in_polygon(nx, ny, self.polygon)
@@ -161,8 +165,12 @@ def parse_zones(items: list[dict] | None) -> list[Zone]:
         if direction is not None and (ztype != "entrance" or direction not in DIRECTIONS):
             raise ValueError(f"La zona {name!r}: el sentido de entrada va solo en zonas de entrada "
                              f"({', '.join(DIRECTIONS)})")
+        wait = bool(z.get("wait"))
+        if wait and ztype in NO_WAIT_TYPES:
+            raise ValueError(f"La zona {name!r}: el tiempo de espera se mide en zonas de clientes (no en "
+                             "«Personal» ni en «Surtidor»)")
         names.add(name)
-        zones.append(Zone(name, ztype, poly, direction))
+        zones.append(Zone(name, ztype, poly, direction, wait))
     return zones
 
 

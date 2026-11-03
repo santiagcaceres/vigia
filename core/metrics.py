@@ -21,11 +21,25 @@ Qué se mide por cubo:
   segundos desde que el vehículo entró al surtidor hasta que llegó una persona a esa misma zona
   (tiempo de espera hasta el pistero); `pump_unattended`: vehículos que se fueron sin que llegara nadie.
 - `shop_visits`: personas que entraron a una zona `shop` (tienda).
+- `waits` (plan «comercio»): por zona marcada «medir espera» (`Zone.wait`: caja, mostrador, fila), cuánto esperaron
+  los clientes. Cada cliente que estuvo ahí `WAIT_MIN_SECONDS` o más es una espera: `n`, `sum_s` (para el promedio),
+  `max_s` y `hist` (cuántas esperas de menos de 1 min, 1-3, 3-5, 5-10 y 10 o más: `WAIT_EDGES`). Por cuadro, la fila:
+  `obs_s` (segundos mirados), `queue_s` (personas-segundo esperando: promedio de la fila = queue_s / obs_s),
+  `queue_max`, `busy_s` (segundos con alguien esperando). Si la cámara tiene zona de personal (`staffed` = 1):
+  `unattended_s` (segundos con clientes esperando y nadie en la zona de personal) y `left_alone` (clientes que
+  esperaron sin que apareciera nadie del personal en todo ese rato).
+- Plan «empleados»: `posts`, por zona de personal (el puesto: detrás del mostrador, la caja por dentro), `obs_s`,
+  `covered_s` (segundos con alguien adentro), `people_s` (personas-segundo: promedio de gente en el puesto) y `max`;
+  `staff_s` (personas-segundo de empleados a la vista en la cámara: promedio = staff_s / segundos) y `staff_max`
+  (máximo de empleados a la vez); `staff_dwell`: por zona, segundos que pasaron ahí los empleados (dónde trabajan).
 - `frames`: cuadros procesados (para saber si la cámara estuvo activa).
 
-Lo que NO mide (y hay que decirlo): gestos (lavar vidrios, guardar algo) ni caras. A los empleados los descuenta
-solo si pisan su zona o llegan con el local cerrado. Una persona que el tracker pierde y vuelve a encontrar cuenta
-dos veces (salvo en la puerta con sentido, donde cuenta el cruce).
+Lo que NO mide (y hay que decirlo): gestos (lavar vidrios, guardar algo) ni caras. A los empleados los reconoce
+solo si pisan su zona (2 s o más) o llegan con el local cerrado: no sabe quién es quién ni sigue a una persona de una
+cámara a otra. Quien pisa la zona de personal cuenta como «alguien en el puesto», sea o no empleado. La espera es el
+tiempo en la zona marcada: si la zona incluye el lugar donde se atiende, incluye la atención. En una fila apretada,
+quien queda tapado por otro no se ve. Una persona que el tracker pierde y vuelve a encontrar cuenta dos veces (salvo
+en la puerta con sentido, donde cuenta el cruce).
 """
 
 from __future__ import annotations
@@ -41,6 +55,22 @@ from .tracker import Track
 MIN_VISIT_SECONDS = 2.0  # menos que esto es ruido del detector
 STAFF_MIN_SECONDS = 2.0  # en la zona de personal: menos que esto puede ser un cliente que se acercó al mostrador
 CROSS_FRACTION = 0.4  # para contar un cruce, moverse al menos este tanto del ancho de la puerta en el sentido marcado
+WAIT_MIN_SECONDS = 5.0  # en una zona de espera: menos que esto es pasar de largo, no esperar
+WAIT_EDGES = (60, 180, 300, 600)  # cortes del histograma de esperas: < 1 min, 1-3, 3-5, 5-10 y 10 min o más
+FRAME_GAP_MAX = 1.0  # entre dos cuadros cuenta como mucho esto (un corte del video no suma tiempo mirado)
+
+
+def new_wait() -> dict:
+    return {"n": 0, "sum_s": 0.0, "max_s": 0.0, "hist": [0] * (len(WAIT_EDGES) + 1), "obs_s": 0.0, "queue_s": 0.0,
+            "queue_max": 0, "busy_s": 0.0, "unattended_s": 0.0, "left_alone": 0, "staffed": 0}
+
+
+def new_post() -> dict:
+    return {"obs_s": 0.0, "covered_s": 0.0, "people_s": 0.0, "max": 0}
+
+
+def wait_bin(secs: float) -> int:
+    return sum(1 for edge in WAIT_EDGES if secs >= edge)
 
 
 def bucket_start(wall: datetime) -> datetime:
@@ -52,17 +82,47 @@ def empty_bucket() -> dict:
             "staff": 0, "staff_entries": 0, "zones": {},
             "vehicles": 0, "vehicles_dwell_s": 0.0, "vehicles_max": 0,
             "pump_vehicles": 0, "pump_wait_s": 0.0, "pump_wait_n": 0, "pump_unattended": 0,
-            "shop_visits": 0, "frames": 0}
+            "shop_visits": 0, "frames": 0,
+            "waits": {}, "posts": {}, "staff_s": 0.0, "staff_max": 0, "staff_dwell": {}}
+
+
+_MAX_KEYS = {"max_s", "queue_max", "staffed", "max"}  # dentro de waits/posts: se quedan con el mayor
+
+
+def _merge_stats(a: dict, b: dict, blank: dict) -> dict:
+    out = dict(blank)
+    for k, v0 in blank.items():
+        va, vb = a.get(k, v0), b.get(k, v0)
+        if isinstance(v0, list):
+            n = len(v0)
+            va, vb = (list(va) + [0] * n)[:n], (list(vb) + [0] * n)[:n]
+            out[k] = [x + y for x, y in zip(va, vb)]
+        elif k in _MAX_KEYS:
+            out[k] = max(va, vb)
+        else:
+            out[k] = va + vb
+    return out
 
 
 def merge_bucket(a: dict, b: dict) -> dict:
     """Suma dos cubos (de cámaras u horas distintas). Los máximos se quedan con el mayor."""
     out = dict(empty_bucket())
     for k in out:
-        if k == "zones":
+        if k in ("zones", "waits", "posts", "staff_dwell"):
             continue
         va, vb = a.get(k, 0), b.get(k, 0)
         out[k] = max(va, vb) if k.endswith("_max") or k == "door" else va + vb
+    for key, blank in (("waits", new_wait()), ("posts", new_post())):
+        merged: dict[str, dict] = {}
+        for src in (a.get(key) or {}, b.get(key) or {}):
+            for name, st in src.items():
+                merged[name] = _merge_stats(merged.get(name, blank), st or {}, blank)
+        out[key] = merged
+    dwell: dict[str, float] = {}
+    for src in (a.get("staff_dwell") or {}, b.get("staff_dwell") or {}):
+        for name, secs in src.items():
+            dwell[name] = dwell.get(name, 0.0) + float(secs or 0.0)
+    out["staff_dwell"] = dwell
     zones: dict[str, dict] = {}
     for src in (a.get("zones") or {}, b.get("zones") or {}):
         for name, z in src.items():
@@ -76,23 +136,51 @@ def merge_bucket(a: dict, b: dict) -> dict:
 # Qué parte del cubo es de cada plan del cliente (server: Client.plans / Camera.plans). Una cámara mide solo los planes
 # que se le eligieron; lo demás que haya contado (una cámara de afuera también ve gente) no se suma al cliente.
 PEOPLE_KEYS = ("people", "people_dwell_s", "people_max", "entries", "exits", "door", "staff", "staff_entries",
-               "zones")  # plan «comercio»
+               "zones", "waits")  # plan «comercio» (la espera de los clientes también)
 STATION_KEYS = ("vehicles", "vehicles_dwell_s", "vehicles_max", "pump_vehicles", "pump_wait_s", "pump_wait_n",
                 "pump_unattended", "shop_visits")  # plan «estacion»
+STAFF_KEYS = ("posts", "staff_s", "staff_max", "staff_dwell")  # plan «empleados»
+_DICT_KEYS = ("zones", "waits", "posts", "staff_dwell")
 
 
 def restrict_bucket(data: dict, client_plans, camera_plans) -> dict:
     """Copia del cubo de una cámara con solo lo que esa cámara mide para su cliente: si el cliente tiene «comercio» y
-    la cámara no lo mide, la gente queda en cero; si tiene «estacion» y la cámara no la mide, los vehículos. Si el
-    cliente no tiene ese plan no se toca (se ve lo de siempre). `frames` no se toca nunca."""
+    la cámara no lo mide, la gente queda en cero; si tiene «estacion» y la cámara no la mide, los vehículos; si tiene
+    «empleados», lo del personal. Si el cliente no tiene ese plan no se toca (se ve lo de siempre). `frames` no se toca
+    nunca."""
     out = dict(data or {})
     client_plans, camera_plans = set(client_plans or ()), set(camera_plans or ())
     blank = empty_bucket()
-    for plan, keys in (("comercio", PEOPLE_KEYS), ("estacion", STATION_KEYS)):
+    for plan, keys in (("comercio", PEOPLE_KEYS), ("estacion", STATION_KEYS), ("empleados", STAFF_KEYS)):
         if plan in client_plans and plan not in camera_plans:
             for k in keys:
-                out[k] = {} if k == "zones" else blank[k]
+                out[k] = {} if k in _DICT_KEYS else blank[k]
     return out
+
+
+def wait_stats(w: dict | None) -> dict:
+    """Resumen de la espera en una zona (lo que muestran la app, la web, el PDF y el Excel): cuántos esperaron, el
+    promedio y el máximo (segundos), cuántos esperaron 1, 3, 5 y 10 minutos o más (`over`, por segundos del corte),
+    la fila promedio y máxima, y —si la cámara tiene zona de personal— los segundos con clientes esperando y nadie del
+    personal y cuántos esperaron solos (None si no hay zona de personal)."""
+    w = _merge_stats(new_wait(), w or {}, new_wait())
+    n, hist = w["n"], w["hist"]
+    over = {edge: sum(hist[i + 1:]) for i, edge in enumerate(WAIT_EDGES)}
+    staffed = bool(w["staffed"])
+    return {"n": n, "avg_s": (w["sum_s"] / n) if n else None, "max_s": w["max_s"] if n else None, "over": over,
+            "queue_avg": (w["queue_s"] / w["obs_s"]) if w["obs_s"] else None, "queue_max": w["queue_max"],
+            "busy_s": w["busy_s"], "obs_s": w["obs_s"], "staffed": staffed,
+            "unattended_s": w["unattended_s"] if staffed else None, "left_alone": w["left_alone"] if staffed else None}
+
+
+def post_stats(p: dict | None) -> dict:
+    """Resumen de un puesto (zona de personal): qué parte del tiempo mirado hubo alguien (`covered_pct`, 0-100), los
+    segundos sin nadie, el promedio y el máximo de gente en el puesto."""
+    p = _merge_stats(new_post(), p or {}, new_post())
+    obs = p["obs_s"]
+    return {"obs_s": obs, "covered_s": p["covered_s"], "uncovered_s": max(0.0, obs - p["covered_s"]),
+            "covered_pct": (100.0 * p["covered_s"] / obs) if obs else None,
+            "avg_people": (p["people_s"] / obs) if obs else None, "max": p["max"]}
 
 
 @dataclass
@@ -108,6 +196,7 @@ class _Visit:
     door_from: dict[str, tuple[float, float]] = field(default_factory=dict)  # puerta -> dónde estaba antes de pisarla
     crossings: list[int] = field(default_factory=list)  # +1 entró, -1 salió
     door_of: list[str] = field(default_factory=list)  # por qué puerta fue cada cruce (para contar cada puerta aparte)
+    attended: set[str] = field(default_factory=set)  # zonas de espera donde, estando ahí, hubo alguien en el puesto
 
 
 @dataclass
@@ -137,6 +226,9 @@ class MetricsCollector:
             self.by_type.setdefault(z.type, []).append(z)
         self.doors = [z for z in self.by_type.get("entrance", []) if z.direction]
         self._staff_names = {z.name for z in self.by_type.get("staff", [])}
+        self._wait_names = [z.name for z in zones if z.wait]
+        self._last_frame_ts: float | None = None
+        self._waiting: dict[str, int] = {}  # zona de espera -> clientes esperando en el último cuadro
         self._visits: dict[int, _Visit] = {}
         self._pump: dict[str, list[_PumpWait]] = {}  # zona surtidor -> esperas abiertas
         self._buckets: dict[datetime, dict] = {}
@@ -153,6 +245,8 @@ class MetricsCollector:
         w, h = frame_size
         if self.since is None:
             self.since = wall
+        frame_dt = 0.0 if self._last_frame_ts is None else min(max(ts - self._last_frame_ts, 0.0), FRAME_GAP_MAX)
+        self._last_frame_ts = ts
         b = self._bucket(wall)
         b["frames"] += 1
         if self.doors:
@@ -161,6 +255,10 @@ class MetricsCollector:
         visible_people = visible_vehicles = 0
         people_in_pump: dict[str, bool] = {}
         now_counts: dict[str, int] = {}
+        in_post: dict[str, int] = {}  # zona de personal -> personas adentro ahora (sean o no empleados)
+        waiting: dict[str, int] = {}  # zona de espera -> clientes esperando ahora
+        waiting_visits: list[tuple[_Visit, set[str]]] = []
+        staff_now = 0
         for t in tracks:
             v = self._visits.get(t.id)
             if v is None:
@@ -202,6 +300,17 @@ class MetricsCollector:
                     now_counts[name] = now_counts.get(name, 0) + 1
                     if any(z.name == name and z.type == "pump" for z in self.zones):
                         people_in_pump[name] = True
+                posts_now = self._staff_names & now_in
+                for name in posts_now:
+                    in_post[name] = in_post.get(name, 0) + 1
+                if posts_now or self.is_staff(v):
+                    staff_now += 1
+                elif self._wait_names:
+                    here = {n for n in self._wait_names if n in now_in}
+                    for name in here:
+                        waiting[name] = waiting.get(name, 0) + 1
+                    if here:
+                        waiting_visits.append((v, here))
         # espera hasta el pistero: la primera persona que pisa el surtidor atiende a los vehículos que esperan
         for name, waits in self._pump.items():
             if people_in_pump.get(name):
@@ -211,6 +320,35 @@ class MetricsCollector:
                         b["pump_wait_s"] += ts - pw.since_ts
                         b["pump_wait_n"] += 1
         self._now = now_counts
+        self._waiting = waiting
+        # la fila de cada zona de espera y si había alguien del personal para atenderla
+        post_manned = any(in_post.values())
+        for name in self._wait_names:
+            wz = b["waits"].setdefault(name, new_wait())
+            n = waiting.get(name, 0)
+            wz["obs_s"] += frame_dt
+            wz["queue_s"] += frame_dt * n
+            wz["queue_max"] = max(wz["queue_max"], n)
+            if self._staff_names:
+                wz["staffed"] = 1
+            if n:
+                wz["busy_s"] += frame_dt
+                if self._staff_names and not post_manned:
+                    wz["unattended_s"] += frame_dt
+        if post_manned:
+            for v, here in waiting_visits:
+                v.attended |= here
+        # cada puesto (zona de personal): cuánto tiempo hubo alguien y cuántos; y los empleados a la vista
+        for name in self._staff_names:
+            p = b["posts"].setdefault(name, new_post())
+            c = in_post.get(name, 0)
+            p["obs_s"] += frame_dt
+            p["people_s"] += frame_dt * c
+            p["max"] = max(p["max"], c)
+            if c:
+                p["covered_s"] += frame_dt
+        b["staff_s"] += frame_dt * staff_now
+        b["staff_max"] = max(b["staff_max"], staff_now)
         b["people_max"] = max(b["people_max"], visible_people)
         b["vehicles_max"] = max(b["vehicles_max"], visible_vehicles)
         # visitas terminadas: el tracker dejó de informar el track
@@ -245,6 +383,8 @@ class MetricsCollector:
             b["staff_entries"] += sum(1 for c in v.crossings if c > 0)
             for name in self._staff_names & set(v.zone_dwell):
                 self._staff_done[name] = self._staff_done.get(name, 0) + 1
+            for name, secs in v.zone_dwell.items():  # dónde pasan el tiempo los empleados
+                b["staff_dwell"][name] = b["staff_dwell"].get(name, 0.0) + secs
             self._dirty.add(bucket_start(v.wall_first))
             return
         b["people"] += 1
@@ -263,6 +403,19 @@ class MetricsCollector:
             z = b["zones"].setdefault(name, {"type": zone_type.get(name), "visits": 0, "dwell_s": 0.0})
             z["visits"] += 1
             z["dwell_s"] += secs
+        for name in self._wait_names:  # cuánto esperó en cada zona de espera
+            secs = v.zone_dwell.get(name, 0.0)
+            if secs < WAIT_MIN_SECONDS:
+                continue
+            wz = b["waits"].setdefault(name, new_wait())
+            wz["n"] += 1
+            wz["sum_s"] += secs
+            wz["max_s"] = max(wz["max_s"], secs)
+            wz["hist"][wait_bin(secs)] += 1
+            if self._staff_names:
+                wz["staffed"] = 1
+                if name not in v.attended:
+                    wz["left_alone"] += 1
         self._dirty.add(bucket_start(v.wall_first))
 
     def live_counts(self) -> dict:
@@ -304,6 +457,24 @@ class MetricsCollector:
                         zones[name]["entries" if c > 0 else "exits"] += 1
             elif entrance_plain & set(v.zone_dwell):
                 out["entries"] += 1  # puerta sin sentido: cuenta a todos los que la pisaron (como `_finish`)
+        # zonas de espera: las esperas terminadas más las de quien sigue ahí (con lo que lleva), y la fila ahora
+        for name in self._wait_names:
+            agg = new_wait()
+            for b in self._buckets.values():
+                agg = _merge_stats(agg, (b.get("waits") or {}).get(name) or {}, new_wait())
+            n, total, longest = agg["n"], agg["sum_s"], agg["max_s"]
+            for v in self._visits.values():
+                secs = v.zone_dwell.get(name, 0.0)
+                if v.label != VEHICLE_LABEL and secs >= WAIT_MIN_SECONDS and not self.is_staff(v):
+                    n, total, longest = n + 1, total + secs, max(longest, secs)
+            zones[name]["wait"] = {"n": n, "avg_s": total / n if n else None, "max_s": longest if n else None,
+                                   "now": self._waiting.get(name, 0)}
+        # puestos (zonas de personal): qué parte del tiempo hubo alguien
+        for name in self._staff_names:
+            agg = new_post()
+            for b in self._buckets.values():
+                agg = _merge_stats(agg, (b.get("posts") or {}).get(name) or {}, new_post())
+            zones[name]["covered_pct"] = post_stats(agg)["covered_pct"]
         return out
 
     def is_staff(self, v: _Visit) -> bool:
