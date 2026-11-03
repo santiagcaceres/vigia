@@ -30,7 +30,7 @@ import numpy as np
 from core.imagen import pixel_aspect, square_pixels
 
 from .cameras import build_camera
-from .worker import MediaClock
+from .worker import MediaClock, bursty
 
 log = logging.getLogger("vigia.vista")
 SHOW_INTERVAL = 0.1  # la ventana no necesita más de 10 cuadros por segundo
@@ -150,6 +150,7 @@ class ViewWorker:
                 continue
             self.state, self.error, backoff = "en_linea", None, 2.0
             self._sar = pixel_aspect(cap)  # «1080p lite»: con píxeles cuadrados, como en las máquinas
+            self._bursty = bursty(getattr(self.hik, "brand", ""), url)
             try:
                 self._read(cap)
             finally:
@@ -162,7 +163,7 @@ class ViewWorker:
     def _read(self, cap: cv2.VideoCapture) -> None:
         # Hik-Connect manda el video en ráfagas: los cuadros se eligen con el reloj del video (como en las máquinas y
         # en «Configurar…»), no con el de la PC; si no, de cada ráfaga quedaba uno solo (0,5 cuadros por segundo)
-        clock = MediaClock(cap) if getattr(self.hik, "brand", "") == "hikconnect" else None
+        clock = MediaClock(cap) if getattr(self, "_bursty", getattr(self.hik, "brand", "") == "hikconnect") else None
         self.pacer.restart(PLAY_DELAY if clock else 0.0)
         offset = max(self._last_ts + 0.2, time.monotonic() - self._t0)
         fails = 0

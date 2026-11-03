@@ -22,7 +22,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from core.gestos import GESTURE_TYPES, GestureConfig
-from core.metrics import empty_bucket, merge_bucket, restrict_bucket
+from core.metrics import empty_bucket, merge_bucket, post_stats, restrict_bucket, wait_stats
 from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
@@ -136,6 +136,10 @@ class Settings:
 
 
 # ---------------------------------------------------------------- esquemas
+# planes que contrata un cliente (y que cada cámara elige medir): los mismos que PLAN_NAMES, en ese orden
+PlanName = Literal["hurto", "comercio", "estacion", "empleados"]
+
+
 class LoginIn(BaseModel):
     username: str
     password: str
@@ -148,7 +152,7 @@ class ClientIn(BaseModel):
     contact_whatsapp: str | None = Field(None, max_length=32)
     contact_email: str | None = Field(None, max_length=200)
     webhook_url: str | None = None
-    plans: list[Literal["hurto", "comercio", "estacion"]] = ["hurto"]
+    plans: list[PlanName] = ["hurto"]
     # Acceso a la web del cliente (opcional). Al crear: usuario y clave. Al editar: cambia el usuario
     # existente (la clave solo si viene) o lo crea si el cliente no tenía.
     web_username: str | None = Field(None, max_length=80)
@@ -186,8 +190,9 @@ class HikConnectKeyIn(BaseModel):
     hc_api_url: str | None = Field(None, max_length=255)
 
 
-PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
-PLAN_ORDER = tuple(PLAN_NAMES)  # hurto, comercio, estacion: así se devuelven siempre
+PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
+              "empleados": "Seguimiento de empleados"}
+PLAN_ORDER = tuple(PLAN_NAMES)  # hurto, comercio, estacion, empleados: así se devuelven siempre
 
 
 def file_safe(name: str, default: str) -> str:
@@ -247,6 +252,46 @@ def clean_camera_plans(plans: list[str] | None, client, camera: str | None = Non
                                      "contratado")
     pick = ordered_plans(plans)
     return None if pick == own else pick
+
+
+# Excel de métricas: tiempo de espera (plan «comercio») y puestos del personal (plan «empleados»), al final de cada fila
+WAIT_CSV_HEAD = ("Esperas", "Espera promedio (min)", "Espera máxima (min)", "Esperaron más de 5 min", "Fila promedio",
+                 "Esperando sin nadie en el puesto (min)")
+STAFF_CSV_HEAD = ("Puesto cubierto (%)", "Puesto sin nadie (min)", "Empleados a la vez (máx.)")
+
+
+def wait_csv_cells(b: dict, num) -> list[str]:
+    """Las columnas de espera de una fila del Excel (una cámara en un día u hora), juntando todas sus zonas de espera:
+    esperas y segundos sumados (→ promedio), el máximo el mayor, la fila promedio por zona (personas-segundo sobre
+    segundos mirados) y, si la cámara tiene zona de personal, el mayor rato con clientes esperando y nadie en el puesto
+    (el puesto es el mismo para todas las zonas de la cámara: sumarlas contaría dos veces el mismo minuto). Vacío si
+    la cámara no tiene zonas de espera."""
+    zones = [wait_stats(w) for w in (b.get("waits") or {}).values()]
+    zones = [z for z in zones if z["n"] or z["obs_s"]]
+    if not zones:
+        return [""] * len(WAIT_CSV_HEAD)
+    n = sum(z["n"] for z in zones)
+    total = sum(z["avg_s"] * z["n"] for z in zones if z["n"])
+    longest = max((z["max_s"] for z in zones if z["n"]), default=None)
+    obs = sum(z["obs_s"] for z in zones)
+    queue = sum((z["queue_avg"] or 0.0) * z["obs_s"] for z in zones)
+    alone = [z["unattended_s"] for z in zones if z["staffed"]]
+    return [str(n), num(total / n / 60) if n else "", num(longest / 60) if longest is not None else "",
+            str(sum(z["over"][300] for z in zones)), num(queue / obs) if obs else "",
+            num(max(alone) / 60) if alone else ""]
+
+
+def staff_csv_cells(b: dict, num) -> list[str]:
+    """Las columnas del personal de una fila del Excel: qué parte del tiempo hubo alguien en los puestos (zonas de
+    personal; con varias, segundos cubiertos sobre segundos mirados de todas), el tiempo sin nadie y el máximo de
+    empleados a la vez. Vacío si la cámara no tiene zona de personal ni vio empleados."""
+    posts = [post_stats(p) for p in (b.get("posts") or {}).values()]
+    obs = sum(p["obs_s"] for p in posts)
+    if not obs and not b.get("staff_max"):
+        return [""] * len(STAFF_CSV_HEAD)
+    covered = sum(p["covered_s"] for p in posts)
+    return [num(100 * covered / obs, 0) if obs else "", num(sum(p["uncovered_s"] for p in posts) / 60) if obs else "",
+            str(b.get("staff_max", 0))]
 
 
 class MetricBucketIn(BaseModel):
@@ -313,7 +358,7 @@ class CamerasDeleteIn(BaseModel):
 class CamerasPlansIn(BaseModel):
     """Qué mide cada cámara de lo que contrató su cliente. None = todo lo del cliente."""
     camera_ids: list[int] = Field(min_length=1, max_length=500)
-    plans: list[Literal["hurto", "comercio", "estacion"]] | None
+    plans: list[PlanName] | None
 
 
 class EnrollIn(BaseModel):
@@ -459,7 +504,7 @@ class CameraIn(BaseModel):
     keep_source_url: bool = False
     # qué mide de lo que contrató el cliente. None = todo lo del cliente. Al editar solo se toca si viene en el pedido
     # (`null` = volver a «como el cliente»)
-    plans: list[Literal["hurto", "comercio", "estacion"]] | None = None
+    plans: list[PlanName] | None = None
 
 
 class StreamUrlIn(BaseModel):
@@ -475,6 +520,9 @@ class ZoneIn(BaseModel):
     polygon: list[tuple[float, float]] = Field(min_length=3)
     # solo entrance: hacia dónde se mueve en la imagen quien ENTRA (cuenta ingresos y egresos por separado)
     direction: Literal["abajo", "arriba", "derecha", "izquierda"] | None = None
+    # medir el tiempo de espera de los clientes acá (caja, mostrador, fila): métricas, no da alertas. No va en zonas
+    # de personal ni de surtidor (core.rules.parse_zones lo rechaza). None/False = no se mide
+    wait: bool | None = None
 
 
 class AnalysisIn(BaseModel):
@@ -1787,7 +1835,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_analysis(cam_id: int, body: AnalysisIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         # una app vieja todavía manda el tiempo de merodeo: se descarta
-        cfg = {"zones": [z.model_dump(exclude_none=True) for z in body.zones], "rules": clean_rules(body.rules)}
+        # «wait» (medir la espera) se guarda solo si está prendido: una zona sin espera queda como siempre
+        cfg = {"zones": [{k: v for k, v in z.model_dump(exclude_none=True).items() if k != "wait" or v}
+                         for z in body.zones], "rules": clean_rules(body.rules)}
         try:
             parse_config(cfg)
             gestures = clean_gestures(body.gestures)
@@ -3151,19 +3201,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         head = ["Fecha"] + (["Hora"] if agrupar == "hora" else []) + [
             "Cliente", "Cámara", "Tiempo promedio en escena (min)", "Máximo a la vez", "Ingresos",
             "Egresos", "Empleados", "Vehículos", "Vehículos en surtidor", "Espera promedio en surtidor (min)", "Surtidor sin atender",
-            "Visitas a la tienda", "Zonas (visitas · minutos)"]
+            "Visitas a la tienda", "Zonas (visitas · minutos)", *WAIT_CSV_HEAD, *STAFF_CSV_HEAD]
         lines = [";".join(head)]
         for (when, cl_id, cam_id), b in sorted(groups.items(), key=lambda kv: (kv[0][0], cls.get(kv[0][1], ""),
                                                                                   cams.get(kv[0][2], ""))):
             zones = " | ".join(f"{name}: {z.get('visits', 0)} · {num(z.get('dwell_s', 0) / 60)}"
                                for name, z in sorted((b.get("zones") or {}).items()))
+            cl_plans = own.get(cl_id, [])
             cells = [when.strftime("%d/%m/%Y")] + ([when.strftime("%H:00")] if agrupar == "hora" else []) + [
                 cls.get(cl_id, str(cl_id)), cams.get(cam_id, f"Cámara {cam_id}"),
                 num(b["people_dwell_s"] / b["people"] / 60) if b["people"] else "", str(b["people_max"]),
                 str(b["entries"]), str(b["exits"]) if b.get("door") else "", str(b["staff"]), str(b["vehicles"]),
                 str(b["pump_vehicles"]),
                 num(b["pump_wait_s"] / b["pump_wait_n"] / 60) if b["pump_wait_n"] else "", str(b["pump_unattended"]),
-                str(b["shop_visits"]), zones]
+                str(b["shop_visits"]), zones,
+                # la espera es de «comercio» y los puestos de «empleados»: vacío si el cliente no lo tiene (como en la
+                # app, la web y el PDF) o si la cámara no tiene zonas para eso
+                *(wait_csv_cells(b, num) if "comercio" in cl_plans else [""] * len(WAIT_CSV_HEAD)),
+                *(staff_csv_cells(b, num) if "empleados" in cl_plans else [""] * len(STAFF_CSV_HEAD))]
             lines.append(";".join(c.replace(";", ",") for c in cells))
         name = file_safe(cls.get(client_id, "cliente"), "cliente") if client_id else "todos"
         fname = f"metricas_{name}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.csv"

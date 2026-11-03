@@ -15,9 +15,19 @@ const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal"
 const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo" };
 const ZONE_NAMES = { shelf: "Góndola", aisle: "Pasillo", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)" };
 const ZONE_COLORS = { shelf: "#ffc800", aisle: "#78ffff", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8", staff: "#8a8a8a" };
-const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio" };
+// ayuda de cada tipo en el editor de zonas (la misma de la app, agent/oficina.py ZONE_HELP y WAIT_HELP)
+const ZONE_HELP = { shelf: "Góndola: el piso frente al estante, donde la gente se para a elegir (no el estante).",
+  aisle: "Pasillo: por donde camina la gente (solo para saber a dónde va; no da alertas).",
+  checkout: "Caja: el piso donde el cliente paga, de su lado del mostrador.", exit: "Salida: el piso junto a la puerta, del lado de adentro.",
+  restricted: "Restringida: donde un cliente no debería entrar (da alerta).", entrance: "Entrada: la puerta (el sentido de los que entran se marca en la app).",
+  pump: "Surtidor: el lugar donde para el vehículo a cargar.", shop: "Tienda: el piso de la tienda de la estación.",
+  staff: "Personal: detrás del mostrador o depósito: quien lo pisa se toma como empleado." };
+const WAIT_HELP = "Espera: marcá el piso donde la gente hace la fila o espera. Si la zona incluye donde se atiende, el tiempo incluye la atención.";
+const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio", empleados: "Seguimiento de empleados" };
 const PLAN_KEYS = Object.keys(PLAN_NAMES);  // el orden de siempre (el mismo del servidor)
-const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación" };
+const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación", empleados: "Empleados" };
+// la casilla «Medir el tiempo de espera acá» no va en estas zonas (core.rules.NO_WAIT_TYPES: el servidor las rechaza)
+const NO_WAIT_TYPES = ["staff", "pump"];
 const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
 // marcas que la web no ofrece al crear pero que una cámara cargada en la app puede tener (al editarla se conservan)
 const OTHER_BRANDS = { hikconnect: "Hikvision por Hik-Connect", ip: "Por IP y puertos (marca detectada sola)" };
@@ -48,6 +58,12 @@ function cameraMeasures(cam, own = clientPlans(cam.client_id)) {
   const pick = Array.isArray(cam.plans) ? own.filter((p) => cam.plans.includes(p)) : [];
   return pick.length ? pick : own;
 }
+
+/** La cámara tiene zona «Personal (empleados)»: sin ella el plan empleados no mide puestos (a los empleados se los
+ * reconoce solo por esa zona o porque aparecen con el local cerrado). */
+const hasStaffZone = (cam) => (cam.zones || []).some((z) => z.type === "staff");
+const NO_POSTS_TEXT = "Para medir los puestos, marcá la zona «Personal (empleados)» en las cámaras (detrás del mostrador, la caja por dentro): a los empleados se los reconoce por esa zona o porque llegan con el local cerrado.";
+const STAFF_ZONE_HINT = "Para medir empleados, marcá la zona «Personal (empleados)» en «Zonas y reglas» (detrás del mostrador, la caja por dentro): sin esa zona no se miden los puestos y solo se reconoce como empleado a quien aparece con el local cerrado.";
 
 async function api(method, path, body, opts = {}) {
   const init = { method, headers: {}, credentials: "same-origin" };
@@ -428,9 +444,13 @@ function cameraForm(box, agents, c = {}, opts = {}) {
     const own = clientPlans(+clientSel.value) || [], on = $$("input[name=plan]:checked", planBox).map((x) => x.value);
     const note = $("#cf-plans-note", planBox);
     const alarms = ["alarmas", "alarmas_equipo"].includes(($("#cf [name=mode]", box) || {}).value);
-    if (note) note.innerHTML = !on.length ? `<span class="error">Elegí al menos una cosa para medir.</span>`
+    if (!note) return;
+    note.innerHTML = !on.length ? `<span class="error">Elegí al menos una cosa para medir.</span>`
       : own.includes("hurto") && !on.includes("hurto") ? "Sin «Detección de hurtos» esta cámara no da alertas ni mira gestos: solo mide." +
         (alarms ? " <b>Ojo:</b> en modo alarmas solo se buscan hurtos y no se mide nada: para medir, elegí el modo «En vivo»." : "") : "";
+    // a los empleados se los reconoce por la zona «Personal (empleados)» (o porque llegan con el local cerrado)
+    if (on.includes("empleados") && !hasStaffZone(+clientSel.value === c.client_id ? c : {}))
+      note.innerHTML += (note.innerHTML ? " " : "") + `<span class="warn-text">${STAFF_ZONE_HINT}</span>`;
   };
   $("#cf [name=mode]", box).addEventListener("change", () => syncPlanNote());
   const renderPlans = () => {
@@ -567,8 +587,8 @@ async function cameraView(v, id) {
           <dt>Canal</dt><dd>${cam.channel}${cam.mode === "alarmas" ? ` · serie ${esc(cam.hpp_serial || "—")}` : ""}</dd>
           <dt>Usuario</dt><dd class="mono">${esc(cam.username || "—")}</dd>
           <dt>PC central</dt><dd>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</dd>` : `<dt>Modo</dt><dd>${esc(MODE_NAMES[cam.mode] || cam.mode)}</dd>`}
-          ${measures ? `<dt>Mide</dt><dd>${measures.length ? measures.map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ") : `<span class="muted">nada: el cliente ya no tiene lo que se le eligió (elegilo en «Editar»)</span>`}${isStaff() && measures.length ? ` <span class="muted" style="font-size:12px">${Array.isArray(cam.plans) ? "elegido para esta cámara" : "todo lo del cliente"}</span>` : ""}</dd>` : ""}
-          <dt>Zonas</dt><dd>${(cam.zones || []).length ? (cam.zones || []).map((z) => `${esc(z.name)} (${ZONE_NAMES[z.type] || z.type})`).join(", ") : `<span class="muted">ninguna: sin zonas no se disparan reglas</span>`}</dd>
+          ${measures ? `<dt>Mide</dt><dd>${measures.length ? measures.map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ") : `<span class="muted">nada: el cliente ya no tiene lo que se le eligió (elegilo en «Editar»)</span>`}${isStaff() && measures.length ? ` <span class="muted" style="font-size:12px">${Array.isArray(cam.plans) ? "elegido para esta cámara" : "todo lo del cliente"}</span>` : ""}${isStaff() && measures.includes("empleados") && !hasStaffZone(cam) ? `<div class="warn-text note">${STAFF_ZONE_HINT}</div>` : ""}</dd>` : ""}
+          <dt>Zonas</dt><dd>${(cam.zones || []).length ? (cam.zones || []).map((z) => `${esc(z.name)} (${ZONE_NAMES[z.type] || z.type}${z.wait ? " · espera" : ""})`).join(", ") : `<span class="muted">ninguna: sin zonas no se disparan reglas</span>`}</dd>
           ${cam.status && cam.status.error ? `<dt>Error</dt><dd class="error">${esc(cam.status.error)}</dd>` : ""}
         </dl></div>
     </div>`;
@@ -737,8 +757,10 @@ async function zonesView(v, id) {
           <label>Nombre<input id="z-name" placeholder="gondola_bebidas"></label>
           <label>Tipo<select id="z-type">${options(Object.entries(ZONE_NAMES), "shelf")}</select></label>
         </div>
+        <label class="inline" style="margin-top:8px"><input type="checkbox" id="z-wait"> Medir el tiempo de espera acá</label>
+        <p class="muted note" id="z-help"></p>
         <div class="row" style="margin:8px 0 14px"><button id="z-close" class="small">Cerrar zona</button><button id="z-undo" class="small">Deshacer punto</button><span class="muted" id="z-draft"></span></div>
-        <h3>Zonas</h3><div id="z-list"></div>
+        <h3>Zonas</h3><div id="z-list"></div><div id="z-warn"></div>
         <h3 style="margin-top:16px">Reglas</h3>
         <div class="form" style="grid-template-columns:1fr 1fr">
           <label>Seg. en góndola para "tomó algo"<input id="r-shelf" type="number" step="0.5" min="0" value="${rules.shelf_dwell_seconds ?? 3}"></label>
@@ -748,7 +770,7 @@ async function zonesView(v, id) {
           <label>Cierra<input id="r-close" type="time" value="${rules.opening_hours?.end || ""}"></label>
         </div>
         <div style="margin-top:8px">${RULE_KEYS.map((k) => `<label class="inline" style="margin-right:12px"><input type="checkbox" class="r-en" value="${k}" ${enabled.has(k) ? "checked" : ""}> ${TYPE_NAMES[k]}</label>`).join("")}</div>
-        ${noTheft ? `<p class="muted note"><b>${noTheftWhy}: las reglas no dan alertas.</b> Las zonas sirven igual para las métricas (entrada, a dónde van, surtidor).</p>` : ""}
+        ${noTheft ? `<p class="muted note"><b>${noTheftWhy}: las reglas no dan alertas.</b> Las zonas sirven igual para las métricas (entrada, a dónde van, espera, personal, surtidor).</p>` : ""}
         <h3 style="margin-top:16px">Gestos</h3>
         <div class="gestures">${GESTURE_KEYS.map((k) => `<label class="inline"><input type="checkbox" class="g-en" value="${k}" ${gestOn.has(k) ? "checked" : ""}> ${TYPE_NAMES[k]}</label>`).join("")}</div>
         <p class="muted note">Avisan un <b>posible ocultamiento</b> (tomar algo y llevar la mano al bolsillo, dentro de la ropa o a la bolsa): es un indicio para revisar el clip, nunca una prueba. Hace falta ver a la persona de la cintura para arriba; mirar la postura usa un 30 % más de procesador.${noTheft ? ` <b>${noTheftWhy}: no se usan.</b>` : cam.profile === "metricas" ? " <b>Esta cámara es «Solo métricas»: no se usan.</b>" : ""}</p>
@@ -780,7 +802,7 @@ async function zonesView(v, id) {
       const col = ZONE_COLORS[z.type] || "#fff";
       ctx.beginPath(); z.polygon.forEach(([x, y], k) => (k ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H))); ctx.closePath();
       ctx.fillStyle = col + (i === selected ? "66" : "33"); ctx.fill(); ctx.lineWidth = lw * (i === selected ? 2 : 1); ctx.strokeStyle = col; ctx.stroke();
-      const [lx, ly] = z.polygon[0]; ctx.font = `${Math.round(W / 50)}px system-ui`; ctx.fillStyle = col; ctx.fillText(z.name, lx * W + 6, ly * H + W / 45);
+      const [lx, ly] = z.polygon[0]; ctx.font = `${Math.round(W / 50)}px system-ui`; ctx.fillStyle = col; ctx.fillText(z.name + (z.wait ? " · espera" : ""), lx * W + 6, ly * H + W / 45);
     });
     if (draft.length) {
       const col = ZONE_COLORS[$("#z-type").value];
@@ -789,24 +811,47 @@ async function zonesView(v, id) {
       draft.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x * W, y * H, lw * 2.5, 0, 7); ctx.fillStyle = col; ctx.fill(); });
     }
     $("#z-draft").textContent = draft.length ? `${draft.length} puntos` : "";
-    $("#z-list").innerHTML = zones.map((z, i) => `<div class="zone-item" data-i="${i}" style="${i === selected ? "border-color:var(--muted)" : ""}">
-      <span class="swatch" style="background:${ZONE_COLORS[z.type]}"></span><b>${esc(z.name)}</b><span class="muted">${ZONE_NAMES[z.type]}</span><span class="spacer"></span>
-      <button class="small ghost" data-del="${i}">Borrar</button></div>`).join("") || `<p class="muted">Sin zonas. Para "salida sin pago" hacen falta al menos una góndola, una caja y una salida.</p>`;
+    $("#z-list").innerHTML = zones.map((z, i) => `<div class="zone-item pick${i === selected ? " sel" : ""}" data-i="${i}"><div class="zone-row">
+      <span class="swatch" style="background:${ZONE_COLORS[z.type]}"></span><b>${esc(z.name)}</b><span class="muted">${ZONE_NAMES[z.type] || esc(z.type)}${z.wait ? " · espera" : ""}${z.direction ? ` · entran hacia ${esc(z.direction)}` : ""}</span><span class="spacer"></span>
+      <button class="small ghost" data-del="${i}">Borrar</button></div>
+      ${i === selected ? `<div class="zone-sel">${NO_WAIT_TYPES.includes(z.type)
+        ? `<span class="muted">El tiempo de espera se mide en zonas de clientes (no en «Personal» ni en «Surtidor»).</span>`
+        : `<label class="inline"><input type="checkbox" data-wait="${i}" ${z.wait ? "checked" : ""}> Medir el tiempo de espera acá</label>`}</div>` : ""}</div>`).join("") || `<p class="muted">Sin zonas. Para "salida sin pago" hacen falta al menos una góndola, una caja y una salida.</p>`;
+    // avisos de las métricas: empleados sin zona de personal; espera en una cámara que no mide el comercio
+    const warns = [];
+    if (camPlans && camPlans.includes("empleados") && !zones.some((z) => z.type === "staff"))
+      warns.push("Esta cámara mide «Seguimiento de empleados»: marcá la zona «Personal (empleados)» (detrás del mostrador, la caja por dentro). Sin esa zona no se miden los puestos y solo se reconoce como empleado a quien aparece con el local cerrado.");
+    if (camPlans && !camPlans.includes("comercio") && zones.some((z) => z.wait))
+      warns.push("El tiempo de espera va con «Métricas de comercio» y esta cámara no lo mide: no se va a ver (se elige en «Editar» de la cámara).");
+    $("#z-warn").innerHTML = warns.map((w) => `<p class="warn-text note">${esc(w)}</p>`).join("");
   }
+  // la casilla de la zona nueva: no va en Personal ni en Surtidor; la ayuda dice qué marcar
+  const syncNew = () => {
+    const type = $("#z-type").value, box = $("#z-wait"), off = NO_WAIT_TYPES.includes(type);
+    box.disabled = off; if (off) box.checked = false;
+    $("#z-help").textContent = [ZONE_HELP[type], box.checked ? WAIT_HELP : off ? "El tiempo de espera se mide en zonas de clientes (caja, mostrador, fila)." : ""].filter(Boolean).join(" ");
+  };
   const pt = (e) => { const r = cv.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))].map((x) => Math.round(x * 1000) / 1000); };
   const close = () => {
     if (draft.length < 3) return toast("Una zona necesita al menos 3 puntos", true);
     const name = ($("#z-name").value || "").trim() || `${$("#z-type").value}_${zones.length + 1}`;
     if (zones.some((z) => z.name === name)) return toast("Ya hay una zona con ese nombre", true);
-    zones.push({ name, type: $("#z-type").value, polygon: draft }); draft = []; $("#z-name").value = ""; selected = zones.length - 1; draw();
+    const zone = { name, type: $("#z-type").value, polygon: draft };
+    if ($("#z-wait").checked && !NO_WAIT_TYPES.includes(zone.type)) zone.wait = true;
+    zones.push(zone); draft = []; $("#z-name").value = ""; $("#z-wait").checked = false; selected = zones.length - 1; syncNew(); draw();
   };
   cv.addEventListener("click", (e) => { draft.push(pt(e)); draw(); });
   cv.addEventListener("dblclick", (e) => { e.preventDefault(); draft.pop(); close(); });
   $("#z-close").addEventListener("click", close);
   $("#z-undo").addEventListener("click", () => { draft.pop(); draw(); });
-  $("#z-type").addEventListener("change", draw);
+  $("#z-type").addEventListener("change", () => { syncNew(); draw(); });
+  $("#z-wait").addEventListener("change", syncNew);
+  syncNew();
   $("#z-list").addEventListener("click", (e) => {
     const d = e.target.closest("[data-del]"); if (d) { zones.splice(+d.dataset.del, 1); selected = -1; return draw(); }
+    const w = e.target.closest("[data-wait]");  // (se maneja en el clic: draw() rehace la lista)
+    if (w) { const z = zones[+w.dataset.wait]; if (w.checked) z.wait = true; else delete z.wait; return draw(); }
+    if (e.target.closest(".zone-sel")) return;
     const it = e.target.closest("[data-i]"); if (it) { selected = +it.dataset.i; draw(); }
   });
   onKeys((e) => { if (e.key === "Escape") { draft = []; draw(); } if (e.key === "Enter") close(); });
@@ -1143,19 +1188,81 @@ async function summaryView(v) {
 // ------------------------------------------------------------------ métricas por cliente (planes comercio / estación)
 const fmtDur = (s) => { s = Math.round(s || 0); return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min` : s >= 90 ? `${Math.round(s / 60)} min` : `${s} s`; };
 const avg = (sum, n) => (n ? sum / n : 0);
+// Redondeo como Python (round y format redondean al par en los empates exactos: 0,5 → 0, 2,5 → 2), así la web
+// escribe los mismos números que la app y el PDF.
+const roundEven = (x) => { const r = Math.round(x); return r - x === 0.5 && r % 2 !== 0 ? r - 1 : r; };
+function toFixedEven(x, digits) {
+  const plain = x.toFixed(digits), long = Math.abs(x).toFixed(Math.min(100, digits + 30)), cut = long.length - 30;
+  if (/^50*$/.test(long.slice(cut))) {  // empate exacto: si el último dígito ya es par, se trunca
+    const low = long.slice(0, cut).replace(/\.$/, "");
+    if (+low.slice(-1) % 2 === 0) return (x < 0 ? "-" : "") + low;
+  }
+  return plain;
+}
+/** Tiempos de espera y de los puestos: «1:20» (minutos:segundos) o, de una hora para arriba, «1 h 12 min» (como la app
+ * y el PDF). Sin dato, «—». */
+const fmtClock = (s) => {
+  if (s == null) return "—";
+  s = Math.max(0, roundEven(s));
+  if (s >= 3600) { const mm = roundEven(s / 60); return `${Math.floor(mm / 60)} h ${mm % 60} min`; }
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+/** Un rato largo dicho en una frase: «12 min», «menos de 1 min» o «1 h 12 min». */
+const fmtMinutes = (s) => (!s ? "0 min" : s >= 3600 ? fmtClock(s) : s < 30 ? "menos de 1 min" : `${roundEven(s / 60)} min`);
+/** Número con coma decimal («1,3»). */
+const fmtDec = (v, digits = 1) => (v == null ? "—" : toFixedEven(Number(v), digits).replace(".", ","));
+
+// ---- tiempo de espera (plan «comercio») y puestos del personal (plan «empleados»). Lo mismo que core/metrics.py
+// (wait_stats / post_stats, que usan la app y el PDF): si cambia allá, cambiar acá.
+const WAIT_MIN_SECONDS = 5, WAIT_EDGES = [60, 180, 300, 600];
+const num0 = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+/** Resumen de la espera en una zona: esperas, promedio y máximo (segundos), cuántos esperaron 1, 3, 5 y 10 min o más
+ * (`over`), la fila promedio y máxima y, si la cámara tiene zona de personal, el rato con clientes esperando y nadie en
+ * el puesto y cuántos esperaron solos (null sin zona de personal). */
+function waitStats(w) {
+  w = w || {};
+  const hist = [0, 1, 2, 3, 4].map((i) => num0((w.hist || [])[i]));
+  const n = num0(w.n), obs = num0(w.obs_s), staffed = Math.max(0, num0(w.staffed)) > 0;
+  const over = {};
+  WAIT_EDGES.forEach((edge, i) => { over[edge] = hist.slice(i + 1).reduce((a, b) => a + b, 0); });
+  return { n, avg_s: n ? num0(w.sum_s) / n : null, max_s: n ? Math.max(0, num0(w.max_s)) : null, over,
+    queue_avg: obs ? num0(w.queue_s) / obs : null, queue_max: Math.max(0, num0(w.queue_max)), busy_s: num0(w.busy_s),
+    obs_s: obs, staffed, unattended_s: staffed ? num0(w.unattended_s) : null, left_alone: staffed ? num0(w.left_alone) : null };
+}
+/** Resumen de un puesto (zona de personal): qué parte del tiempo mirado hubo alguien (0-100), los segundos sin nadie,
+ * el promedio y el máximo de gente en el puesto. */
+function postStats(p) {
+  p = p || {};
+  const obs = num0(p.obs_s), covered = num0(p.covered_s);
+  return { obs_s: obs, covered_s: covered, uncovered_s: Math.max(0, obs - covered), covered_pct: obs ? 100 * covered / obs : null,
+    avg_people: obs ? num0(p.people_s) / obs : null, max: Math.max(0, num0(p.max)) };
+}
+const byName = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+/** Las zonas de espera con algo medido de un cubo (total, día, hora o cámara), la de más esperas primero. */
+const waitZones = (b) => Object.entries((b && b.waits) || {}).map(([name, w]) => [name, waitStats(w)])
+  .filter(([, w]) => w.n || w.obs_s).sort((a, b) => b[1].n - a[1].n || byName(a, b));
+/** Todas las zonas de espera juntas (como el PDF): esperas y segundos sumados (→ promedio), el máximo el mayor. */
+function waitTotal(zones) {
+  const withN = zones.filter(([, w]) => w.n), n = withN.reduce((a, [, w]) => a + w.n, 0);
+  return { n, avg_s: n ? withN.reduce((a, [, w]) => a + w.avg_s * w.n, 0) / n : null,
+    max_s: withN.length ? Math.max(...withN.map(([, w]) => w.max_s)) : null,
+    over5: zones.reduce((a, [, w]) => a + w.over[300], 0), queue_max: Math.max(0, ...zones.map(([, w]) => w.queue_max)) };
+}
+/** Los puestos (zonas de personal) mirados de un cubo, por nombre. */
+const postZones = (b) => Object.entries((b && b.posts) || {}).map(([name, p]) => [name, postStats(p)]).filter(([, p]) => p.obs_s).sort(byName);
 
 const fmtDay = (iso) => { const [y, m, d] = String(iso).split("-"); return d ? `${d}/${m}` : iso; };
 const fmtFull = (iso) => { const [y, m, d] = String(iso).split("-"); return d ? `${d}/${m}/${y}` : iso; };
 
-function barChart(items, key, label) {
-  // gráfico de barras en SVG, sin librerías: items = [{hour|date, ...}]
+function barChart(items, key, label, fmt = String) {
+  // gráfico de barras en SVG, sin librerías: items = [{hour|date, ...}]; `fmt` escribe el número de cada barra
   if (!items.length) return `<div class="empty">Sin datos en este período.</div>`;
   const vals = items.map((x) => +x[key] || 0), max = Math.max(1, ...vals);
   const W = 720, H = 180, T = 16, pad = 26, bw = Math.max(4, (W - pad * 2) / items.length - 4);  // T: lugar para el número de arriba
   return `<svg viewBox="0 0 ${W} ${H + 30 + T}" style="width:100%;max-width:${W}px;display:block">
     ${items.map((x, i) => { const v = vals[i], h = Math.round((H - 10) * v / max), xx = pad + i * ((W - pad * 2) / items.length);
-      return `<rect x="${xx}" y="${T + H - h}" width="${bw}" height="${h}" rx="3" fill="var(--accent)"><title>${esc(x.hour !== undefined ? x.hour + ":00" : x.date)}: ${v} ${label}</title></rect>
-        ${v ? `<text x="${xx + bw / 2}" y="${T + H - h - 4}" font-size="10" text-anchor="middle" fill="currentColor">${v}</text>` : ""}
+      return `<rect x="${xx}" y="${T + H - h}" width="${bw}" height="${h}" rx="3" fill="var(--accent)"><title>${esc(x.hour !== undefined ? x.hour + ":00" : x.date)}: ${esc(fmt(v))} ${label}</title></rect>
+        ${v ? `<text x="${xx + bw / 2}" y="${T + H - h - 4}" font-size="10" text-anchor="middle" fill="currentColor">${esc(fmt(v))}</text>` : ""}
         <text x="${xx + bw / 2}" y="${T + H + 14}" font-size="10" text-anchor="middle" fill="var(--muted)">${esc(x.hour !== undefined ? x.hour + "h" : fmtDay(x.date))}</text>`; }).join("")}
   </svg>`;
 }
@@ -1181,6 +1288,55 @@ async function metricsView(v, clientId) {
   // (el servidor ya no lo suma). Sin `measures` (servidor viejo), como antes.
   const showMeasures = m.by_camera.some((c) => Array.isArray(c.measures));
   const measures = (c, plan) => !Array.isArray(c.measures) || !plans.includes(plan) || c.measures.includes(plan);
+  const grid = `class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))"`;
+  // tiempo de espera (plan «comercio»): por zona marcada «Medir el tiempo de espera acá»
+  const waits = plans.includes("comercio") ? waitZones(t) : [];
+  let waitHtml = "";
+  if (waits.length) {
+    const tot = waitTotal(waits);
+    const series = (days === 1 ? m.by_hour : m.by_day).map((x) => ({ ...x, wait_avg: waitTotal(waitZones(x)).avg_s || 0 }));
+    const staffed = waits.filter(([, w]) => w.staffed);
+    waitHtml = `
+      <h2>Tiempo de espera</h2>
+      <div ${grid}>
+        ${tile(fmtClock(tot.avg_s), "Espera promedio", `${tot.n} espera${tot.n !== 1 ? "s" : ""} en ${waits.length} zona${waits.length !== 1 ? "s" : ""}`)}
+        ${tile(fmtClock(tot.max_s), "Espera más larga", "el cliente que más esperó")}
+        ${tile(tot.over5, "Más de 5 min", "clientes que esperaron 5 minutos o más")}
+        ${tile(tot.queue_max, "Fila máxima", "personas esperando a la vez")}
+      </div>
+      <div class="panel" style="margin-top:12px"><b>Por zona</b><div class="table-wrap"><table class="nums"><thead><tr><th>Zona</th><th>Esperas</th><th>Promedio</th><th>Máximo</th><th>Más de 5 min</th><th>Más de 10 min</th><th>Fila prom.</th><th>Fila máx.</th></tr></thead>
+        <tbody>${waits.map(([name, w]) => `<tr><td>${esc(name)}</td><td>${w.n}</td><td>${fmtClock(w.avg_s)}</td><td>${fmtClock(w.max_s)}</td><td>${w.over[300]}</td><td>${w.over[600]}</td><td>${fmtDec(w.queue_avg)}</td><td>${w.queue_max}</td></tr>`).join("")}</tbody></table></div>
+        ${staffed.length ? `<ul class="plain">${staffed.map(([name, w]) => `<li><b>${esc(name)}</b>: con clientes esperando y nadie en el puesto: ${fmtMinutes(w.unattended_s)} · se fueron sin que hubiera nadie: ${w.left_alone}</li>`).join("")}</ul>`
+          : isStaff() ? `<p class="muted note">Para saber si había alguien para atender, marcá la zona «Personal (empleados)» (detrás del mostrador) en la misma cámara.</p>` : ""}</div>
+      ${series.filter((x) => x.wait_avg).length > 1 ? `<div class="panel" style="margin-top:12px"><b>Espera promedio ${days === 1 ? "por hora" : "por día"}</b>${barChart(series, "wait_avg", "de espera promedio", fmtClock)}</div>` : ""}
+      <p class="muted note">La espera es el tiempo de cada cliente (${WAIT_MIN_SECONDS} s o más) en la zona marcada: si la zona incluye donde se atiende, incluye la atención. En una fila apretada, quien queda tapado por otro no se ve.</p>`;
+  } else if (plans.includes("comercio") && isStaff() && !sinDatos) {
+    waitHtml = `<p class="muted note">Para medir el tiempo de espera (caja, mostrador, fila), tildá «Medir el tiempo de espera acá» en esa zona, en «Zonas y reglas» de la cámara.</p>`;
+  }
+  // empleados (plan «empleados»): puestos (zonas de personal), cuántos a la vista y dónde pasan el tiempo
+  let staffHtml = "";
+  if (plans.includes("empleados")) {
+    const posts = postZones(t), watched = Math.max(0, ...posts.map(([, p]) => p.obs_s));  // segundos mirados
+    const dwell = Object.entries(t.staff_dwell || {}).filter(([, secs]) => num0(secs) > 0).sort((a, b) => b[1] - a[1]).slice(0, 6);
+    staffHtml = `
+      <h2>Empleados</h2>
+      <div ${grid}>
+        ${tile(num0(t.staff_max), "Máximo a la vez", "empleados a la vista")}
+        ${watched ? tile(fmtDec(num0(t.staff_s) / watched), "Promedio a la vista", "empleados, en el tiempo mirado") : ""}
+        ${posts.length === 1 ? tile(`${fmtDec(posts[0][1].covered_pct, 0)} %`, `${esc(posts[0][0])}: cubierto`, `sin nadie ${fmtClock(posts[0][1].uncovered_s)}`) : ""}
+      </div>
+      ${posts.length ? `<div class="panel" style="margin-top:12px"><b>Puestos</b><div class="table-wrap"><table class="nums"><thead><tr><th>Puesto</th><th>Cubierto</th><th>Sin nadie</th><th>Gente en el puesto (promedio)</th><th>Máximo</th><th></th></tr></thead>
+        <tbody>${posts.map(([name, p]) => `<tr><td>${esc(name)}</td><td>${fmtDec(p.covered_pct, 0)} %</td><td>${fmtClock(p.uncovered_s)}</td><td>${fmtDec(p.avg_people)}</td><td>${p.max}</td><td style="width:30%"><div class="bar"><i style="width:${Math.round(p.covered_pct || 0)}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>`
+        : `<p class="warn-text note">${isStaff() ? NO_POSTS_TEXT : "Todavía no se miden los puestos: falta marcar la zona del personal en las cámaras."}</p>`}
+      ${dwell.length ? `<div class="panel" style="margin-top:12px"><b>Dónde pasan el tiempo</b><div class="table-wrap"><table class="nums"><thead><tr><th>Zona</th><th>Tiempo de los empleados</th><th></th></tr></thead>
+        <tbody>${dwell.map(([name, secs]) => `<tr><td>${esc(name)}</td><td>${fmtClock(secs)}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * secs / dwell[0][1])}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}
+      <p class="muted note">Reconoce a los empleados solo por su zona «Personal» (pisada 2 s o más) o por el horario (con el local cerrado); no sabe quién es quién ni los sigue de una cámara a otra; quien pisa el puesto cuenta como «alguien en el puesto», sea o no empleado.</p>`;
+  }
+  // «Por cámara»: la espera y los puestos de cada una, si hay (con «—» donde la cámara no mide ese plan)
+  const camWait = (c) => { const w = waitTotal(waitZones(c)); return measures(c, "comercio") && w.n ? fmtClock(w.avg_s) : "—"; };
+  const camPosts = (c) => { const ps = postZones(c); return !measures(c, "empleados") || !ps.length ? "—" : ps.length === 1 ? `${fmtDec(ps[0][1].covered_pct, 0)} %` : ps.map(([n, p]) => `${esc(n)} ${fmtDec(p.covered_pct, 0)} %`).join(" · "); };
+  const showWait = plans.includes("comercio") && m.by_camera.some((c) => measures(c, "comercio") && waitTotal(waitZones(c)).n);
+  const showPosts = plans.includes("empleados") && m.by_camera.some((c) => measures(c, "empleados") && postZones(c).length);
   v.innerHTML = `
     <div class="row"><h1>${isStaff() ? "Métricas" : `Resumen de ${esc(client.name)}`}</h1>
       ${isStaff() ? `<select id="m-client" class="inline-select">${options(S.clients.map((c) => [c.id, c.name]), clientId)}</select>` : ""}
@@ -1201,6 +1357,7 @@ async function metricsView(v, clientId) {
       ${t.door || t.entries ? `<div class="panel" style="margin-top:12px"><b>${t.door ? "Entraron" : "Pasaron por la entrada"} ${days === 1 ? "por hora" : "por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "entries", t.door ? "entraron" : "pasaron")}</div>` : ""}
       ${zones.length ? `<div class="panel" style="margin-top:12px"><b>A dónde van</b><div class="table-wrap"><table><thead><tr><th>Zona</th><th>Tipo</th><th>Visitas</th><th>Tiempo promedio</th><th></th></tr></thead>
         <tbody>${zones.map(([name, z]) => `<tr><td>${esc(name)}</td><td>${esc(ZONE_NAMES[z.type] || z.type)}</td><td>${z.visits}</td><td>${fmtDur(avg(z.dwell_s, z.visits))}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * z.visits / Math.max(1, zones[0][1].visits))}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}` : ""}
+    ${waitHtml}
     ${plans.includes("estacion") ? `
       <h2>Estación de servicio</h2>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
@@ -1213,6 +1370,7 @@ async function metricsView(v, clientId) {
       </div>
       <div class="panel" style="margin-top:12px"><b>${days === 1 ? "Vehículos por hora" : "Vehículos por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "vehicles", "vehículos")}</div>
       ${!plans.includes("comercio") ? `<div class="panel" style="margin-top:12px"><b>Personas</b> promedio ${fmtDur(avg(t.people_dwell_s, t.people))} en cámara · máximo ${t.people_max} al mismo tiempo</div>` : ""}` : ""}
+    ${staffHtml}
     ${plans.includes("hurto") && stats ? `
       <h2>Alertas de hurto</h2>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
@@ -1222,8 +1380,8 @@ async function metricsView(v, clientId) {
         ${tile(stats.by_label.sin_etiqueta || 0, "Sin revisar todavía", "")}
       </div>
       <p><a class="btn" href="#/alertas?client_id=${clientId}">Ver las alertas</a></p>` : ""}
-    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th>${showMeasures ? "<th>Mide</th>" : ""}<th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
-      <tbody>${m.by_camera.map((c) => { const people = measures(c, "comercio"), cars = measures(c, "estacion"); return `<tr><td>${esc(c.name)}</td>${showMeasures ? `<td>${(c.measures || []).map((p) => esc(PLAN_SHORT[p] || p)).join(" · ") || "—"}</td>` : ""}<td>${people ? fmtDur(avg(c.people_dwell_s, c.people)) : "—"}</td>${plans.includes("estacion") ? `<td>${cars ? c.vehicles : "—"}</td>` : ""}<td>${people ? c.people_max : "—"}</td></tr>`; }).join("")}</tbody></table></div></div>` : ""}
+    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table class="nums"><thead><tr><th>Cámara</th>${showMeasures ? "<th>Mide</th>" : ""}<th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th>${showWait ? "<th>Espera prom.</th>" : ""}${showPosts ? "<th>Puesto cubierto</th>" : ""}</tr></thead>
+      <tbody>${m.by_camera.map((c) => { const people = measures(c, "comercio"), cars = measures(c, "estacion"); return `<tr><td>${esc(c.name)}</td>${showMeasures ? `<td>${(c.measures || []).map((p) => esc(PLAN_SHORT[p] || p)).join(" · ") || "—"}</td>` : ""}<td>${people ? fmtDur(avg(c.people_dwell_s, c.people)) : "—"}</td>${plans.includes("estacion") ? `<td>${cars ? c.vehicles : "—"}</td>` : ""}<td>${people ? c.people_max : "—"}</td>${showWait ? `<td>${camWait(c)}</td>` : ""}${showPosts ? `<td>${camPosts(c)}</td>` : ""}</tr>`; }).join("")}</tbody></table></div></div>` : ""}
     <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). No se muestra una suma de personas de todas las cámaras: la misma persona aparece en varias y, si sale del cuadro y vuelve, cuenta de nuevo. "A dónde van" cuenta visitas: quien vuelve a una zona suma otra visita. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona. Cada cámara suma solo lo que mide (por ejemplo, la de afuera la estación y la de adentro la gente del comercio).</p>`;
   const sel = $("#m-client", v);
   if (sel) sel.addEventListener("change", () => { location.hash = `#/metricas?client_id=${sel.value}&days=${days}`; });
@@ -1250,7 +1408,7 @@ async function clientsView(v) {
       <label>Chat de Telegram (opcional)<input name="telegram_chat_id" value="${esc(c.telegram_chat_id || "")}" placeholder="-1001234567890"></label>
       <label>Webhook (opcional)<input name="webhook_url" value="${esc(c.webhook_url || "")}" placeholder="https://…"></label>
       <fieldset><legend>Planes contratados</legend>${Object.entries(PLAN_NAMES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="plan" value="${k}" ${(c.plans || ["hurto"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}
-        <small class="muted" style="flex-basis:100%">Hurtos: alertas con clip. Comercio: cuánta gente entra, cuánto se queda y a dónde va (zonas Entrada y Góndola). Estación: vehículos, espera hasta el pistero y visitas a la tienda (zonas Surtidor y Tienda; el detector también marca vehículos). <b>Cada cámara mide los planes que le elijas</b> (en «Editar» de la cámara; por ejemplo, la de adentro las métricas y la de afuera la estación) y los datos se juntan por cliente.</small></fieldset>
+        <small class="muted" style="flex-basis:100%">Hurtos: alertas con clip. Comercio: cuánta gente entra, cuánto se queda y a dónde va (zonas Entrada y Góndola). Estación: vehículos, espera hasta el pistero y visitas a la tienda (zonas Surtidor y Tienda; el detector también marca vehículos). El tiempo de espera (caja, mostrador, fila) va con Comercio y se marca en la zona («Medir el tiempo de espera acá»). Empleados: si los puestos están cubiertos, cuántos empleados hay a la vista y dónde pasan el tiempo (se los reconoce por la zona «Personal (empleados)» de cada cámara o porque llegan con el local cerrado). <b>Cada cámara mide los planes que le elijas</b> (en «Editar» de la cámara; por ejemplo, la de adentro las métricas y la de afuera la estación) y los datos se juntan por cliente.</small></fieldset>
       <div class="row"><button class="primary" type="submit">${c.id ? "Guardar" : "Crear cliente"}</button><button type="button" id="cancel">Cancelar</button></div>
     </form>`;
     $("#cancel").addEventListener("click", () => ($("#client-form").innerHTML = ""));

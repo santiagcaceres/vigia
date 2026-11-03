@@ -48,7 +48,7 @@ from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
 
 from .cameras import build_camera
-from .worker import MediaClock
+from .worker import MediaClock, bursty
 
 log = logging.getLogger("vigia.ajuste")
 
@@ -273,7 +273,8 @@ class Tuner:
             rule_cfg.gestures = GestureConfig()
         # qué decide el conteo por zona: si no cambia (se prueban otros tiempos o gestos), en vivo el conteo sigue
         # como venía (desde que se abrió) en lugar de rehacerse solo con los últimos 10 minutos que se recuerdan
-        count_key = (tuple((z.name, z.type, tuple(map(tuple, z.polygon)), z.direction) for z in zones),
+        # (con la espera: tildar «Medir el tiempo de espera acá» en una zona también recuenta, si no la zona no la mediría)
+        count_key = (tuple((z.name, z.type, tuple(map(tuple, z.polygon)), z.direction, z.wait) for z in zones),
                      repr(rule_cfg.schedule))
         with self._lock:
             keep = (self.live and count_key == getattr(self, "_count_key", None)
@@ -448,8 +449,8 @@ class Tuner:
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error, backoff = "en_linea", None, 2.0
-            # Hik-Connect manda el video en ráfagas: se usa el reloj del video, como en las máquinas
-            clock = MediaClock(cap) if cam.brand == "hikconnect" else None
+            # Hik-Connect (o un link HLS) manda el video en ráfagas: se usa el reloj del video, como en las máquinas
+            clock = MediaClock(cap) if bursty(cam.brand, url) else None
             sar = pixel_aspect(cap)  # «1080p lite»: con píxeles cuadrados, como en las máquinas
             offset = max(last_ts + 0.2, time.monotonic() - t0)
             last, fails = -1e9, 0
@@ -942,20 +943,41 @@ def ascii_text(text: str) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 
+def wait_clock(secs: float | None) -> str:
+    """Un tiempo de espera como reloj: «1:20»; de una hora o más, «1 h 12 min» (como la app, la web y el PDF)."""
+    if secs is None:
+        return "-"
+    s = max(0, round(secs))
+    if s < 3600:
+        return f"{s // 60}:{s % 60:02d}"
+    h, m = divmod(round(s / 60), 60)
+    return f"{h} h {m} min"
+
+
 def count_text(z: Zone, counts: dict | None) -> str | None:
     """Lo contado en una zona, corto para dibujarlo debajo de su nombre (sin tildes: OpenCV no las dibuja): la puerta
-    con sentido, entraron y salieron; las demás, cuántas personas entraron y cuántas hay ahora."""
+    con sentido, entraron y salieron; la de personal, cuántos empleados y qué parte del tiempo hubo alguien; las demás,
+    cuántas personas entraron y cuántas hay ahora. Una zona que mide la espera suma un renglón (`\n`): cuántos clientes
+    esperan ahora y el promedio y el máximo de las esperas (`MetricsCollector.live_counts`: «wait»)."""
     if not counts:
         return None
     c = (counts.get("zones") or {}).get(z.name)
     if c is None:
         return None
     if z.type == "staff":
-        return f"personal {c.get('staff', 0)}"
+        pct = c.get("covered_pct")
+        return f"personal {c.get('staff', 0)}" + (f"  cubierto {pct:.0f}%" if pct is not None else "")
     if z.type == "entrance" and z.direction:
-        return f"entraron {c.get('entries', 0)}  salieron {c.get('exits', 0)}"
-    text = f"{'pasaron' if z.type == 'entrance' else 'entraron'} {c['visits']}"
-    return text + (f"  ahora {c['now']}" if c.get("now") else "")
+        text = f"entraron {c.get('entries', 0)}  salieron {c.get('exits', 0)}"
+    else:
+        text = f"{'pasaron' if z.type == 'entrance' else 'entraron'} {c['visits']}"
+        text += f"  ahora {c['now']}" if c.get("now") else ""
+    w = c.get("wait") if z.wait else None
+    if w is not None:
+        text += f"\nesperando {w.get('now', 0)}"
+        if w.get("avg_s") is not None:
+            text += f"  prom {wait_clock(w['avg_s'])}  max {wait_clock(w.get('max_s'))}"
+    return text
 
 
 def draw_counts(out: np.ndarray, zones: list[Zone], counts: dict | None) -> None:
@@ -967,14 +989,18 @@ def draw_counts(out: np.ndarray, zones: list[Zone], counts: dict | None) -> None
         if not text:
             continue
         color = ZONE_COLORS.get(z.type, (200, 200, 200))
-        x = int(min(p[0] for p in z.polygon) * w) + 4
-        y = int(min(p[1] for p in z.polygon) * h) + 16 * thick + 20 * thick  # debajo del nombre
-        y = min(max(y, 14), h - 26)
+        lines = text.split("\n")  # (la espera va en un renglón aparte)
         size = 0.5 * thick
-        tw, th = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0]
-        x = max(2, min(x, w - tw - 6))
-        cv2.rectangle(out, (x - 3, y - th - 4), (x + tw + 3, y + 4), (0, 0, 0), -1)
-        cv2.putText(out, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, thick, cv2.LINE_AA)
+        step = 18 * thick
+        x0 = int(min(p[0] for p in z.polygon) * w) + 4
+        y = int(min(p[1] for p in z.polygon) * h) + 16 * thick + 20 * thick  # debajo del nombre
+        y = min(max(y, 14), h - 26 - step * (len(lines) - 1))
+        for line in lines:
+            tw, th = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0]
+            x = max(2, min(x0, w - tw - 6))
+            cv2.rectangle(out, (x - 3, y - th - 4), (x + tw + 3, y + 4), (0, 0, 0), -1)
+            cv2.putText(out, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, thick, cv2.LINE_AA)
+            y += step
 
 
 def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleConfig, hot: list[TestAlert],

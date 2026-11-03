@@ -12,6 +12,8 @@ from pathlib import Path
 
 from fpdf import FPDF
 
+from core.metrics import WAIT_MIN_SECONDS, post_stats, wait_stats
+
 MARCA = (1, 27, 93)  # azul del logo (#011b5d)
 SUAVE = (102, 112, 133)
 TEXTO = (29, 36, 51)
@@ -19,7 +21,8 @@ BORDE = (216, 222, 233)
 FONDO = (243, 245, 249)
 CELESTE = (61, 107, 214)
 LOGO = Path(__file__).with_name("logo.png")  # el ojo en blanco (sobre la franja azul)
-PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
+PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
+              "empleados": "Seguimiento de empleados"}
 ZONE_NAMES = {"shelf": "Góndola", "aisle": "Pasillo", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
               "entrance": "Entrada", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal"}
 LABELS = {"hurto": "Confirmadas como hurto", "sospechoso": "Sospechosas", "normal": "Normales",
@@ -43,6 +46,47 @@ def dur(seconds: float | None) -> str:
     m, s = divmod(s, 60)
     h, m = divmod(m, 60)
     return f"{h} h {m:02d} min" if h else f"{m} min {s:02d} s" if m else f"{s} s"
+
+
+def clock(seconds: float | None) -> str:
+    """Tiempos de espera y de los puestos: «1:20» (minutos:segundos) o, de una hora para arriba, «1 h 12 min»."""
+    if seconds is None:
+        return "-"
+    s = round(seconds)
+    if s >= 3600:
+        h, m = divmod(round(s / 60), 60)
+        return f"{h} h {m} min"
+    m, s = divmod(s, 60)
+    return f"{m}:{s:02d}"
+
+
+def minutes(seconds: float | None) -> str:
+    """«12 min» (o «1 h 12 min»): para los ratos largos que se dicen en una frase."""
+    if not seconds:
+        return "0 min"
+    if seconds >= 3600:
+        return clock(seconds)
+    return "menos de 1 min" if seconds < 30 else f"{round(seconds / 60)} min"
+
+
+def dec(v: float | None, digits: int = 1) -> str:
+    """Número con coma decimal («1,3»)."""
+    return "-" if v is None else f"{v:.{digits}f}".replace(".", ",")
+
+
+def wait_zones(bucket: dict) -> list[tuple[str, dict]]:
+    """Las zonas de espera con algo medido (`core.metrics.wait_stats` de cada una), la de más esperas primero."""
+    out = [(name, wait_stats(w)) for name, w in (bucket.get("waits") or {}).items()]
+    return sorted([(n, w) for n, w in out if w["n"] or w["obs_s"]], key=lambda kv: (-kv[1]["n"], kv[0]))
+
+
+def wait_total(zones: list[tuple[str, dict]]) -> dict:
+    """Todas las zonas de espera juntas: esperas y segundos sumados (→ promedio), el máximo el mayor."""
+    n = sum(w["n"] for _, w in zones)
+    total = sum(w["avg_s"] * w["n"] for _, w in zones if w["n"])
+    return {"n": n, "avg_s": total / n if n else None,
+            "max_s": max((w["max_s"] for _, w in zones if w["n"]), default=None),
+            "over5": sum(w["over"][300] for _, w in zones), "queue_max": max((w["queue_max"] for _, w in zones), default=0)}
 
 
 def avg(total: float, n: int) -> float | None:
@@ -165,6 +209,14 @@ class Reporte(FPDF):
         self.set_text_color(*TEXTO)
         self.set_y(y0 + h + 8)
 
+    def fit(self, text: str, width: float) -> str:
+        """El texto recortado con «...» para que no pise la columna de al lado (nombres largos de zona o cámara)."""
+        if self.get_string_width(text) <= width:
+            return text
+        while text and self.get_string_width(text + "...") > width:
+            text = text[:-1]
+        return text.rstrip() + "..."
+
     def table(self, head: list[str], rows: list[list[str]], widths: list[float]) -> None:
         if not rows:
             return
@@ -183,7 +235,7 @@ class Reporte(FPDF):
             if self.get_y() > 272:
                 self.add_page()
             for c, w in zip(r, widths):
-                self.cell(w, 6.5, latin(c), border="B")
+                self.cell(w, 6.5, self.fit(latin(c), w - 1.5), border="B")
             self.ln()
         self.ln(2)
 
@@ -277,6 +329,59 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
                     str(c["people_max"]) if people(c) else "-"]
                    + ([str(c["vehicles"]) if cars(c) else "-"] if est else []) for c in m["by_camera"]],
                   [90, 44, 38] + ([22] if est else []))
+    waits = wait_zones(t) if "comercio" in plans else []
+    if waits:
+        pdf.h2("Tiempo de espera")
+        tot = wait_total(waits)
+        pdf.tiles([(clock(tot["avg_s"]), "Espera promedio",
+                    f"{tot['n']} espera{'s' if tot['n'] != 1 else ''} en {len(waits)} zona{'s' if len(waits) != 1 else ''}"),
+                   (clock(tot["max_s"]), "Espera más larga", "el cliente que más esperó"),
+                   (str(tot["over5"]), "Más de 5 min", "clientes que esperaron 5 minutos o más"),
+                   (str(tot["queue_max"]), "Fila máxima", "personas esperando a la vez")])
+        pdf.table(["Zona", "Esperas", "Promedio", "Máximo", "Más de 5 min", "Más de 10 min", "Fila prom.", "Fila máx."],
+                  [[name, str(w["n"]), clock(w["avg_s"]), clock(w["max_s"]), str(w["over"][300]), str(w["over"][600]),
+                    dec(w["queue_avg"]), str(w["queue_max"])] for name, w in waits],
+                  [40, 17, 20, 20, 22, 24, 19, 20])
+        for name, w in waits:
+            if w["staffed"]:
+                pdf.note(f"{name}: con clientes esperando y nadie en el puesto: {minutes(w['unattended_s'])} · se "
+                         f"fueron sin que hubiera nadie: {w['left_alone']}", size=9)
+        if not any(w["staffed"] for _, w in waits):
+            pdf.note("Para saber si había alguien para atender, marcá la zona «Personal (empleados)» (detrás del "
+                     "mostrador) en la misma cámara.")
+        if not one_day:
+            days = [(d["date"], wait_total(wait_zones(d))) for d in m.get("by_day") or []]
+            days = [(d, w) for d, w in days if w["n"]]
+            if len(days) > 1:
+                pdf.set_font("Helvetica", "B", 10)
+                pdf.cell(0, 7, latin("Por día"), new_x="LMARGIN", new_y="NEXT")
+                pdf.table(["Día", "Esperas", "Promedio", "Máximo", "Más de 5 min", "Fila máx."],
+                          [[fmt_day(d), str(w["n"]), clock(w["avg_s"]), clock(w["max_s"]), str(w["over5"]),
+                            str(w["queue_max"])] for d, w in days],
+                          [36, 24, 28, 28, 32, 34])
+    if "empleados" in plans:
+        pdf.h2("Empleados")
+        posts = [(name, post_stats(p)) for name, p in (t.get("posts") or {}).items()]
+        posts = sorted([(n, p) for n, p in posts if p["obs_s"]], key=lambda kv: kv[0])
+        watched = max((p["obs_s"] for _, p in posts), default=0.0)  # segundos mirados
+        seen = f"Empleados a la vista: máximo {t.get('staff_max', 0)} a la vez"
+        if watched:
+            seen += f", promedio {dec(t.get('staff_s', 0.0) / watched)}"
+        if posts:
+            pdf.table(["Puesto", "Cubierto", "Sin nadie", "Gente en el puesto (promedio)", "Máximo"],
+                      [[name, f"{dec(p['covered_pct'], 0)} %", clock(p["uncovered_s"]), dec(p["avg_people"]),
+                        str(p["max"])] for name, p in posts],
+                      [56, 24, 30, 52, 20])
+        else:
+            pdf.note("Para medir los puestos falta marcar la zona «Personal (empleados)» en la cámara (detrás del "
+                     "mostrador, la caja por dentro): sin esa zona solo se reconoce como empleado a quien aparece con "
+                     "el local cerrado.", size=9)
+        pdf.set_font("Helvetica", "", 9.5)
+        pdf.multi_cell(0, 5, latin(seen), new_x="LMARGIN", new_y="NEXT")
+        dwell = sorted(((n, v) for n, v in (t.get("staff_dwell") or {}).items() if v), key=lambda kv: -kv[1])[:6]
+        if dwell:
+            pdf.multi_cell(0, 5, latin("Dónde pasan el tiempo: " + " · ".join(f"{n} {clock(v)}" for n, v in dwell)),
+                           new_x="LMARGIN", new_y="NEXT")
     if "hurto" in plans and alerts is not None:
         pdf.h2("Alertas de posible hurto")
         total = sum(alerts.values())
@@ -293,4 +398,12 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
              "zona suma otra visita. Quien pisa la zona de "
              "personal o aparece con el local cerrado no cuenta como cliente. Cada cámara suma solo lo que se le eligió "
              "medir («-» en lo que no mide). No se reconocen caras.")
+    if waits:
+        pdf.note(f"Tiempo de espera: cuánto estuvo cada cliente ({WAIT_MIN_SECONDS:g} s o más) en la zona marcada para "
+                 "medir la espera; si la zona incluye el lugar donde se atiende, incluye la atención. En una fila "
+                 "apretada, quien queda tapado por otro no se ve.")
+    if "empleados" in plans:
+        pdf.note("Empleados: se reconocen solo por su zona («Personal», pisada 2 s o más) o por estar con el local "
+                 "cerrado; no se sabe quién es quién ni se los sigue de una cámara a otra, y quien pisa el puesto "
+                 "cuenta como «alguien en el puesto», sea o no empleado.")
     return bytes(pdf.output())

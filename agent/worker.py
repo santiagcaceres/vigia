@@ -98,6 +98,15 @@ class MetricsQueue:
                 self.add(batch, older=True)
 
 
+def bursty(brand: str | None, url: str | None) -> bool:
+    """El video llega en ráfagas: Hik-Connect, o un link HLS (…m3u8, pegado en una cámara Hikvision o Dahua). Ahí los
+    cuadros se eligen con el reloj del video: con el de la PC quedaría uno por ráfaga (0,6 cuadros por segundo). Con
+    RTSP (o un MJPEG por http) el video llega parejo y se sigue usando el reloj de la PC: un MJPEG no trae marcas de
+    tiempo y, si declara mal sus cuadros por segundo, el reloj del video correría a otra velocidad."""
+    u = str(url or "").strip().lower()
+    return brand == "hikconnect" or (u.startswith(("http://", "https://")) and ".m3u8" in u)
+
+
 class MediaClock:
     """Segundos de video transcurridos según las marcas de tiempo del stream. Si el stream no las trae
     (o vuelven atrás), cuenta cuadros a los fps que declara. Nunca retrocede."""
@@ -256,6 +265,7 @@ class CameraWorker:
             self.state, self.error = "en_linea", None
             log.info("[%s] conectada", self.name)
             connected_at = time.monotonic()
+            self._bursty = bursty(self.hik.brand, url)
             try:
                 self._read_loop(cap)
             except Exception as exc:
@@ -280,8 +290,8 @@ class CameraWorker:
         # sigue desde donde quedó la conexión anterior, más lo que duró el corte
         base = 0.0 if self._last_ts is None else self._last_ts + max(t0 - self._last_ts_at, 0.1)
         # Hik-Connect (HLS) manda el video en ráfagas de 1-4 s: con el reloj de la PC se analizaría un solo
-        # cuadro por ráfaga. Ahí se usa el reloj del video (marca de tiempo de cada cuadro).
-        clock = MediaClock(cap) if self.hik.brand == "hikconnect" else None
+        # cuadro por ráfaga. Ahí se usa el reloj del video (marca de tiempo de cada cuadro). Igual con un link HLS.
+        clock = MediaClock(cap) if getattr(self, "_bursty", self.hik.brand == "hikconnect") else None
         # «1080p lite» (960x1080 con píxeles 2:1): se analiza con píxeles cuadrados (960x540), igual que en
         # «Configurar…» y en las alarmas; si no, las personas quedan flacas y los gestos no andan
         sar = pixel_aspect(cap)

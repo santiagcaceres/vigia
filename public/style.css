@@ -98,6 +98,10 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; background: var(--panel-2); }
 tbody tr:hover td { background: #f7f9fc; }
 .table-wrap { overflow-x: auto; }
+/* tablas de números (métricas): los tiempos («8 h 52 min») y los títulos no se parten en el celular; la tabla se
+   desliza de costado dentro de su recuadro */
+table.nums th, table.nums td:not(:first-child) { white-space: nowrap; }
+table.nums td:first-child { min-width: 7.5em; }
 
 .media { background: #000; border-radius: var(--radius); overflow: hidden; position: relative; }
 .media video, .media img { width: 100%; display: block; max-height: 70vh; object-fit: contain; background: #000; }
@@ -121,10 +125,18 @@ dl.kv dd { margin: 0; }
 .zone-editor { position: relative; user-select: none; }
 .zone-editor canvas { width: 100%; display: block; border-radius: var(--radius); cursor: crosshair; background: #000; }
 .zone-item { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 6px; }
+/* la lista del editor de zonas: el renglón de la zona y, en la elegida, la casilla de la espera debajo */
+.zone-item.pick { display: block; cursor: pointer; }
+.zone-item .zone-row { display: flex; gap: 8px; align-items: center; }
+.zone-item.sel { border-color: var(--accent-2); background: #f5f8fe; }
+.zone-item .zone-sel { padding: 6px 0 2px 20px; font-size: 13px; cursor: default; }
 .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
 /* gestos de ocultamiento en el editor de zonas: casilleros y la aclaración (indicio, no prueba) */
 .gestures { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; }
 .note { font-size: 13px; line-height: 1.45; margin: 8px 0 0; }
+/* avisos que piden hacer algo (p. ej. marcar la zona del personal): naranja, sin ser un error */
+.warn-text { color: var(--warn); }
+ul.plain { margin: 10px 0 0; padding-left: 18px; font-size: 13px; display: grid; gap: 4px; }
 
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line);
   padding: 10px 16px; border-radius: 10px; box-shadow: var(--shadow); z-index: 50; max-width: calc(100% - 32px); }

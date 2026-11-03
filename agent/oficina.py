@@ -44,7 +44,8 @@ import httpx
 import numpy as np
 
 from core.gestos import GESTURE_NAMES, GestureConfig
-from core.rules import snap_edge
+from core.metrics import WAIT_MIN_SECONDS, post_stats, wait_stats
+from core.rules import NO_WAIT_TYPES, snap_edge
 from core.schedule import DAY_NAMES, DAYS, open_hours_per_week
 
 from . import actualizar
@@ -54,8 +55,10 @@ from .version import VERSION
 
 log = logging.getLogger("vigia.oficina")
 
-PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
-PLAN_SHORT = {"hurto": "Hurto", "comercio": "Comercio", "estacion": "Estación"}  # (columna «Mide» de las cámaras)
+PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
+              "empleados": "Seguimiento de empleados"}
+PLAN_SHORT = {"hurto": "Hurto", "comercio": "Comercio", "estacion": "Estación",
+              "empleados": "Empleados"}  # (columna «Mide» de las cámaras)
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cliente"}  # (operador = «entrenador» por dentro)
 # qué cámaras analizan las máquinas (server/pool.py): las elegidas en «Clientes» o todas
 ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
@@ -117,11 +120,42 @@ def fmt_date(iso: str | None) -> str:
         return iso
 
 
+def _hours_min(s: int) -> str:
+    """«1 h 12 min» (de 1 h 59 min 40 s no sale «1 h 60 min»: redondea a «2 h 0 min»)."""
+    h, m = s // 3600, round((s % 3600) / 60)
+    if m == 60:
+        h, m = h + 1, 0
+    return f"{h} h {m} min"
+
+
 def fmt_dur(s: float) -> str:
     s = round(s or 0)
     if s >= 3600:
-        return f"{s // 3600} h {round((s % 3600) / 60)} min"
+        return _hours_min(s)
     return f"{round(s / 60)} min" if s >= 90 else f"{s} s"
+
+
+def fmt_clock(s: float | None) -> str:
+    """Un tiempo de espera o de un puesto como reloj: «0:45», «1:20», «12:05»; de una hora o más, «1 h 12 min» (lo
+    mismo que la web y el reporte en PDF). Sin dato, «—»."""
+    if s is None:
+        return "—"
+    s = max(0, round(s))
+    return _hours_min(s) if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def fmt_minutes(s: float | None) -> str:
+    """Un rato largo dicho en una frase: «12 min», «menos de 1 min» o «1 h 12 min» (como el PDF)."""
+    if not s:
+        return "0 min"
+    if s >= 3600:
+        return fmt_clock(s)
+    return "menos de 1 min" if s < 30 else f"{round(s / 60)} min"
+
+
+def fmt_dec(x: float | None, nd: int = 1) -> str:
+    """Un número con decimales con coma, como se escribe acá: 1,4."""
+    return "—" if x is None else f"{x:.{nd}f}".replace(".", ",")
 
 
 def parse_moment(text: str) -> float:
@@ -170,6 +204,185 @@ def door_text(b: dict, staff: bool = False) -> str:
         return f"Pasaron por la entrada {b['entries']} (entrando o saliendo: falta marcar el sentido de la puerta)"
     return ("Todavía no se cuenta la gente que entra: marcá la zona Entrada, con su sentido, en la cámara de la "
             "puerta.")
+
+
+# ------------------------------------------------------------------ tiempo de espera y empleados
+# (pedido del dueño, 3 nov: «medir el tiempo de espera promedio de las personas en una cierta zona, por ejemplo
+# mostradores… y además seguir empleados como otra función de métricas»). Lo mide core/metrics.py; acá, los textos
+# (los mismos que la web y el PDF), a partir de sus resúmenes `wait_stats` y `post_stats`.
+LIMITS_TEXT = ("Límites: reconoce a los empleados solo por su zona «Personal» o por el horario; no sabe quién es quién ni "
+               "los sigue de una cámara a otra; quien pisa el puesto cuenta como «alguien en el puesto»; la espera es el "
+               "tiempo en la zona marcada (si incluye donde se atiende, incluye la atención).")
+NO_POSTS_TEXT = ("Para medir los puestos, marcá la zona «Personal (empleados)» en las cámaras (detrás del mostrador, la "
+                 "caja por dentro): a los empleados se los reconoce por esa zona o porque llegan con el local cerrado.")
+
+
+def has_waits(b: dict | None) -> bool:
+    """El cubo tiene algo de tiempo de espera (alguna zona de espera mirada o con esperas)."""
+    return any((w or {}).get("n") or (w or {}).get("obs_s") for w in ((b or {}).get("waits") or {}).values())
+
+
+def wait_lines(name: str, st: dict) -> list[str]:
+    """La espera en una zona (`core.metrics.wait_stats`): esperas, promedio, máximo, cuántos esperaron más de 5 y de
+    10 minutos y la fila; si la cámara tiene zona de personal, otro renglón con el rato con clientes esperando y nadie
+    en el puesto y cuántos se fueron sin que hubiera nadie."""
+    n = st.get("n") or 0
+    if not n:
+        head = f"{name}: nadie esperó todavía ({WAIT_MIN_SECONDS:g} s o más en la zona)"
+    else:
+        over = st.get("over") or {}
+        head = (f"{name}: {n} espera{'s' if n != 1 else ''} · promedio {fmt_clock(st.get('avg_s'))} · máximo "
+                f"{fmt_clock(st.get('max_s'))} · más de 5 min: {over.get(300, 0)} · más de 10 min: {over.get(600, 0)}")
+    if st.get("queue_avg") is not None:
+        head += f" · fila promedio {fmt_dec(st['queue_avg'])}, máxima {st.get('queue_max', 0)}"
+    lines = [head]
+    if st.get("staffed"):
+        lines.append(f"con clientes esperando y nadie en el puesto: {fmt_minutes(st.get('unattended_s'))} · "
+                     f"se fueron sin que hubiera nadie: {st.get('left_alone') or 0}")
+    return lines
+
+
+def wait_section(b: dict | None) -> list[str]:
+    """Todas las zonas de espera de un cubo (total, día u hora), por nombre; el segundo renglón de cada una, sangrado."""
+    out: list[str] = []
+    for name, w in sorted(((b or {}).get("waits") or {}).items()):
+        first, *rest = wait_lines(name, wait_stats(w))
+        out += [first] + ["  " + line for line in rest]
+    return out
+
+
+def post_text(name: str, st: dict) -> str:
+    """Un puesto (zona de personal, `core.metrics.post_stats`): qué parte del tiempo hubo alguien, cuánto estuvo sin
+    nadie y cuánta gente hubo (promedio y máximo)."""
+    if st.get("covered_pct") is None:
+        return f"{name}: sin datos todavía"
+    return (f"{name}: cubierto {st['covered_pct']:.0f} % · sin nadie {fmt_clock(st.get('uncovered_s') or 0)} · "
+            f"en el puesto: promedio {fmt_dec(st.get('avg_people') or 0)}, máximo {st.get('max', 0)}")
+
+
+def staff_lines(b: dict | None, hint: bool = True) -> list[str]:
+    """Lo de los empleados de un cubo (plan «Seguimiento de empleados»): cada puesto, cuántos se vieron a la vez (el
+    promedio, sobre el tiempo mirado: el del puesto más mirado) y dónde pasan el tiempo (las 6 zonas con más). Sin
+    puestos y con `hint`, cómo marcarlos."""
+    b = b or {}
+    posts = [(name, post_stats(p)) for name, p in sorted((b.get("posts") or {}).items())]
+    posts = [(name, st) for name, st in posts if st["obs_s"]]
+    lines = [post_text(name, st) for name, st in posts]
+    watched = max((st["obs_s"] for _, st in posts), default=0.0)  # segundos mirados
+    seen = f"Empleados a la vista: máximo {b.get('staff_max', 0)} a la vez"
+    if watched:
+        seen += f", promedio {fmt_dec((b.get('staff_s') or 0.0) / watched)}"
+    lines.append(seen)
+    dwell = sorted(((n, s) for n, s in (b.get("staff_dwell") or {}).items() if (s or 0) > 0), key=lambda kv: -kv[1])
+    if dwell:
+        lines.append("Dónde pasan el tiempo: " + " · ".join(f"{n} {fmt_clock(s)}" for n, s in dwell[:6]))
+    if not posts and hint:
+        lines.append(NO_POSTS_TEXT)
+    return lines
+
+
+def zone_extra_text(z, zc: dict | None) -> str:
+    """La columna «Espera / puesto» de «Personas por zona» (`MetricsCollector.live_counts` de una zona): la que mide la
+    espera, «esperando 2 · prom. 1:20» (el máximo se ve en la imagen); la de personal, «cubierto 90 %». `z`: la zona
+    (core.rules.Zone)."""
+    zc = zc or {}
+    if z.type == "staff":
+        pct = zc.get("covered_pct")
+        return f"cubierto {pct:.0f} %" if pct is not None else ""
+    w = zc.get("wait") if getattr(z, "wait", False) else None
+    if w is None:
+        return ""
+    text = f"esperando {w.get('now', 0)}"
+    if w.get("avg_s") is not None:
+        text += f" · prom. {fmt_clock(w['avg_s'])}"
+    return text
+
+
+def staff_zone_missing(cam: dict, client: dict | None) -> bool:
+    """La cámara mide empleados pero no tiene zona «Personal»: así no mide puestos (a los empleados se los reconoce por
+    esa zona o por el horario)."""
+    return "empleados" in camera_measures(cam, client) and not any(
+        (z or {}).get("type") == "staff" for z in cam.get("zones") or [])
+
+
+def metrics_text(c: dict, today: dict, week: dict) -> str:
+    """El texto de «Métricas» de un cliente con lo de hoy y lo de los últimos 7 días (`/api/metrics` con days=1 y 7):
+    la gente que entró, vehículos, a dónde van y qué suma cada cámara; y, según sus planes, el tiempo de espera
+    («Métricas de comercio», si alguna zona lo mide) y los empleados («Seguimiento de empleados»)."""
+    t, w = today["total"], week["total"]
+    plans = client_plans(c)
+    est = "estacion" in (c.get("plans") or [])
+    zones = sorted((t.get("zones") or {}).items(), key=lambda kv: -kv[1]["visits"])
+    # Sin «personas vistas»: es la suma de todas las cámaras y la misma persona cuenta en cada una (y de nuevo
+    # si se pierde y vuelve). La cantidad de gente sale de la puerta: entraron / salieron.
+    lines = ["HOY", "  " + door_text(t, staff=True)]
+    if t.get("people"):
+        lines += [f"  Tiempo promedio en cámara: {fmt_dur(t['people_dwell_s'] / t['people'])}",
+                  f"  Máximo al mismo tiempo: {t['people_max']}"]
+    if est:
+        lines += [f"  Vehículos: {t['vehicles']} · espera hasta el pistero: "
+                  f"{fmt_dur(t['pump_wait_s'] / t['pump_wait_n']) if t['pump_wait_n'] else '—'} · "
+                  f"sin atención: {t['pump_unattended']} · bajaron a la tienda: {t['shop_visits']}"]
+    if zones:
+        lines += ["", "  A dónde van (visitas a cada zona):"] + [
+            f"    {n}: {z['visits']} visitas, promedio {fmt_dur(z['dwell_s'] / max(1, z['visits']))}"
+            for n, z in zones]
+    cams = today.get("by_camera") or []
+    if len(cams) > 1 or any(cam.get("measures") for cam in cams):
+        # cada cámara suma solo lo que mide (pedido del dueño, 2 nov): se ve qué aporta cada una
+        own = c.get("plans") or []
+        lines += ["", "  Por cámara (cada una suma lo que mide):"]
+        for cam in cams:
+            meas = cam.get("measures") or own
+            parts = []
+            if "comercio" in meas or "comercio" not in own:
+                if cam.get("door") or cam.get("entries"):
+                    parts.append(door_text(cam).lower())
+                elif cam.get("people"):
+                    parts.append(f"gente en cámara {fmt_dur(cam['people_dwell_s'] / cam['people'])} en promedio")
+                for zn, wz in sorted((cam.get("waits") or {}).items()):
+                    st = wait_stats(wz)
+                    if st["n"]:
+                        parts.append(f"espera en {zn} {fmt_clock(st['avg_s'])} en promedio")
+            if "estacion" in meas and est:
+                parts.append(f"{cam.get('vehicles', 0)} vehículos")
+            if "empleados" in meas and "empleados" in own:
+                for pn, p in sorted((cam.get("posts") or {}).items()):
+                    st = post_stats(p)
+                    if st["covered_pct"] is not None:
+                        parts.append(f"{pn} cubierto {st['covered_pct']:.0f} %")
+            mide = " · ".join(PLAN_SHORT.get(p, p) for p in meas) or "nada"
+            lines.append(f"    {cam['name']} (mide {mide}): {', '.join(parts) or 'sin datos que sumar'}")
+    lines += ["", "ÚLTIMOS 7 DÍAS"]
+    if w.get("door") or w.get("entries"):
+        lines.append("  " + door_text(w))
+    if est:
+        lines.append(f"  Vehículos: {w['vehicles']}")
+    for d in week.get("by_day") or []:
+        day = door_text(d) if d.get("door") or d.get("entries") else "sin conteo de la puerta"
+        lines.append(f"    {d['date']}: {day[0].lower()}{day[1:]}"
+                     + (f", {d['vehicles']} vehículos" if est and d.get("vehicles") else ""))
+    extra = False
+    if "comercio" in plans and (has_waits(t) or has_waits(w)):
+        extra = True
+        lines += ["", f"TIEMPO DE ESPERA (cada cliente que estuvo {WAIT_MIN_SECONDS:g} s o más en la zona marcada)"]
+        for title, b in (("Hoy", t), ("Últimos 7 días", w)):
+            lines.append(f"  {title}:")
+            lines += ["    " + line for line in (wait_section(b) if has_waits(b) else [])] or ["    sin esperas medidas"]
+    if "empleados" in plans:
+        extra = True
+        lines += ["", "EMPLEADOS"]
+        for title, b in (("Hoy", t), ("Últimos 7 días", w)):
+            lines.append(f"  {title}:")
+            lines += ["    " + line for line in staff_lines(b, hint=False)]
+        if not any(post_stats(p)["obs_s"] for p in (w.get("posts") or {}).values()):
+            lines.append("  " + NO_POSTS_TEXT)  # (una sola vez, no en hoy y en la semana)
+    if extra:
+        lines += ["", LIMITS_TEXT]
+    if not t.get("frames") and not w.get("frames"):
+        lines += ["", "Todavía no hay datos: las métricas salen de las cámaras que se analizan (llegan cada 5 "
+                      "minutos)."]
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------------ qué mide cada cámara
@@ -928,8 +1141,11 @@ class Oficina:
             return  # se está mostrando el resultado de una prueba: no pisarlo
         self._info_locked = None
         st = cam.get("status") or {}
-        zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])})" for z in cam.get("zones") or []) or \
-            "ninguna (sin zonas no hay alertas: «✎ Marcar zonas»)"
+        zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])}{' · espera' if z.get('wait') else ''})"
+                          for z in cam.get("zones") or []) or "ninguna (sin zonas no hay alertas: «✎ Marcar zonas»)"
+        owner = self._client_of(cam)
+        staff_warn = ("\n⚠ Para medir empleados, marcá la zona «Personal (empleados)» con «✎ Marcar zonas» (detrás del "
+                      "mostrador, la caja por dentro)." if staff_zone_missing(cam, owner) else "")
         conn = (f"Hik-Connect · grabador {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
                 if cam.get("brand") == "hikconnect" else
                 f"{BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · canal {cam.get('channel')} · RTSP "
@@ -938,7 +1154,7 @@ class Oficina:
             f"{cam['name']}\n"
             f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
             f"Se analiza: {('sí, en ' + (cam.get('analyzer_name') or 'la primera máquina que se prenda')) if cam.get('analyzed') else 'no (se puede ver en «En vivo»)'}\n"
-            f"Mide: {measures_text(cam, self._client_of(cam), short=False)}\n"
+            f"Mide: {measures_text(cam, owner, short=False)}{staff_warn}\n"
             f"Puesta a punto: {self._tuning_text(cam)}\n"
             f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
             f"{int(cam.get('process_fps') or 5)} cuadros por segundo · {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
@@ -1031,13 +1247,11 @@ class Oficina:
         plans = {p: tk.BooleanVar(value=p in (c.get("plans") or ["hurto"])) for p in PLAN_NAMES}
         pf = ttk.LabelFrame(frm, text="Planes contratados", padding=6)
         pf.grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
-        for p, t in PLAN_NAMES.items():
-            ttk.Checkbutton(pf, text=t, variable=plans[p]).pack(anchor="w")
+        for i, (p, t) in enumerate(PLAN_NAMES.items()):  # (de a dos por renglón: la ventana entra en 768 de alto)
+            ttk.Checkbutton(pf, text=t, variable=plans[p]).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 24))
         ttk.Label(pf, text="Sin «Detección de hurtos» las cámaras quedan en «solo métricas»: 2-3 cuadros por "
                            "segundo y sin clips (mucho más barato).", foreground="#666", wraplength=560,
-                  justify="left").pack(anchor="w", pady=(2, 0))
-        ttk.Label(pf, text="Cada cámara mide los que le elijas (en la cámara, «Qué mide»).", foreground="#666",
-                  wraplength=560, justify="left").pack(anchor="w")
+                  justify="left").grid(row=9, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # horario del local: con el local cerrado la PC central no abre el video (ahorra internet y análisis)
         of = ttk.LabelFrame(frm, text="Horario del local (fuera de horario no se gasta video ni análisis)", padding=6)
@@ -1103,6 +1317,14 @@ class Oficina:
             ttk.Label(lf, text="Lo normal es marcar cámara por cámara con «✔ Analizar». «Todas sus cámaras» pasa "
                                "el cliente entero (salvo las marcadas «No analizar»).", foreground="#666", wraplength=400,
                       justify="left").pack(anchor="w", pady=(2, 0))
+        # (a la derecha, donde sobra lugar: a la izquierda ya no entraba en 768 de alto)
+        nf = ttk.LabelFrame(right, text="Qué mide cada cámara", padding=6)
+        nf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(nf, text="Cada cámara mide los planes que le elijas (en la cámara, «Qué mide»); los números se suman "
+                           "por cliente. El tiempo de espera (caja, mostrador, fila) va con «Métricas de comercio» y se "
+                           "marca en la zona («Medir el tiempo de espera acá»). «Seguimiento de empleados» reconoce a los "
+                           "empleados por la zona «Personal (empleados)» de cada cámara (o porque llegan con el local "
+                           "cerrado).", foreground="#666", wraplength=400, justify="left").pack(anchor="w")
 
         if not c.get("id") and not web_user.get():
             # sugerir el usuario a partir del nombre (se puede cambiar)
@@ -1170,7 +1392,7 @@ class Oficina:
         self._row(frm, 3, "Hasta (dd/mm/aaaa)", ttk.Entry(frm, textvariable=d2))
         grp_box = ttk.Combobox(frm, textvariable=grp, state="readonly", values=["Por día", "Por hora"])
         self._row(frm, 4, "Agrupar (Excel)", grp_box)
-        ttk.Label(frm, text="En la hora del local: entradas y salidas, tiempo promedio, zonas, vehículos y alertas.", style="Suave.TLabel", wraplength=440, justify="left").grid(
+        ttk.Label(frm, text="En la hora del local: entradas y salidas, tiempos (también el de espera), zonas, empleados, vehículos y alertas, según los planes.", style="Suave.TLabel", wraplength=440, justify="left").grid(
             row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         def fmt_changed(*_):
@@ -1445,6 +1667,11 @@ class Oficina:
             if txt and inv(MODE_NAMES, v["mode"].get()) in ("alarmas", "alarmas_equipo"):
                 txt += (" Ojo: en modo alarmas solo se buscan hurtos y no se mide nada: para medir, poné el modo «En vivo» "
                         "(en «Más opciones»).")
+            if "empleados" in pv and pv["empleados"].get() and not any(
+                    (z or {}).get("type") == "staff" for z in cam.get("zones") or []):
+                # (a los empleados se los reconoce por esa zona o porque llegan con el local cerrado)
+                txt += ("\n" if txt else "") + ("Para medir empleados, marcá la zona «Personal (empleados)» con «✎ Marcar "
+                                                "zonas» (detrás del mostrador, la caja por dentro).")
             theft_lbl.configure(text=txt)
             theft_lbl.pack(anchor="w", pady=(4, 0)) if txt else theft_lbl.pack_forget()
         for p in cplans:
@@ -1754,6 +1981,20 @@ class Oficina:
                             "«Detección de hurtos» la cámara queda en «solo métricas»: sin alertas ni clips. Los números se suman "
                             "por cliente.", foreground="#666", wraplength=430, justify="left").grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        if "empleados" in cplans:  # a los empleados se los reconoce por la zona «Personal»: decir qué cámaras no la tienen
+            r += 1
+            staff_lbl = ttk.Label(frm, text="", style="Aviso.TLabel", wraplength=430, justify="left")
+            staff_lbl.grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            bare = [c["name"] for c in cams if not any((z or {}).get("type") == "staff" for z in c.get("zones") or [])]
+
+            def staff_changed(*_) -> None:
+                txt = ""
+                if pv["empleados"].get() and bare:
+                    txt = ("Para medir empleados falta marcar la zona «Personal (empleados)» (✎ Marcar zonas) en: "
+                           + ", ".join(bare[:6]) + ("…" if len(bare) > 6 else "") + ".")
+                staff_lbl.configure(text=txt)
+            pv["empleados"].trace_add("write", staff_changed)
+            staff_changed()
 
         def save() -> None:
             try:
@@ -2130,10 +2371,13 @@ class Oficina:
         txt = tk.Text(frm, width=78, height=24, wrap="word", relief="flat", bg="#ffffff", padx=12, pady=8,
                       highlightthickness=1, highlightbackground="#d8dee9", font=("Segoe UI", 10))
         txt.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        sb = ttk.Scrollbar(frm, orient="vertical", command=txt.yview)  # (con espera y empleados el texto es largo)
+        sb.grid(row=0, column=2, sticky="ns")
+        txt.configure(yscrollcommand=sb.set)
         txt.insert("1.0", "Cargando…")
         txt.configure(state="disabled")
         bb = ttk.Frame(frm)
-        bb.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        bb.grid(row=1, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(bb, text="Exportar (PDF o Excel)…", style="Primario.TButton", command=self.export_dialog).pack(
             side="left")
         ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="left", padx=(6, 0))
@@ -2145,54 +2389,7 @@ class Oficina:
             txt.configure(state="disabled")
 
         def done(res):
-            today, week = res
-            t, w = today["total"], week["total"]
-            est = "estacion" in (c.get("plans") or [])
-            zones = sorted((today["total"].get("zones") or {}).items(), key=lambda kv: -kv[1]["visits"])
-            # Sin «personas vistas»: es la suma de todas las cámaras y la misma persona cuenta en cada una (y de nuevo
-            # si se pierde y vuelve). La cantidad de gente sale de la puerta: entraron / salieron.
-            lines = ["HOY", "  " + door_text(t, staff=True)]
-            if t.get("people"):
-                lines += [f"  Tiempo promedio en cámara: {fmt_dur(t['people_dwell_s'] / t['people'])}",
-                          f"  Máximo al mismo tiempo: {t['people_max']}"]
-            if est:
-                lines += [f"  Vehículos: {t['vehicles']} · espera hasta el pistero: "
-                          f"{fmt_dur(t['pump_wait_s'] / t['pump_wait_n']) if t['pump_wait_n'] else '—'} · "
-                          f"sin atención: {t['pump_unattended']} · bajaron a la tienda: {t['shop_visits']}"]
-            if zones:
-                lines += ["", "  A dónde van (visitas a cada zona):"] + [
-                    f"    {n}: {z['visits']} visitas, promedio {fmt_dur(z['dwell_s'] / max(1, z['visits']))}"
-                    for n, z in zones]
-            cams = today.get("by_camera") or []
-            if len(cams) > 1 or any(cam.get("measures") for cam in cams):
-                # cada cámara suma solo lo que mide (pedido del dueño, 2 nov): se ve qué aporta cada una
-                own = c.get("plans") or []
-                lines += ["", "  Por cámara (cada una suma lo que mide):"]
-                for cam in cams:
-                    meas = cam.get("measures") or own
-                    parts = []
-                    if "comercio" in meas or "comercio" not in own:
-                        if cam.get("door") or cam.get("entries"):
-                            parts.append(door_text(cam).lower())
-                        elif cam.get("people"):
-                            parts.append(f"gente en cámara {fmt_dur(cam['people_dwell_s'] / cam['people'])} en promedio")
-                    if "estacion" in meas and est:
-                        parts.append(f"{cam.get('vehicles', 0)} vehículos")
-                    mide = " · ".join(PLAN_SHORT.get(p, p) for p in meas) or "nada"
-                    lines.append(f"    {cam['name']} (mide {mide}): {', '.join(parts) or 'sin datos que sumar'}")
-            lines += ["", "ÚLTIMOS 7 DÍAS"]
-            if w.get("door") or w.get("entries"):
-                lines.append("  " + door_text(w))
-            if est:
-                lines.append(f"  Vehículos: {w['vehicles']}")
-            for d in week["by_day"]:
-                day = door_text(d) if d.get("door") or d.get("entries") else "sin conteo de la puerta"
-                lines.append(f"    {d['date']}: {day[0].lower()}{day[1:]}"
-                             + (f", {d['vehicles']} vehículos" if est and d.get("vehicles") else ""))
-            if not t.get("frames") and not w.get("frames"):
-                lines += ["", "Todavía no hay datos: las métricas salen de las cámaras que se analizan (llegan cada 5 "
-                              "minutos)."]
-            show("\n".join(lines))
+            show(metrics_text(c, *res))
         self.bg.run(lambda: (self.api.get("/api/metrics", client_id=c["id"], days=1),
                              self.api.get("/api/metrics", client_id=c["id"], days=7)), done,
                     lambda e: show(f"No se pudieron traer las métricas: {e}"))
@@ -2948,6 +3145,9 @@ ZONE_HELP = {"shelf": "Góndola: el piso frente al estante, donde la gente se pa
              "pump": "Surtidor: el lugar donde para el vehículo a cargar.",
              "shop": "Tienda: el piso de la tienda de la estación.",
              "staff": "Personal: detrás del mostrador o depósito: quien lo pisa se toma como empleado."}
+# la casilla «Medir el tiempo de espera acá» (cualquier zona de clientes: caja, mostrador, fila; no Personal ni Surtidor)
+WAIT_HELP = ("Espera: marcá el piso donde la gente hace la fila o espera. Si la zona incluye donde se atiende, el tiempo "
+             "incluye la atención.")
 
 
 def nearest_vertex(zones: list[dict], nx: float, ny: float, w: int, h: int, radius: float) -> tuple[int, int] | None:
@@ -2983,7 +3183,7 @@ class ZonesEditor:
     """Editor de zonas sobre la imagen de la cámara.
     - Zona nueva: «＋ Zona nueva» (o clic afuera de las zonas) y clics en el piso; doble clic para cerrarla.
     - Corregir: clic en una zona para elegirla; arrastrar sus puntos o la zona entera; clic derecho en un punto lo
-      borra. Nombre, tipo y sentido se cambian con «Aplicar a la elegida».
+      borra. Nombre, tipo, sentido y «Medir el tiempo de espera acá» se cambian con «Aplicar a la elegida».
     - Desde «● En vivo» / «🎞 Clips» llega el mapa de pisadas (`footmap`, core/pisadas.py): se ve encima de la imagen (celeste =
       caminan, rojo = se paran) y «Sugerir zonas» propone zonas a partir de él (punteadas hasta guardar)."""
 
@@ -3002,7 +3202,8 @@ class ZonesEditor:
         self.confirm = confirm
         self.footmap = footmap
         tk, ttk = app.tk, app.ttk
-        self.zones = [dict(z) for z in cam.get("zones") or []]
+        # (con los puntos copiados: arrastrar un punto y «Cancelar» no tiene que cambiar las zonas de la cámara)
+        self.zones = [{**z, "polygon": [list(p) for p in z.get("polygon") or []]} for z in cam.get("zones") or []]
         self.rules = dict(cam.get("rules") or {})
         self.draft: list[tuple[float, float]] = []
         self.drawing = False
@@ -3045,6 +3246,14 @@ class ZonesEditor:
         self.dirbox = ttk.Combobox(row, textvariable=self.zdir, values=list(DOOR_NAMES.values()), state="readonly",
                                    width=22)
         self.dirbox.pack(side="left")
+        # tiempo de espera de los clientes en esta zona (métricas, no da alertas): un renglón aparte, así el editor sigue
+        # entrando en 1366 de ancho
+        self.zwait = tk.BooleanVar(value=False)
+        row = ttk.Frame(right)
+        row.pack(anchor="w", fill="x", pady=(2, 0))
+        self.waitcb = ttk.Checkbutton(row, text="Medir el tiempo de espera acá", variable=self.zwait,
+                                      command=self._show_help)
+        self.waitcb.pack(side="left")
         self.help = ttk.Label(right, text="", foreground="#666", wraplength=300, justify="left")
         self.help.pack(anchor="w", pady=(2, 0))
         bz = ttk.Frame(right)
@@ -3052,8 +3261,8 @@ class ZonesEditor:
         ttk.Button(bz, text="＋ Zona nueva", command=self.new_zone).pack(side="left")
         ttk.Button(bz, text="Cerrar zona", command=self.close_zone).pack(side="left", padx=4)
         ttk.Button(bz, text="Deshacer punto", command=self.undo).pack(side="left")
-        ttk.Button(right, text="Aplicar nombre, tipo y sentido a la elegida", command=self.apply_selected).pack(
-            anchor="w", pady=(4, 0))
+        ttk.Button(right, text="Aplicar a la elegida (nombre, tipo, sentido y espera)",
+                   command=self.apply_selected).pack(anchor="w", pady=(4, 0))
         ttk.Label(right, text="Zonas", style="Subtitulo.TLabel").pack(anchor="w", pady=(8, 0))
         self.zlist = tk.Listbox(right, height=6, width=42, exportselection=False)
         self.zlist.pack(anchor="w")
@@ -3066,11 +3275,13 @@ class ZonesEditor:
             fr.pack(anchor="w", pady=(6, 0), fill="x")
             ttk.Checkbutton(fr, text="Mapa de pisadas", variable=self.show_feet, command=self.draw).pack(side="left")
             ttk.Button(fr, text="Sugerir zonas", command=self.suggest_zones).pack(side="left", padx=6)
+            # (con corte de renglón: sin él, este texto hacía la ventana más ancha que una pantalla de 1366)
             ttk.Label(right, text=f"{footmap.persons} personas en {fmt_dur(footmap.seconds)} de video · celeste: "
-                                  "caminan · rojo: se paran", foreground="#666").pack(anchor="w")
-        ttk.Label(right, text="Al guardar, la cámara cuenta cuántas personas entran a cada zona (se ve en «● En vivo» y, "
-                              "si se analiza, en las métricas). Los tiempos de las alertas se prueban en «● En vivo» o "
-                              "«🎞 Clips».", style="Suave.TLabel",
+                                  "caminan · rojo: se paran", foreground="#666", wraplength=320,
+                      justify="left").pack(anchor="w")
+        ttk.Label(right, text="Al guardar, la cámara cuenta cuántas personas entran a cada zona y, en las de espera, "
+                              "cuánto esperan (se ve en «● En vivo» y, si se analiza, en las métricas). Los tiempos de "
+                              "las alertas se prueban en «● En vivo» o «🎞 Clips».", style="Suave.TLabel",
                   wraplength=320, justify="left").pack(anchor="w", pady=(10, 0))
         bb = ttk.Frame(right)
         bb.pack(anchor="e", pady=(10, 0), fill="x")
@@ -3163,10 +3374,19 @@ class ZonesEditor:
     def _direction(self) -> str:
         return next((k for k, t in DOOR_NAMES.items() if t == self.zdir.get()), "")
 
+    def _wait(self) -> bool:
+        """«Medir el tiempo de espera acá» tildada y el tipo lo permite (no en Personal ni en Surtidor)."""
+        return bool(self.zwait.get()) and self._type() not in NO_WAIT_TYPES
+
     def _show_help(self) -> None:
-        """Ayuda del tipo elegido; el sentido solo se elige para la Entrada."""
-        self.help.configure(text=ZONE_HELP.get(self._type(), ""))
+        """Ayuda del tipo elegido (y de la espera, si está tildada); el sentido solo se elige para la Entrada y la
+        espera no va en Personal ni en Surtidor (el personal no espera; en el surtidor esperan vehículos)."""
+        no_wait = self._type() in NO_WAIT_TYPES
+        if no_wait:
+            self.zwait.set(False)
+        self.help.configure(text=ZONE_HELP.get(self._type(), "") + (f"\n{WAIT_HELP}" if self._wait() else ""))
         self.dirbox.configure(state="readonly" if self._type() == "entrance" else "disabled")
+        self.waitcb.configure(state="disabled" if no_wait else "normal")
 
     def new_zone(self) -> None:
         self.select(None)
@@ -3191,6 +3411,8 @@ class ZonesEditor:
         zone = {"name": name, "type": ztype, "polygon": [[snap_edge(x), snap_edge(y)] for x, y in pts]}
         if ztype == "entrance" and self._direction():
             zone["direction"] = self._direction()
+        if self._wait():
+            zone["wait"] = True
         self.zones.append(zone)
         self.drawing, self.draft = False, []
         self.zname.set("")
@@ -3204,11 +3426,12 @@ class ZonesEditor:
             self.zname.set(z["name"])
             self.ztype.set(ZONE_NAMES.get(z["type"], z["type"]))
             self.zdir.set(DOOR_NAMES[z.get("direction") if z.get("direction") in DOOR_ARROWS else ""])
+            self.zwait.set(bool(z.get("wait")))
             self._show_help()
         self.draw()
 
     def apply_selected(self) -> None:
-        """Nombre, tipo y sentido de los campos de arriba a la zona elegida (por ejemplo, a una sugerida)."""
+        """Nombre, tipo, sentido y espera de los campos de arriba a la zona elegida (por ejemplo, a una sugerida)."""
         if self.sel is None:
             return self.app.mb.showinfo(NOMBRE, "Elegí una zona: clic sobre ella o en la lista.", parent=self.top)
         z = self.zones[self.sel]
@@ -3220,6 +3443,10 @@ class ZonesEditor:
             z["direction"] = self._direction()
         else:
             z.pop("direction", None)
+        if self._wait():
+            z["wait"] = True
+        else:
+            z.pop("wait", None)  # (sin la clave: una zona sin espera queda como siempre)
         z.pop("sugerida", None)
         self.select(self.sel)
 
@@ -3261,7 +3488,8 @@ class ZonesEditor:
         for z in self.zones:
             door = f"  {DOOR_NAMES[z['direction']][-1]}" if z.get("direction") in DOOR_ARROWS else ""
             sug = "  (sugerida)" if z.get("sugerida") else ""
-            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}{door}{sug}")
+            wait = " · espera" if z.get("wait") else ""
+            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}{door}{wait}{sug}")
         if self.sel is not None and self.sel < len(self.zones):
             self.zlist.selection_set(self.sel)
 
@@ -3282,7 +3510,8 @@ class ZonesEditor:
             chosen = zi == self.sel
             c.create_polygon(*pts, outline=col, fill=col, stipple="gray12" if z.get("sugerida") else "gray25",
                              width=3 if chosen else 2, dash=(6, 4) if z.get("sugerida") else None)
-            c.create_text(pts[0] + 4, pts[1] + 4, text=z["name"], fill=col, anchor="nw", font=("Segoe UI", 10, "bold"))
+            c.create_text(pts[0] + 4, pts[1] + 4, text=z["name"] + (" · espera" if z.get("wait") else ""), fill=col,
+                          anchor="nw", font=("Segoe UI", 10, "bold"))
             if z.get("direction") in DOOR_ARROWS:  # flecha: hacia dónde entran
                 cx = sum(x for x, _ in z["polygon"]) / len(z["polygon"]) * self.W
                 cy = sum(y for _, y in z["polygon"]) / len(z["polygon"]) * self.H
@@ -3506,10 +3735,12 @@ class TuneWindow:
         # personas por zona: lo que se cuenta apenas se guardan las zonas (las mismas reglas que las métricas)
         zf = ttk.LabelFrame(right, text="Personas por zona", padding=(6, 2, 6, 4))
         zf.pack(fill="x", pady=(6, 0))
-        self.ztree = ttk.Treeview(zf, columns=("tipo", "entraron", "ahora"), show="tree headings", height=3,
+        # (la espera y el puesto en una columna más, con las otras más angostas: la ventana no se ensancha)
+        self.ztree = ttk.Treeview(zf, columns=("tipo", "entraron", "ahora", "espera"), show="tree headings", height=3,
                                   selectmode="none", style="Conteo.Treeview")
-        for col, text, width, anchor in (("#0", "Zona", 200, "w"), ("tipo", "Tipo", 130, "w"),
-                                         ("entraron", "Entraron", 150, "center"), ("ahora", "Ahora", 70, "center")):
+        for col, text, width, anchor in (("#0", "Zona", 115, "w"), ("tipo", "Tipo", 90, "w"),
+                                         ("entraron", "Entraron", 120, "center"), ("ahora", "Ahora", 55, "center"),
+                                         ("espera", "Espera / puesto", 205, "w")):
             self.ztree.heading(col, text=text, anchor=anchor)
             self.ztree.column(col, width=width, anchor=anchor, stretch=col == "#0")
         zsb = ttk.Scrollbar(zf, orient="vertical", command=self.ztree.yview)
@@ -4530,7 +4761,7 @@ class TuneWindow:
         momento (`Tuner.counts_at`: las mismas reglas que las métricas de las máquinas)."""
         c = t.counts_at(idx) if t is not None and idx is not None else None
         zones = list(t.zones) if t is not None else []
-        key = (id(t), id(c), tuple(z.name for z in zones))
+        key = (id(t), id(c), tuple((z.name, z.wait) for z in zones))
         if key == self._counts_key:
             return
         self._counts_key = key
@@ -4539,7 +4770,7 @@ class TuneWindow:
             self.zcap.configure(text="")
             return
         if not zones:
-            self.ztree.insert("", "end", text="Sin zonas todavía", values=("tocá «✎ Marcar zonas»", "", ""))
+            self.ztree.insert("", "end", text="Sin zonas todavía", values=("", "", "", "tocá «✎ Marcar zonas»"))
             self.zcap.configure(text="Apenas guardes las zonas, se cuenta cuántas personas entran a cada una.")
             return
         c = c or {}
@@ -4552,8 +4783,10 @@ class TuneWindow:
             else:
                 entered = str(zc.get("visits", 0))
             self.ztree.insert("", "end", text=z.name, values=(ZONE_NAMES.get(z.type, z.type).split(" (")[0], entered,
-                                                               zc.get("now") or ""))
+                                                               zc.get("now") or "", zone_extra_text(z, zc)))
         rule = "personas vistas 2 s o más que pisaron la zona, sin el personal: como las métricas"
+        if any(z.wait for z in zones):
+            rule += f"; espera: clientes {WAIT_MIN_SECONDS:g} s o más en la zona"
         if not c:
             cap = "Esperando video…"
         elif t.live:
@@ -4563,6 +4796,8 @@ class TuneWindow:
             smp = t.sample_at(idx) if idx is not None else None
             name = t.seg_names[smp.seg] if smp is not None and smp.seg < len(t.seg_names) else "el clip"
             cap = f"En «{name}», hasta lo que se ve ({rule})."
+        if "empleados" in ((self.analysis or {}).get("plans") or ()) and not any(z.type == "staff" for z in zones):
+            cap += " Para medir empleados, marcá la zona «Personal (empleados)»."  # (se los reconoce por esa zona)
         self.zcap.configure(text=cap)
 
     def _show_state(self, t) -> None:

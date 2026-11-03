@@ -161,3 +161,14 @@ def test_si_la_pc_no_da_abasto_saltea_los_cuadros_viejos():
         w._q.append((np.full((H, W, 3), 60, np.uint8), i * 0.2, now - 10 + i * 0.2))
     w._drain()
     assert det.calls == 1  # solo el último: no se queda atrasada analizando lo viejo
+
+
+def test_un_link_hls_se_lee_con_el_reloj_del_video():
+    """Un link HLS (http…) pegado en una cámara Hikvision o Dahua llega en ráfagas como Hik-Connect: con el reloj de la
+    PC quedaba un cuadro por ráfaga (0,6 cuadros/s en «Ver con la IA», en «● En vivo» y en las máquinas)."""
+    from agent.worker import bursty
+    assert bursty("hikconnect", "rtsp://x")
+    assert bursty("hikvision", "http://127.0.0.1:8031/live.m3u8") and bursty("dahua", " HTTPS://x/y.m3u8")
+    assert not bursty("hikvision", "rtsp://vigia:x@h:554/Streaming/Channels/101")
+    assert not bursty("dahua", None) and not bursty(None, "/tmp/video.mp4")
+    assert not bursty("hikvision", "http://h:8080/ISAPI/Streaming/channels/101/httpPreview")  # MJPEG: parejo

@@ -38,7 +38,8 @@ def test_restrict_bucket_saca_lo_que_la_camara_no_mide():
             "vehicles": 3, "vehicles_dwell_s": 30.0, "vehicles_max": 2, "pump_vehicles": 2, "pump_wait_s": 20.0,
             "pump_wait_n": 2, "pump_unattended": 1, "shop_visits": 1, "frames": 900}
     solo_gente = restrict_bucket(data, TODOS, ["hurto", "comercio"])
-    assert all(solo_gente[k] == data[k] for k in PEOPLE_KEYS) and solo_gente["frames"] == 900
+    # (un cubo de antes no trae «waits»: la espera de los clientes, que también es de «comercio»)
+    assert all(solo_gente.get(k) == data.get(k) for k in PEOPLE_KEYS) and solo_gente["frames"] == 900
     assert all(solo_gente[k] == empty_bucket()[k] for k in STATION_KEYS)
     solo_estacion = restrict_bucket(data, TODOS, ["estacion"])
     assert solo_estacion["zones"] == {} and solo_estacion["people"] == 0 and solo_estacion["door"] == 0
