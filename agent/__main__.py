@@ -168,7 +168,8 @@ class Agent:
 
     def _detector(self, name: str, cam_cfg: dict | None = None) -> Detector:
         vehicles = bool(((cam_cfg or {}).get("analysis") or {}).get("vehicles"))
-        return build_detector(name, self.model_path, vehicles=vehicles)
+        # la app (a demanda): el mismo modelo para todas las cámaras, ya cargado al abrir (`preload_ai`)
+        return build_detector(name, self.model_path, vehicles=vehicles, shared=self.on_demand)
 
     def apply_config(self, cfg: dict) -> None:
         if self.on_demand:
@@ -886,6 +887,8 @@ def main() -> None:
     a.server = servidor_actual(a.server) or SERVIDOR_POR_DEFECTO
     verify = not a.insecure
     if a.ventana:
+        arranque.aviso("Cargando la inteligencia artificial…", 77)
+        preload_ai(a.model)
         arranque.aviso("Abriendo la ventana…", 80)
         ventana = Ventana(data_dir / "ventana.json")
         if not ventana.failed:
@@ -1019,6 +1022,20 @@ def restart_app(exe: Path | None = None) -> None:
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     subprocess.Popen(cmd, close_fds=True, env=env, cwd=str((exe or actualizar.current_exe()).parent)
                      if getattr(sys, "frozen", False) else None)
+
+
+def preload_ai(model_path) -> None:
+    """La app: carga el YOLO y la postura al abrir, mientras se ve la pantalla de carga (que no se traba). Cargar un
+    modelo frena todo el programa unos segundos; si se cargaba al abrir la primera cámara con «Ver con la IA», la
+    ventana quedaba «No responde» (más en PCs sin placa de video). Si falla, se carga como antes, al abrir la cámara."""
+    t = time.monotonic()
+    try:
+        for vehicles in (False, True):  # (comparten la sesión: la segunda no carga nada)
+            build_detector("yolo", model_path, vehicles=vehicles, shared=True)
+        build_pose()
+        log.info("IA cargada al abrir la app en %.1f s", time.monotonic() - t)
+    except Exception as exc:  # noqa: BLE001 - sin el modelo la app igual abre (y lo dice al abrir una cámara)
+        log.warning("No se pudo cargar la IA al abrir (%s): se carga al abrir la primera cámara", exc)
 
 
 def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, verify: bool | str) -> None:

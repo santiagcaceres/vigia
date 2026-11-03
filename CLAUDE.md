@@ -154,6 +154,14 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   aparece a los 0,1 s, la barra pasa por 20, 33, 50, 62, 70, 80 y 93 % y se cierra a los ~6 s con la entrada o la ventana
   principal (`tests/test_arranque.py`). En Windows sin probar: fuente Segoe UI, `center="active"` (la pantalla donde está
   el mouse).
+  **App 1.40.1 (3 nov, el dueño: «se tranca y no responde a veces» al abrir una cámara con «Ver con la IA»):** armar una
+  sesión de onnxruntime frena todo el programa (no suelta el GIL de Python; medido: el hilo de la ventana queda 1,3 s
+  parado con 2,5 s de carga, y en Windows con DirectML tarda más → «No responde»), y en una PC **sin placa de video**
+  `build_detector` armaba una sesión nueva por cada cámara que se abría. Ahora la app carga el YOLO y la postura al abrir,
+  con la pantalla de carga («Cargando la inteligencia artificial…», 77 %; `preload_ai` en `agent/__main__.py`, que no
+  frena nada porque el splash es del cargador de PyInstaller) y los comparte entre todas las cámaras también en el
+  procesador (`build_detector(..., shared=True)`, una sesión de hasta 4 hilos; `Agent._detector` lo pide con
+  `on_demand`). Las máquinas sin ventana siguen igual. Prueba: `tests/test_app_ia_precargada.py`.
 - **Tiempo de espera por zona y plan «Seguimiento de empleados» (3 nov, pedido del dueño: «medir el tiempo de espera
   promedio de las personas en una cierta zona, por ejemplo mostradores… y además seguir empleados como otra función de
   métricas»; app 1.40.0).** Todo sale de los mismos recuadros (sin procesar más).

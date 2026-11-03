@@ -352,8 +352,12 @@ def session_stats() -> tuple[int, float]:
     return frames, (frames / batches if batches else 0.0)
 
 
-def build_detector(name: str, model_path: str | Path | None = None, vehicles: bool = False) -> Detector:
-    """`vehicles=True`: además de personas detecta autos, motos, ómnibus y camiones (estaciones de servicio)."""
+def build_detector(name: str, model_path: str | Path | None = None, vehicles: bool = False,
+                   shared: bool = False) -> Detector:
+    """`vehicles=True`: además de personas detecta autos, motos, ómnibus y camiones (estaciones de servicio).
+    `shared=True` (la app de escritorio): un solo modelo para todas las cámaras también en el procesador. Cargarlo
+    frena todo el programa unos segundos (onnxruntime no suelta Python mientras arma la sesión): sin esto, en una PC sin
+    placa de video cada cámara que se abría con «Ver con la IA» lo volvía a cargar y la ventana quedaba «No responde»."""
     if name == "motion":
         return MotionDetector()
     if name == "yolo":
@@ -368,10 +372,12 @@ def build_detector(name: str, model_path: str | Path | None = None, vehicles: bo
             if sess is None:
                 # VIGIA_HILOS (máquina sin placa de video): una sesión por núcleo, compartidas por todas las cámaras
                 hilos = int(os.getenv("VIGIA_HILOS") or 0)
+                # la app: una sola sesión con más hilos, en vez de una de 2 hilos por cámara
+                threads = hilos or (min(4, max(2, os.cpu_count() or 2)) if shared else 2)
                 sess = (SessionPool(model_path, hilos) if hilos > 1 else
-                        OnnxSession(model_path, threads=hilos or 2, max_batch=None))
+                        OnnxSession(model_path, threads=threads, max_batch=None))
             det = OnnxYoloDetector(classes=classes, session=sess)
-            if det.on_gpu or sess.max_batch > 1 or os.getenv("VIGIA_HILOS"):  # una sola sesión para todas las cámaras
+            if det.on_gpu or sess.max_batch > 1 or os.getenv("VIGIA_HILOS") or shared:  # una sola sesión para todas
                 _sessions[str(model_path)] = sess
                 _shared[key] = det
             if key not in _logged:
