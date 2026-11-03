@@ -1,0 +1,79 @@
+1
+00:00:00,000 --> 00:00:05,500
+Analítica Crítica mira las cámaras de su comercio por usted.
+
+2
+00:00:05,500 --> 00:00:10,400
+Y le avisa cuando pasa algo que puede ser un hurto.
+
+3
+00:00:10,400 --> 00:00:16,100
+Usted ya tiene cámaras y un grabador. No hay que cambiar nada.
+
+4
+00:00:16,100 --> 00:00:25,200
+Nuestro sistema analiza el video mientras pasa: salir sin pagar, entrar a zonas privadas, esconder un producto.
+
+5
+00:00:25,200 --> 00:00:32,300
+Una persona de nuestro equipo revisa cada alerta. Las falsas alarmas no le llegan.
+
+6
+00:00:32,300 --> 00:00:39,700
+Y le avisamos con un link privado al clip. Es un aviso para que mire, no una acusación.
+
+7
+00:00:39,700 --> 00:00:45,200
+No grabamos sus cámaras: el video se analiza y se descarta.
+
+8
+00:00:45,200 --> 00:00:51,400
+Solo guardamos el clip corto de cada alerta, y se borra a los 60 días.
+
+9
+00:00:51,400 --> 00:00:58,000
+Sus grabaciones siguen en su grabador, como siempre. Y no reconocemos caras.
+
+10
+00:00:58,000 --> 00:01:04,800
+Para analizar el video, nuestro sistema tiene que poder verlo. Hay dos formas.
+
+11
+00:01:04,800 --> 00:01:12,100
+Abrir puertos en el router deja su grabador expuesto a internet y necesita un técnico.
+
+12
+00:01:12,100 --> 00:01:20,100
+Con una clave de Hik-Connect no se toca el router ni se instala nada. Es la que le recomendamos.
+
+13
+00:01:20,100 --> 00:01:27,600
+La clave tiene dos partes: la AppKey, que es el nombre, y la SecretKey, la llave secreta.
+
+14
+00:01:27,600 --> 00:01:34,100
+Es una llave aparte, solo para nosotros. No es la contraseña de su cuenta.
+
+15
+00:01:34,100 --> 00:01:41,100
+La puede borrar cuando quiera, y en ese mismo momento dejamos de ver sus cámaras.
+
+16
+00:01:41,100 --> 00:01:50,300
+Para darnos acceso: tenga su grabador en Hik-Connect, apague el cifrado de video y pase la cuenta al modo equipo.
+
+17
+00:01:50,300 --> 00:01:57,700
+Cree la clave en «Integración de API» y mándenos la AppKey y la SecretKey, por privado.
+
+18
+00:01:57,700 --> 00:02:04,100
+Le damos un tutorial con cada paso y, si prefiere, lo hacemos con usted.
+
+19
+00:02:04,100 --> 00:02:08,900
+Nunca le vamos a pedir la contraseña de su cuenta.
+
+20
+00:02:08,900 --> 00:02:14,500
+Analítica Crítica: cuidamos su comercio, con revisión humana.

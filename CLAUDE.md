@@ -249,6 +249,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   grabador o web) → substream H.264 640×360 8 fps 384 kbps → Hik-Connect for Teams → AppKey/SecretKey → planilla de
   datos y cámaras. Los nombres de menú no se verificaron en todos los modelos. PDF con Playwright
   (`executable_path="/opt/pw-browsers/chromium"`, A4, `print_background=True`).
+- **Para convencer al cliente (3 nov, pedido del dueño):** `docs/analitica-critica-para-clientes.html` + `.pdf` (2 páginas,
+  de usted: qué hace el sistema, qué guardamos y qué no, puertos contra clave de Hik-Connect, qué es la AppKey y la
+  SecretKey, los 5 pasos) y un video sin voz con subtítulos grabados (`docs/video-clientes/*.mp4` + `.srt`, 2 min 15 s,
+  1920x1080; lo arma `python -m tools.video_clientes` con Playwright y ffmpeg). **Nunca decir «no guardamos nada»:** se
+  guardan el clip y la foto de cada alerta (60 días), los números de las métricas y la última imagen de cada cámara; lo
+  correcto es «no grabamos sus cámaras: el video se analiza y se descarta». Guía interna para operadores y técnicos:
+  `docs/guia-conexion-camaras.html` + `.pdf` (por nube y por puertos, qué pedir y a quién).
 - **Usuario web al crear el cliente (23 oct):** `ClientIn.web_username/web_password` → crea (o edita) el
   usuario de rol `cliente` en la misma transacción; staff (admin y empleado) puede. `GET /api/clients` trae
   `web_username`. En la app: recuadro «Acceso a la web del cliente» (usuario sugerido del nombre, «Generar»

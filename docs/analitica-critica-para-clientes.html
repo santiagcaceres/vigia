@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Cómo funciona Analítica Crítica y cómo nos da acceso a sus cámaras</title>
+<style>
+  @page { size: A4; margin: 14mm 15mm 14mm 15mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#011b5d; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 10.2pt; line-height: 1.42; margin: 0; }
+  h1 { font-size: 21pt; margin: 0 0 2px; letter-spacing: -0.3px; color: #fff; line-height: 1.15; }
+  h2 { font-size: 14pt; margin: 13px 0 6px; color: var(--accent); page-break-after: avoid; }
+  h3 { font-size: 11.8pt; margin: 10px 0 4px; color: var(--accent); page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ul, ol { margin: 5px 0 5px 20px; padding: 0; }
+  li { margin: 2px 0; }
+  .hero { background: var(--accent); color: #fff; border-radius: 10px; padding: 13px 20px; display: flex; gap: 18px;
+          align-items: center; margin-bottom: 14px; }
+  .hero img { width: 64px; height: 64px; }
+  .hero .brand { font-size: 10pt; letter-spacing: 2px; text-transform: uppercase; opacity: .85; font-weight: 700; }
+  .hero .sub { font-size: 12.5pt; opacity: .92; margin-top: 4px; }
+  .lead { font-size: 11pt; }
+  .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 6px; page-break-inside: avoid; }
+  .flow div { border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 8px; padding: 8px 10px;
+              font-size: 9.8pt; background: #fff; }
+  .flow b { display: block; color: var(--accent); font-size: 10.6pt; margin-bottom: 2px; }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 8px 13px; margin: 9px 0; border-radius: 7px;
+         page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; page-break-inside: avoid; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font-size: 9.8pt; }
+  .card h3 { margin-top: 0; }
+  .card.good { border-top: 4px solid var(--ok); }
+  .card.meh { border-top: 4px solid var(--warn); }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--bad); font-weight: 700; }
+  table { border-collapse: collapse; width: 100%; margin: 7px 0; font-size: 10pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  td.k { width: 34%; font-weight: 600; }
+  .key { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; page-break-inside: avoid; }
+  .key div { background: var(--bg); border-radius: 8px; padding: 7px 11px; }
+  .key b { color: var(--accent); font-size: 11.5pt; }
+  .steps { counter-reset: s; list-style: none; margin: 6px 0; padding: 0; }
+  .steps li { counter-increment: s; position: relative; padding-left: 32px; margin: 3px 0; page-break-inside: avoid; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%;
+                      background: var(--accent); color: #fff; text-align: center; line-height: 24px; font-weight: 700; font-size: 10pt; }
+  .muted { color: var(--muted); }
+  .small { font-size: 9.2pt; }
+  .pb { page-break-before: always; }
+  .foot { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 8.8pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <img src="../public/img/logo-blanco.png" alt="">
+  <div>
+    <div class="brand">Analítica Crítica</div>
+    <h1>Cómo funciona y cómo nos da acceso a sus cámaras</h1>
+    <div class="sub">Qué hacemos con su video, qué es la «clave de API» y por qué es la forma más segura de conectarse</div>
+  </div>
+</div>
+
+<p class="lead">Analítica Crítica <b>mira sus cámaras por usted</b>: analiza el video en tiempo real, detecta comportamientos que
+pueden ser un hurto y, cuando pasa algo, <b>una persona de nuestro equipo lo revisa</b> antes de avisarle. Usted no tiene que
+estar mirando las pantallas todo el día.</p>
+
+<h2>Qué hace nuestro sistema</h2>
+<div class="flow">
+  <div><b>1 · Mira</b>Analiza el video de sus cámaras mientras pasa, todo el día o en el horario de su local.</div>
+  <div><b>2 · Detecta</b>Personas que salen sin pasar por la caja, que entran a zonas privadas o que esconden un producto.</div>
+  <div><b>3 · Revisamos</b>Cada alerta la mira una persona de nuestro equipo. Las falsas alarmas no le llegan.</div>
+  <div><b>4 · Le avisamos</b>Le mandamos un link privado con el clip, que vence a los 14 días.</div>
+</div>
+<p>Además, si lo contrata, le damos <b>números de su local</b>: cuántas personas entraron por hora, cuánto esperan en la caja,
+si el mostrador estuvo atendido. Los ve en la web, desde el celular o la computadora.</p>
+<div class="box warn"><b>Un aviso para que usted mire, no una acusación.</b> El sistema marca situaciones sospechosas, pero no
+es infalible: por eso cada alerta la revisa una persona y siempre dice «posible hurto». La decisión es suya.</div>
+
+<h2>Qué guardamos y qué no</h2>
+<table>
+  <tr><th>No hacemos</th><th>Sí guardamos (solo lo necesario)</th></tr>
+  <tr>
+    <td>
+      <ul>
+        <li><span class="no">No grabamos sus cámaras.</span> El video se analiza al pasar y se descarta.</li>
+        <li>No tocamos sus grabaciones: siguen en su grabador, como siempre, y son suyas.</li>
+        <li>No reconocemos caras ni identificamos a las personas.</li>
+        <li>No cambiamos la configuración de su grabador ni borramos nada.</li>
+        <li>No necesitamos ni guardamos la contraseña de su cuenta ni la de su grabador.</li>
+      </ul>
+    </td>
+    <td>
+      <ul>
+        <li>El <b>clip corto y la foto de cada alerta</b>, para que una persona la revise y para mostrársela a usted.
+            <b>Se borran a los 60 días.</b></li>
+        <li>Los <b>números</b> de su local (personas por hora, tiempos de espera), sin imágenes.</li>
+        <li>La última imagen de cada cámara, para marcar las zonas (caja, góndolas, salida).</li>
+        <li>La clave de acceso que usted nos da, <b>guardada cifrada</b>.</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+<p class="small muted">Guardamos solo lo necesario y por el tiempo necesario, como pide la Ley 18.331 de Protección de Datos
+Personales. Cada acceso de nuestro equipo a sus cámaras queda registrado.</p>
+
+<h2 class="pb" style="margin-top:0">Dos formas de darnos acceso</h2>
+<p>Para analizar el video, nuestro sistema tiene que poder verlo. Hay dos formas de lograrlo:</p>
+<div class="two">
+  <div class="card meh">
+    <h3>Abriendo puertos en su router</h3>
+    <ul>
+      <li>Un técnico va al local y configura el router para que su grabador se pueda ver <b>desde internet</b>.</li>
+      <li>Su grabador queda <b>expuesto</b>: en internet hay programas que buscan grabadores abiertos para probar claves.</li>
+      <li>Hace falta una IP fija o un servicio que la siga, y revisar que siga andando cuando el proveedor de internet la
+          cambia.</li>
+      <li>Para dejar de darnos acceso hay que volver a tocar el router.</li>
+    </ul>
+  </div>
+  <div class="card good">
+    <h3>Con una clave de Hik-Connect <span class="yes">(recomendada)</span></h3>
+    <ul>
+      <li><b>No se toca el router ni se instala nada.</b> Su grabador no queda abierto a internet.</li>
+      <li>Usamos la misma conexión que ya usa su app Hik-Connect, la nube de Hikvision.</li>
+      <li><b>No compartimos su contraseña</b>: usted crea una llave aparte, solo para nosotros.</li>
+      <li><b>La borra cuando quiera</b> y en ese mismo momento dejamos de ver sus cámaras.</li>
+      <li>Lo hace usted en 20 a 40 minutos, desde el celular y la computadora. Si quiere, lo hacemos juntos.</li>
+    </ul>
+  </div>
+</div>
+<p class="small muted">La clave de Hik-Connect es para grabadores <b>Hikvision</b>. Con otra marca (por ejemplo Dahua) se abren
+puertos, con un usuario que solo puede mirar y las medidas de seguridad que le explicamos aparte.</p>
+
+<h2>¿Qué es la «clave de API»?</h2>
+<p>Piénselo como una <b>llave aparte</b> que usted le da a un servicio de confianza: no es la llave de su casa (su contraseña),
+es otra, que abre solo lo que hace falta y que usted puede cambiar o anular cuando quiera.</p>
+<div class="key">
+  <div><b>AppKey</b><br>El <b>nombre</b> de la llave: dice a quién se la dio. Es como el número de un llavero.</div>
+  <div><b>SecretKey</b><br>La <b>llave</b> en sí: la parte secreta. Se la manda solo a su contacto de Analítica Crítica, por
+      privado, nunca en un grupo.</div>
+</div>
+<ul>
+  <li><b>Qué permite:</b> que nuestro sistema le pida a Hikvision el video de las cámaras de su grabador para analizarlo.</li>
+  <li><b>Qué no permite:</b> entrar a su cuenta, ver su contraseña, ni usar su app. Nosotros no la usamos para cambiar la
+      configuración ni para borrar grabaciones.</li>
+  <li><b>Cómo quitarnos el acceso:</b> en el portal de Hik-Connect, Gestión del equipo → Integración de API → borrar la clave.
+      Es inmediato.</li>
+</ul>
+
+<h2>Qué tiene que hacer usted</h2>
+<ol class="steps">
+  <li>Tener su grabador en la app <b>Hik-Connect</b> (si ya ve sus cámaras ahí, está listo).</li>
+  <li><b>Apagar el «cifrado de video»</b> en el grabador: con el cifrado prendido, Hikvision solo entrega el video a su propia
+      app.</li>
+  <li>Pasar su cuenta al <b>modo equipo</b> (Hik-Connect for Teams) en www.hik-connect.com.</li>
+  <li>Crear la clave en <b>Gestión del equipo → Integración de API</b>: aparecen la AppKey y la SecretKey.</li>
+  <li>Mandarnos <b>por privado</b> la AppKey, la SecretKey, el número de serie del grabador y qué mira cada cámara.</li>
+</ol>
+<div class="box ok">Le damos el <b>«Tutorial Hikvision»</b> paso a paso y, si prefiere, lo hacemos con usted.
+<b>Nunca le vamos a pedir la contraseña de su cuenta.</b> Si un portal le pide un pago, avísenos antes de aceptar.</div>
+
+
+</body>
+</html>
