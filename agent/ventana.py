@@ -32,7 +32,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import estilo, marca
+from . import arranque, estilo, marca
 
 log = logging.getLogger("vigia.ventana")
 
@@ -116,6 +116,7 @@ class Ventana:
         self.main_built = False
         self.on_logout: Callable[[], None] | None = None
         self.hooks: list[Callable[[], None]] = []  # se llaman en cada pump (resultados de red de la oficina)
+        self._shown = False  # ya se dibujó una vez (se cierra la pantalla de carga del .exe)
         self.analyze = False
         self.on_demand = False  # app de escritorio: lo elegido se abre en esta PC (ver Agent._demand_tick)
         self.selected_at = 0.0  # cuándo cambió la selección (para no avisar en cada clic con Shift)
@@ -176,6 +177,7 @@ class Ventana:
         verdadero o lanza ValueError con el mensaje a mostrar. Devuelve ese resultado, o None si cerraron."""
         if not self.open:
             return None
+        arranque.cerrar()  # la pantalla de carga queda siempre encima: taparía la entrada
         tk, ttk = self.tk, self.ttk
         frame = ttk.Frame(self.root, padding=30)
         frame.place(relx=0.5, rely=0.45, anchor="center")
@@ -469,6 +471,9 @@ class Ventana:
                 hook()
             self.root.update_idletasks()
             self.root.update()
+            if not self._shown:  # la ventana ya se dibujó: afuera la pantalla de carga
+                self._shown = True
+                arranque.cerrar()
             self.root.after(ms)  # sin callback: espera `ms` (como un sleep que no congela la ventana)
             return self.open
         except Exception:

@@ -6,7 +6,11 @@ Equivale a `python -m agent`. El .exe lee `agente.env` (servidor y token) de su 
 y, si no existe, los pide por consola la primera vez.
 """
 
-from agent.__main__ import main
+from agent import arranque
+
+arranque.aviso("Cargando la inteligencia artificial…", 74)  # (cargar OpenCV y el detector tarda unos segundos)
+
+from agent.__main__ import main  # noqa: E402
 
 if __name__ == "__main__":
     main()

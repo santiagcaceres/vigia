@@ -139,6 +139,21 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   pone el nuevo y lo reabre (`restart_app`, con `PYINSTALLER_RESET_ENVIRONMENT=1`); el viejo se borra al
   arrancar. `agente.env` no se toca: vuelve con la misma sesión. La versión la graba el workflow en
   `agent/version.py` (en el código dice `dev`). **Publicar una versión = correr el workflow con `version`.**
+- **Pantalla de carga al abrir la app (3 nov, pedido del dueño: «demora un poco… un pop up de carga con el logo hasta
+  que abra»; app 1.39.0):** `Splash` de PyInstaller en `agente_pc.spec`: se ve apenas se hace doble clic, **antes** de que
+  el .exe se descomprima (~1500 archivos, ~360 MB: lo que más tarda) y de que arranque Python. Imagen
+  `agent/recursos/splash.png` (ojo, nombre, lema y riel; la genera `tools/logo.py`, medidas en `agent/arranque.py`). El
+  .spec reemplaza el procedimiento de Tcl `canvas_text_update` de la plantilla de PyInstaller: en vez del nombre de cada
+  archivo, «Preparando el programa…» y una barra que avanza **por tamaño** (los archivos de 256 KB o más van con su tamaño
+  en el script, el resto con el promedio; si avanzara por cantidad se quedaría quieta con los grandes) hasta el 70 %; si
+  otra versión de PyInstaller cambia la plantilla, la compilación avisa y queda la de fábrica. `agent/arranque.py`:
+  `aviso(texto, avance)` manda «=NN|texto» (74 cargando la IA, en `agente_pc.py` antes de importar OpenCV; 80 abriendo la
+  ventana; 86 conectando con el servidor; 93 pestañas) y `cerrar()`: antes de la pantalla de entrada, antes de cualquier
+  mensaje (queda siempre encima y lo taparía) y en el primer `Ventana.pump`; el registro dice cuánto tardó desde que
+  arrancó Python. Probado con un .exe de Linux armado con la misma versión que Windows (PyInstaller 6.22.3) en Xvfb:
+  aparece a los 0,1 s, la barra pasa por 20, 33, 50, 62, 70, 80 y 93 % y se cierra a los ~6 s con la entrada o la ventana
+  principal (`tests/test_arranque.py`). En Windows sin probar: fuente Segoe UI, `center="active"` (la pantalla donde está
+  el mouse).
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router

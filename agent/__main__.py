@@ -35,7 +35,7 @@ from core.rules import parse_zones
 from core.schedule import is_open, next_open
 from core.scorer import Scorer
 
-from . import actualizar, hikconnect
+from . import actualizar, arranque, hikconnect
 from .alarms import AlarmRunner
 from .device_alarms import DeviceAlarmListener
 from .imports import ImportJobRunner
@@ -878,6 +878,7 @@ def main() -> None:
     setup_logging(data_dir, a.verbose)
     renamed = actualizar.adopt_name()  # VigiaAgente.exe → «Analítica Crítica.exe» (una sola vez)
     if renamed is not None:
+        arranque.cerrar()  # la copia nueva muestra la suya
         restart_app(renamed)  # se abre la copia con el nombre nuevo (que borra este archivo) y este proceso termina
         return
     threading.Thread(target=actualizar.cleanup_old, daemon=True).start()
@@ -885,10 +886,15 @@ def main() -> None:
     a.server = servidor_actual(a.server) or SERVIDOR_POR_DEFECTO
     verify = not a.insecure
     if a.ventana:
+        arranque.aviso("Abriendo la ventana…", 80)
         ventana = Ventana(data_dir / "ventana.json")
         if not ventana.failed:
-            return run_app(a, env, cfg_path, data_dir, ventana, verify)
+            try:
+                return run_app(a, env, cfg_path, data_dir, ventana, verify)
+            finally:
+                arranque.cerrar()
         log.warning("Sin ventana: sigue como servicio (solo análisis)")
+    arranque.cerrar()
     if a.clave_maquinas:
         return run_machine(a, data_dir, verify)
     # sin ventana (servidor): solo analiza, con el token del agente
@@ -1024,6 +1030,7 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     global _instance_lock
     _instance_lock = single_instance(data_dir)
     if _instance_lock is None:
+        arranque.cerrar()  # (queda siempre encima: taparía el mensaje)
         ventana.messagebox.showinfo(NOMBRE, f"{NOMBRE} ya está abierto en esta PC. Usá esa ventana (fijate en la barra "
                                             "de tareas): con dos abiertos, uno le cierra la sesión al otro.")
         ventana.close()
@@ -1049,6 +1056,7 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     # sesión guardada
     logged = False
     if saved.get("VIGIA_SESSION"):
+        arranque.aviso("Conectando con el servidor…", 86)
         api.set_token(saved["VIGIA_SESSION"])
         try:
             logged = api.me().get("role") in ("admin", "entrenador")
@@ -1072,11 +1080,13 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
     try:
         session = api.post("/api/agent/session")
     except ApiError as exc:
+        arranque.cerrar()
         ventana.messagebox.showerror(NOMBRE, f"No se pudo preparar el análisis de cámaras: {exc}")
         return
     user = api.user or {}
     title = f"{user.get('username')} ({'administrador' if user.get('role') == 'admin' else 'operador'})"
     ventana.on_logout = logout
+    arranque.aviso("Preparando las pestañas…", 93)
     ventana.build_main(title, analyze=True, on_demand=True)
     holder: dict = {}
 

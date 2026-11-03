@@ -7,6 +7,7 @@ primera a); en el sistema el nombre se escribe aparte, bien: «Analítica Críti
 Salida:
 - agent/recursos/: logo para la app de escritorio (PNG para Tk, que no escala bien: un archivo por tamaño) e
   `icono.ico` (ícono del .exe, de la ventana y de la barra de tareas).
+  También `splash.png`, la pantalla de carga del .exe (agente_pc.spec).
 - public/img/: logo y favicon para la web.
 Necesita Pillow (solo para generar; la app y el servidor no lo usan).
 """
@@ -65,6 +66,43 @@ def tile(mask: Image.Image, size: int) -> Image.Image:
     return bg.resize((size, size), Image.LANCZOS)
 
 
+# pantalla de carga del .exe (agente_pc.spec, Splash): la barra de avance y el texto los dibuja PyInstaller encima;
+# las medidas están en agent/arranque.py (el .spec las lee de ahí, sin Pillow)
+FONT_DIR = Path("/usr/share/fonts/opentype/inter")  # Inter (OFL); solo para generar la imagen
+
+
+def splash(mask: Image.Image) -> Image.Image:
+    """Imagen de la pantalla de carga: el ojo, el nombre, el lema y el riel de la barra (sin magenta: en Windows es
+    el color transparente)."""
+    from PIL import ImageFont
+
+    from agent.arranque import SPLASH_BAR, SPLASH_SIZE
+
+    w, h = SPLASH_SIZE
+    img = Image.new("RGBA", (w, h), (255, 255, 255, 255))
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, w - 1, h - 1), outline=(214, 220, 232, 255))  # borde suave
+    d.rectangle((0, h - 6, w - 1, h - 1), fill=NAVY + (255,))  # franja de la marca abajo
+    eye = colored(mask, 92, NAVY)
+    img.alpha_composite(eye, ((w - 92) // 2, 34))
+
+    def font(style: str, size: int):
+        for name in (f"Inter-{style}.otf", f"Inter-{style}.ttf"):
+            if (FONT_DIR / name).exists():
+                return ImageFont.truetype(str(FONT_DIR / name), size)
+        return ImageFont.load_default(size)
+
+    def centered(text: str, y: int, fnt, fill) -> None:
+        x0, _, x1, _ = d.textbbox((0, 0), text, font=fnt)
+        d.text(((w - (x1 - x0)) // 2, y), text, font=fnt, fill=fill)
+
+    centered("Analítica Crítica", 140, font("Bold", 32), NAVY)
+    centered("Analítica de video para comercios", 184, font("Regular", 15), (91, 100, 112))
+    x0, y0, x1, y1 = SPLASH_BAR
+    d.rounded_rectangle((x0, y0, x1, y1), radius=3, fill=(228, 233, 242, 255))
+    return img
+
+
 def main() -> None:
     mask = symbol_mask()
     app = ROOT / "agent" / "recursos"
@@ -78,6 +116,7 @@ def main() -> None:
         tiles[s].save(app / f"icono-{s}.png")
     for s in (28, 40, 96):  # encabezado y pantalla de entrada (sin cuadrado, sobre el fondo de la app)
         colored(mask, s, NAVY).save(app / f"logo-{s}.png")
+    splash(mask).convert("RGB").save(app / "splash.png")  # pantalla de carga del .exe (sin transparencia)
     colored(mask, 512, NAVY).save(web / "logo.png")
     colored(mask, 512, (255, 255, 255)).save(web / "logo-blanco.png")
     tiles[32].save(web / "favicon-32.png")
