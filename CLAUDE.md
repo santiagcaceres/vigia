@@ -249,19 +249,25 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   métricas y una de afuera otra cosa»).** Los planes los sigue contratando el cliente (`clients.plans`); cada cámara
   elige cuáles mide: `cameras.plans` (JSON; None = como el cliente; si no, subconjunto no vacío; igual a todos = None;
   `SCHEMA_VERSION` 2026-11-02.1). `server/main.py`: `camera_plans`/`pick_plans` (lo que rige: lo elegido dentro de lo del
-  cliente; si no queda nada, todo lo del cliente), `clean_camera_plans` (422 si el cliente no lo tiene, vacío o
-  repetido), `trim_plans` (al cambiar los planes del cliente o pasar la cámara a otro cliente). `camera_analysis` usa lo
+  cliente; si el cliente ya no tiene nada de lo elegido, **nada**: la app dice «elegilo en Editar»), `clean_camera_plans`
+  (422 si el cliente no lo tiene, vacío o repetido). Lo elegido **no se recorta** cuando el cliente cambia sus planes (así
+  una cámara de afuera puesta sin hurto no empieza a dar alertas si el cliente deja y vuelve a contratar hurto); al pasar
+  la cámara a otro cliente vuelve a «como el cliente». Un cliente necesita al menos un plan (422; `plans_of` toma `[]`
+  viejo como hurto, como `client_dict`). Las alarmas de una cámara que no mide hurto se descartan (`store_alarm` →
+  «no_mide_hurto»; en modo alarmas no se mide nada: la app y la web lo avisan). `camera_analysis` usa lo
   de la cámara: sin «hurto» → solo métricas (sin reglas, gestos ni clips; 2-3 cuadros/s); «estacion» → vehículos; manda
   `plans` (de la cámara) y `client_plans`. `camera_dict` trae `plans` y `measures`; `CameraIn.plans` (al editar solo si
   viene en el pedido); `POST /api/cameras/plans` {camera_ids, plans} (staff, todas o ninguna). **Agrupado por cliente:**
   `metrics_summary` (/api/metrics y PDF) y `/api/metrics/export` recortan cada cubo con `core.metrics.restrict_bucket`
   (gente = `PEOPLE_KEYS`, plan comercio; vehículos, surtidor y tienda = `STATION_KEYS`, plan estacion; solo si el cliente
   tiene ese plan, así con todo en None nada cambia); `by_camera` trae `measures`. Se recorta según lo que mide la cámara
-  HOY (cambiarlo cambia cómo se suman sus datos viejos). Nombres de archivo de PDF/CSV sin tildes (`file_safe`). App:
+  HOY (cambiarlo cambia cómo se suman sus datos viejos). PDF «Por cámara» con «-» en lo que no mide. Nombres de
+  archivo de PDF/CSV sin tildes (`file_safe`). Web: editar una cámara ya no le asigna sola la primera PC central ni
+  falla si solo tiene link (`check_camera_body(existing=)`). App:
   «Qué mide esta cámara» en el formulario (columna derecha), columna «Mide» en la lista, «Mide: …» en el detalle, «Qué
   mide…» en «Más» para varias, «Por cámara (cada una suma lo que mide)» en Métricas; `gestures_blocked` dice «esta cámara
   no mide hurtos». Web: lo mismo en el formulario y la ficha de la cámara y «Mide» en Métricas «Por cámara». Hecho con 3
-  agentes en paralelo (servidor, app, web) y revisión adversarial. Probado de punta a punta (servidor real + app en Xvfb
+  agentes en paralelo (servidor, app, web) y revisión adversarial (6 agentes: 7 defectos confirmados, arreglados). Probado de punta a punta (servidor real + app en Xvfb
   como operador + una máquina dada de alta): «Playa surtidores» solo Estación (2 cuadros/s, sin alertas, vehículos),
   «Tienda» y «Caja» Hurto + Comercio (5 cuadros/s, reglas y gestos); con 10 personas y 7 vehículos en la playa y 25
   personas y 2 vehículos en la tienda, el cliente suma 25 personas y 7 vehículos. Prueba: `tests/test_planes_por_camara.py`.

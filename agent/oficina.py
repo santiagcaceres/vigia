@@ -187,7 +187,7 @@ def client_plans(client: dict | None) -> list[str]:
 
 def camera_measures(cam: dict, client: dict | None) -> list[str]:
     """Lo que mide la cámara en efecto: lo que dice el servidor (`measures`) o, si no lo manda, lo del cliente
-    recortado por lo guardado en la cámara (si no queda nada, todo lo del cliente, como el servidor)."""
+    recortado por lo guardado en la cámara (como el servidor: si el cliente ya no tiene nada de lo elegido, nada)."""
     m = cam.get("measures")
     if isinstance(m, list):
         return [p for p in PLAN_NAMES if p in m]
@@ -195,7 +195,7 @@ def camera_measures(cam: dict, client: dict | None) -> list[str]:
     saved = cam.get("plans")
     if saved is None:
         return have
-    return [p for p in have if p in saved] or have
+    return [p for p in have if p in saved]
 
 
 def plans_to_save(checked, cplans: list[str]) -> list[str] | None:
@@ -213,7 +213,9 @@ def measures_text(cam: dict, client: dict | None, short: bool = True) -> str:
         return "(todo)"
     m = camera_measures(cam, client)
     names = PLAN_SHORT if short else PLAN_NAMES
-    txt = (" · " if short else ", ").join(names[p] for p in m) or "nada"
+    txt = (" · " if short else ", ").join(names[p] for p in m)
+    if not txt:  # el cliente ya no tiene nada de lo que se le eligió: hay que elegirle de nuevo
+        return "nada" if short else "nada: el cliente ya no tiene lo que se le eligió (elegilo en «Editar»)"
     return txt if short else txt + (" (como el cliente)" if cam.get("plans") is None else "")
 
 
@@ -1115,6 +1117,8 @@ class Oficina:
             body["timezone"] = body["timezone"] or "America/Montevideo"
             body["webhook_url"] = c.get("webhook_url")
             body["plans"] = [p for p, var in plans.items() if var.get()]
+            if not body["plans"]:  # (el servidor tampoco lo acepta: sin planes las cámaras no sabrían qué medir)
+                return self.mb.showwarning(NOMBRE, "Elegí al menos un plan para el cliente.", parent=top)
             body["hours"] = {d: var.get().strip() for d, var in hours.items()}
             if self.is_admin:
                 body["analysis_location"] = next((k for k, t in LOCATION_NAMES.items() if t == loc.get()), "general")
@@ -1438,6 +1442,9 @@ class Oficina:
                        "alertas ni clips.")
             else:
                 txt = ""
+            if txt and inv(MODE_NAMES, v["mode"].get()) in ("alarmas", "alarmas_equipo"):
+                txt += (" Ojo: en modo alarmas solo se buscan hurtos y no se mide nada: para medir, poné el modo «En vivo» "
+                        "(en «Más opciones»).")
             theft_lbl.configure(text=txt)
             theft_lbl.pack(anchor="w", pady=(4, 0)) if txt else theft_lbl.pack_forget()
         for p in cplans:
@@ -1449,6 +1456,7 @@ class Oficina:
                            "Los números se suman por cliente.", foreground="#666", wraplength=370,
                   justify="left").pack(anchor="w", pady=(4, 0))
         plans_changed()
+        v["mode"].trace_add("write", lambda *_: plans_changed())  # (el aviso del modo alarmas)
 
         def srow(r: int, label: str, widget, sticky: str = "ew") -> None:
             ttk.Label(side, text=label).grid(row=r, column=0, sticky="w")

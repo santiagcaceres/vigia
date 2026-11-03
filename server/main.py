@@ -204,31 +204,28 @@ def ordered_plans(plans) -> list[str]:
 
 
 def plans_of(client) -> list[str]:
-    """Lo que contrató el cliente (sin cliente: nada; un video subido para entrenar no es de ningún plan)."""
-    return ordered_plans(client.plans if client is not None else None)
+    """Lo que contrató el cliente (sin cliente: nada; un video subido para entrenar no es de ningún plan). Un cliente
+    guardado sin planes es de hurto, como lo muestran `client_dict`, las métricas y la app (desde el 2 nov no se puede
+    guardar sin ninguno)."""
+    if client is None:
+        return []
+    return ordered_plans(client.plans or ["hurto"])
 
 
 def pick_plans(saved, own: list[str]) -> list[str]:
-    """Lo que mide en efecto una cámara: lo elegido para ella (`saved`) dentro de lo del cliente (`own`). Sin elegir, o
-    si el cliente ya no tiene nada de lo elegido, todo lo del cliente."""
+    """Lo que mide en efecto una cámara: lo elegido para ella (`saved`) dentro de lo del cliente (`own`); sin elegir,
+    todo lo del cliente. Lo elegido no se toca cuando el cliente cambia sus planes: si deja uno, la cámara deja de medirlo;
+    si lo vuelve a contratar, lo vuelve a medir solo si se le había elegido. Si el cliente ya no tiene nada de lo elegido,
+    la cámara no mide nada (la app lo muestra) en vez de pasar a medir lo que no se le pidió (p. ej. hurto afuera)."""
     if saved is None:
         return list(own)
     keep = set(saved)
-    return [p for p in own if p in keep] or list(own)
+    return [p for p in own if p in keep]
 
 
 def camera_plans(c, client) -> list[str]:
     """Los planes que mide la cámara `c` (Camera.plans dentro de Client.plans)."""
     return pick_plans(c.plans, plans_of(client))
-
-
-def trim_plans(saved, own: list[str]) -> list[str] | None:
-    """Lo elegido para una cámara recortado a lo que su cliente sigue teniendo. None (= como el cliente) si no queda
-    nada o si queda todo lo del cliente."""
-    if saved is None:
-        return None
-    keep = [p for p in own if p in set(saved)]
-    return None if not keep or keep == list(own) else keep
 
 
 def clean_camera_plans(plans: list[str] | None, client, camera: str | None = None) -> list[str] | None:
@@ -1232,8 +1229,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             u.password_hash = hash_password(password)
             s.query(SessionToken).filter_by(user_id=u.id).delete()
 
+    def check_client_plans(body: ClientIn) -> None:
+        if not body.plans:  # sin planes la cámara no sabría qué medir (y cada lado lo leía distinto)
+            raise HTTPException(422, "Elegí al menos un plan para el cliente")
+
     @app.post("/api/clients", status_code=201)
     def create_client(body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
+        check_client_plans(body)
         if s.query(Client).filter_by(name=body.name).first():
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         c = Client(**body.client_fields())
@@ -1249,6 +1251,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/clients/{cid}")
     def update_client(cid: int, body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
+        check_client_plans(body)
         c = get_or_404(s, Client, cid, "Cliente")
         other = s.query(Client).filter(Client.name == body.name, Client.id != cid).first()
         if other:
@@ -1262,10 +1265,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_client_hc(c, body)
         moved = set_client_ip(s, c, body)
         set_client_web_user(s, c, body)
-        own = plans_of(c)  # lo que el cliente dejó de tener, sus cámaras ya no lo miden
-        for cam in s.query(Camera).filter(Camera.client_id == c.id):
-            if cam.plans is not None:
-                cam.plans = trim_plans(cam.plans, own)
         s.flush()
         sync_locations(s, before)
         bump_rev(s)  # horario y planes cambian qué hacen sus cámaras
@@ -1703,7 +1702,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cl = s.get(Client, body.client_id)
         return cl.ip_password_enc if cl else None
 
-    def check_camera_body(s, body: CameraIn) -> None:
+    def check_camera_body(s, body: CameraIn, existing: Camera | None = None) -> None:
         get_or_404(s, Client, body.client_id, "Cliente")
         if body.agent_id is not None:
             ag = get_or_404(s, Agent, body.agent_id, "Agente")
@@ -1719,7 +1718,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if body.mode != "vivo":
                 raise HTTPException(422, "Por Hik-Connect, por ahora, solo el modo En vivo 24 h")
             return
-        if not body.host and not body.source_url:
+        kept = existing is not None and body.keep_source_url and bool(existing.source_url_enc)  # el link guardado
+        if not body.host and not body.source_url and not kept:
             raise HTTPException(422, "Indicá la IP del NVR/cámara o una URL RTSP")
         if body.mode == "alarmas" and not body.hpp_serial:
             raise HTTPException(422, "En modo alarmas indicá el número de serie del DVR en Hik-Partner Pro")
@@ -1757,13 +1757,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/cameras/{cam_id}")
     def update_camera(cam_id: int, body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
-        check_camera_body(s, body)
+        check_camera_body(s, body, existing=c)
         check_not_repeated(s, body, exclude=cam_id)
         client = s.get(Client, body.client_id)
-        if "plans" in body.model_fields_set:  # solo si vino: null = como el cliente
+        if "plans" in body.model_fields_set:  # solo si vino: null = como el cliente (lo elegido no se recorta solo)
             c.plans = clean_camera_plans(body.plans, client)
-        elif c.plans is not None and body.client_id != c.client_id:  # pasó a otro cliente: lo que este no tenga, no
-            c.plans = trim_plans(c.plans, plans_of(client))
+        elif body.client_id != c.client_id:  # pasó a otro cliente: lo elegido era para el otro, sigue al nuevo
+            c.plans = None
         before = locations(s)
         for k, v in camera_fields(body).items():
             setattr(c, k, v)
@@ -2532,6 +2532,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Guarda una alarma (de HPP o del propio grabador) agrupando los disparos seguidos."""
         if target and target.lower() not in ("human", "person", "persona"):
             return "no_persona_dvr"  # el propio equipo (AcuSense / SMD) dice que fue un vehículo u otra cosa
+        if cam is not None and "hurto" not in camera_plans(cam, s.get(Client, cam.client_id)):
+            return "no_mide_hurto"  # las alarmas solo sirven para buscar hurtos: esta cámara no los mide («Qué mide»)
         status = "pendiente" if cam else "sin_camara"
         merge = timedelta(seconds=st.alarm_merge_seconds)
         q = s.query(Alarm).filter(Alarm.device_serial == serial, Alarm.channel == channel,

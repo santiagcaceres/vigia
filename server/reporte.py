@@ -264,9 +264,18 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
     if len(m.get("by_camera") or []) > 1:
         pdf.h2("Por cámara")
         est = "estacion" in plans
+
+        def people(c: dict) -> bool:  # la cámara suma gente (si el cliente mide comercio, solo las que lo miden)
+            meas = c.get("measures")
+            return meas is None or "comercio" not in plans or "comercio" in meas
+
+        def cars(c: dict) -> bool:
+            meas = c.get("measures")
+            return meas is None or "estacion" in meas
         pdf.table(["Cámara", "Tiempo promedio", "Máximo a la vez"] + (["Vehículos"] if est else []),
-                  [[c["name"], dur(avg(c["people_dwell_s"], c["people"])), str(c["people_max"])]
-                   + ([str(c["vehicles"])] if est else []) for c in m["by_camera"]],
+                  [[c["name"], dur(avg(c["people_dwell_s"], c["people"])) if people(c) else "-",
+                    str(c["people_max"]) if people(c) else "-"]
+                   + ([str(c["vehicles"]) if cars(c) else "-"] if est else []) for c in m["by_camera"]],
                   [90, 44, 38] + ([22] if est else []))
     if "hurto" in plans and alerts is not None:
         pdf.h2("Alertas de posible hurto")
@@ -282,5 +291,6 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
              "cámara, así nadie se cuenta dos veces). No se suma la gente de todas las cámaras: la misma persona aparece en "
              "varias y, si sale del cuadro y vuelve, cuenta de nuevo. «A dónde van» cuenta visitas: quien vuelve a una "
              "zona suma otra visita. Quien pisa la zona de "
-             "personal o aparece con el local cerrado no cuenta como cliente. No se reconocen caras.")
+             "personal o aparece con el local cerrado no cuenta como cliente. Cada cámara suma solo lo que se le eligió "
+             "medir («-» en lo que no mide). No se reconocen caras.")
     return bytes(pdf.output())

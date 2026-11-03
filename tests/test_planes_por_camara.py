@@ -180,25 +180,65 @@ def test_elegir_lo_que_miden_varias_camaras_a_la_vez(app):
         assert u.post("/api/cameras/plans", json={"camera_ids": [c1["id"]], "plans": ["hurto"]}).status_code == 403
 
 
-def test_el_cliente_que_deja_un_plan_recorta_lo_de_sus_camaras(app):
+def test_lo_elegido_en_la_camara_no_se_pierde_cuando_el_cliente_cambia_sus_planes(app):
+    """(Revisión 2 nov) Antes se recortaba al guardar el cliente: una cámara de afuera puesta sin hurto quedaba «como el
+    cliente» y, al volver a contratar hurto, empezaba a dar alertas sin que nadie lo pidiera."""
     with TestClient(app) as a:
         a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
         cid = a.post("/api/clients", json={"name": "Estación", "plans": TODOS}).json()["id"]
         x = a.post("/api/cameras", json=cam_body(cid, "X", plans=["comercio", "estacion"])).json()
         y = a.post("/api/cameras", json=cam_body(cid, "Y", plans=["estacion"])).json()
-        z = a.post("/api/cameras", json=cam_body(cid, "Z", plans=["hurto", "comercio"])).json()
         w = a.post("/api/cameras", json=cam_body(cid, "W")).json()
         assert a.put(f"/api/clients/{cid}", json={"name": "Estación", "plans": ["hurto", "comercio"]}).status_code == 200
         cams = {c["name"]: c for c in a.get("/api/cameras", params={"client_id": cid}).json()}
-        assert (cams["X"]["plans"], cams["X"]["measures"]) == (["comercio"], ["comercio"])  # recortada
-        assert (cams["Y"]["plans"], cams["Y"]["measures"]) == (None, ["hurto", "comercio"])  # no quedó nada
-        assert (cams["Z"]["plans"], cams["Z"]["measures"]) == (None, ["hurto", "comercio"])  # quedó todo
-        assert cams["W"]["plans"] is None
-        # vuelve a contratar estación: las elegidas siguen con lo suyo; las «como el cliente» lo miden
+        assert (cams["X"]["plans"], cams["X"]["measures"]) == (["comercio", "estacion"], ["comercio"])
+        assert (cams["Y"]["plans"], cams["Y"]["measures"]) == (["estacion"], [])  # no mide nada (no pasa a dar alertas)
+        assert cams["W"]["measures"] == ["hurto", "comercio"]
+        # vuelve a contratar estación: cada una vuelve a lo que se le eligió (la X sigue sin hurto)
         a.put(f"/api/clients/{cid}", json={"name": "Estación", "plans": TODOS})
         cams = {c["id"]: c for c in a.get("/api/cameras", params={"client_id": cid}).json()}
-        assert cams[x["id"]]["measures"] == ["comercio"]
-        assert cams[y["id"]]["measures"] == cams[z["id"]]["measures"] == cams[w["id"]]["measures"] == TODOS
+        assert cams[x["id"]]["measures"] == ["comercio", "estacion"]
+        assert cams[y["id"]]["measures"] == ["estacion"] and cams[w["id"]]["measures"] == TODOS
+
+
+def test_un_cliente_tiene_que_tener_al_menos_un_plan(app):
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        r = a.post("/api/clients", json={"name": "Vacío", "plans": []})
+        assert r.status_code == 422 and "al menos un plan" in r.json()["detail"]
+        cid = a.post("/api/clients", json={"name": "Kiosco", "plans": ["comercio"]}).json()["id"]
+        assert a.put(f"/api/clients/{cid}", json={"name": "Kiosco", "plans": []}).status_code == 422
+
+
+def test_una_camara_que_no_mide_hurtos_no_da_alertas_por_alarmas(app):
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = a.post("/api/clients", json={"name": "Estación", "plans": TODOS, "timezone": "America/Montevideo"}).json()["id"]
+        ag = a.post("/api/agents", json={"name": "central", "client_id": None}).json()
+        h = {"X-Agent-Token": ag["token"]}
+        alarm = {"mode": "alarmas_equipo", "alarm_cfg": {"event_types": ["VMD"], "pre_seconds": 5, "post_seconds": 5}}
+        afuera = a.post("/api/cameras", json=cam_body(cid, "Afuera", agent_id=ag["id"], plans=["estacion"], **alarm)).json()
+        adentro = a.post("/api/cameras", json=cam_body(cid, "Adentro", agent_id=ag["id"], channel=2, **alarm)).json()
+        when = datetime.now(ZoneInfo("America/Montevideo")).strftime("%Y-%m-%dT%H:%M:%S")
+        r1 = a.post("/api/agent/alarms", headers=h, json={"camera_id": afuera["id"], "event_type": "VMD",
+                                                         "occurred_at": when, "raw": {}})
+        r2 = a.post("/api/agent/alarms", headers=h, json={"camera_id": adentro["id"], "event_type": "VMD",
+                                                         "occurred_at": when, "raw": {}})
+        assert r1.json()["result"] == "no_mide_hurto" and r2.json()["result"] == "nueva"
+
+
+def test_editar_una_camara_que_solo_tiene_link(app):
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = a.post("/api/clients", json={"name": "Kiosco", "plans": TODOS}).json()["id"]
+        cam = a.post("/api/cameras", json={"client_id": cid, "name": "Link", "brand": "hikvision", "host": "",
+                                           "source_url": "rtsp://u:p@dvr.ddns.net:554/Streaming/Channels/401"}).json()
+        body = {"client_id": cid, "name": "Link nuevo", "brand": "hikvision", "host": "", "keep_source_url": True,
+                "plans": ["comercio"]}
+        r = a.put(f"/api/cameras/{cam['id']}", json=body)
+        assert r.status_code == 200 and r.json()["name"] == "Link nuevo" and r.json()["measures"] == ["comercio"]
+        body.pop("keep_source_url")
+        assert a.put(f"/api/cameras/{cam['id']}", json=body).status_code == 422  # sin link ni dirección: no
 
 
 def export_rows(c, cid, day):

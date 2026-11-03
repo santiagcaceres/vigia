@@ -380,7 +380,7 @@ function cameraForm(box, agents, c = {}, opts = {}) {
       <p class="muted">Datos del grabador (DVR/NVR): los mismos que usás en iVMS-4200 (Hikvision) o SmartPSS Lite (Dahua). La IP es la <b>IP pública o el DDNS</b> del cliente y los puertos son los <b>externos</b> que abriste en su router. Paso a paso en la <a href="guia.html" target="_blank" rel="noopener">guía de conexión</a>.</p>
       <form class="form" id="cf">
         <label class="${lockClient ? "hidden" : ""}">Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id ?? opts.clientId)}</select></label>
-        <label>PC central (agente)<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? a.name : `${a.name} (${clientName(a.client_id)})`]), c.agent_id ?? (agents.find((a) => a.central) || {}).id, "—")}</select></label>
+        <label>PC central (agente)<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? a.name : `${a.name} (${clientName(a.client_id)})`]), c.id ? c.agent_id : (agents.find((a) => a.central) || {}).id, "—")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
         <fieldset id="cf-plans"></fieldset>
         <label>Marca<select name="brand">${options([...Object.entries(BRAND_NAMES), ...(OTHER_BRANDS[c.brand] ? [[c.brand, OTHER_BRANDS[c.brand]]] : [])], c.brand || "hikvision")}</select><small id="brand-note" class="muted"></small></label>
@@ -427,9 +427,12 @@ function cameraForm(box, agents, c = {}, opts = {}) {
   const syncPlanNote = () => {
     const own = clientPlans(+clientSel.value) || [], on = $$("input[name=plan]:checked", planBox).map((x) => x.value);
     const note = $("#cf-plans-note", planBox);
+    const alarms = ["alarmas", "alarmas_equipo"].includes(($("#cf [name=mode]", box) || {}).value);
     if (note) note.innerHTML = !on.length ? `<span class="error">Elegí al menos una cosa para medir.</span>`
-      : own.includes("hurto") && !on.includes("hurto") ? "Sin «Detección de hurtos» esta cámara no da alertas ni mira gestos: solo mide." : "";
+      : own.includes("hurto") && !on.includes("hurto") ? "Sin «Detección de hurtos» esta cámara no da alertas ni mira gestos: solo mide." +
+        (alarms ? " <b>Ojo:</b> en modo alarmas solo se buscan hurtos y no se mide nada: para medir, elegí el modo «En vivo»." : "") : "";
   };
+  $("#cf [name=mode]", box).addEventListener("change", () => syncPlanNote());
   const renderPlans = () => {
     const cid = +clientSel.value, own = clientPlans(cid) || [];
     const on = new Set(c.id && cid === c.client_id ? cameraMeasures(c, own) || own : own);  // nueva u otro cliente: todo
@@ -461,6 +464,7 @@ function cameraForm(box, agents, c = {}, opts = {}) {
       body.plans = picked.length === own.length ? null : picked;
     }
     if (c.id) {  // lo que este formulario no muestra queda como estaba (si no, el servidor lo pondría en su valor de siempre)
+      if (body.agent_id === (c.agent_id ?? null)) delete body.agent_id;  // sin tocar: lo maneja «Analizar» y el reparto
       body.profile = c.profile || "general";
       if (c.hc_resource_id) body.hc_resource_id = c.hc_resource_id;
       if (!body.source_url && c.has_source_url) body.keep_source_url = true;
@@ -563,7 +567,7 @@ async function cameraView(v, id) {
           <dt>Canal</dt><dd>${cam.channel}${cam.mode === "alarmas" ? ` · serie ${esc(cam.hpp_serial || "—")}` : ""}</dd>
           <dt>Usuario</dt><dd class="mono">${esc(cam.username || "—")}</dd>
           <dt>PC central</dt><dd>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</dd>` : `<dt>Modo</dt><dd>${esc(MODE_NAMES[cam.mode] || cam.mode)}</dd>`}
-          ${measures ? `<dt>Mide</dt><dd>${measures.length ? measures.map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ") : `<span class="muted">nada: el cliente no tiene planes contratados</span>`}${isStaff() && measures.length ? ` <span class="muted" style="font-size:12px">${Array.isArray(cam.plans) ? "elegido para esta cámara" : "todo lo del cliente"}</span>` : ""}</dd>` : ""}
+          ${measures ? `<dt>Mide</dt><dd>${measures.length ? measures.map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ") : `<span class="muted">nada: el cliente ya no tiene lo que se le eligió (elegilo en «Editar»)</span>`}${isStaff() && measures.length ? ` <span class="muted" style="font-size:12px">${Array.isArray(cam.plans) ? "elegido para esta cámara" : "todo lo del cliente"}</span>` : ""}</dd>` : ""}
           <dt>Zonas</dt><dd>${(cam.zones || []).length ? (cam.zones || []).map((z) => `${esc(z.name)} (${ZONE_NAMES[z.type] || z.type})`).join(", ") : `<span class="muted">ninguna: sin zonas no se disparan reglas</span>`}</dd>
           ${cam.status && cam.status.error ? `<dt>Error</dt><dd class="error">${esc(cam.status.error)}</dd>` : ""}
         </dl></div>
@@ -1252,6 +1256,7 @@ async function clientsView(v) {
     $("#cancel").addEventListener("click", () => ($("#client-form").innerHTML = ""));
     $("#cf").addEventListener("submit", async (e) => {
       e.preventDefault(); const fd = new FormData(e.target); const f = Object.fromEntries(fd); delete f.plan; f.plans = fd.getAll("plan");
+      if (!f.plans.length) return toast("Elegí al menos un plan para el cliente", true);  // (el servidor tampoco lo acepta)
       for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
       try { await api(c.id ? "PUT" : "POST", c.id ? "/api/clients/" + c.id : "/api/clients", f); toast(c.id ? "Cliente guardado" : "Cliente creado"); S._clientsAt = 0; route(); } catch (err) { fail(err); }
     });
