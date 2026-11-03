@@ -11,8 +11,10 @@ repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
   Más: entrenamiento y eliminar) y sus cámaras, con una sola barra: «✎ Marcar zonas» (`ZonesEditor`), «● En vivo» y
   «🎞 Clips» (`TuneWindow`: la cámara con la IA de esta PC, en vivo o con clips; cuenta las personas por zona, alertas
   de prueba, tiempos, gestos y aprobar; motor en agent/ajuste.py), «Analizar» / «Dejar de analizar» (cambia según lo
-  elegido), «Editar» (conexión, nombre, tipo) y «Más» (probar conexión, bajar grabación, nombres e imágenes,
-  eliminar), también con clic derecho. Abajo, la imagen y los datos de la cámara elegida.
+  elegido), «Editar» (conexión, nombre, tipo, qué mide) y «Más» (qué mide de varias a la vez, probar conexión, bajar
+  grabación, nombres e imágenes, eliminar), también con clic derecho. Abajo, la imagen y los datos de la cámara elegida.
+  Qué mide cada cámara: de los planes que contrató el cliente, los que se le elijan (`plans`; None = todo lo del
+  cliente); los números se suman por cliente.
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
   "Avisar al cliente".
 - Máquinas (solo admin): cada máquina de análisis, si está prendida en Google Cloud (`/api/cloud`, server/nube.py) y si
@@ -53,6 +55,7 @@ from .version import VERSION
 log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
+PLAN_SHORT = {"hurto": "Hurto", "comercio": "Comercio", "estacion": "Estación"}  # (columna «Mide» de las cámaras)
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cliente"}  # (operador = «entrenador» por dentro)
 # qué cámaras analizan las máquinas (server/pool.py): las elegidas en «Clientes» o todas
 ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
@@ -167,6 +170,57 @@ def door_text(b: dict, staff: bool = False) -> str:
         return f"Pasaron por la entrada {b['entries']} (entrando o saliendo: falta marcar el sentido de la puerta)"
     return ("Todavía no se cuenta la gente que entra: marcá la zona Entrada, con su sentido, en la cámara de la "
             "puerta.")
+
+
+# ------------------------------------------------------------------ qué mide cada cámara
+# Los planes los contrata el cliente (hurto, comercio, estación); cada cámara mide los que se le elijan (pedido del
+# dueño, 2 nov: «una cámara de dentro del local puede medir métricas y una de afuera otra cosa»). En la cámara se guarda
+# `plans` (None = como el cliente: todo lo contratado) y el servidor devuelve `measures` (lo que mide en efecto). Los
+# números se suman por cliente.
+def client_plans(client: dict | None) -> list[str]:
+    """Los planes que contrató el cliente, en el orden de siempre (sin cliente, ninguno)."""
+    if not client:
+        return []
+    have = client.get("plans") or ["hurto"]  # (como el servidor: sin planes guardados es de hurto)
+    return [p for p in PLAN_NAMES if p in have]
+
+
+def camera_measures(cam: dict, client: dict | None) -> list[str]:
+    """Lo que mide la cámara en efecto: lo que dice el servidor (`measures`) o, si no lo manda, lo del cliente
+    recortado por lo guardado en la cámara (si no queda nada, todo lo del cliente, como el servidor)."""
+    m = cam.get("measures")
+    if isinstance(m, list):
+        return [p for p in PLAN_NAMES if p in m]
+    have = client_plans(client)
+    saved = cam.get("plans")
+    if saved is None:
+        return have
+    return [p for p in have if p in saved] or have
+
+
+def plans_to_save(checked, cplans: list[str]) -> list[str] | None:
+    """Lo que se manda como `plans` de la cámara a partir de las casillas: None si están todas (como el cliente),
+    si no la lista. ValueError si no se marcó ninguna."""
+    chosen = [p for p in cplans if p in checked]
+    if cplans and not chosen:
+        raise ValueError("Elegí al menos una cosa para medir.")
+    return None if chosen == cplans else chosen
+
+
+def measures_text(cam: dict, client: dict | None, short: bool = True) -> str:
+    """«(todo)» si la cámara sigue al cliente; si no, «Hurto · Comercio» (o los nombres largos)."""
+    if short and cam.get("plans") is None:
+        return "(todo)"
+    m = camera_measures(cam, client)
+    names = PLAN_SHORT if short else PLAN_NAMES
+    txt = (" · " if short else ", ").join(names[p] for p in m) or "nada"
+    return txt if short else txt + (" (como el cliente)" if cam.get("plans") is None else "")
+
+
+def plans_names(plans: list[str]) -> str:
+    """«Detección de hurtos y Métricas de comercio»"""
+    names = [PLAN_NAMES.get(p, p) for p in plans]
+    return " y ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else (names[0] if names else "nada")
 
 
 # ------------------------------------------------------------------ API
@@ -670,11 +724,11 @@ class Oficina:
         self.cam_title = ttk.Label(kh, text="Cámaras", style="Subtitulo.TLabel")
         self.cam_title.pack(side="left")
         ttk.Button(kh, text="＋ Agregar cámaras", command=lambda: self.camera_dialog()).pack(side="right")
-        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "analiza", "ajuste", "alertas"),
+        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "analiza", "mide", "ajuste", "alertas"),
                                      show="headings", height=9, selectmode="extended")
-        for col, txt, w, stretch in (("nombre", "Cámara", 170, True), ("estado", "Estado", 170, True),
-                                     ("analiza", "Se analiza", 170, True), ("ajuste", "Puesta a punto", 125, False),
-                                     ("alertas", "Alertas hoy", 95, False)):
+        for col, txt, w, stretch in (("nombre", "Cámara", 150, True), ("estado", "Estado", 150, True),
+                                     ("analiza", "Se analiza", 145, True), ("mide", "Mide", 150, True),
+                                     ("ajuste", "Puesta a punto", 115, False), ("alertas", "Alertas hoy", 85, False)):
             self.cam_tree.heading(col, text=txt, anchor="w")
             self.cam_tree.column(col, width=w, stretch=stretch, anchor="center" if col == "alertas" else "w")
         self.cam_tree.pack(fill="x")
@@ -733,6 +787,7 @@ class Oficina:
             menu.add_command(label=self._analyze_label(), command=lambda: self.set_analyze(None))
             menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
             menu.add_separator()
+        menu.add_command(label="Qué mide…", command=self.plans_dialog)
         menu.add_command(label="Probar conexión", command=lambda: self.probe(sel()))
         menu.add_command(label="Bajar grabación…", command=self.recording_dialog)
         menu.add_command(label="Nombres e imágenes de todas…", command=self.names_dialog)
@@ -791,6 +846,9 @@ class Oficina:
         sel = self.cam_tree.selection()
         return next((c for c in self.cameras if str(c["id"]) == (sel[0] if sel else "")), None)
 
+    def _client_of(self, cam: dict | None) -> dict | None:
+        return next((c for c in self.clients if c["id"] == (cam or {}).get("client_id")), None)
+
     def _fill_clients(self, keep_info: bool = False) -> None:
         prev = self.cl_tree.selection()
         self.cl_tree.delete(*self.cl_tree.get_children())
@@ -844,6 +902,7 @@ class Oficina:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
                 cam["name"], self._cam_state(cam),
                 ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")) if cam.get("analyzed") else "No",
+                measures_text(cam, c),
                 TUNING_NAMES.get(cam.get("tuning") or "sin_ajustar", "—"),
                 (counts.get(str(cam["id"])) or {}).get("today", 0) or ""))
         if prev_cam and self.cam_tree.exists(prev_cam[0]):
@@ -877,6 +936,7 @@ class Oficina:
             f"{cam['name']}\n"
             f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
             f"Se analiza: {('sí, en ' + (cam.get('analyzer_name') or 'la primera máquina que se prenda')) if cam.get('analyzed') else 'no (se puede ver en «En vivo»)'}\n"
+            f"Mide: {measures_text(cam, self._client_of(cam), short=False)}\n"
             f"Puesta a punto: {self._tuning_text(cam)}\n"
             f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
             f"{int(cam.get('process_fps') or 5)} cuadros por segundo · {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
@@ -972,8 +1032,10 @@ class Oficina:
         for p, t in PLAN_NAMES.items():
             ttk.Checkbutton(pf, text=t, variable=plans[p]).pack(anchor="w")
         ttk.Label(pf, text="Sin «Detección de hurtos» las cámaras quedan en «solo métricas»: 2-3 cuadros por "
-                           "segundo y sin clips (mucho más barato).", foreground="#666", wraplength=440,
+                           "segundo y sin clips (mucho más barato).", foreground="#666", wraplength=560,
                   justify="left").pack(anchor="w", pady=(2, 0))
+        ttk.Label(pf, text="Cada cámara mide los que le elijas (en la cámara, «Qué mide»).", foreground="#666",
+                  wraplength=560, justify="left").pack(anchor="w")
 
         # horario del local: con el local cerrado la PC central no abre el video (ahorra internet y análisis)
         of = ttk.LabelFrame(frm, text="Horario del local (fuera de horario no se gasta video ni análisis)", padding=6)
@@ -1350,21 +1412,59 @@ class Oficina:
         nvr_cb = ttk.Checkbutton(frm, text="Bajar el clip de la grabación del grabador (si tiene disco)", variable=nvr)
         nvr_cb.grid(row=17, column=0, columnspan=2, sticky="w")
         rows["adv"] += [af, nvr_cb]
-        row(None, 18, "Tipo de cámara (qué mira)", ttk.Combobox(frm, textvariable=v["profile"],
-                                                                  values=list(PROFILE_NAMES.values()), state="readonly"))
-        off_cb = ttk.Combobox(frm, textvariable=v["off_hours"], values=list(OFF_HOURS_NAMES.values()), state="readonly")
-        row(None, 19, "Con el local cerrado", off_cb)
+        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=18, column=0, columnspan=2, sticky="w",
+                                                                      pady=(6, 0))
+        frm.rowconfigure(23, weight=1)  # (si la columna de la derecha es más alta, el espacio queda arriba de Guardar)
+
+        # a la derecha, qué mide y cómo se analiza (a la izquierda queda la conexión): así entra en 1366x768 aun con
+        # «Más opciones» abierto
+        side = ttk.Frame(frm)
+        side.grid(row=0, column=2, rowspan=24, sticky="n", padx=(18, 0))
+        side.columnconfigure(0, weight=1, minsize=380)
+        # qué mide (pedido del dueño, 2 nov): de los planes que contrató el cliente, los que mide esta cámara
+        cplans = client_plans(own)
+        now = camera_measures(cam, own) if cam.get("id") else cplans
+        pv = {p: tk.BooleanVar(value=p in now or len(cplans) == 1) for p in cplans}
+        mf = ttk.LabelFrame(side, text="Qué mide esta cámara", padding=6)
+        mf.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        theft_lbl = ttk.Label(mf, foreground="#666", wraplength=370, justify="left")
+
+        def plans_changed() -> None:
+            if "hurto" not in cplans:
+                txt = ("Este cliente no tiene «Detección de hurtos»: la cámara queda en «solo métricas» (2-3 cuadros "
+                       "por segundo, sin alertas ni clips).")
+            elif not pv["hurto"].get():
+                txt = ("Sin «Detección de hurtos» esta cámara queda en «solo métricas»: 2-3 cuadros por segundo, sin "
+                       "alertas ni clips.")
+            else:
+                txt = ""
+            theft_lbl.configure(text=txt)
+            theft_lbl.pack(anchor="w", pady=(4, 0)) if txt else theft_lbl.pack_forget()
+        for p in cplans:
+            ttk.Checkbutton(mf, text=PLAN_NAMES[p], variable=pv[p], command=plans_changed,
+                            state="disabled" if len(cplans) == 1 else "normal").pack(anchor="w")
+        if len(cplans) == 1:  # (no hay qué elegir)
+            ttk.Label(mf, text="Es lo único que tiene contratado el cliente.", foreground="#666").pack(anchor="w")
+        ttk.Label(mf, text="Los planes los contrata el cliente (Editar cliente); acá se elige cuáles mide esta cámara. "
+                           "Los números se suman por cliente.", foreground="#666", wraplength=370,
+                  justify="left").pack(anchor="w", pady=(4, 0))
+        plans_changed()
+
+        def srow(r: int, label: str, widget, sticky: str = "ew") -> None:
+            ttk.Label(side, text=label).grid(row=r, column=0, sticky="w")
+            widget.grid(row=r + 1, column=0, sticky=sticky, pady=(1, 8))
+        srow(1, "Tipo de cámara (qué mira)", ttk.Combobox(side, textvariable=v["profile"],
+                                                          values=list(PROFILE_NAMES.values()), state="readonly"))
+        off_cb = ttk.Combobox(side, textvariable=v["off_hours"], values=list(OFF_HOURS_NAMES.values()),
+                              state="readonly")
+        srow(3, "Con el local cerrado", off_cb)
         hours_txt = ("Horario del local: se carga en el cliente (Editar cliente)." if not own.get("hours") else
                      "Horario del local: " + " · ".join(f"{d[:2].capitalize()} {(own['hours'].get(d) or 'cerrado')}"
                                                        for d in DAYS))
-        ttk.Label(frm, text=hours_txt, foreground="#666", wraplength=560, justify="left").grid(
-            row=20, column=0, columnspan=2, sticky="w")
-        row(None, 21, "Cuadros por segundo (5 a 15)", ttk.Spinbox(frm, from_=5, to=15, textvariable=v["fps"]))
-        if "hurto" not in (own.get("plans") or ["hurto"]):
-            ttk.Label(frm, text="Este cliente es solo de métricas: la cámara usa 2-3 cuadros por segundo y no guarda "
-                                "clips (lo de arriba no se aplica).", foreground="#666", wraplength=560,
-                      justify="left").grid(row=22, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(frm, text="Habilitada", variable=enabled).grid(row=23, column=0, columnspan=2, sticky="w")
+        ttk.Label(side, text=hours_txt, foreground="#666", wraplength=370, justify="left").grid(
+            row=5, column=0, sticky="w", pady=(0, 8))
+        srow(6, "Cuadros por segundo (5 a 15)", ttk.Spinbox(side, from_=5, to=15, textvariable=v["fps"], width=6),
+             sticky="w")
 
         filled: dict = {"line": None}
 
@@ -1437,6 +1537,10 @@ class Oficina:
                 }
             except ValueError:
                 return self.mb.showwarning(NOMBRE, "Los cuadros por segundo tienen que ser un número.", parent=top)
+            try:  # todas marcadas = como el cliente (None); va en todos los pedidos (una cámara, links, canales…)
+                common["plans"] = plans_to_save([p for p, var in pv.items() if var.get()], cplans)
+            except ValueError as exc:
+                return self.mb.showwarning(NOMBRE, str(exc), parent=top)
             skip: list[str] = []  # canales que ya estaban cargados: no se repiten
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
@@ -1540,7 +1644,7 @@ class Oficina:
                     self.mb.showinfo(NOMBRE, f"Se agregaron {len(added)} cámaras.")
             self.bg.run(send, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=24, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=24, column=0, columnspan=3, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
         ttk.Label(bb, text="Qué se analiza se elige con «Analizar» en la lista; las zonas, con «✎ Marcar zonas».",
@@ -1603,6 +1707,66 @@ class Oficina:
             return
         self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}),
                     lambda _: self.config_saved(), self.err)
+
+    def plans_dialog(self) -> None:
+        """«Qué mide…» de las cámaras elegidas (pedido del dueño, 2 nov): de los planes que contrató el cliente, cuáles
+        mide cada cámara (una de adentro, las métricas de comercio; una de afuera, la estación). Los números se siguen
+        sumando por cliente. Todas marcadas = como el cliente."""
+        tk, ttk = self.tk, self.ttk
+        cams = self._sel_cameras()
+        if not cams:
+            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
+        if len({c["client_id"] for c in cams}) > 1:
+            return self.mb.showinfo(NOMBRE, "Elegí cámaras de un solo cliente.")
+        owner = self._client_of(cams[0])
+        cplans = client_plans(owner)
+        name = (owner or {}).get("name", "")
+        if len(cplans) < 2:
+            return self.mb.showinfo(NOMBRE, f"«{name}» tiene contratado solo {plans_names(cplans)}: sus cámaras miden "
+                                             "eso. Para que una cámara mida otra cosa, sumale el plan al cliente en "
+                                             "«Editar cliente».")
+        now = [camera_measures(c, owner) for c in cams]
+        common = [p for p in cplans if all(p in m for m in now)]  # (si miden distinto, lo de todas; puede ser nada)
+        what = f"«{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras"
+        top, frm = self._dialog(f"Qué mide · {cams[0]['name'] if len(cams) == 1 else name}", width=460)
+        ttk.Label(frm, text=f"Qué mide {what}, de lo que contrató {name}:", wraplength=430,
+                  justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
+        pv = {p: tk.BooleanVar(value=p in common) for p in cplans}
+        for i, p in enumerate(cplans):
+            ttk.Checkbutton(frm, text=PLAN_NAMES[p], variable=pv[p]).grid(row=1 + i, column=0, columnspan=2,
+                                                                        sticky="w", padx=(8, 0))
+        r = 1 + len(cplans)
+        if len({tuple(m) for m in now}) > 1:  # hoy miden distinto: se dice qué mide cada una
+            lines = [f"{c['name']}: {measures_text(c, owner)}" for c in cams[:6]] + (["…"] if len(cams) > 6 else [])
+            ttk.Label(frm, text="Hoy miden distinto (se marcó lo que miden todas):\n" + "\n".join(lines),
+                      foreground="#666", wraplength=430, justify="left").grid(row=r, column=0, columnspan=2,
+                                                                              sticky="w", pady=(6, 0))
+            r += 1
+        ttk.Label(frm, text="Todas marcadas = como el cliente (si se le suma un plan, también lo miden). Sin "
+                            "«Detección de hurtos» la cámara queda en «solo métricas»: sin alertas ni clips. Los números se suman "
+                            "por cliente.", foreground="#666", wraplength=430, justify="left").grid(
+            row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        def save() -> None:
+            try:
+                plans = plans_to_save([p for p, var in pv.items() if var.get()], cplans)
+            except ValueError as exc:
+                return self.mb.showwarning(NOMBRE, str(exc), parent=top)
+            ids = [c["id"] for c in cams]
+
+            def done(res) -> None:
+                top.destroy()
+                self.config_saved()
+                n = res.get("updated", len(ids)) if isinstance(res, dict) else len(ids)
+                self.mb.showinfo(NOMBRE, f"{n} cámara{'s' if n != 1 else ''}: ahora mide{'n' if n != 1 else ''} "
+                                         f"{plans_names(plans or cplans)}"
+                                         + (" (todo lo del cliente)." if plans is None else "."))
+            self.bg.run(lambda: self.api.post("/api/cameras/plans", {"camera_ids": ids, "plans": plans}), done,
+                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
+        bb = ttk.Frame(frm)
+        bb.grid(row=r + 1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
+        ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
     def delete_camera(self) -> None:
         """Borra las cámaras elegidas (con Ctrl o Shift se eligen varias; «Elegir todas» toma las del cliente)."""
@@ -1991,6 +2155,23 @@ class Oficina:
                 lines += ["", "  A dónde van (visitas a cada zona):"] + [
                     f"    {n}: {z['visits']} visitas, promedio {fmt_dur(z['dwell_s'] / max(1, z['visits']))}"
                     for n, z in zones]
+            cams = today.get("by_camera") or []
+            if len(cams) > 1 or any(cam.get("measures") for cam in cams):
+                # cada cámara suma solo lo que mide (pedido del dueño, 2 nov): se ve qué aporta cada una
+                own = c.get("plans") or []
+                lines += ["", "  Por cámara (cada una suma lo que mide):"]
+                for cam in cams:
+                    meas = cam.get("measures") or own
+                    parts = []
+                    if "comercio" in meas or "comercio" not in own:
+                        if cam.get("door") or cam.get("entries"):
+                            parts.append(door_text(cam).lower())
+                        elif cam.get("people"):
+                            parts.append(f"gente en cámara {fmt_dur(cam['people_dwell_s'] / cam['people'])} en promedio")
+                    if "estacion" in meas and est:
+                        parts.append(f"{cam.get('vehicles', 0)} vehículos")
+                    mide = " · ".join(PLAN_SHORT.get(p, p) for p in meas) or "nada"
+                    lines.append(f"    {cam['name']} (mide {mide}): {', '.join(parts) or 'sin datos que sumar'}")
             lines += ["", "ÚLTIMOS 7 DÍAS"]
             if w.get("door") or w.get("entries"):
                 lines.append("  " + door_text(w))
@@ -3468,7 +3649,7 @@ class TuneWindow:
 
     def _fill_gestures(self) -> None:
         """Los gestos que rigen (los manda el servidor en `analysis`) y sus segundos; sin gestos, los segundos
-        guardados o los de siempre. Si la cámara no puede tener gestos (solo métricas, cliente sin plan de hurto),
+        guardados o los de siempre. Si la cámara no puede tener gestos (solo métricas, no mide hurtos),
         las casillas quedan apagadas y se dice por qué."""
         from .ajuste import gestures_blocked
         eff = self.analysis.get("gestures")
@@ -4612,7 +4793,10 @@ class NamesWindow:
                     if okj:
                         self.agent.client.preview(cam["id"], jpg.tobytes())
                         cam["has_preview"] = True  # al volver a abrir la ventana, se baja esta imagen
-                info = describe(img, det, plans) if det is not None else None
+                # (la sugerencia de tipo mira lo que mide esta cámara: vehículos en una que mide la estación =
+                # surtidores; en una que no, la calle)
+                mine = tuple(camera_measures(cam, self.client)) or plans
+                info = describe(img, det, mine) if det is not None else None
                 self._post(self._show, (cam["id"], img, info))
                 ok += 1
             except Exception as exc:  # noqa: BLE001 - se muestra en la tarjeta de esa cámara

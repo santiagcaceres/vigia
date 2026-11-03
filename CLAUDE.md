@@ -244,6 +244,27 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     (Pasillo 5). Ojo al probar con un archivo como «vivo»: se lee de golpe y se reconecta cada 2 s (nadie llega a 2 s
     en la zona). Revisión adversarial (workflow, 6 agentes): 11 defectos confirmados, todos arreglados. Prueba:
     `tests/test_conteo_zonas.py`.
+  **App 1.38.0 (2 nov, pedido del dueño: «quiero poder elegir para cada cámara qué se mide… los servicios del cliente son
+  los que se le podrán asignar a cada cámara, y luego los datos se agrupan por cliente: una cámara de adentro puede medir
+  métricas y una de afuera otra cosa»).** Los planes los sigue contratando el cliente (`clients.plans`); cada cámara
+  elige cuáles mide: `cameras.plans` (JSON; None = como el cliente; si no, subconjunto no vacío; igual a todos = None;
+  `SCHEMA_VERSION` 2026-11-02.1). `server/main.py`: `camera_plans`/`pick_plans` (lo que rige: lo elegido dentro de lo del
+  cliente; si no queda nada, todo lo del cliente), `clean_camera_plans` (422 si el cliente no lo tiene, vacío o
+  repetido), `trim_plans` (al cambiar los planes del cliente o pasar la cámara a otro cliente). `camera_analysis` usa lo
+  de la cámara: sin «hurto» → solo métricas (sin reglas, gestos ni clips; 2-3 cuadros/s); «estacion» → vehículos; manda
+  `plans` (de la cámara) y `client_plans`. `camera_dict` trae `plans` y `measures`; `CameraIn.plans` (al editar solo si
+  viene en el pedido); `POST /api/cameras/plans` {camera_ids, plans} (staff, todas o ninguna). **Agrupado por cliente:**
+  `metrics_summary` (/api/metrics y PDF) y `/api/metrics/export` recortan cada cubo con `core.metrics.restrict_bucket`
+  (gente = `PEOPLE_KEYS`, plan comercio; vehículos, surtidor y tienda = `STATION_KEYS`, plan estacion; solo si el cliente
+  tiene ese plan, así con todo en None nada cambia); `by_camera` trae `measures`. Se recorta según lo que mide la cámara
+  HOY (cambiarlo cambia cómo se suman sus datos viejos). Nombres de archivo de PDF/CSV sin tildes (`file_safe`). App:
+  «Qué mide esta cámara» en el formulario (columna derecha), columna «Mide» en la lista, «Mide: …» en el detalle, «Qué
+  mide…» en «Más» para varias, «Por cámara (cada una suma lo que mide)» en Métricas; `gestures_blocked` dice «esta cámara
+  no mide hurtos». Web: lo mismo en el formulario y la ficha de la cámara y «Mide» en Métricas «Por cámara». Hecho con 3
+  agentes en paralelo (servidor, app, web) y revisión adversarial. Probado de punta a punta (servidor real + app en Xvfb
+  como operador + una máquina dada de alta): «Playa surtidores» solo Estación (2 cuadros/s, sin alertas, vehículos),
+  «Tienda» y «Caja» Hurto + Comercio (5 cuadros/s, reglas y gestos); con 10 personas y 7 vehículos en la playa y 25
+  personas y 2 vehículos en la tienda, el cliente suma 25 personas y 7 vehículos. Prueba: `tests/test_planes_por_camara.py`.
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

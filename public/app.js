@@ -16,7 +16,11 @@ const LABEL_KEYS = { "1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso
 const ZONE_NAMES = { shelf: "Góndola", aisle: "Pasillo", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)" };
 const ZONE_COLORS = { shelf: "#ffc800", aisle: "#78ffff", checkout: "#00c800", exit: "#0096ff", restricted: "#ff3030", entrance: "#c800ff", pump: "#ff7800", shop: "#00c8c8", staff: "#8a8a8a" };
 const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio" };
+const PLAN_KEYS = Object.keys(PLAN_NAMES);  // el orden de siempre (el mismo del servidor)
+const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación" };
 const BRAND_NAMES = { hikvision: "Hikvision", dahua: "Dahua" };
+// marcas que la web no ofrece al crear pero que una cámara cargada en la app puede tener (al editarla se conservan)
+const OTHER_BRANDS = { hikconnect: "Hikvision por Hik-Connect", ip: "Por IP y puertos (marca detectada sola)" };
 const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida", fuera_de_horario: "Local cerrado" };
 const CHANNEL_NAMES = { portal: "Portal / link", telegram: "Telegram", whatsapp: "WhatsApp", email: "Email", webhook: "Webhook" };
 const REPORT_STATUS = { enviado: ["ok", "Enviado"], parcial: ["warn", "Enviado en parte"], error: ["bad", "No se pudo enviar"] };
@@ -34,6 +38,16 @@ const pct = (v) => (v == null ? "—" : Math.round(v * 100) + "%");
 const isStaff = () => S.me && (S.me.role === "admin" || S.me.role === "entrenador");
 const isAdmin = () => S.me && S.me.role === "admin";
 const clientName = (id) => (S.clients.find((c) => c.id === id) || {}).name || "—";
+/** Planes que contrató un cliente, en el orden de siempre (null si no está cargado). */
+const clientPlans = (id) => { const cl = S.clients.find((c) => c.id === id); return cl ? PLAN_KEYS.filter((p) => (cl.plans || ["hurto"]).includes(p)) : null; };
+/** Lo que mide en efecto una cámara: `measures` del servidor; si no viene (servidor viejo), lo elegido (`plans`) dentro
+ * de lo del cliente, o todo lo del cliente. null si no se sabe. */
+function cameraMeasures(cam, own = clientPlans(cam.client_id)) {
+  if (Array.isArray(cam.measures)) return PLAN_KEYS.filter((p) => cam.measures.includes(p));
+  if (!own) return null;
+  const pick = Array.isArray(cam.plans) ? own.filter((p) => cam.plans.includes(p)) : [];
+  return pick.length ? pick : own;
+}
 
 async function api(method, path, body, opts = {}) {
   const init = { method, headers: {}, credentials: "same-origin" };
@@ -368,7 +382,8 @@ function cameraForm(box, agents, c = {}, opts = {}) {
         <label class="${lockClient ? "hidden" : ""}">Cliente<select name="client_id" required>${options(S.clients.map((x) => [x.id, x.name]), c.client_id ?? opts.clientId)}</select></label>
         <label>PC central (agente)<select name="agent_id">${options(agents.map((a) => [a.id, a.central ? a.name : `${a.name} (${clientName(a.client_id)})`]), c.agent_id ?? (agents.find((a) => a.central) || {}).id, "—")}</select></label>
         <label>Nombre<input name="name" value="${esc(c.name || "")}" required placeholder="Salón principal"></label>
-        <label>Marca<select name="brand">${options(Object.entries(BRAND_NAMES), c.brand || "hikvision")}</select><small id="brand-note" class="muted"></small></label>
+        <fieldset id="cf-plans"></fieldset>
+        <label>Marca<select name="brand">${options([...Object.entries(BRAND_NAMES), ...(OTHER_BRANDS[c.brand] ? [[c.brand, OTHER_BRANDS[c.brand]]] : [])], c.brand || "hikvision")}</select><small id="brand-note" class="muted"></small></label>
         <label>Modo<select name="mode">${options([["alarmas_equipo", "Alarmas del propio grabador (recomendado)"], ["alarmas", "Alarmas por Hik-Partner Pro (solo Hikvision)"], ["vivo", "En vivo 24 h"]], c.mode || "alarmas_equipo")}</select><small id="mode-note" class="muted"></small></label>
         <label class="alarm-only hpp-only">N.º de serie del DVR en Hik-Partner Pro<input name="hpp_serial" value="${esc(c.hpp_serial || "")}" placeholder="E44034229"></label>
         <fieldset class="alarm-only"><legend>Alarmas del grabador que se analizan</legend>${Object.entries(ALARM_TYPES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="alarm_type" value="${k}" ${((c.alarm_cfg || {}).event_types || ["VMD", "fielddetection", "linedetection"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</fieldset>
@@ -400,13 +415,33 @@ function cameraForm(box, agents, c = {}, opts = {}) {
     $$("#cf .alarm-only", box).forEach((el) => el.classList.toggle("hidden", !alarms));
     $$("#cf .hpp-only", box).forEach((el) => el.classList.toggle("hidden", modo.value !== "alarmas"));
     $$("#cf .live-only", box).forEach((el) => el.classList.toggle("hidden", alarms));
-    $("#brand-note", box).textContent = esHik ? "" : "Para Dahua: alarmas del propio grabador o en vivo.";
+    $("#brand-note", box).textContent = $("#cf [name=brand]", box).value === "dahua" ? "Para Dahua: alarmas del propio grabador o en vivo." : "";
     $("#mode-note", box).textContent = { alarmas_equipo: "El grabador le avisa al agente cada alarma (movimiento, intrusión…) y solo se analiza ese tramo. Sin nube ni API key: activá las detecciones en el grabador.",
       alarmas: "Las alarmas llegan por el webhook de Hik-Partner Pro (hay que conectar HPP en Alarmas).", vivo: "El agente mira el stream las 24 h (más carga de PC e internet)." }[modo.value] || "";
   };
   $("#cf [name=mode]", box).addEventListener("change", syncMode);
   $("#cf [name=brand]", box).addEventListener("change", syncMode);
   syncMode();
+  // «Qué mide esta cámara»: casillas con los planes de SU cliente (cambian si se elige otro cliente)
+  const planBox = $("#cf-plans", box), clientSel = $("#cf [name=client_id]", box);
+  const syncPlanNote = () => {
+    const own = clientPlans(+clientSel.value) || [], on = $$("input[name=plan]:checked", planBox).map((x) => x.value);
+    const note = $("#cf-plans-note", planBox);
+    if (note) note.innerHTML = !on.length ? `<span class="error">Elegí al menos una cosa para medir.</span>`
+      : own.includes("hurto") && !on.includes("hurto") ? "Sin «Detección de hurtos» esta cámara no da alertas ni mira gestos: solo mide." : "";
+  };
+  const renderPlans = () => {
+    const cid = +clientSel.value, own = clientPlans(cid) || [];
+    const on = new Set(c.id && cid === c.client_id ? cameraMeasures(c, own) || own : own);  // nueva u otro cliente: todo
+    planBox.innerHTML = `<legend>Qué mide esta cámara</legend>` + (own.length
+      ? own.map((p) => `<label class="inline"><input type="checkbox" name="plan" value="${p}" ${on.has(p) ? "checked" : ""}> ${esc(PLAN_NAMES[p])}</label>`).join("") +
+        `<small class="muted" style="flex-basis:100%">De lo que contrató el cliente, lo que mide esta cámara (por ejemplo, la de adentro las métricas del comercio y la de afuera la estación). Los datos se juntan por cliente.</small><small class="muted" id="cf-plans-note" style="flex-basis:100%"></small>`
+      : `<small class="muted">Este cliente no tiene planes contratados: elegilos en «Editar cliente».</small>`);
+    $$("input[name=plan]", planBox).forEach((x) => x.addEventListener("change", syncPlanNote));
+    syncPlanNote();
+  };
+  clientSel.addEventListener("change", renderPlans);
+  renderPlans();
   $("#cf", box).addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const f = new FormData(ev.target);
@@ -419,6 +454,17 @@ function cameraForm(box, agents, c = {}, opts = {}) {
       mode: f.get("mode"), hpp_serial: f.get("hpp_serial") || null,
       alarm_cfg: { event_types: f.getAll("alarm_type"), pre_seconds: +f.get("pre_seconds"), post_seconds: +f.get("post_seconds") },
     };
+    // qué mide: todas las del cliente = null («como el cliente», así un plan que contrate después también lo mide)
+    const own = clientPlans(body.client_id) || [], picked = f.getAll("plan");
+    if (own.length) {
+      if (!picked.length) return toast("Elegí al menos una cosa para medir", true);
+      body.plans = picked.length === own.length ? null : picked;
+    }
+    if (c.id) {  // lo que este formulario no muestra queda como estaba (si no, el servidor lo pondría en su valor de siempre)
+      body.profile = c.profile || "general";
+      if (c.hc_resource_id) body.hc_resource_id = c.hc_resource_id;
+      if (!body.source_url && c.has_source_url) body.keep_source_url = true;
+    }
     try {
       const saved = await api(c.id ? "PUT" : "POST", c.id ? "/api/cameras/" + c.id : "/api/cameras", body);
       toast("Cámara guardada. La PC central la toma en menos de un minuto."); S._camsAt = 0;
@@ -483,7 +529,7 @@ async function clientCamerasView(v, clientId) {
     <div id="cam-form"></div>
     <div class="grid cams" style="margin-top:12px">${cams.map((c) => `<a class="card cam" href="#/camara/${c.id}">${camThumb(c)}
       <div class="body"><div class="row"><span class="title">${esc(c.name)}</span><span class="spacer"></span>${c.enabled ? (c.mode === "alarmas" ? `<span class="chip">${MODE_NAMES[c.mode]}</span>` : statusChip(c.status)) : `<span class="chip">deshabilitada</span>`}</div>
-      <span class="muted mono">${connText(c)}</span></div></a>`).join("") || `<div class="empty">Este cliente todavía no tiene cámaras.${isStaff() ? " Tocá <b>Agregar cámara</b>." : ""}</div>`}</div>`;
+      <span class="muted mono">${connText(c)}</span>${isStaff() && Array.isArray(c.plans) && cameraMeasures(c) ? `<div class="muted" style="font-size:12px;margin-top:4px">Mide: ${cameraMeasures(c).map((p) => esc(PLAN_SHORT[p] || p)).join(" · ")}</div>` : ""}</div></a>`).join("") || `<div class="empty">Este cliente todavía no tiene cámaras.${isStaff() ? " Tocá <b>Agregar cámara</b>." : ""}</div>`}</div>`;
   if (!isStaff()) { every(30000, () => $$("img", v).forEach((i) => { const c = cams.find((x) => "#/camara/" + x.id === i.closest("a").getAttribute("href")); if (c) i.src = previewUrl(c); })); return; }
   $("#add").addEventListener("click", () => { if (!agents.length) return toast("Primero creá la PC central en Administración", true); cameraForm($("#cam-form"), agents, {}, { clientId }); });
   $("#edit-client").addEventListener("click", () => (location.hash = `#/clientes?editar=${clientId}`));
@@ -497,6 +543,7 @@ async function cameraView(v, id) {
   await loadClients();
   const agents = isStaff() ? await api("GET", "/api/agents") : [];
   const ag = agents.find((a) => a.id === cam.agent_id);
+  const measures = cameraMeasures(cam);  // qué planes del cliente mide (null si no se sabe)
   const back = isStaff() ? `#/cliente/${cam.client_id}` : "#/camaras";
   v.innerHTML = `
     <div class="row"><a href="${back}">← Cámaras de ${esc(clientName(cam.client_id))}</a></div>
@@ -516,6 +563,7 @@ async function cameraView(v, id) {
           <dt>Canal</dt><dd>${cam.channel}${cam.mode === "alarmas" ? ` · serie ${esc(cam.hpp_serial || "—")}` : ""}</dd>
           <dt>Usuario</dt><dd class="mono">${esc(cam.username || "—")}</dd>
           <dt>PC central</dt><dd>${ag ? esc(ag.name) : `<span class="chip bad">sin agente</span>`}</dd>` : `<dt>Modo</dt><dd>${esc(MODE_NAMES[cam.mode] || cam.mode)}</dd>`}
+          ${measures ? `<dt>Mide</dt><dd>${measures.length ? measures.map((p) => `<span class="chip">${esc(PLAN_NAMES[p] || p)}</span>`).join(" ") : `<span class="muted">nada: el cliente no tiene planes contratados</span>`}${isStaff() && measures.length ? ` <span class="muted" style="font-size:12px">${Array.isArray(cam.plans) ? "elegido para esta cámara" : "todo lo del cliente"}</span>` : ""}</dd>` : ""}
           <dt>Zonas</dt><dd>${(cam.zones || []).length ? (cam.zones || []).map((z) => `${esc(z.name)} (${ZONE_NAMES[z.type] || z.type})`).join(", ") : `<span class="muted">ninguna: sin zonas no se disparan reglas</span>`}</dd>
           ${cam.status && cam.status.error ? `<dt>Error</dt><dd class="error">${esc(cam.status.error)}</dd>` : ""}
         </dl></div>
@@ -661,7 +709,12 @@ async function zonesView(v, id) {
   const enabled = new Set(rules.enabled_rules || cam.rules_default || RULE_KEYS);
   const gestOn = new Set((cam.gestures && cam.gestures.enabled) || cam.gestures_default || []);
   const client = (await loadClients().catch(() => [])).find((c) => c.id === cam.client_id);
-  const noTheft = client && !(client.plans || ["hurto"]).includes("hurto");
+  // sin «Detección de hurtos» en lo que mide ESTA cámara (cada cámara elige qué planes del cliente mide) no hay reglas
+  // ni gestos; si el servidor no manda `measures`, como antes: lo del cliente
+  const clientTheft = !client || (client.plans || ["hurto"]).includes("hurto");
+  const camPlans = Array.isArray(cam.measures) ? cam.measures : client ? (client.plans || ["hurto"]) : null;
+  const noTheft = !!camPlans && !camPlans.includes("hurto");
+  const noTheftWhy = clientTheft ? "Esta cámara no mide «Detección de hurtos» (se elige en «Editar» de la cámara)" : "Este cliente no tiene «Detección de hurtos»";
   v.innerHTML = `
     <div class="row"><a href="#/camara/${id}">← ${esc(cam.name)}</a></div>
     <h1>${esc(cam.name)} · zonas y reglas</h1>
@@ -691,9 +744,10 @@ async function zonesView(v, id) {
           <label>Cierra<input id="r-close" type="time" value="${rules.opening_hours?.end || ""}"></label>
         </div>
         <div style="margin-top:8px">${RULE_KEYS.map((k) => `<label class="inline" style="margin-right:12px"><input type="checkbox" class="r-en" value="${k}" ${enabled.has(k) ? "checked" : ""}> ${TYPE_NAMES[k]}</label>`).join("")}</div>
+        ${noTheft ? `<p class="muted note"><b>${noTheftWhy}: las reglas no dan alertas.</b> Las zonas sirven igual para las métricas (entrada, a dónde van, surtidor).</p>` : ""}
         <h3 style="margin-top:16px">Gestos</h3>
         <div class="gestures">${GESTURE_KEYS.map((k) => `<label class="inline"><input type="checkbox" class="g-en" value="${k}" ${gestOn.has(k) ? "checked" : ""}> ${TYPE_NAMES[k]}</label>`).join("")}</div>
-        <p class="muted note">Avisan un <b>posible ocultamiento</b> (tomar algo y llevar la mano al bolsillo, dentro de la ropa o a la bolsa): es un indicio para revisar el clip, nunca una prueba. Hace falta ver a la persona de la cintura para arriba; mirar la postura usa un 30 % más de procesador.${noTheft ? " <b>Este cliente no tiene «Detección de hurtos»: no se usan.</b>" : cam.profile === "metricas" ? " <b>Esta cámara es «Solo métricas»: no se usan.</b>" : ""}</p>
+        <p class="muted note">Avisan un <b>posible ocultamiento</b> (tomar algo y llevar la mano al bolsillo, dentro de la ropa o a la bolsa): es un indicio para revisar el clip, nunca una prueba. Hace falta ver a la persona de la cintura para arriba; mirar la postura usa un 30 % más de procesador.${noTheft ? ` <b>${noTheftWhy}: no se usan.</b>` : cam.profile === "metricas" ? " <b>Esta cámara es «Solo métricas»: no se usan.</b>" : ""}</p>
         <div class="row" style="margin-top:14px"><button id="save" class="primary">Guardar</button></div>
       </div>
     </div>`;
@@ -1119,6 +1173,10 @@ async function metricsView(v, clientId) {
   const zones = Object.entries(t.zones || {}).sort((a, b) => b[1].visits - a[1].visits);
   const sinDatos = !t.frames;
   const pdf = `/api/metrics/report.pdf?days=${days}` + (isStaff() ? `&client_id=${clientId}` : "");
+  // cada cámara mide los planes del cliente que le eligieron (`measures`); lo que una cámara no mide sale «—»
+  // (el servidor ya no lo suma). Sin `measures` (servidor viejo), como antes.
+  const showMeasures = m.by_camera.some((c) => Array.isArray(c.measures));
+  const measures = (c, plan) => !Array.isArray(c.measures) || !plans.includes(plan) || c.measures.includes(plan);
   v.innerHTML = `
     <div class="row"><h1>${isStaff() ? "Métricas" : `Resumen de ${esc(client.name)}`}</h1>
       ${isStaff() ? `<select id="m-client" class="inline-select">${options(S.clients.map((c) => [c.id, c.name]), clientId)}</select>` : ""}
@@ -1160,9 +1218,9 @@ async function metricsView(v, clientId) {
         ${tile(stats.by_label.sin_etiqueta || 0, "Sin revisar todavía", "")}
       </div>
       <p><a class="btn" href="#/alertas?client_id=${clientId}">Ver las alertas</a></p>` : ""}
-    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th><th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
-      <tbody>${m.by_camera.map((c) => `<tr><td>${esc(c.name)}</td><td>${fmtDur(avg(c.people_dwell_s, c.people))}</td>${plans.includes("estacion") ? `<td>${c.vehicles}</td>` : ""}<td>${c.people_max}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
-    <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). No se muestra una suma de personas de todas las cámaras: la misma persona aparece en varias y, si sale del cuadro y vuelve, cuenta de nuevo. "A dónde van" cuenta visitas: quien vuelve a una zona suma otra visita. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona.</p>`;
+    ${m.by_camera.length > 1 ? `<div class="panel" style="margin-top:12px"><b>Por cámara</b><div class="table-wrap"><table><thead><tr><th>Cámara</th>${showMeasures ? "<th>Mide</th>" : ""}<th>Tiempo promedio</th>${plans.includes("estacion") ? "<th>Vehículos</th>" : ""}<th>Máximo a la vez</th></tr></thead>
+      <tbody>${m.by_camera.map((c) => { const people = measures(c, "comercio"), cars = measures(c, "estacion"); return `<tr><td>${esc(c.name)}</td>${showMeasures ? `<td>${(c.measures || []).map((p) => esc(PLAN_SHORT[p] || p)).join(" · ") || "—"}</td>` : ""}<td>${people ? fmtDur(avg(c.people_dwell_s, c.people)) : "—"}</td>${plans.includes("estacion") ? `<td>${cars ? c.vehicles : "—"}</td>` : ""}<td>${people ? c.people_max : "—"}</td></tr>`; }).join("")}</tbody></table></div></div>` : ""}
+    <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). No se muestra una suma de personas de todas las cámaras: la misma persona aparece en varias y, si sale del cuadro y vuelve, cuenta de nuevo. "A dónde van" cuenta visitas: quien vuelve a una zona suma otra visita. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona. Cada cámara suma solo lo que mide (por ejemplo, la de afuera la estación y la de adentro la gente del comercio).</p>`;
   const sel = $("#m-client", v);
   if (sel) sel.addEventListener("change", () => { location.hash = `#/metricas?client_id=${sel.value}&days=${days}`; });
 }
@@ -1188,7 +1246,7 @@ async function clientsView(v) {
       <label>Chat de Telegram (opcional)<input name="telegram_chat_id" value="${esc(c.telegram_chat_id || "")}" placeholder="-1001234567890"></label>
       <label>Webhook (opcional)<input name="webhook_url" value="${esc(c.webhook_url || "")}" placeholder="https://…"></label>
       <fieldset><legend>Planes contratados</legend>${Object.entries(PLAN_NAMES).map(([k, t]) => `<label class="inline"><input type="checkbox" name="plan" value="${k}" ${(c.plans || ["hurto"]).includes(k) ? "checked" : ""}> ${t}</label>`).join("")}
-        <small class="muted" style="flex-basis:100%">Hurtos: alertas con clip. Comercio: cuánta gente entra, cuánto se queda y a dónde va (zonas Entrada y Góndola). Estación: vehículos, espera hasta el pistero y visitas a la tienda (zonas Surtidor y Tienda; el detector también marca vehículos).</small></fieldset>
+        <small class="muted" style="flex-basis:100%">Hurtos: alertas con clip. Comercio: cuánta gente entra, cuánto se queda y a dónde va (zonas Entrada y Góndola). Estación: vehículos, espera hasta el pistero y visitas a la tienda (zonas Surtidor y Tienda; el detector también marca vehículos). <b>Cada cámara mide los planes que le elijas</b> (en «Editar» de la cámara; por ejemplo, la de adentro las métricas y la de afuera la estación) y los datos se juntan por cliente.</small></fieldset>
       <div class="row"><button class="primary" type="submit">${c.id ? "Guardar" : "Crear cliente"}</button><button type="button" id="cancel">Cancelar</button></div>
     </form>`;
     $("#cancel").addEventListener("click", () => ($("#client-form").innerHTML = ""));

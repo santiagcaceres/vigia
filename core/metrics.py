@@ -73,6 +73,28 @@ def merge_bucket(a: dict, b: dict) -> dict:
     return out
 
 
+# Qué parte del cubo es de cada plan del cliente (server: Client.plans / Camera.plans). Una cámara mide solo los planes
+# que se le eligieron; lo demás que haya contado (una cámara de afuera también ve gente) no se suma al cliente.
+PEOPLE_KEYS = ("people", "people_dwell_s", "people_max", "entries", "exits", "door", "staff", "staff_entries",
+               "zones")  # plan «comercio»
+STATION_KEYS = ("vehicles", "vehicles_dwell_s", "vehicles_max", "pump_vehicles", "pump_wait_s", "pump_wait_n",
+                "pump_unattended", "shop_visits")  # plan «estacion»
+
+
+def restrict_bucket(data: dict, client_plans, camera_plans) -> dict:
+    """Copia del cubo de una cámara con solo lo que esa cámara mide para su cliente: si el cliente tiene «comercio» y
+    la cámara no lo mide, la gente queda en cero; si tiene «estacion» y la cámara no la mide, los vehículos. Si el
+    cliente no tiene ese plan no se toca (se ve lo de siempre). `frames` no se toca nunca."""
+    out = dict(data or {})
+    client_plans, camera_plans = set(client_plans or ()), set(camera_plans or ())
+    blank = empty_bucket()
+    for plan, keys in (("comercio", PEOPLE_KEYS), ("estacion", STATION_KEYS)):
+        if plan in client_plans and plan not in camera_plans:
+            for k in keys:
+                out[k] = {} if k == "zones" else blank[k]
+    return out
+
+
 @dataclass
 class _Visit:
     label: str

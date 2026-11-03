@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import secrets
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from core.gestos import GESTURE_TYPES, GestureConfig
-from core.metrics import empty_bucket, merge_bucket
+from core.metrics import empty_bucket, merge_bucket, restrict_bucket
 from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
@@ -186,6 +187,69 @@ class HikConnectKeyIn(BaseModel):
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio"}
+PLAN_ORDER = tuple(PLAN_NAMES)  # hurto, comercio, estacion: así se devuelven siempre
+
+
+def file_safe(name: str, default: str) -> str:
+    """Nombre para un archivo que se baja, sin tildes ni signos: va en la cabecera Content-Disposition, que solo admite
+    latin-1 (con un «’» o un «–» en el nombre del cliente, el pedido daba error)."""
+    plain = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    return "".join(ch if ch.isalnum() else "_" for ch in plain).strip("_") or default
+
+
+def ordered_plans(plans) -> list[str]:
+    """Planes en el orden de siempre, sin repetidos ni nombres que no existen."""
+    have = set(plans or ())
+    return [p for p in PLAN_ORDER if p in have]
+
+
+def plans_of(client) -> list[str]:
+    """Lo que contrató el cliente (sin cliente: nada; un video subido para entrenar no es de ningún plan)."""
+    return ordered_plans(client.plans if client is not None else None)
+
+
+def pick_plans(saved, own: list[str]) -> list[str]:
+    """Lo que mide en efecto una cámara: lo elegido para ella (`saved`) dentro de lo del cliente (`own`). Sin elegir, o
+    si el cliente ya no tiene nada de lo elegido, todo lo del cliente."""
+    if saved is None:
+        return list(own)
+    keep = set(saved)
+    return [p for p in own if p in keep] or list(own)
+
+
+def camera_plans(c, client) -> list[str]:
+    """Los planes que mide la cámara `c` (Camera.plans dentro de Client.plans)."""
+    return pick_plans(c.plans, plans_of(client))
+
+
+def trim_plans(saved, own: list[str]) -> list[str] | None:
+    """Lo elegido para una cámara recortado a lo que su cliente sigue teniendo. None (= como el cliente) si no queda
+    nada o si queda todo lo del cliente."""
+    if saved is None:
+        return None
+    keep = [p for p in own if p in set(saved)]
+    return None if not keep or keep == list(own) else keep
+
+
+def clean_camera_plans(plans: list[str] | None, client, camera: str | None = None) -> list[str] | None:
+    """Valida lo que se eligió que mida una cámara (HTTPException 422 con el motivo) y devuelve lo que se guarda: None
+    (= como el cliente) o la lista en el orden de siempre. Lo mismo que todo lo del cliente se guarda como None, así
+    un plan que el cliente contrate después también lo mide."""
+    if plans is None:
+        return None
+    where = f" en «{camera}»" if camera else ""
+    if not plans:
+        raise HTTPException(422, f"Elegí al menos una cosa para medir{where}")
+    if len(set(plans)) != len(plans):
+        raise HTTPException(422, f"Hay cosas repetidas en lo que se eligió medir{where}")
+    who = f"La cámara «{camera}»" if camera else "La cámara"
+    own = plans_of(client)
+    for p in plans:
+        if p not in own:
+            raise HTTPException(422, f"{who} no puede medir «{PLAN_NAMES.get(p, p)}»: el cliente no lo tiene "
+                                     "contratado")
+    pick = ordered_plans(plans)
+    return None if pick == own else pick
 
 
 class MetricBucketIn(BaseModel):
@@ -247,6 +311,12 @@ class CameraNamesIn(BaseModel):
 class CamerasDeleteIn(BaseModel):
     camera_ids: list[int] = Field(min_length=1, max_length=2000)
     con_alertas: bool = False  # borrar también sus alertas, clips y videos subidos
+
+
+class CamerasPlansIn(BaseModel):
+    """Qué mide cada cámara de lo que contrató su cliente. None = todo lo del cliente."""
+    camera_ids: list[int] = Field(min_length=1, max_length=500)
+    plans: list[Literal["hurto", "comercio", "estacion"]] | None
 
 
 class EnrollIn(BaseModel):
@@ -390,6 +460,9 @@ class CameraIn(BaseModel):
     client_password: bool = False
     # al editar sin mandar `source_url` (el link no vuelve a la app: lleva la clave): dejar el que estaba
     keep_source_url: bool = False
+    # qué mide de lo que contrató el cliente. None = todo lo del cliente. Al editar solo se toca si viene en el pedido
+    # (`null` = volver a «como el cliente»)
+    plans: list[Literal["hurto", "comercio", "estacion"]] | None = None
 
 
 class StreamUrlIn(BaseModel):
@@ -619,7 +692,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Nombres para mostrar en cada cámara: quién la revisa (usuario) y qué la analiza (PC o máquina), y dónde
         se analiza cada una."""
         return {"users": dict(s.query(User.id, User.username).all()),
-                "agents": dict(s.query(Agent.id, Agent.name).all()), "locs": locations(s)}
+                "agents": dict(s.query(Agent.id, Agent.name).all()), "locs": locations(s),
+                "client_plans": {cid: ordered_plans(p) for cid, p in s.query(Client.id, Client.plans)}}
 
     def user_agent(s, u: User) -> Agent:
         """La PC de un usuario: se crea sola la primera vez (no hay que vincular ni nombrar PCs)."""
@@ -853,11 +927,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                              for m in ms]}
 
     def camera_dict(c: Camera, user: User, status: dict | None = None, ops: dict | None = None) -> dict:
+        own = ((ops or {}).get("client_plans") or {}).get(c.client_id, [])  # lo que contrató su cliente
         d = {"id": c.id, "client_id": c.client_id, "agent_id": c.agent_id, "name": c.name, "enabled": c.enabled,
              "detector": c.detector, "process_fps": c.process_fps, "zones": c.zones or [], "rules": clean_rules(c.rules),
              "gestures": c.gestures,  # lo elegido a mano, o None = los de su tipo (gestures_default)
              "has_preview": bool(c.preview_path), "preview_at": iso(c.preview_at), "status": status,
-             "live": bool(status and status.get("live")), "mode": c.mode or "vivo"}
+             "live": bool(status and status.get("live")), "mode": c.mode or "vivo",
+             # qué mide de lo que contrató el cliente: lo elegido (None = todo lo del cliente) y lo que rige
+             "plans": c.plans, "measures": pick_plans(c.plans, own)}
         if user.role != "cliente":
             prof_rules = camera_profile(c)["rules"]
             d.update(brand=c.brand, host=c.host, username=c.username, has_password=bool(c.password_enc),
@@ -1185,6 +1262,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_client_hc(c, body)
         moved = set_client_ip(s, c, body)
         set_client_web_user(s, c, body)
+        own = plans_of(c)  # lo que el cliente dejó de tener, sus cámaras ya no lo miden
+        for cam in s.query(Camera).filter(Camera.client_id == c.id):
+            if cam.plans is not None:
+                cam.plans = trim_plans(cam.plans, own)
         s.flush()
         sync_locations(s, before)
         bump_rev(s)  # horario y planes cambian qué hacen sus cámaras
@@ -1587,7 +1668,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return camera_dict(c, user, agent_status_map(s).get(c.id), operator_map(s))
 
     def camera_fields(body: CameraIn) -> dict:
-        f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password", "keep_source_url"})
+        f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password", "keep_source_url",
+                                     "plans"})
         if "agent_id" not in body.model_fields_set:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
         if f.get("off_hours") is None:
@@ -1662,8 +1744,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_camera(body: CameraIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         check_camera_body(s, body)
         check_not_repeated(s, body)
+        plans = clean_camera_plans(body.plans, s.get(Client, body.client_id))
         c = Camera(**camera_fields(body), password_enc=box.encrypt(body.password) or client_password(s, body),
-                   source_url_enc=box.encrypt(body.source_url))
+                   source_url_enc=box.encrypt(body.source_url), plans=plans)
         apply_operator(s, c, body, user)
         s.add(c)
         bump_rev(s)
@@ -1676,6 +1759,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         check_camera_body(s, body)
         check_not_repeated(s, body, exclude=cam_id)
+        client = s.get(Client, body.client_id)
+        if "plans" in body.model_fields_set:  # solo si vino: null = como el cliente
+            c.plans = clean_camera_plans(body.plans, client)
+        elif c.plans is not None and body.client_id != c.client_id:  # pasó a otro cliente: lo que este no tenga, no
+            c.plans = trim_plans(c.plans, plans_of(client))
         before = locations(s)
         for k, v in camera_fields(body).items():
             setattr(c, k, v)
@@ -1787,6 +1875,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "No se encontraron esas cámaras")
         set_analyzed(s, cams, body.analyze)
         return {"changed": len(cams), "analyze": body.analyze}
+
+    @app.post("/api/cameras/plans")
+    def cameras_plans(body: CamerasPlansIn, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """Qué mide cada cámara de lo que contrató su cliente (varias a la vez; `plans` None = todo lo del cliente).
+        Si alguna no puede medir lo pedido (su cliente no lo tiene), no se guarda ninguna."""
+        cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids))).order_by(Camera.id).all()
+        if not cams:
+            raise HTTPException(404, "No se encontraron esas cámaras")
+        clients = {cl.id: cl for cl in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))}
+        new = {c.id: clean_camera_plans(body.plans, clients.get(c.client_id), c.name) for c in cams}
+        for c in cams:
+            c.plans = new[c.id]
+        bump_rev(s)  # cambia qué hace cada cámara (reglas, vehículos, cuadros por segundo)
+        s.commit()
+        rebalance(s, force=True)  # y cuánto pesa en las máquinas
+        log.info("Qué miden %d cámaras (%s): %s", len(cams), user.username,
+                 ", ".join(body.plans) if body.plans is not None else "como el cliente")
+        ops = operator_map(s)
+        return {"updated": len(cams), "cameras": [camera_dict(c, user, ops=ops) for c in cams]}
 
     @app.post("/api/cameras/names")
     def cameras_names(body: CameraNamesIn, user: User = Depends(staff), s=Depends(db)) -> dict:
@@ -1936,7 +2043,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ev
 
     def camera_analysis(c: Camera, client: Client | None = None) -> dict:
-        plans = list((client.plans if client is not None else None) or [])
+        plans = camera_plans(c, client)  # lo que mide esta cámara de lo que contrató el cliente
         prof = camera_profile(c)
         zones, rules = list(c.zones or []), clean_rules(c.rules)  # sin el merodeo (ya no existe)
         if prof["rules"] is not None and "enabled_rules" not in rules:  # lo elegido a mano manda
@@ -1961,7 +2068,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # las zonas de la cámara
         extra = [z for z in zones if (z or {}).get("type") in NEW_ZONE_TYPES]
         out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES], "rules": rules,
-               "vehicles": vehicles, "plans": plans, "profile": c.profile or "general", "metrics_only": metrics_only}
+               "vehicles": vehicles, "plans": plans, "client_plans": plans_of(client), "profile": c.profile or "general",
+               "metrics_only": metrics_only}
         if gestures.enabled:  # compacto: solo los gestos y lo que difiere de lo de siempre (una clave nueva viaja
             out["gestures"] = gestures.to_dict(compact=True)  # solo a las cámaras que la cambiaron)
         if extra:
@@ -2896,23 +3004,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if camera_id is not None:
             q = q.filter(CameraMetric.camera_id == camera_id)
         rows = q.all()
-        cams = {c.id: c.name for c in s.query(Camera).filter(Camera.client_id == client.id)}
+        own = plans_of(client)
+        cams, measures = {}, {}
+        for cid, name, saved in s.query(Camera.id, Camera.name, Camera.plans).filter(Camera.client_id == client.id):
+            cams[cid], measures[cid] = name, pick_plans(saved, own)
         total = empty_bucket()
         by_day: dict[str, dict] = {}
         by_hour: dict[int, dict] = {}
         by_cam: dict[int, dict] = {}
         for r in rows:
-            total = merge_bucket(total, r.data)
+            # cada cámara suma solo lo que mide: la de afuera no cuenta gente si el cliente mide eso con otra
+            data = restrict_bucket(r.data, own, measures.get(r.camera_id, own))
+            total = merge_bucket(total, data)
             d = r.bucket_start.date().isoformat()
-            by_day[d] = merge_bucket(by_day.get(d, empty_bucket()), r.data)
-            by_hour[r.bucket_start.hour] = merge_bucket(by_hour.get(r.bucket_start.hour, empty_bucket()), r.data)
-            by_cam[r.camera_id] = merge_bucket(by_cam.get(r.camera_id, empty_bucket()), r.data)
+            by_day[d] = merge_bucket(by_day.get(d, empty_bucket()), data)
+            by_hour[r.bucket_start.hour] = merge_bucket(by_hour.get(r.bucket_start.hour, empty_bucket()), data)
+            by_cam[r.camera_id] = merge_bucket(by_cam.get(r.camera_id, empty_bucket()), data)
         return {"client_id": client.id, "client_name": client.name, "plans": list(client.plans or ["hurto"]),
                 "since": since.date().isoformat(), "until": until.date().isoformat(),
                 "total": total,
                 "by_day": [{"date": d, **by_day[d]} for d in sorted(by_day)],
                 "by_hour": [{"hour": h, **by_hour[h]} for h in sorted(by_hour)],
-                "by_camera": [{"camera_id": cid, "name": cams.get(cid, f"Cámara {cid}"), **by_cam[cid]} for cid in sorted(by_cam)]}
+                "by_camera": [{"camera_id": cid, "name": cams.get(cid, f"Cámara {cid}"),
+                               "measures": measures.get(cid, own), **by_cam[cid]} for cid in sorted(by_cam)]}
 
     @app.get("/api/metrics/report.pdf")
     def metrics_report(client_id: int | None = None, desde: str | None = None, hasta: str | None = None,
@@ -2949,8 +3063,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             alerts = {(label or "sin_etiqueta"): n for label, n in labels}
         from .reporte import metrics_pdf  # fpdf2 se carga solo cuando se pide un reporte
         pdf = metrics_pdf(client.name, list(client.plans or ["hurto"]), d1.date(), d2.date(), m, alerts)
-        safe = "".join(ch if ch.isalnum() else "_" for ch in client.name).strip("_") or "cliente"
-        fname = f"metricas_{safe}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.pdf"
+        fname = f"metricas_{file_safe(client.name, 'cliente')}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.pdf"
         return Response(content=pdf, media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
@@ -3012,12 +3125,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if client_id is not None:
             q = q.filter(CameraMetric.client_id == client_id)
         rows = q.order_by(CameraMetric.bucket_start, CameraMetric.camera_id).all()
-        cams = dict(s.query(Camera.id, Camera.name).all())
-        cls = dict(s.query(Client.id, Client.name).all())
+        cls, own = {}, {}
+        for cl_id, cl_name, cl_plans in s.query(Client.id, Client.name, Client.plans):
+            cls[cl_id], own[cl_id] = cl_name, ordered_plans(cl_plans)
+        cams, cam_plans = {}, {}
+        for cid, cl_id, name, saved in s.query(Camera.id, Camera.client_id, Camera.name, Camera.plans):
+            cams[cid], cam_plans[cid] = name, (cl_id, saved)
+
+        def measures(cam_id: int, cl_id: int) -> list[str]:
+            cl_plans = own.get(cl_id, [])
+            cam_cl, saved = cam_plans.get(cam_id, (None, None))
+            return pick_plans(saved, cl_plans) if cam_cl == cl_id else cl_plans
+
         groups: dict[tuple, dict] = {}
         for r in rows:
             key = (r.bucket_start if agrupar == "hora" else r.bucket_start.replace(hour=0), r.client_id, r.camera_id)
-            groups[key] = merge_bucket(groups.get(key, empty_bucket()), r.data)
+            data = restrict_bucket(r.data, own.get(r.client_id, []), measures(r.camera_id, r.client_id))
+            groups[key] = merge_bucket(groups.get(key, empty_bucket()), data)
 
         def num(v: float, dec: int = 1) -> str:
             return f"{v:.{dec}f}".replace(".", ",")
@@ -3039,7 +3163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 num(b["pump_wait_s"] / b["pump_wait_n"] / 60) if b["pump_wait_n"] else "", str(b["pump_unattended"]),
                 str(b["shop_visits"]), zones]
             lines.append(";".join(c.replace(";", ",") for c in cells))
-        name = (cls.get(client_id, "cliente") if client_id else "todos").replace(" ", "_")
+        name = file_safe(cls.get(client_id, "cliente"), "cliente") if client_id else "todos"
         fname = f"metricas_{name}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.csv"
         return Response(content="\ufeff" + "\r\n".join(lines) + "\r\n", media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{fname}"'})

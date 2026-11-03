@@ -97,8 +97,10 @@ def gestures_blocked(analysis: dict) -> str | None:
     """Por qué la cámara no puede mirar gestos aunque se elijan (como el servidor, `camera_analysis`), o None."""
     if (analysis.get("profile") or "general") == "metricas":
         return "la cámara es del tipo «Solo métricas»"
-    plans = analysis.get("plans")
+    plans = analysis.get("plans")  # (lo que mide esta cámara; `client_plans`, lo que contrató el cliente)
     if plans is not None and "hurto" not in plans:
+        if "hurto" in (analysis.get("client_plans") or ()):
+            return "esta cámara no mide hurtos: se elige en «Editar» → «Qué mide esta cámara»"
         return "el cliente no tiene el plan «Detección de hurtos»"
     return None
 
@@ -828,8 +830,8 @@ class Tuner:
             out.append("La zona Entrada no tiene sentido: cuenta igual a los que entran y a los que salen. Marcá hacia "
                        "dónde caminan los que entran en «✎ Marcar zonas» → «Sentido».")
         if self.metrics_only or (not rules and not g.enabled):
-            out.append("Esta cámara no da alertas: es «solo métricas» (el cliente no tiene el plan de hurto o el tipo de "
-                       "cámara no usa reglas).")
+            why = gestures_blocked(self.analysis) or "el tipo de cámara no usa reglas"
+            out.append(f"Esta cámara no da alertas: es «solo métricas» ({why}).")
         elif not self.zones:
             out.append("No hay zonas: no se puede disparar ninguna regla. Dibujá góndolas, caja y salida con «✎ Marcar zonas»."
                        + (" Los gestos sí miran sin zonas (con las góndolas marcadas dan menos falsas alarmas)."
