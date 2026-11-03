@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Preparar un grabador nuevo · Analítica Crítica</title>
+<style>
+  @page { size: A4; margin: 13mm 14mm 13mm 14mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#011b5d; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 10.4pt; line-height: 1.42; margin: 0; }
+  h1 { font-size: 23pt; margin: 0 0 2px; letter-spacing: -0.3px; color: var(--accent); line-height: 1.12; }
+  h2 { font-size: 13.8pt; margin: 15px 0 6px; padding-top: 7px; border-top: 2px solid var(--accent); color: var(--accent);
+       page-break-after: avoid; }
+  h2 .n { display: inline-block; min-width: 26px; height: 26px; line-height: 26px; text-align: center; border-radius: 50%;
+          background: var(--accent); color: #fff; font-size: 12pt; margin-right: 8px; }
+  h3 { font-size: 11.4pt; margin: 10px 0 4px; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ol, ul { margin: 4px 0 4px 21px; padding: 0; }
+  li { margin: 2.5px 0; }
+  b.m { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-weight: 600; white-space: nowrap; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 9.4pt; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 9.8pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  td.k { width: 32%; font-weight: 600; }
+  td.blank { height: 25px; }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 7px 12px; margin: 8px 0; border-radius: 6px;
+         page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .box.bad { border-left-color: var(--bad); }
+  .check { list-style: none; margin-left: 2px; }
+  .check li::before { content: "☐ "; color: var(--accent); font-weight: 700; }
+  .aviso { display: block; margin: 6px 0 2px; padding: 5px 10px; background: #eaf4ec; border-radius: 6px; font-size: 9.9pt;
+           page-break-inside: avoid; }
+  .aviso::before { content: "✔ Avisale a Santiago: "; font-weight: 700; color: var(--ok); }
+  .muted { color: var(--muted); }
+  .small { font-size: 9.2pt; }
+  .cover { display: flex; align-items: center; gap: 18px; border-bottom: 3px solid var(--accent); padding-bottom: 11px; margin-bottom: 10px; }
+  .cover img { width: 74px; height: 74px; }
+  .brand { font-size: 10.2pt; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .sub { font-size: 12.4pt; color: var(--muted); margin-top: 2px; }
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: 8px 0; page-break-inside: avoid; }
+  .steps div { border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 6px; padding: 5px 8px; font-size: 9.4pt; }
+  .steps b { display: block; color: var(--accent); font-size: 10.2pt; }
+  .net { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; page-break-inside: avoid; }
+  .net > div { border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; }
+  .net h3 { margin-top: 0; }
+  .net .good { border-top: 4px solid var(--ok); }
+  .net .meh { border-top: 4px solid var(--warn); }
+  .chain { font-family: Consolas, monospace; font-size: 9.3pt; background: var(--bg); border-radius: 6px; padding: 5px 8px; margin: 4px 0; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--bad); font-weight: 700; }
+  .pb { page-break-before: always; }
+  section { break-inside: avoid; page-break-inside: avoid; }
+  .foot { margin-top: 12px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 8.8pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <img src="guia-operadores/logo.png" alt="">
+  <div>
+    <div class="brand">Analítica Crítica · uso interno</div>
+    <h1>Preparar un grabador nuevo, de la caja a la clave de API</h1>
+    <div class="sub">Para dejarlo listo en tu casa y que mañana en lo del cliente solo haya que enchufarlo</div>
+  </div>
+</div>
+
+<div class="box ok">
+  <b>Qué vamos a hacer.</b> Dejar el grabador Hikvision conectado a la <b>nube de Hik-Connect</b> y sacar dos datos, la
+  <b>AppKey</b> y la <b>SecretKey</b>, que me mandás por privado. Con eso nuestro sistema ve las cámaras desde acá, esté donde
+  esté el grabador. <b>No hay que tocar ningún router</b> (ni el de Antel ni el nuevo) ni abrir puertos. Lleva unos 45 a 60
+  minutos. Si en algún paso algo no coincide con lo que ves, <b>sacale una foto a la pantalla y mandámela</b>: lo resolvemos
+  juntos.
+</div>
+
+<div class="steps">
+  <div><b>1 · Conectar</b>Grabador, cámaras, monitor, mouse y cable al router de Antel</div>
+  <div><b>2 · Activar</b>Clave del grabador y asistente de inicio</div>
+  <div><b>3 · Nube</b>Hik-Connect habilitado y sin cifrado</div>
+  <div><b>4 · Señal liviana</b>La segunda señal de cada cámara en H.264</div>
+  <div><b>5 · App</b>El grabador en la cuenta de la empresa</div>
+  <div><b>6 · Equipo</b>Hik-Connect for Teams en la computadora</div>
+  <div><b>7 · Clave de API</b>Sacar la AppKey y la SecretKey</div>
+  <div><b>8 · Mandar</b>Los datos, por privado</div>
+</div>
+
+<h3>Lo que necesitás</h3>
+<ul class="check">
+  <li>El <b>grabador Hikvision</b> (dice HIKVISION en el frente), su fuente de alimentación y las cámaras con sus cables.
+      <span class="muted">Si dice Dahua u otra marca, pará y avisame: esta guía no sirve para esa marca.</span></li>
+  <li>Un <b>monitor o televisor con HDMI</b> (o VGA) y un <b>mouse USB</b>. El grabador se maneja con eso.</li>
+  <li>Un <b>cable de red</b> del grabador al <b>router de Antel</b>. Wi-Fi no: el grabador va siempre por cable.</li>
+  <li>Tu <b>celular</b> con la app <b>Hik-Connect</b> instalada (Play Store o App Store) y una <b>computadora</b> con internet.</li>
+  <li>Los datos que te paso yo por privado: la <b>clave del grabador</b> y la <b>cuenta de Hik-Connect de la empresa</b>
+      (correo y clave).</li>
+</ul>
+<p class="small muted"><b>El router nuevo no hace falta.</b> Lo podés dejar en la caja; al final explico para qué sirve si lo
+querés usar. Los nombres de los menús cambian un poco según el modelo (a veces salen en inglés): entre paréntesis va el otro
+nombre que puede tener.</p>
+
+<section>
+<h2><span class="n">1</span>Conectar todo</h2>
+<ol>
+  <li>Cámaras al grabador (cada cámara en una entrada de video; anotá qué cámara va en qué número de canal).</li>
+  <li>Monitor por HDMI y mouse en el USB del grabador.</li>
+  <li>Cable de red: del puerto <b>LAN</b> del grabador a cualquier puerto amarillo (LAN) del router de Antel.</li>
+  <li>Recién ahí, la corriente. Tarda 1 o 2 minutos en arrancar.</li>
+</ol>
+<p class="small muted">Si tiene <b>disco duro</b> adentro, mejor: así graba. Si no tiene, anda igual (nosotros analizamos el video
+en vivo), pero puede pitar avisando que falta el disco: ver «Dónde te podés trabar».</p>
+
+</section>
+<section>
+<h2><span class="n">2</span>Activar el grabador y el asistente de inicio</h2>
+<p>Un grabador nuevo arranca pidiendo que lo «actives», o sea, que le pongas la clave del usuario <code>admin</code>.</p>
+<ol>
+  <li><b>Clave de admin:</b> poné la que te pasé por privado (dos veces). No la anotes en un papel pegado al equipo.</li>
+  <li><b>Patrón de desbloqueo</b> (si lo pide): dibujá uno simple y contame cuál es.</li>
+  <li><b>Recuperar la clave</b> (si pide preguntas de seguridad o un correo): poné el <b>correo de la empresa</b>.</li>
+  <li>Sigue el <b>asistente</b> (Wizard). Usá estos valores y en todo lo demás tocá <b class="m">Siguiente</b>:
+    <table>
+      <tr><td class="k">Idioma</td><td>Español</td></tr>
+      <tr><td class="k">Zona horaria</td><td><b>GMT-03:00</b> (Montevideo / Buenos Aires). <b>Horario de verano: apagado</b>
+          (Uruguay no tiene).</td></tr>
+      <tr><td class="k">Fecha y hora</td><td>Activá <b>NTP</b> (hora por internet) si aparece; si no, poné la hora a mano bien.</td></tr>
+      <tr><td class="k">Red</td><td>Marcá <b>DHCP</b> (que tome la dirección sola). <b>No pongas IP fija:</b> mañana el grabador
+          cambia de red y con IP fija se queda sin internet.</td></tr>
+      <tr><td class="k">Hik-Connect</td><td>Lo hacemos en el paso 3 (si el asistente lo muestra acá, hacelo acá igual que en el 3).</td></tr>
+      <tr><td class="k">Disco duro</td><td>Si tiene disco y figura «Sin inicializar», <b>Inicializar</b> (es nuevo, no se pierde nada).</td></tr>
+    </table>
+  </li>
+  <li>Al terminar, en la pantalla principal tienen que verse <b>todas las cámaras</b>. Si alguna sale en negro o «sin
+      señal», revisá su cable y su fuente.</li>
+</ol>
+<div class="box"><b>Sin monitor:</b> en una computadora conectada al mismo router, bajá <b>SADP Tool</b> de la página de
+Hikvision; encuentra el grabador en la red y deja activarlo, ponerle la clave y marcar DHCP. Después entrás escribiendo en el
+navegador la dirección que muestra SADP. Si te complica, avisame.</div>
+<span class="aviso">«Está activado y se ven las N cámaras».</span>
+
+</section>
+<section>
+<h2><span class="n">3</span>Conectarlo a la nube (Hik-Connect) y apagar el cifrado</h2>
+<ol>
+  <li>En el grabador: <b class="m">Menú</b> → <b class="m">Configuración</b> → <b class="m">Red</b> →
+      <b class="m">Acceso a plataforma</b> (o <b class="m">Hik-Connect</b>; en algunos modelos está dentro de
+      <b class="m">Configuración avanzada</b>).</li>
+  <li>Marcá <b>Habilitar</b>. Si aparecen los términos del servicio, aceptalos.</li>
+  <li><b>Código de verificación:</b> creá uno de 6 a 12 letras o números y <b>anotalo</b> (me lo vas a mandar). Si el
+      grabador ya trae uno impreso en la etiqueta (6 letras mayúsculas), podés usar ese.</li>
+  <li><b>Desmarcá «Cifrado de stream»</b> (o <b class="m">Habilitar cifrado de flujo</b> / <b class="m">Stream Encryption</b>).
+      <b>Este es el paso más importante:</b> con el cifrado prendido, Hikvision le entrega el video solo a su propia app y
+      nuestro sistema no lo puede ver.</li>
+  <li><b class="m">Aplicar</b>. Esperá 1 o 2 minutos hasta que el estado diga <b>En línea</b> (Online).</li>
+</ol>
+<p class="small muted">Si no pasa a «En línea»: revisá el cable de red, que en <b class="m">Red</b> → <b class="m">General</b> esté DHCP
+y que tenga una dirección que empiece igual que la del router (por ejemplo <code>192.168.1.</code>…), y reiniciá el grabador.</p>
+<span class="aviso">«Hik-Connect en línea, cifrado desmarcado» + el código de verificación.</span>
+
+</section>
+<section>
+<h2><span class="n">4</span>La segunda señal de cada cámara (la que analizamos)</h2>
+<p>Cada cámara manda dos señales: la <b>principal</b> (para grabar, no se toca) y la <b>secundaria</b> (Sub-stream), más
+liviana, que es la que analizamos. Así casi no gasta internet del cliente.</p>
+<p>En el grabador: <b class="m">Configuración</b> → <b class="m">Grabación</b> (o <b class="m">Cámara</b>) →
+<b class="m">Parámetros</b> → pestaña <b class="m">Secundario</b> (Sub-stream). Para cada cámara:</p>
+<table>
+  <tr><th style="width:28%">Opción</th><th style="width:34%">Poné</th><th>Por qué</th></tr>
+  <tr><td>Compresión (Codificación)</td><td><b>H.264</b> (no H.265 ni H.265+)</td><td>Con H.265 la nube no nos entrega el video.</td></tr>
+  <tr><td>Resolución</td><td>640×360, WD1 o D1 (la más parecida)</td><td>Alcanza para ver personas.</td></tr>
+  <tr><td>Cuadros por segundo</td><td><b>8</b> (entre 6 y 10)</td><td>Analizamos 5 por segundo.</td></tr>
+  <tr><td>Tasa de bits</td><td>Variable, máximo <b>384 kbps</b></td><td>Menos internet.</td></tr>
+</table>
+<p class="small muted">Suele haber un botón <b class="m">Copiar</b> para pasar lo mismo a las demás cámaras. Al final,
+<b class="m">Aplicar</b>.</p>
+
+</section>
+<section>
+<h2><span class="n">5</span>Agregar el grabador a la cuenta de la empresa (app del celular)</h2>
+<ol>
+  <li>Abrí la app <b>Hik-Connect</b> y entrá con la <b>cuenta de la empresa</b> que te pasé (no con una tuya). Si te pide
+      región, <b>Uruguay</b>.</li>
+  <li>Tocá <b class="m">+</b> → <b class="m">Escanear código QR</b> y escaneá el QR de la etiqueta del grabador (o el que
+      muestra la pantalla <b class="m">Acceso a plataforma</b> del paso 3). También se puede escribir el <b>número de serie</b>
+      a mano.</li>
+  <li>Cuando lo pida, poné el <b>código de verificación</b> del paso 3.</li>
+  <li><b>Prueba clave:</b> abrí una cámara en la app.
+    <ul>
+      <li>Si se ve directo: <span class="yes">bien</span>, el cifrado está apagado.</li>
+      <li>Si te pide el código de verificación para ver la imagen: <span class="no">el cifrado sigue prendido</span>. Tocá
+          el grabador → <b class="m">⚙ Configuración</b> → <b class="m">Cifrado de video</b> (o <b class="m">Cifrado de
+          imagen</b>) → apagalo; o volvé al paso 3 en el grabador.</li>
+    </ul>
+  </li>
+  <li>Anotá el <b>número de serie</b>: en la app, grabador → <b class="m">⚙</b> → <b class="m">Información del dispositivo</b>
+      (copialo tal cual, con letras y números).</li>
+</ol>
+<span class="aviso">«Está en la app de la empresa y las cámaras se ven sin pedir código» + el número de serie.</span>
+
+</section>
+<section>
+<h2><span class="n">6</span>Pasar la cuenta a «equipo» (Hik-Connect for Teams, en la computadora)</h2>
+<p>El modo equipo es el que deja darle a nuestro sistema una clave propia, sin usar la clave de la cuenta.</p>
+<ol>
+  <li>En la computadora entrá a <b>www.hik-connect.com</b> con la <b>misma cuenta de la empresa</b>.</li>
+  <li>Elegí el modo <b class="m">Equipo</b> (Team) → <b class="m">Crear equipo</b> (Create Team). Nombre:
+      <code>Analitica Critica</code>; país: Uruguay. <span class="muted">(Si el equipo ya existe, entrá a ese: no crees otro.)</span></li>
+  <li>Pasá el grabador al equipo: <b class="m">Dispositivos</b> → <b class="m">Agregar</b> →
+      <b class="m">Importar desde Hik-Connect</b> (modo personal). Si no aparece esa opción, agregalo con el número de serie y
+      el código de verificación.</li>
+  <li>Fijate que el grabador figure <b>En línea</b> y que se vean sus cámaras.</li>
+</ol>
+<div class="box warn"><b>Si el portal te ofrece una prueba, una licencia o te pide un pago o una tarjeta: no aceptes nada.</b>
+Sacá una foto y llamame.</div>
+
+</section>
+<section>
+<h2><span class="n">7</span>Crear la clave de API (AppKey y SecretKey)</h2>
+<ol>
+  <li>En el portal del equipo: <b class="m">Gestión del equipo</b> (Team Management) → <b class="m">Integración de API</b>
+      (API Integration).</li>
+  <li>Si pide completar una solicitud:
+    <table>
+      <tr><td class="k">Nombre de la aplicación</td><td><code>Analitica_Critica</code> (sin espacios ni tildes)</td></tr>
+      <tr><td class="k">Descripción</td><td>Análisis de video para prevención de hurtos</td></tr>
+    </table>
+    Si queda «pendiente de aprobación», avisame y esperamos.</li>
+  <li><b class="m">Crear</b> / <b class="m">Generar</b>. Aparecen dos datos:
+    <ul>
+      <li><b>AppKey</b> (puede decir <i>Account</i> o <i>API Key</i>).</li>
+      <li><b>SecretKey</b> (puede decir <i>API Secret</i>). <b>Puede mostrarse una sola vez:</b> copiala en ese momento,
+          completa, sin espacios al principio ni al final.</li>
+    </ul>
+  </li>
+</ol>
+<div class="box bad"><b>La SecretKey es como una llave de las cámaras.</b> Copiala como texto (mejor no captura de pantalla:
+queda en la galería y en la nube del celular), mandámela <b>por WhatsApp privado</b>, nunca en un grupo, y después
+<b>borrala</b> de las notas o del chat donde la hayas pegado. Si se te perdió antes de mandarla, no pasa nada: se borra esa y
+se crea otra.</div>
+
+</section>
+<section>
+<h2><span class="n">8</span>Mandarme los datos (por privado)</h2>
+<table>
+  <tr><td class="k">AppKey</td><td class="blank"></td></tr>
+  <tr><td class="k">SecretKey</td><td class="blank"><span class="muted small">(solo por WhatsApp privado)</span></td></tr>
+  <tr><td class="k">Número de serie del grabador</td><td class="blank"></td></tr>
+  <tr><td class="k">Código de verificación</td><td class="blank"></td></tr>
+  <tr><td class="k">Modelo del grabador</td><td class="blank"><span class="muted small">En la etiqueta, empieza con DS- o iDS-</span></td></tr>
+  <tr><td class="k">Patrón de desbloqueo</td><td class="blank"><span class="muted small">Si lo pidió</span></td></tr>
+  <tr><td class="k">Cámaras conectadas</td><td class="blank"><span class="muted small">Cuántas y en qué canales (1, 2, 3…)</span></td></tr>
+</table>
+<p>Con eso cargo el grabador en el sistema y pruebo desde acá que se vea el video. <b>Hasta que te diga «anda», no desarmes
+nada.</b></p>
+
+</section>
+<section>
+<h2>Dónde te podés trabar</h2>
+<table>
+  <tr><th style="width:38%">Lo que pasa</th><th>Qué hacer</th></tr>
+  <tr><td>El grabador no pasa a «En línea» en Acceso a plataforma</td><td>Cable bien puesto (luz del puerto prendida), DHCP
+      marcado en <b class="m">Red</b> → <b class="m">General</b>. Reiniciá el grabador. Si sigue, foto de esa pantalla.</td></tr>
+  <tr><td>La app pide el código de verificación para ver una cámara</td><td>El cifrado sigue prendido: paso 3 (desmarcar
+      «Cifrado de stream») o paso 5 (Cifrado de video en la app).</td></tr>
+  <tr><td>La app dice que el grabador ya está agregado a otra cuenta</td><td>Avisame: hay que sacarlo de esa cuenta primero.</td></tr>
+  <tr><td>Pita sin parar (no tiene disco)</td><td><b class="m">Configuración</b> → <b class="m">Eventos</b> →
+      <b class="m">Excepción</b> → en «Error de disco» / «Sin disco», desmarcá <b>Aviso sonoro</b>.</td></tr>
+  <tr><td>No hay opción H.264 en la segunda señal</td><td>Foto de la pantalla: algunos modelos lo ponen en otro menú.</td></tr>
+  <tr><td>No aparece «Integración de API»</td><td>Confirmá que estás en modo <b>Equipo</b> (no personal) y que sos el
+      dueño del equipo. Si sigue sin aparecer, foto del menú.</td></tr>
+  <tr><td>Te olvidaste el código de verificación</td><td>En el grabador, <b class="m">Red</b> → <b class="m">Acceso a
+      plataforma</b>: ahí se ve o se cambia.</td></tr>
+  <tr><td>El portal pide pago, licencia o tarjeta</td><td>No aceptes nada: llamame.</td></tr>
+</table>
+
+</section>
+<section>
+<h2>Mañana, en lo del cliente</h2>
+<ul>
+  <li><b>No se configura nada.</b> Cámaras al grabador, cable de red del grabador a un puerto del router del cliente, y
+      corriente.</li>
+  <li>En 2 o 3 minutos el grabador aparece <b>En línea</b> en la app de Hik-Connect de la empresa, aunque sea otra red y
+      otro proveedor de internet: está atado a la cuenta, no a la red.</li>
+  <li>No hace falta abrir puertos, ni saber la IP, ni la clave del Wi-Fi del cliente.</li>
+  <li>Si no aparece en línea: probá otro puerto del router y reiniciá el grabador. Si el cliente tiene un router que no da
+      direcciones solo (muy raro), llamame.</li>
+</ul>
+
+</section>
+
+<div class="net">
+  <div class="good">
+    <h3>Sin el router nuevo <span class="yes">(lo normal)</span></h3>
+    <div class="chain">Grabador → router del cliente → internet</div>
+    <p class="small">Es lo más simple y lo que recomiendo. El router nuevo queda guardado.</p>
+  </div>
+  <div class="meh">
+    <h3>Con el router nuevo (si lo usamos)</h3>
+    <div class="chain">Grabador → router nuevo → router del cliente</div>
+    <p class="small">El puerto <b>WAN / Internet</b> (suele ser azul) del router nuevo va a un puerto LAN del router del
+    cliente; el grabador, a un LAN del router nuevo. Router nuevo en DHCP, <b>sin abrir puertos</b>. Hik-Connect anda igual
+    con dos routers en cadena. Hoy lo podés armar así en tu casa con el de Antel para probar que el grabador sigue «En
+    línea» al cambiar de red.</p>
+  </div>
+</div>
+
+<div class="foot">Analítica Crítica · Guía interna · 3 de noviembre de 2026 · Sirve para grabadores <b>Hikvision</b> por la
+nube de Hik-Connect. Los nombres de los menús pueden variar según el modelo y la versión.</div>
+
+</body>
+</html>
