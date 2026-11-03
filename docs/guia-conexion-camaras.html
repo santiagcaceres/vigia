@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Cómo conectar las cámaras · Analítica Crítica</title>
+<style>
+  @page { size: A4; margin: 15mm 14mm 15mm 14mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#011b5d; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 10.6pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 25pt; margin: 0 0 2px; letter-spacing: -0.3px; color: var(--accent); }
+  h2 { font-size: 15pt; margin: 18px 0 8px; padding-top: 8px; border-top: 2px solid var(--accent); color: var(--accent);
+       page-break-after: avoid; }
+  h2 .n { display: inline-block; min-width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 50%;
+          background: var(--accent); color: #fff; font-size: 12.5pt; margin-right: 8px; }
+  h3 { font-size: 11.8pt; margin: 12px 0 5px; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ol, ul { margin: 5px 0 5px 22px; padding: 0; }
+  li { margin: 3px 0; }
+  ol.steps-list > li { margin: 6px 0; page-break-inside: avoid; }
+  b.m { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-weight: 600; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px;
+         font-size: 9.3pt; word-break: break-all; }
+  table { border-collapse: collapse; width: 100%; margin: 7px 0; font-size: 9.8pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  td.who { width: 30%; font-weight: 600; }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 7px 12px; margin: 9px 0; border-radius: 6px;
+         page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .box.bad { border-left-color: var(--bad); }
+  .muted { color: var(--muted); }
+  .small { font-size: 9.2pt; }
+  .cover { display: flex; align-items: center; gap: 18px; border-bottom: 3px solid var(--accent); padding-bottom: 12px; margin-bottom: 12px; }
+  .cover img { width: 76px; height: 76px; }
+  .brand { font-size: 10.5pt; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .sub { font-size: 13pt; color: var(--muted); margin-top: 2px; }
+  .ways { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; page-break-inside: avoid; }
+  .ways div { border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 6px; padding: 8px 11px; }
+  .ways b.t { display: block; color: var(--accent); font-size: 11.5pt; margin-bottom: 3px; }
+  .flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0; font-size: 9.8pt; }
+  .flow span { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; background: var(--bg); }
+  .flow i { color: var(--muted); font-style: normal; }
+  .pb { page-break-before: always; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--bad); font-weight: 700; }
+  .foot { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 8.8pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <img src="guia-operadores/logo.png" alt="">
+  <div>
+    <div class="brand">Analítica Crítica</div>
+    <h1>Cómo conectar las cámaras</h1>
+    <div class="sub">Por nube o por puertos: qué se precisa, a quién pedirlo y cómo hacerlo</div>
+    <p class="muted small">Guía interna para operadores y técnicos · 3 de noviembre de 2026</p>
+  </div>
+</div>
+
+<h2><span class="n">1</span>Lo básico</h2>
+<ul>
+  <li>Las cámaras de un local van todas a un <b>grabador</b>: un <b>DVR</b> para cámaras analógicas, un <b>NVR</b> para
+      cámaras IP. <b>Nosotros nos conectamos al grabador</b>, nunca a cada cámara.</li>
+  <li>Cada cámara es un <b>canal</b> del grabador (canal 1, 2, 3…).</li>
+  <li>Trabajamos con dos marcas: <b>Hikvision</b> y <b>Dahua</b>.</li>
+  <li>Cada cámara manda dos señales: la <b>principal</b> (alta calidad, la que graba el local) y la <b>secundaria</b>, más
+      liviana. <b>Nosotros usamos la secundaria</b>, así gastamos poco internet del local. La principal no se toca.</li>
+  <li>En el local <b>no se instala nada</b>: ni PC ni aparatos.</li>
+</ul>
+<div class="flow">
+  <span>Cámaras</span><i>→</i><span>Grabador del local</span><i>→</i><span>Nube de Hikvision <b>o</b> router del local</span>
+  <i>→</i><span>Analítica Crítica</span>
+</div>
+
+<h3>Las dos formas de llegar al grabador</h3>
+<div class="ways">
+  <div>
+    <b class="t">Por nube (Hik-Connect)</b>
+    Solo <b>Hikvision</b>. No se toca el router ni se abre nada a internet. El cliente nos corta el acceso en un clic.
+    <br><span class="yes">Es la recomendada para Hikvision.</span>
+  </div>
+  <div>
+    <b class="t">Por puertos (router)</b>
+    <b>Hikvision o Dahua</b>. Se abre el grabador a internet por el router del local, con un usuario de solo vista.
+    <br><span class="muted">Es la única forma para Dahua.</span>
+  </div>
+</div>
+
+<h2><span class="n">2</span>Por nube (Hikvision, Hik-Connect)</h2>
+
+<h3>Qué se necesita y a quién pedirlo</h3>
+<table>
+  <tr><th>Qué</th><th>A quién</th></tr>
+  <tr><td>El celular con la app <b>Hik-Connect</b> y la cuenta donde está el grabador</td><td class="who">Al dueño del comercio</td></tr>
+  <tr><td>El <b>código de verificación</b> del grabador (6 letras en la etiqueta, o el que se creó al activar Hik-Connect)</td>
+      <td class="who">Al dueño, o al instalador</td></tr>
+  <tr><td>Acceso al grabador con monitor y mouse (por si algo no se puede hacer desde la app)</td>
+      <td class="who">Al dueño o al instalador</td></tr>
+  <tr><td>Una computadora con internet</td><td class="who">La lleva el operador</td></tr>
+</table>
+<div class="box bad"><b>Nunca pedir la contraseña de la cuenta Hik-Connect.</b> No hace falta: lo que nos pasan es una
+clave aparte (AppKey y SecretKey) que el cliente puede borrar cuando quiera.</div>
+
+<h3>Paso a paso (con el cliente al lado, unos 20 a 40 minutos)</h3>
+<ol class="steps-list">
+  <li><b>Que el grabador esté en Hik-Connect.</b> Si el cliente ya ve sus cámaras en la app, este paso está hecho. Si no:
+    <ul>
+      <li>En el grabador: <b class="m">Configuración → Red → Acceso a plataforma</b> (o «Hik-Connect»).</li>
+      <li>Marcar <b>Habilitar</b>, crear un código de verificación y anotarlo.</li>
+      <li>En la app: <b class="m">+ → Escanear QR</b> del grabador.</li>
+    </ul></li>
+  <li><b>Apagar el cifrado de video.</b> Si queda prendido no vemos nada: sale el error <b>EVZ60019</b>.
+    <ul>
+      <li>En la app: grabador → <b class="m">⚙ → Cifrado de video</b> → apagar (pide el código).</li>
+      <li>Si la app se traba: en el grabador, <b class="m">Red → Acceso a plataforma</b> → desmarcar <b>Cifrado de stream</b>.</li>
+    </ul></li>
+  <li><b>Ajustar la señal secundaria</b> de cada cámara. En el grabador:
+      <b class="m">Configuración → Grabación (o Cámara) → Parámetros → Secundario</b>.
+    <table>
+      <tr><th>Opción</th><th>Valor</th><th>Por qué</th></tr>
+      <tr><td>Compresión</td><td><b>H.264</b> (nunca H.265 ni H.265+)</td><td>La nube no entrega H.265</td></tr>
+      <tr><td>Resolución</td><td><b>640×360</b> (o la más cercana)</td><td>Alcanza para ver personas</td></tr>
+      <tr><td>Cuadros por segundo</td><td><b>8</b></td><td>Analizamos 5 por segundo</td></tr>
+      <tr><td>Tasa de bits</td><td>Variable, máximo <b>384 kbps</b></td><td>Menos internet del local</td></tr>
+    </table></li>
+  <li><b>Pasar la cuenta a «modo equipo»:</b>
+    <ul>
+      <li>En la computadora, entrar a <b>www.hik-connect.com</b> con la misma cuenta del celular.</li>
+      <li>Elegir <b class="m">Equipo / Team → Crear equipo</b>. Nombre del equipo: el del comercio. País: Uruguay.</li>
+      <li><b class="m">Dispositivos → Agregar → Importar desde Hik-Connect</b>. Si no aparece esa opción, agregar el grabador
+          con número de serie y código de verificación.</li>
+      <li>Verificar que el grabador diga <b>En línea</b> y que se vean las cámaras.</li>
+    </ul></li>
+  <li><b>Crear la clave de acceso:</b>
+    <ul>
+      <li><b class="m">Gestión del equipo → Integración de API → Crear</b>.</li>
+      <li>Si pide una solicitud: nombre <code>Analitica_Critica</code> (sin espacios ni tildes) y una descripción corta
+          (por ejemplo «Análisis de video para prevención de hurtos»).</li>
+      <li>Aparecen dos datos: <b>AppKey</b> y <b>SecretKey</b>.</li>
+    </ul>
+    <div class="box warn"><b>La SecretKey puede mostrarse una sola vez:</b> copiarla en ese momento. Si el portal pide un
+    pago o una licencia, <b>no aceptar</b>: avisar primero a la oficina.</div></li>
+  <li><b>Que nos manden, por privado</b> (WhatsApp o mail directo, nunca en un grupo):
+    <ul>
+      <li>AppKey y SecretKey.</li>
+      <li>Número de serie del grabador (app → grabador → <b class="m">⚙ → Información del dispositivo</b>).</li>
+      <li>Correo de la cuenta Hik-Connect.</li>
+      <li>Qué mira cada canal (caja, góndola, entrada, depósito…) y cuáles analizar.</li>
+      <li>Horario del local.</li>
+    </ul></li>
+</ol>
+
+<h3>En nuestra app</h3>
+<ol>
+  <li>En la cámara, elegir Marca <b class="m">Hikvision por Hik-Connect</b>.</li>
+  <li>En <b class="m">Clave de Hik-Connect…</b> cargar la AppKey y la SecretKey del cliente.</li>
+  <li><b class="m">Elegir de Hik-Connect…</b> y marcar las cámaras.</li>
+  <li>Marcar zonas y probar con <b class="m">● En vivo</b>.</li>
+</ol>
+
+<h3>Para tener en cuenta</h3>
+<ul>
+  <li>El cliente nos saca el acceso cuando quiera: <b class="m">Gestión del equipo → Integración de API</b> → borrar la clave.</li>
+  <li>Hik-Connect da pocas transmisiones a la vez por grabador. Si una cámara no abre, puede ser por eso.</li>
+  <li>El vivo por nube ya anduvo (Minas). Bajar grabaciones por nube <b>todavía no se probó</b> con un grabador real.</li>
+</ul>
+
+<h2><span class="n">3</span>Por puertos (Hikvision o Dahua)</h2>
+
+<h3>Qué se necesita y a quién pedirlo</h3>
+<table>
+  <tr><th>Qué</th><th>A quién</th></tr>
+  <tr><td>Permiso para entrar al local y tocar el router</td><td class="who">Al dueño</td></tr>
+  <tr><td>Usuario y clave <b>de administrador del grabador</b>, para crear nuestro usuario y ajustar el video (esa clave no
+      se carga nunca en nuestro sistema)</td><td class="who">Al instalador de las cámaras o al dueño</td></tr>
+  <tr><td>Usuario y clave del router (en los de Antel está en la etiqueta de abajo)</td>
+      <td class="who">Etiqueta del router, o Antel</td></tr>
+  <tr><td>Confirmar que el local tiene <b>IP pública real</b>, no compartida (lo que se llama CG-NAT). Con IP compartida
+      los puertos no andan y hay que pedirle una IP pública al proveedor</td><td class="who">A Antel (el proveedor de internet)</td></tr>
+  <tr><td>Un nombre <b>DDNS</b> (ej. <code>vigia-local.ddns.net</code>) que sigue a la IP del local aunque cambie</td>
+      <td class="who">Lo crea la oficina en noip.com</td></tr>
+  <tr><td>Internet de subida: 0,25 a 0,5 Mbps por cámara</td><td class="who">Se mide en el local</td></tr>
+</table>
+
+<h3>Paso a paso (lo hace el técnico en el local, 1 a 2 horas)</h3>
+<ol class="steps-list">
+  <li><b>Grabador por cable al router</b> (nunca por wifi), con la <b>hora bien puesta</b> (Montevideo, NTP).</li>
+  <li><b>IP fija del grabador</b> dentro del local (ej. <code>192.168.1.6</code>) y la <b>misma IP reservada en el router</b>.</li>
+  <li><b>Usuario <code>vigia</code></b> en el grabador:
+    <ul>
+      <li>Permisos <b>solo de vista en vivo y reproducción</b>. <span class="no">Nunca usar el admin.</span></li>
+      <li>Clave larga: 12 o más caracteres, distinta en cada local, sin <code>@ : / # ? &amp;</code> ni espacios.</li>
+    </ul></li>
+  <li><b>Señal secundaria</b> igual que en el camino de nube: H.264, 640×360, unos 8 cuadros por segundo, bitrate bajo.</li>
+  <li><b>En el router, dos reglas de puertos</b> hacia el grabador, con números altos (entre 20000 y 60000) y
+      <b>distintos en cada local</b>:
+    <table>
+      <tr><th>Regla</th><th>Puerto externo (router)</th><th>Va al grabador</th></tr>
+      <tr><td>Video (RTSP)</td><td>un número alto, ej. 4XXXX</td><td><b>554</b></td></tr>
+      <tr><td>Datos del equipo (HTTP)</td><td>otro número alto</td><td><b>80</b></td></tr>
+    </table></li>
+  <li><b>DDNS</b> cargado en el grabador (<b class="m">Red → DDNS → No-IP</b>), para que el nombre siga a la IP aunque Antel
+      la cambie. La cuenta gratis de No-IP manda un mail cada 30 días que hay que confirmar; si nadie lo confirma, el nombre
+      se apaga y la cámara queda «Sin conexión».</li>
+  <li><b>Seguridad del grabador:</b>
+    <ul>
+      <li>Bloqueo por intentos fallidos prendido.</li>
+      <li>UPnP apagado (así el grabador no abre puertos por su cuenta).</li>
+      <li>Si la clave de admin es de fábrica, cambiarla con el cliente presente.</li>
+    </ul></li>
+  <li><b>Prueba desde afuera</b> (con datos móviles, no con el wifi del local):
+    <ul>
+      <li>En el navegador: <code>http://NOMBRE-DDNS:PUERTO-HTTP</code> tiene que mostrar el login del grabador.</li>
+      <li>En VLC, Hikvision: <code>rtsp://vigia:CLAVE@NOMBRE-DDNS:PUERTO-RTSP/Streaming/Channels/102</code>
+          (102 = cámara 1, 202 = cámara 2…).</li>
+      <li>En VLC, Dahua: <code>rtsp://vigia:CLAVE@NOMBRE-DDNS:PUERTO-RTSP/cam/realmonitor?channel=1&amp;subtype=1</code>.</li>
+    </ul>
+    <div class="box warn"><b>Reiniciar el router y el grabador, y volver a probar.</b> No irse del local sin esta prueba.</div></li>
+</ol>
+
+<h3>En nuestra app</h3>
+<ol>
+  <li>En la cámara, elegir Marca <b class="m">Hikvision</b> o <b class="m">Dahua</b>.</li>
+  <li><b>Pegar el link RTSP</b> que anduvo en VLC: completa solo dirección, puerto, usuario, clave y canal.</li>
+  <li><b class="m">Probar conexión</b>, marcar zonas y <b class="m">● En vivo</b>.</li>
+</ol>
+
+<h2><span class="n">4</span>¿Cuál elegir?</h2>
+<table>
+  <tr><th>Caso</th><th>Camino</th></tr>
+  <tr><td>Grabador Hikvision</td><td><b>Por nube.</b> No se abre nada a internet, es más seguro y el cliente nos corta el acceso
+      en un clic.</td></tr>
+  <tr><td>Grabador Dahua, o un Hikvision que no se puede pasar a Hik-Connect</td><td><b>Por puertos.</b></td></tr>
+</table>
+<div class="box"><b>Cuándo no anda cada uno:</b>
+  <ul>
+    <li><b>Por nube</b>: si el grabador tiene el cifrado prendido o la señal secundaria está en H.265.</li>
+    <li><b>Por puertos</b>: si el local tiene IP compartida (CG-NAT).</li>
+  </ul>
+</div>
+
+<h2><span class="n">5</span>Reglas para todos</h2>
+<div class="box bad">
+  <ul>
+    <li>Las claves (SecretKey, clave del usuario <code>vigia</code>) se pasan <b>solo por privado</b>, nunca en grupos.</li>
+    <li>Nunca nos quedamos con la contraseña de Hik-Connect ni con la de admin del grabador.</li>
+    <li>Usuario propio, de solo vista, en cada grabador. Una clave distinta en cada local.</li>
+  </ul>
+</div>
+
+<div class="foot">Analítica Crítica · Guía interna de conexión de cámaras · Los nombres de los menús pueden cambiar un poco según
+el modelo y la versión del grabador o de la app (algunos aparecen en inglés). Más detalle en el «Tutorial Hikvision» (para el
+cliente) y en la «Guía del técnico: instalación de un local».</div>
+
+</body>
+</html>
