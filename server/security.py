@@ -5,25 +5,95 @@ import hashlib
 import hmac
 import os
 import secrets
+import unicodedata
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+# scrypt con lo que pide OWASP (Password Storage Cheat Sheet): N=2^17, r=8, p=1 (~128 MB y unas décimas de segundo por
+# clave). Las claves guardadas antes (N=2^14, formato de 3 partes) se siguen aceptando y se rehacen solas al entrar
+# (`needs_rehash`). VIGIA_SCRYPT_LOG2N lo baja solo para las pruebas (que crean cientos de usuarios).
+SCRYPT_LOG2N = int(os.getenv("VIGIA_SCRYPT_LOG2N", "17"))
+SCRYPT_R, SCRYPT_P = 8, 1
+LEGACY_LOG2N = 14
+
+
+def _scrypt(password: str, salt: bytes, log2n: int, r: int, p: int, dklen: int = 32) -> bytes:
+    n = 2 ** log2n
+    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=dklen, maxmem=256 * n * r + 2 ** 24)
+
 
 def hash_password(password: str) -> str:
     salt = os.urandom(16)
-    dk = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
-    return f"scrypt${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
+    dk = _scrypt(password, salt, SCRYPT_LOG2N, SCRYPT_R, SCRYPT_P)
+    return (f"scrypt${SCRYPT_LOG2N}${SCRYPT_R}${SCRYPT_P}$"
+            f"{base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}")
+
+
+def _parse(stored: str) -> tuple[int, int, int, bytes, bytes] | None:
+    parts = (stored or "").split("$")
+    try:
+        if len(parts) == 3 and parts[0] == "scrypt":  # formato viejo: N=2^14, r=8, p=1
+            return LEGACY_LOG2N, 8, 1, base64.b64decode(parts[1]), base64.b64decode(parts[2])
+        if len(parts) == 6 and parts[0] == "scrypt":
+            log2n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+            if not (10 <= log2n <= 20 and 1 <= r <= 16 and 1 <= p <= 4):
+                return None
+            return log2n, r, p, base64.b64decode(parts[4]), base64.b64decode(parts[5])
+    except ValueError:
+        return None
+    return None
 
 
 def verify_password(password: str, stored: str) -> bool:
-    try:
-        _, salt_b64, dk_b64 = stored.split("$")
-        salt, dk = base64.b64decode(salt_b64), base64.b64decode(dk_b64)
-    except ValueError:
+    parsed = _parse(stored)
+    if parsed is None:
         return False
-    test = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=len(dk))
+    log2n, r, p, salt, dk = parsed
+    test = _scrypt(password, salt, log2n, r, p, dklen=len(dk))
     return hmac.compare_digest(test, dk)
+
+
+def needs_rehash(stored: str) -> bool:
+    """La clave guardada es de antes (más barata de adivinar que lo de ahora): se rehace al entrar."""
+    parsed = _parse(stored)
+    return (parsed is None or stored.count("$") != 5
+            or (parsed[0], parsed[1], parsed[2]) != (SCRYPT_LOG2N, SCRYPT_R, SCRYPT_P))
+
+
+# Una clave que no protege nada: las más usadas (listas públicas de filtraciones, también en castellano) y variantes del
+# nombre de la empresa. Se compara sin mayúsculas, tildes ni espacios.
+COMMON_PASSWORDS = {
+    "12345678", "123456789", "1234567890", "123123123", "11111111", "00000000", "87654321", "12341234", "123qweasd",
+    "password", "password1", "password123", "passw0rd", "qwerty123", "qwertyui", "qwerty12", "1q2w3e4r", "1qaz2wsx",
+    "abc12345", "abcd1234", "iloveyou", "sunshine", "princess", "football", "baseball", "welcome1", "letmein1",
+    "admin123", "admin1234", "administrador", "contrasena", "contrasena1", "contrasena123", "clave123", "clave1234",
+    "micontrasena", "uruguay1", "uruguay123", "montevideo", "argentina", "teamo123", "analiticacritica", "analitica",
+    "analitica123", "vigia123", "vigia1234", "camaras123", "hikvision", "hikvision123", "dahua123", "seguridad",
+    "seguridad123", "cambiame", "cambiar123",
+}
+
+
+def _plain(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return "".join(ch for ch in text if not ch.isspace())
+
+
+def password_problem(password: str, username: str | None = None) -> str | None:
+    """Por qué una clave nueva no sirve (None si sirve): muy corta o muy larga, igual o parecida al usuario, un solo
+    carácter repetido o una de las más usadas."""
+    if len(password) < 8:
+        return "La clave tiene que tener al menos 8 caracteres"
+    if len(password) > 200:
+        return "La clave puede tener hasta 200 caracteres"
+    plain, user = _plain(password), _plain(username or "")
+    if len(set(plain)) <= 2:
+        return "La clave no puede ser un mismo carácter repetido"
+    if user and (plain == user or user in plain and len(plain) - len(user) < 4):
+        return "La clave no puede ser el nombre de usuario (o casi)"
+    if plain in COMMON_PASSWORDS:
+        return "Esa clave es de las más usadas: elegí otra (una frase de 3 o 4 palabras es fácil de recordar)"
+    return None
 
 
 def new_token() -> str:

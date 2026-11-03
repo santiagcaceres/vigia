@@ -75,6 +75,17 @@ class SessionToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
 
 
+class LoginFailure(Base):
+    """Intentos fallidos de entrar (usuario o clave mal, clave de máquinas, clave actual al cambiarla), para frenar a
+    quien prueba claves: `key` es la huella de «ip|usuario», «ip» o «usuario» (server/main.py `Throttle`). Vercel no
+    guarda nada entre pedidos: por eso va en la base."""
+    __tablename__ = "login_failures"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    first_at: Mapped[datetime] = mapped_column(DateTime)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Agent(Base):
     """PC que corre el análisis. Con client_id es el agente de un local; con client_id NULL es
     un agente *central* (la PC de la empresa) que atiende las cámaras que se le asignen, de
@@ -339,7 +350,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-02.1"
+SCHEMA_VERSION = "2026-11-03.1"
 
 
 class CameraMetric(Base):

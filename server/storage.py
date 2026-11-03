@@ -32,6 +32,11 @@ class Storage:
     def signed_upload_url(self, path: str) -> str: ...
     def exists(self, path: str) -> bool: ...
     def modified_at(self, path: str) -> float | None: ...  # época UNIX del último cambio, o None si no existe
+
+    def stat(self, path: str) -> tuple[float, int | None] | None:
+        """(último cambio, tamaño en bytes o None si no se sabe), o None si no existe."""
+        mtime = self.modified_at(path)
+        return None if mtime is None else (mtime, None)
     def remove(self, paths: list[str]) -> None: ...
 
 
@@ -99,17 +104,23 @@ class SupabaseStorage(Storage):
         return r.status_code == 200
 
     def modified_at(self, path: str) -> float | None:
+        info = self.stat(path)
+        return None if info is None else info[0]
+
+    def stat(self, path: str) -> tuple[float, int | None] | None:
         r = self.http.head(f"{self.base}/object/{self.bucket}/{self._p(path)}")
         if r.status_code != 200:
             return None
+        size = r.headers.get("content-length")
+        size = int(size) if size and size.isdigit() else None
         lm = r.headers.get("last-modified")
         if not lm:
-            return time.time()
+            return time.time(), size
         from email.utils import parsedate_to_datetime
         try:
-            return parsedate_to_datetime(lm).timestamp()
+            return parsedate_to_datetime(lm).timestamp(), size
         except (TypeError, ValueError):
-            return time.time()
+            return time.time(), size
 
     def remove(self, paths: list[str]) -> None:
         paths = [p for p in paths if p]
@@ -166,6 +177,13 @@ class LocalStorage(Storage):
     def modified_at(self, path: str) -> float | None:
         f = self.file(path)
         return f.stat().st_mtime if f.exists() else None
+
+    def stat(self, path: str) -> tuple[float, int | None] | None:
+        f = self.file(path)
+        if not f.exists():
+            return None
+        info = f.stat()
+        return info.st_mtime, info.st_size
 
     def remove(self, paths: list[str]) -> None:
         for p in paths:

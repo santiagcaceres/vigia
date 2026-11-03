@@ -111,7 +111,8 @@ def central_setup(admin, **cam):
 
 def send_webhook(app, messages, secret=SECRET, batch="lote-1"):
     ts = str(int(time.time() * 1000))
-    return TestClient(app).post("/api/hpp/webhook", content=json.dumps({"batchId": batch, "list": messages}),
+    return TestClient(app).post(f"/api/hpp/webhook?k={app.state.hook_key}",
+                                content=json.dumps({"batchId": batch, "list": messages}),
                                 headers={"X-Hook-Batch-Id": batch, "X-Hook-Timestamp": ts,
                                          "X-Hook-Signature": hpp.sign(secret, ts, batch),
                                          "Content-Type": "application/json"})
@@ -127,9 +128,20 @@ def make_ready(app):
 
 
 def test_validacion_de_url_y_firma(app):
-    r = TestClient(app).get("/api/hpp/webhook", headers={"X-Hook-Batch-Id": "abc", "X-Hook-Timestamp": "123"})
+    r = TestClient(app).get(f"/api/hpp/webhook?k={app.state.hook_key}",
+                            headers={"X-Hook-Batch-Id": "abc", "X-Hook-Timestamp": "123"})
     assert r.status_code == 200 and r.headers["X-Hook-Signature"] == hpp.sign(SECRET, "123", "abc")
     assert send_webhook(app, [xml_msg()], secret="otra").status_code == 401
+    # sin la clave propia de la dirección no firma ni acepta nada (antes cualquiera pedía la firma y mandaba alarmas)
+    for k in ("", "?k=otra"):
+        r = TestClient(app).get("/api/hpp/webhook" + k, headers={"X-Hook-Batch-Id": "abc", "X-Hook-Timestamp": "1"})
+        assert r.status_code == 404 and "X-Hook-Signature" not in r.headers
+        ts = str(int(time.time() * 1000))
+        r = TestClient(app).post("/api/hpp/webhook" + k, content=json.dumps({"batchId": "b", "list": [xml_msg()]}),
+                                 headers={"X-Hook-Batch-Id": "b", "X-Hook-Timestamp": ts,
+                                          "X-Hook-Signature": hpp.sign(SECRET, ts, "b"),
+                                          "Content-Type": "application/json"})
+        assert r.status_code == 404
 
 
 def test_camara_en_modo_alarmas_requiere_serie(admin):

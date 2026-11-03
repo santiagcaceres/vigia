@@ -412,8 +412,10 @@ class CameraWorker:
         self.analyzer.engine = RuleEngine(zones, rule_cfg)
         self._analysis = analysis
         self._sync_pose()  # se prendieron o apagaron los gestos: enganchar o soltar la postura
-        self._send_metrics(self.metrics.close())  # lo medido hasta ahora queda con las zonas viejas
-        self.metrics = MetricsCollector(zones, rule_cfg.schedule)
+        # lo medido hasta ahora queda con las zonas viejas y la hora en curso sigue sumando (sin pisarla en el servidor)
+        old = self.metrics
+        self.metrics = old.with_zones(zones, rule_cfg.schedule)
+        self._send_metrics(old.pending)
         self.live.zones = zones
         log.info("[%s] zonas, reglas y gestos actualizados (%d zonas)", self.name, len(zones))
 

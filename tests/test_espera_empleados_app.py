@@ -89,7 +89,8 @@ def test_texto_de_la_espera_de_una_zona():
     assert of.wait_lines("Caja", st) == [
         ("Caja: 3 esperas · promedio 1:20 · máximo 10:50 · más de 5 min: 1 · más de 10 min: 1 · fila promedio 0,8, "
          "máxima 4"),
-        "con clientes esperando y nadie en el puesto: 5 min · se fueron sin que hubiera nadie: 1"]
+        "con clientes esperando y nadie en su puesto (la zona de personal más cercana): 5 min · se fueron sin que "
+        "hubiera nadie: 1"]
     # sin zona de personal en la cámara no se dice nada de «nadie en el puesto»
     alone = wait_stats({**WAIT, "staffed": 0})
     assert len(of.wait_lines("Caja", alone)) == 1
@@ -105,16 +106,18 @@ def test_texto_de_la_espera_de_una_zona():
 def test_texto_de_los_empleados():
     assert of.post_text("Mostrador", post_stats(POST)) == (
         "Mostrador: cubierto 90 % · sin nadie 6:00 · en el puesto: promedio 1,2, máximo 2")
-    b = {"posts": {"Mostrador": POST}, "staff_s": 5400.0, "staff_max": 3,
+    b = {"posts": {"Mostrador": POST}, "staff_s": 5400.0, "staff_obs_s": 3600.0, "staff_max": 3,
          "staff_dwell": {"Mostrador": 4000.0, "Depósito": 900.0, "Pasillo": 0.0}}
     assert of.staff_lines(b) == [
         "Mostrador: cubierto 90 % · sin nadie 6:00 · en el puesto: promedio 1,2, máximo 2",
-        "Empleados a la vista: máximo 3 a la vez, promedio 1,5",  # 5400 personas-segundo en 3600 s mirados
+        "Empleados a la vista (por cámara): promedio 1,5, máximo 3 a la vez",  # 5400 personas-segundo en 3600 s
         "Dónde pasan el tiempo: Mostrador 1 h 7 min · Depósito 15:00"]
-    # sin puestos: el máximo sin promedio (no se sabe cuánto se miró) y cómo marcarlos
-    lines = of.staff_lines({"staff_s": 100.0, "staff_max": 1})
-    assert lines == ["Empleados a la vista: máximo 1 a la vez", of.NO_POSTS_TEXT]
-    assert of.staff_lines({}, hint=False) == ["Empleados a la vista: máximo 0 a la vez"]
+    # sin puestos ni tiempo mirado (máquina sin actualizar): no se inventa un «máximo 0», se dice qué falta
+    assert of.staff_lines({"staff_s": 0.0, "staff_max": 0}) == [of.NO_POSTS_TEXT]
+    assert of.staff_lines({}, hint=False) == []
+    # sin puestos pero mirado (empleados que llegaron con el local cerrado)
+    lines = of.staff_lines({"staff_s": 100.0, "staff_obs_s": 1000.0, "staff_max": 1})
+    assert lines == ["Empleados a la vista (por cámara): promedio 0,1, máximo 1 a la vez", of.NO_POSTS_TEXT]
     # de las 6 zonas donde más tiempo pasan, de mayor a menor
     many = {f"Z{i}": float(i * 60) for i in range(1, 9)}
     dwell = of.staff_lines({"posts": {"Mostrador": POST}, "staff_dwell": many})[-1]
@@ -137,7 +140,7 @@ def test_metricas_del_cliente_con_espera_y_empleados():
     text = of.metrics_text(client, _resp(data, cams), _resp(data, days=[{"date": "2026-11-03", **data}]))
     assert "TIEMPO DE ESPERA (cada cliente que estuvo 5 s o más en la zona marcada)" in text
     assert "Caja: 2 esperas · promedio " in text and "se fueron sin que hubiera nadie: 1" in text
-    assert "EMPLEADOS" in text and "Mostrador: cubierto " in text and "Empleados a la vista: máximo 1 a la vez" in text
+    assert "EMPLEADOS" in text and "Mostrador: cubierto " in text and "Empleados a la vista (por cámara): promedio " in text
     assert text.count("  Hoy:") == 2 and text.count("  Últimos 7 días:") == 2  # en las dos secciones
     assert of.LIMITS_TEXT in text and of.NO_POSTS_TEXT not in text
     # por cámara: lo que suma cada una
@@ -266,6 +269,16 @@ def test_el_editor_guarda_y_saca_la_espera():
         root.update()
         ed.top.update_idletasks()
         assert ed.top.winfo_reqwidth() <= 1366 and ed.top.winfo_reqheight() <= 768 - 70  # entra en una notebook
+        # como se abre desde la ventana de la cámara (con el mapa de pisadas) y con una zona de espera elegida:
+        # también entra (antes medía 755 de alto y «Guardar zonas» quedaba debajo de la barra de tareas)
+        import numpy as np
+        from core.pisadas import FootMap
+        big = ZonesEditor(app, cam, image=np.zeros((360, 640, 3), np.uint8), footmap=FootMap.empty())
+        big.select(0)
+        root.update()
+        big.top.update_idletasks()
+        assert big.top.winfo_reqwidth() <= 1366 and big.top.winfo_reqheight() <= 768 - 70, big.top.winfo_reqheight()
+        big.top.destroy()
         # tildar la espera en la «Fila» y aplicar
         ed.select(0)
         assert not ed.zwait.get() and str(ed.waitcb.cget("state")) == "normal"
@@ -311,3 +324,22 @@ def test_el_editor_guarda_y_saca_la_espera():
         parse_zones(body["zones"])  # lo que se manda lo acepta el núcleo (y el servidor)
     finally:
         root.destroy()
+
+
+def test_aviso_de_zonas_de_espera_que_se_pisan():
+    a = {"name": "Fila", "wait": True, "polygon": [[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]}
+    b = {"name": "Caja", "wait": True, "polygon": [[0.4, 0.4], [0.8, 0.4], [0.8, 0.8], [0.4, 0.8]]}
+    cross = {"name": "Cruz", "wait": True, "polygon": [[0.2, -0.1], [0.3, -0.1], [0.3, 0.9], [0.2, 0.9]]}
+    far = {"name": "Lejos", "wait": True, "polygon": [[0.9, 0.9], [1, 0.9], [1, 1]]}
+    assert of.overlapping_waits([a, b]) == ("Fila", "Caja")
+    assert of.overlapping_waits([a, cross]) == ("Fila", "Cruz")  # se cruzan sin vértices adentro... o con
+    assert of.overlapping_waits([a, far]) is None
+    assert of.overlapping_waits([a, {**b, "wait": False}]) is None  # solo las que miden la espera
+
+
+def test_si_ninguna_camara_mide_empleados_lo_dice():
+    client = {"id": 1, "name": "Súper", "plans": ["comercio", "empleados"]}
+    b = {**empty_bucket(), "frames": 100}
+    cams = [{"camera_id": 1, "name": "Caja", "measures": ["comercio"], **b}]
+    text = of.metrics_text(client, _resp(b, cams), _resp(b, cams))
+    assert of.NO_STAFF_CAMERA_TEXT in text and of.NO_POSTS_TEXT not in text

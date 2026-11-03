@@ -64,9 +64,13 @@ def minutes(seconds: float | None) -> str:
     """«12 min» (o «1 h 12 min»): para los ratos largos que se dicen en una frase."""
     if not seconds:
         return "0 min"
-    if seconds >= 3600:
-        return clock(seconds)
-    return "menos de 1 min" if seconds < 30 else f"{round(seconds / 60)} min"
+    if seconds < 30:
+        return "menos de 1 min"
+    m = int(seconds / 60 + 0.5)  # (round() redondea 30 s a «0 min»)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h} h {m} min"
+    return f"{m} min"
 
 
 def dec(v: float | None, digits: int = 1) -> str:
@@ -344,8 +348,8 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
                   [40, 17, 20, 20, 22, 24, 19, 20])
         for name, w in waits:
             if w["staffed"]:
-                pdf.note(f"{name}: con clientes esperando y nadie en el puesto: {minutes(w['unattended_s'])} · se "
-                         f"fueron sin que hubiera nadie: {w['left_alone']}", size=9)
+                pdf.note(f"{name}: con clientes esperando y nadie en su puesto (la zona de personal más cercana): "
+                         f"{minutes(w['unattended_s'])} · se fueron sin que hubiera nadie: {w['left_alone']}", size=9)
         if not any(w["staffed"] for _, w in waits):
             pdf.note("Para saber si había alguien para atender, marcá la zona «Personal (empleados)» (detrás del "
                      "mostrador) en la misma cámara.")
@@ -363,21 +367,25 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
         pdf.h2("Empleados")
         posts = [(name, post_stats(p)) for name, p in (t.get("posts") or {}).items()]
         posts = sorted([(n, p) for n, p in posts if p["obs_s"]], key=lambda kv: kv[0])
-        watched = max((p["obs_s"] for _, p in posts), default=0.0)  # segundos mirados
-        seen = f"Empleados a la vista: máximo {t.get('staff_max', 0)} a la vez"
-        if watched:
-            seen += f", promedio {dec(t.get('staff_s', 0.0) / watched)}"
+        watched = t.get("staff_obs_s") or 0.0  # segundos mirados, sumando cámaras (sin esto, máquina sin actualizar)
+        seen = (f"Empleados a la vista (por cámara): promedio {dec(t.get('staff_s', 0.0) / watched)}, máximo "
+                f"{t.get('staff_max', 0)} a la vez") if watched else ""
         if posts:
             pdf.table(["Puesto", "Cubierto", "Sin nadie", "Gente en el puesto (promedio)", "Máximo"],
                       [[name, f"{dec(p['covered_pct'], 0)} %", clock(p["uncovered_s"]), dec(p["avg_people"]),
                         str(p["max"])] for name, p in posts],
                       [56, 24, 30, 52, 20])
+        elif m.get("by_camera") and all(isinstance(c.get("measures"), list) for c in m["by_camera"]) and not any(
+                "empleados" in c["measures"] for c in m["by_camera"]):
+            pdf.note("Ninguna cámara mide «Seguimiento de empleados» en este período.", size=9)
         else:
-            pdf.note("Para medir los puestos falta marcar la zona «Personal (empleados)» en la cámara (detrás del "
-                     "mostrador, la caja por dentro): sin esa zona solo se reconoce como empleado a quien aparece con "
-                     "el local cerrado.", size=9)
-        pdf.set_font("Helvetica", "", 9.5)
-        pdf.multi_cell(0, 5, latin(seen), new_x="LMARGIN", new_y="NEXT")
+            pdf.note("Sin datos de los puestos en este período. Hace falta la zona «Personal (empleados)» en la cámara "
+                     "(detrás del mostrador, la caja por dentro) y que la máquina que la analiza esté actualizada (se "
+                     "actualiza al reiniciarla). Sin esa zona solo se reconoce como empleado a quien aparece con el "
+                     "local cerrado.", size=9)
+        if seen:
+            pdf.set_font("Helvetica", "", 9.5)
+            pdf.multi_cell(0, 5, latin(seen), new_x="LMARGIN", new_y="NEXT")
         dwell = sorted(((n, v) for n, v in (t.get("staff_dwell") or {}).items() if v), key=lambda kv: -kv[1])[:6]
         if dwell:
             pdf.multi_cell(0, 5, latin("Dónde pasan el tiempo: " + " · ".join(f"{n} {clock(v)}" for n, v in dwell)),

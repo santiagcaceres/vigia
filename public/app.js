@@ -62,7 +62,7 @@ function cameraMeasures(cam, own = clientPlans(cam.client_id)) {
 /** La cámara tiene zona «Personal (empleados)»: sin ella el plan empleados no mide puestos (a los empleados se los
  * reconoce solo por esa zona o porque aparecen con el local cerrado). */
 const hasStaffZone = (cam) => (cam.zones || []).some((z) => z.type === "staff");
-const NO_POSTS_TEXT = "Para medir los puestos, marcá la zona «Personal (empleados)» en las cámaras (detrás del mostrador, la caja por dentro): a los empleados se los reconoce por esa zona o porque llegan con el local cerrado.";
+const NO_POSTS_TEXT = "Sin datos de los puestos: hace falta la zona «Personal (empleados)» en las cámaras (detrás del mostrador, la caja por dentro) y que la máquina que las analiza esté actualizada (se actualiza al reiniciarla). A los empleados se los reconoce por esa zona o porque llegan con el local cerrado.";
 const STAFF_ZONE_HINT = "Para medir empleados, marcá la zona «Personal (empleados)» en «Zonas y reglas» (detrás del mostrador, la caja por dentro): sin esa zona no se miden los puestos y solo se reconoce como empleado a quien aparece con el local cerrado.";
 
 async function api(method, path, body, opts = {}) {
@@ -381,7 +381,7 @@ function statusChip(st) {
   if (!st.agent_online) return `<span class="chip bad">Agente desconectado</span>`;
   const ok = st.state === "en_linea" || st.state === "escuchando";
   if (st.state === "fuera_de_horario") return `<span class="chip" title="Fuera del horario del local no se mira (ahorra video y análisis)">Local cerrado</span>`;
-  return `<span class="chip ${ok ? "ok" : "bad"}" title="${esc(st.error || "")}">${esc(STATE_NAMES[st.state] || st.state)}${ok && st.fps ? ` · ${st.fps} fps` : ""}</span>`;
+  return `<span class="chip ${ok ? "ok" : "bad"}" title="${esc(st.error || "")}">${esc(STATE_NAMES[st.state] || st.state)}${ok && st.fps ? ` · ${esc(st.fps)} fps` : ""}</span>`;
 }
 
 const previewUrl = (c) => (c.has_preview ? `/api/cameras/${c.id}/preview?t=${Math.floor(Date.now() / 30000)}` : null);
@@ -482,6 +482,7 @@ function cameraForm(box, agents, c = {}, opts = {}) {
     if (own.length) {
       if (!picked.length) return toast("Elegí al menos una cosa para medir", true);
       body.plans = picked.length === own.length ? null : picked;
+      body.known_plans = PLAN_KEYS;  // así el servidor no conserva lo que se destildó acá
     }
     if (c.id) {  // lo que este formulario no muestra queda como estaba (si no, el servidor lo pondría en su valor de siempre)
       if (body.agent_id === (c.agent_id ?? null)) delete body.agent_id;  // sin tocar: lo maneja «Analizar» y el reparto
@@ -660,9 +661,9 @@ async function alarmsView(v) {
       <thead><tr><th>Hora</th><th>Cámara</th><th>Alarma</th><th>Resultado</th><th></th></tr></thead>
       <tbody>${data.items.map((a) => { const [cls, txt] = ALARM_STATUS[a.status] || ["", a.status]; return `<tr>
         <td>${fmtDate(a.first_at)}${a.triggers > 1 ? `<div class="muted">${a.triggers} disparos</div>` : ""}</td>
-        <td>${a.camera_name ? `${esc(a.camera_name)}<div class="muted">${esc(a.client_name)}</div>` : `<span class="mono">${esc(a.device_serial)} · canal ${a.channel}</span>`}</td>
+        <td>${a.camera_name ? `${esc(a.camera_name)}<div class="muted">${esc(a.client_name)}</div>` : `<span class="mono">${esc(a.device_serial)} · canal ${esc(a.channel)}</span>`}</td>
         <td>${esc(alarmTypeName(a.event_type))}${a.source === "hpp" ? `<div class="muted">por Hik-Partner Pro</div>` : ""}</td>
-        <td><span class="chip ${cls}" title="${esc(a.error || "")}">${esc(txt)}</span>${a.error ? `<div class="muted">${esc(a.error)}</div>` : ""}${a.stats && a.stats.frames ? `<div class="muted">persona en ${a.stats.person_frames} de ${a.stats.frames} cuadros</div>` : ""}</td>
+        <td><span class="chip ${cls}" title="${esc(a.error || "")}">${esc(txt)}</span>${a.error ? `<div class="muted">${esc(a.error)}</div>` : ""}${a.stats && a.stats.frames ? `<div class="muted">persona en ${esc(a.stats.person_frames)} de ${esc(a.stats.frames)} cuadros</div>` : ""}</td>
         <td class="row">${a.event_id ? `<a class="btn small" href="#/evento/${a.event_id}">Ver clip</a>` : ""}
           ${a.status === "sin_camara" && isStaff() ? `<a class="btn small" href="#/camaras?nueva=1&serie=${encodeURIComponent(a.device_serial)}&canal=${a.channel}">Cargar cámara</a>` : ""}
           ${["error", "sin_camara", "sin_persona"].includes(a.status) ? `<button class="small" data-retry="${a.id}">Reintentar</button>` : ""}</td>
@@ -823,6 +824,8 @@ async function zonesView(v, id) {
       warns.push("Esta cámara mide «Seguimiento de empleados»: marcá la zona «Personal (empleados)» (detrás del mostrador, la caja por dentro). Sin esa zona no se miden los puestos y solo se reconoce como empleado a quien aparece con el local cerrado.");
     if (camPlans && !camPlans.includes("comercio") && zones.some((z) => z.wait))
       warns.push("El tiempo de espera va con «Métricas de comercio» y esta cámara no lo mide: no se va a ver (se elige en «Editar» de la cámara).");
+    const pisan = overlappingWaits(zones);
+    if (pisan) warns.push(`Las zonas «${pisan[0]}» y «${pisan[1]}» miden la espera y se pisan: un cliente que espera en la parte común cuenta en las dos (el total de esperas sale de más). Conviene que una sola mida la espera.`);
     $("#z-warn").innerHTML = warns.map((w) => `<p class="warn-text note">${esc(w)}</p>`).join("");
   }
   // la casilla de la zona nueva: no va en Personal ni en Surtidor; la ayuda dice qué marcar
@@ -857,6 +860,8 @@ async function zonesView(v, id) {
   onKeys((e) => { if (e.key === "Escape") { draft = []; draw(); } if (e.key === "Enter") close(); });
   $("#save").addEventListener("click", async () => {
     if (draft.length) return toast("Tenés una zona sin cerrar", true);
+    const pisan = overlappingWaits(zones);
+    if (pisan && !confirm(`Las zonas «${pisan[0]}» y «${pisan[1]}» miden la espera y se pisan: un cliente que espera en la parte común cuenta en las dos. ¿Guardar igual?`)) return;
     // lo que este formulario no muestra (por ejemplo cooldown_seconds, o lo que guardó la app) se conserva
     const r = { ...rules, shelf_dwell_seconds: +$("#r-shelf").value, checkout_min_seconds: +$("#r-checkout").value,
       restricted_min_seconds: +$("#r-restricted").value,
@@ -1208,7 +1213,27 @@ const fmtClock = (s) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 /** Un rato largo dicho en una frase: «12 min», «menos de 1 min» o «1 h 12 min». */
-const fmtMinutes = (s) => (!s ? "0 min" : s >= 3600 ? fmtClock(s) : s < 30 ? "menos de 1 min" : `${roundEven(s / 60)} min`);
+/** Dos zonas que miden la espera y se pisan (un vértice de una adentro de la otra o bordes que se cruzan): el mismo
+ * cliente contaría en las dos. Igual que `agent.oficina.overlapping_waits`. Devuelve sus nombres o null. */
+function overlappingWaits(zones) {
+  const inside = ([x, y], poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c; } return c; };
+  const side = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const cross = (a, b, c, d) => side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0;
+  const ws = (zones || []).filter((z) => z.wait && (z.polygon || []).length >= 3);
+  for (let i = 0; i < ws.length; i++) for (let j = i + 1; j < ws.length; j++) {
+    const pa = ws[i].polygon, pb = ws[j].polygon;
+    if (pa.some((p) => inside(p, pb)) || pb.some((p) => inside(p, pa))) return [ws[i].name, ws[j].name];
+    for (let k = 0; k < pa.length; k++) for (let m = 0; m < pb.length; m++)
+      if (cross(pa[k], pa[(k + 1) % pa.length], pb[m], pb[(m + 1) % pb.length])) return [ws[i].name, ws[j].name];
+  }
+  return null;
+}
+const fmtMinutes = (s) => {
+  if (!s) return "0 min";
+  if (s < 30) return "menos de 1 min";
+  const mm = Math.floor(s / 60 + 0.5);  // (redondear «al par» daría «0 min» con 30 s)
+  return mm >= 60 ? `${Math.floor(mm / 60)} h ${mm % 60} min` : `${mm} min`;
+};
 /** Número con coma decimal («1,3»). */
 const fmtDec = (v, digits = 1) => (v == null ? "—" : toFixedEven(Number(v), digits).replace(".", ","));
 
@@ -1306,28 +1331,28 @@ async function metricsView(v, clientId) {
       </div>
       <div class="panel" style="margin-top:12px"><b>Por zona</b><div class="table-wrap"><table class="nums"><thead><tr><th>Zona</th><th>Esperas</th><th>Promedio</th><th>Máximo</th><th>Más de 5 min</th><th>Más de 10 min</th><th>Fila prom.</th><th>Fila máx.</th></tr></thead>
         <tbody>${waits.map(([name, w]) => `<tr><td>${esc(name)}</td><td>${w.n}</td><td>${fmtClock(w.avg_s)}</td><td>${fmtClock(w.max_s)}</td><td>${w.over[300]}</td><td>${w.over[600]}</td><td>${fmtDec(w.queue_avg)}</td><td>${w.queue_max}</td></tr>`).join("")}</tbody></table></div>
-        ${staffed.length ? `<ul class="plain">${staffed.map(([name, w]) => `<li><b>${esc(name)}</b>: con clientes esperando y nadie en el puesto: ${fmtMinutes(w.unattended_s)} · se fueron sin que hubiera nadie: ${w.left_alone}</li>`).join("")}</ul>`
+        ${staffed.length ? `<ul class="plain">${staffed.map(([name, w]) => `<li><b>${esc(name)}</b>: con clientes esperando y nadie en su puesto (la zona de personal más cercana): ${fmtMinutes(w.unattended_s)} · se fueron sin que hubiera nadie: ${w.left_alone}</li>`).join("")}</ul>`
           : isStaff() ? `<p class="muted note">Para saber si había alguien para atender, marcá la zona «Personal (empleados)» (detrás del mostrador) en la misma cámara.</p>` : ""}</div>
       ${series.filter((x) => x.wait_avg).length > 1 ? `<div class="panel" style="margin-top:12px"><b>Espera promedio ${days === 1 ? "por hora" : "por día"}</b>${barChart(series, "wait_avg", "de espera promedio", fmtClock)}</div>` : ""}
       <p class="muted note">La espera es el tiempo de cada cliente (${WAIT_MIN_SECONDS} s o más) en la zona marcada: si la zona incluye donde se atiende, incluye la atención. En una fila apretada, quien queda tapado por otro no se ve.</p>`;
   } else if (plans.includes("comercio") && isStaff() && !sinDatos) {
-    waitHtml = `<p class="muted note">Para medir el tiempo de espera (caja, mostrador, fila), tildá «Medir el tiempo de espera acá» en esa zona, en «Zonas y reglas» de la cámara.</p>`;
+    waitHtml = `<p class="muted note">Sin datos de espera. Hace falta tildar «Medir el tiempo de espera acá» en la zona (caja, mostrador, fila), en «Zonas y reglas» de la cámara; que esa cámara mida «Métricas de comercio» (en «Editar»); y que la máquina que la analiza esté actualizada (se actualiza al reiniciarla).</p>`;
   }
   // empleados (plan «empleados»): puestos (zonas de personal), cuántos a la vista y dónde pasan el tiempo
   let staffHtml = "";
   if (plans.includes("empleados")) {
-    const posts = postZones(t), watched = Math.max(0, ...posts.map(([, p]) => p.obs_s));  // segundos mirados
+    const posts = postZones(t), watched = num0(t.staff_obs_s);  // segundos mirados, sumando cámaras (0: máquina sin actualizar)
     const dwell = Object.entries(t.staff_dwell || {}).filter(([, secs]) => num0(secs) > 0).sort((a, b) => b[1] - a[1]).slice(0, 6);
     staffHtml = `
       <h2>Empleados</h2>
       <div ${grid}>
-        ${tile(num0(t.staff_max), "Máximo a la vez", "empleados a la vista")}
-        ${watched ? tile(fmtDec(num0(t.staff_s) / watched), "Promedio a la vista", "empleados, en el tiempo mirado") : ""}
+        ${watched ? tile(num0(t.staff_max), "Máximo a la vez", "empleados a la vista en una cámara") : ""}
+        ${watched ? tile(fmtDec(num0(t.staff_s) / watched), "Promedio a la vista", "empleados por cámara, en el tiempo mirado") : ""}
         ${posts.length === 1 ? tile(`${fmtDec(posts[0][1].covered_pct, 0)} %`, `${esc(posts[0][0])}: cubierto`, `sin nadie ${fmtClock(posts[0][1].uncovered_s)}`) : ""}
       </div>
       ${posts.length ? `<div class="panel" style="margin-top:12px"><b>Puestos</b><div class="table-wrap"><table class="nums"><thead><tr><th>Puesto</th><th>Cubierto</th><th>Sin nadie</th><th>Gente en el puesto (promedio)</th><th>Máximo</th><th></th></tr></thead>
         <tbody>${posts.map(([name, p]) => `<tr><td>${esc(name)}</td><td>${fmtDec(p.covered_pct, 0)} %</td><td>${fmtClock(p.uncovered_s)}</td><td>${fmtDec(p.avg_people)}</td><td>${p.max}</td><td style="width:30%"><div class="bar"><i style="width:${Math.round(p.covered_pct || 0)}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>`
-        : `<p class="warn-text note">${isStaff() ? NO_POSTS_TEXT : "Todavía no se miden los puestos: falta marcar la zona del personal en las cámaras."}</p>`}
+        : `<p class="warn-text note">${m.by_camera.length && m.by_camera.every((c) => Array.isArray(c.measures)) && !m.by_camera.some((c) => c.measures.includes("empleados")) ? (isStaff() ? "Ninguna cámara mide «Seguimiento de empleados»: elegilo en «Qué mide esta cámara» (Editar de la cámara)." : "Todavía no hay datos de los puestos en este período.") : isStaff() ? NO_POSTS_TEXT : "Todavía no hay datos de los puestos en este período."}</p>`}
       ${dwell.length ? `<div class="panel" style="margin-top:12px"><b>Dónde pasan el tiempo</b><div class="table-wrap"><table class="nums"><thead><tr><th>Zona</th><th>Tiempo de los empleados</th><th></th></tr></thead>
         <tbody>${dwell.map(([name, secs]) => `<tr><td>${esc(name)}</td><td>${fmtClock(secs)}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * secs / dwell[0][1])}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}
       <p class="muted note">Reconoce a los empleados solo por su zona «Personal» (pisada 2 s o más) o por el horario (con el local cerrado); no sabe quién es quién ni los sigue de una cámara a otra; quien pisa el puesto cuenta como «alguien en el puesto», sea o no empleado.</p>`;
@@ -1413,7 +1438,7 @@ async function clientsView(v) {
     </form>`;
     $("#cancel").addEventListener("click", () => ($("#client-form").innerHTML = ""));
     $("#cf").addEventListener("submit", async (e) => {
-      e.preventDefault(); const fd = new FormData(e.target); const f = Object.fromEntries(fd); delete f.plan; f.plans = fd.getAll("plan");
+      e.preventDefault(); const fd = new FormData(e.target); const f = Object.fromEntries(fd); delete f.plan; f.plans = fd.getAll("plan"); f.known_plans = PLAN_KEYS;
       if (!f.plans.length) return toast("Elegí al menos un plan para el cliente", true);  // (el servidor tampoco lo acepta)
       for (const k of ["telegram_chat_id", "webhook_url", "contact_whatsapp", "contact_email"]) if (!f[k]) f[k] = null;
       try { await api(c.id ? "PUT" : "POST", c.id ? "/api/clients/" + c.id : "/api/clients", f); toast(c.id ? "Cliente guardado" : "Cliente creado"); S._clientsAt = 0; route(); } catch (err) { fail(err); }
@@ -1458,7 +1483,7 @@ async function adminView(v) {
       </ol></div>
     <div class="table-wrap panel" style="padding:0"><table><thead><tr><th>Agente</th><th>Cliente</th><th>Estado</th><th>Última conexión</th><th>Pendientes de subir</th><th></th></tr></thead>
       <tbody>${agents.map((a) => `<tr><td>${esc(a.name)}</td><td>${a.central ? "Todos" : esc(clientName(a.client_id))}</td><td>${a.online ? `<span class="chip ok">En línea</span>` : `<span class="chip bad">Desconectado</span>`}</td>
-        <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${a.status.alarms_with_person} con persona · ${a.status.alarms_discarded} descartadas · ${a.status.alarms_failed} con error</div>` : ""}</td><td>${a.status?.outbox_pending ?? "—"}</td><td class="row"><button class="small" data-rotate="${a.id}">Nuevo token</button><button class="small ghost" data-delagent="${a.id}">Eliminar</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
+        <td>${fmtDate(a.last_seen)}${a.status?.alarms_with_person != null ? `<div class="muted">Alarmas: ${esc(a.status.alarms_with_person)} con persona · ${esc(a.status.alarms_discarded)} descartadas · ${esc(a.status.alarms_failed)} con error</div>` : ""}</td><td>${esc(a.status?.outbox_pending ?? "—")}</td><td class="row"><button class="small" data-rotate="${a.id}">Nuevo token</button><button class="small ghost" data-delagent="${a.id}">Eliminar</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin agentes.</td></tr>`}</tbody></table></div>
     <form class="form panel" id="af" style="margin-top:10px">
       <label>Nombre de la PC<input name="name" required placeholder="PC central"></label>
       <button class="primary" type="submit">Crear agente</button>

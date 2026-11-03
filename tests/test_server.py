@@ -271,7 +271,7 @@ def test_aviso_al_cliente_flujo_completo(app, admin, tmp_path):
     assert r.status_code == 201, r.text
     rep = r.json()
     assert rep["status"] == "enviado" and rep["delivery"]["portal"]["ok"] is True
-    assert "aviso.html?t=" in rep["link"]
+    assert "aviso.html#t=" in rep["link"]  # el token en el fragmento: no viaja en los pedidos
     token = token_of(rep["link"])
 
     pub = TestClient(app)  # sin login: página pública por token

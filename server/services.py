@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from . import probe
 from .db import Client, Event, FilterModel, utcnow
 
 log = logging.getLogger("vigia.server")
@@ -118,7 +119,9 @@ class ClientNotifier:
                 elif ch == "email":
                     self._email(client.contact_email, client.name, message, link)
                 elif ch == "webhook":
-                    httpx.post(client.webhook_url, json={
+                    if why := probe.public_https_url(client.webhook_url):  # (otra vez al mandar: el nombre pudo cambiar)
+                        raise ValueError(f"Webhook: {why}")
+                    httpx.post(client.webhook_url, follow_redirects=False, json={
                         "kind": "aviso_cliente", "event_id": ev.id, "client": client.name,
                         "camera": camera_name, "message": message, "link": link,
                         "occurred_at": ev.occurred_at.isoformat() + "Z",

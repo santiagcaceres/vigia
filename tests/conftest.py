@@ -1,4 +1,5 @@
 import os
+os.environ.setdefault("VIGIA_SCRYPT_LOG2N", "14")  # las pruebas crean cientos de usuarios: scrypt barato (en producción, 17)
 import uuid
 
 import pytest

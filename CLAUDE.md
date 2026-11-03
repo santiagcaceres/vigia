@@ -154,6 +154,71 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   aparece a los 0,1 s, la barra pasa por 20, 33, 50, 62, 70, 80 y 93 % y se cierra a los ~6 s con la entrada o la ventana
   principal (`tests/test_arranque.py`). En Windows sin probar: fuente Segoe UI, `center="active"` (la pantalla donde está
   el mouse).
+- **Tiempo de espera por zona y plan «Seguimiento de empleados» (3 nov, pedido del dueño: «medir el tiempo de espera
+  promedio de las personas en una cierta zona, por ejemplo mostradores… y además seguir empleados como otra función de
+  métricas»; app 1.40.0).** Todo sale de los mismos recuadros (sin procesar más).
+  - **Espera** (va con «Métricas de comercio»): casilla «Medir el tiempo de espera acá» en una zona de clientes
+    (`Zone.wait`; no en «Personal» ni «Surtidor»: el servidor la saca sin error, una app 1.39 no tiene la casilla). Cada
+    cliente que estuvo 5 s o más (`WAIT_MIN_SECONDS`) es una espera: cuántas, promedio, máximo, más de 1/3/5/10 min, fila
+    promedio y máxima (en la fila cuenta quien ya lleva 5 s: el que cruza no). Si la cámara tiene zona de personal: rato
+    con clientes esperando y nadie en **su puesto** (la zona de personal más cercana: el del depósito no atiende la caja,
+    `nearest_post`) y cuántos se fueron sin que hubiera nadie. Dos zonas de espera que se pisan cuentan dos veces: la app
+    y la web avisan al guardar (`overlapping_waits` / `overlappingWaits`).
+  - **Empleados** (plan nuevo `empleados`, «Seguimiento de empleados», en clientes y cámaras): por zona de personal
+    (`posts`) qué parte del tiempo hubo alguien (solo con el local abierto si hay horario), tiempo sin nadie, gente en el
+    puesto; empleados a la vista **por cámara** (`staff_s / staff_obs_s`, nunca más que el máximo) y dónde pasan el
+    tiempo (`staff_dwell`, sumado cuadro a cuadro: un turno de horas queda en sus horas). La cajera tapada por el cliente
+    sigue en el puesto 1,5 s (`POST_GRACE_SECONDS`).
+  - Cubo: `waits`, `posts`, `staff_s`, `staff_obs_s`, `staff_max`, `staff_dwell` (core/metrics.py; `restrict_bucket` con
+    `STAFF_KEYS`; `staff` es de comercio y de empleados). En los totales, una zona con el mismo nombre en dos cámaras va
+    como «Cámara · zona» (y dos cámaras con el mismo nombre, con «(#id)»). Se ve en «Personas por zona» y la imagen en
+    vivo («esperando 2 prom 1:20 max 3:10», «personal 1 cubierto 90%»), Métricas de la app, la web, el PDF y el Excel
+    (9 columnas nuevas; «Puesto sin nadie, el que más»).
+  - Arreglos de la revisión (2 workflows, 37 agentes): `FRAME_GAP_MAX` 2,5 s (con la escena quieta el filtro de
+    movimiento analiza 1 cuadro cada 2 s: antes se contaba la mitad del tiempo mirado); un turno de más de 2 h ya no
+    recrea vacía la hora en que empezó (pisaba en el servidor toda esa hora); guardar zonas con la cámara andando
+    (`MetricsCollector.with_zones`) sigue sumando la hora en curso; las apps 1.38/1.39 no borran «empleados» ni le prenden
+    «hurto» a una cámara de solo empleados (`known_plans`: la app 1.40 y la web lo mandan; sin eso el servidor conserva
+    lo que esa app no muestra, `keep_unknown_plans`).
+  - Probado de punta a punta con una máquina de análisis real a 2 cuadros/s sobre un HLS: fila y puesto en la app, las
+    métricas y el PDF. Pruebas: `tests/test_espera_empleados*.py`. **La máquina mide esto recién al reiniciarse**
+    (`git pull` al arrancar); hasta entonces la app y la web dicen «la máquina todavía no lo mide».
+- **Seguridad (3 nov, pedido del dueño: «que no nos tiren el sistema ni nos roben datos»; app 1.40.0).** Auditoría con 6
+  agentes (accesos, permisos, entradas, disponibilidad, web, secretos), cada hallazgo probado contra un servidor local y
+  verificado por otro agente; nada contra producción. Lo que se arregló (`tests/test_seguridad.py`, 25 pruebas):
+  - **XSS entre clientes** (crítico): el estado que manda una PC (`/api/agent/status`) se guardaba tal cual y la web lo
+    mostraba sin escapar; un operador podía correr código en la sesión del admin. Ahora el servidor solo acepta el estado
+    de las cámaras de esa PC y con datos simples (`clean_status`), y la web escapa todo (también las estadísticas de las
+    alarmas, `AlarmDoneIn.stats` solo números). Un estado sin `camera_id` ya no tira abajo la lista de cámaras (500).
+  - **Política de contenido (CSP)** y cabeceras en `vercel.json` (Vercel sirve `public/`) y en un middleware (local):
+    scripts solo propios y onnxruntime-web 1.19.2 de jsdelivr (camino exacto), sin scripts en línea (`aviso.js` y
+    `guia.js` aparte), `frame-ancestors 'none'`, nosniff, Referrer-Policy no-referrer, HSTS; `/api/*` con
+    `Cache-Control: no-store`. Sin `/docs` ni `/openapi.json` en Vercel. Si se agrega algo externo a la web, sumarlo a
+    `CSP` en server/main.py **y** en vercel.json (una prueba compara las dos).
+  - **Bajas que cortan de verdad:** la PC de un usuario dado de baja, con clave nueva o con otro rol deja de servir (antes
+    seguía bajando las claves de los grabadores); «Cerrar sesión» de la app (Bearer) revoca la sesión; cambiar la clave
+    propia cierra las demás sesiones.
+  - **Freno a quien prueba claves** (tabla `login_failures`, `SCHEMA_VERSION` 2026-11-03.1): por IP+usuario 5 fallos → 1,
+    2, 4… hasta 60 min; por IP 30 en 15 min; por usuario 100 en 1 h (una IP donde ya se entró bien con ese usuario no
+    queda afuera); IPv6 por /64; también en `/api/agent/login`, la clave de máquinas (`enroll`, `scale`) y «Mi clave».
+    Mismo tiempo de respuesta con un usuario que no existe. Claves con **scrypt N=2^17** (OWASP; las viejas se rehacen
+    solas al entrar) y sin claves débiles (`password_problem`: 8+, no el usuario, no las más usadas).
+  - **Hik-Connect:** `hc_api_url` solo `https://*.hikcentralconnect.com` (un operador podía mandarse el SecretKey del
+    cliente a un servidor propio); el caché del token va por AppKey + huella del SecretKey.
+  - **Entradas:** host de cámara y de cliente solo IP o DDNS; «Probar conexión» del servidor no toca redes internas ni
+    lee respuestas de más de 512 KB; webhook del cliente solo https a internet; Excel sin fórmulas (`csv_cell`); eventos,
+    métricas y alarmas de las PCs con tipos y tamaños de verdad (cubos fuera de fecha o con 2000 zonas se saltean, no
+    traban la cola); webhook de HPP con clave propia en la dirección (`?k=`; antes cualquiera pedía la firma).
+  - **Abuso de recursos:** 120 alertas por cámara por hora (429, la PC reintenta), fotos de 2 MB, cuadro en vivo de
+    más de 512 KB no se muestra, una máquina no puede decir que aguanta más del doble de «Cámaras por máquina», tope de
+    40 máquinas (`VIGIA_MAX_MAQUINAS_SERVIDOR`), reportes de más de 60.000 horas-cámara y Excel por hora de más de
+    20.000 filas piden menos días, la consulta de versiones a GitHub se guarda 5 min, el link del aviso firma por 5 min y
+    va con el token en `#t=` (los viejos `?t=` siguen andando).
+  - **Lo que queda (a mano o de diseño):** reglas de límite en el Firewall de Vercel (`/api/login`, `/api/agent/login`,
+    `/api/agent/enroll`, `/api/r/*`); tope de gasto en Vercel y Supabase; `file_size_limit` del bucket; `GITHUB_TOKEN`
+    de solo lectura; no cargar las claves de HPP sin revisar; cualquier operador puede ver las claves de las cámaras que
+    abre (la PC las necesita para abrir el video: sacarlo pide un servidor de video intermedio); retención de métricas y
+    avisos sin definir; los nombres de los admins y series de grabadores están en este archivo público.
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
@@ -974,7 +1039,9 @@ datos pero ya no se ofrecen).
   Al armarla salieron: (1) el editor de zonas de una cámara sin imagen era más ancho que 1366 (el aviso largo no se
   cortaba) → app 1.38.1; (2) caso de borde: «Ver con la IA» y el vivo de la ventana de la cámara eligen cuadros con el
   reloj de la PC salvo Hik-Connect, así que un link **HLS** (http …m3u8) en una cámara Hikvision/Dahua se ve a 0,6
-  cuadros/s; con RTSP no pasa (llega parejo). Sin arreglar.
+  cuadros/s; con RTSP no pasa (llega parejo). **Arreglado en la 1.40.0:** `agent.worker.bursty(marca, link)` usa el reloj
+  del video para Hik-Connect y para cualquier link http(s) con `.m3u8` (MJPEG y RTSP siguen con el de la PC), en la
+  máquina, «Ver con la IA» y la ventana de la cámara (`test_un_link_hls_se_lee_con_el_reloj_del_video`).
 - **cliente**: el dueño del comercio, solo ve lo suyo.
 
 ### Flujo de aviso al cliente (clave del producto)

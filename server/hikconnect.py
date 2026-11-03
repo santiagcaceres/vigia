@@ -21,6 +21,7 @@ registran completos en el log del servidor (Vercel) para corregir.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -45,7 +46,9 @@ class HikConnectError(RuntimeError):
     pass
 
 
-_tokens: dict[str, tuple[str, str, float, str]] = {}  # appKey -> (token, areaDomain, vence, servidor)
+# (appKey + huella del SecretKey) -> (token, areaDomain, vence, servidor). Con la huella: un cliente cargado con el AppKey
+# de otro (que no es secreto) y una clave cualquiera no usa el token del otro
+_tokens: dict[str, tuple[str, str, float, str]] = {}
 _lock = threading.Lock()
 
 
@@ -73,7 +76,23 @@ def short_serial(serial: str | None) -> str:
     return s
 
 
+ALLOWED_DOMAIN = ".hikcentralconnect.com"  # a donde se manda el AppKey y el SecretKey del cliente: solo a Hik-Connect
+
+
+def allowed_url(url: str | None) -> bool:
+    """La dirección es de Hik-Connect for Teams (https y un nombre de *.hikcentralconnect.com, sin puerto ni usuario)."""
+    try:
+        u = httpx.URL(url or "")
+    except Exception:  # noqa: BLE001 (una dirección mal escrita)
+        return False
+    host = (u.host or "").lower()
+    return (u.scheme == "https" and host.endswith(ALLOWED_DOMAIN) and u.port in (None, 443) and not u.userinfo
+            and host.replace(".", "").replace("-", "").isalnum())
+
+
 def normalize_url(url: str | None) -> str | None:
+    """La dirección de la API que se pegó (o None si se borró), con solo el dominio. Si no es de Hik-Connect, ValueError:
+    el servidor le manda ahí el SecretKey del cliente, así que no puede ser cualquiera (se lo podrían llevar)."""
     url = (url or "").strip().rstrip("/")
     if not url:
         return None
@@ -81,7 +100,10 @@ def normalize_url(url: str | None) -> str | None:
         url = "https://" + url
     # si pegaron la dirección del portal con una ruta, quedarse con el dominio
     parts = url.split("/")
-    return "/".join(parts[:3])
+    url = "/".join(parts[:3])
+    if not allowed_url(url):
+        raise ValueError("La dirección de la API tiene que ser de Hik-Connect (https://….hikcentralconnect.com)")
+    return url
 
 
 class HikConnect:
@@ -89,7 +111,12 @@ class HikConnect:
         if not app_key or not secret:
             raise HikConnectError("Falta la clave de la API de Hik-Connect (AppKey y SecretKey) en el cliente")
         self.app_key, self.secret = app_key.strip(), secret.strip()
-        self.api_url = normalize_url(api_url)
+        self._key = self.app_key + ":" + hashlib.sha256(self.secret.encode()).hexdigest()
+        try:
+            self.api_url = normalize_url(api_url)
+        except ValueError:  # una dirección guardada antes de controlarla: se prueban las regiones de siempre
+            log.warning("Hik-Connect: dirección de la API que no es de Hik-Connect, se ignora")
+            self.api_url = None
         self.http = httpx.Client(timeout=timeout)
         self.server: str | None = None  # el que aceptó las credenciales
 
@@ -99,7 +126,7 @@ class HikConnect:
     # ---------- token ----------
     def _token(self) -> tuple[str, str]:
         with _lock:
-            t = _tokens.get(self.app_key)
+            t = _tokens.get(self._key)
             if t and t[2] > time.time() + 300:
                 self.server = t[3]
                 return t[0], t[1]
@@ -113,13 +140,15 @@ class HikConnect:
                 errors.append(f"{base.split('//')[1].split('.')[0]}: {exc}")
                 continue
             token, area = data.get("accessToken"), (data.get("areaDomain") or base).rstrip("/")
+            if not allowed_url(area):  # el área donde siguen los pedidos (con el token): también de Hik-Connect
+                area = base
             if not token:
                 errors.append(f"{base}: sin accessToken")
                 continue
             exp = data.get("expireTime")
             exp = exp / 1000 if isinstance(exp, (int, float)) and exp > 10**11 else (exp or time.time() + 3600)
             with _lock:
-                _tokens[self.app_key] = (token, area, float(exp), base)
+                _tokens[self._key] = (token, area, float(exp), base)
             self.server = base
             log.info("Hik-Connect: token OK en %s (área %s)", base, area)
             return token, area
@@ -133,7 +162,7 @@ class HikConnect:
             raise HikConnectError(f"{what}: sin conexión con Hik-Connect ({exc})") from exc
         if r.status_code == 401:
             with _lock:
-                _tokens.pop(self.app_key, None)
+                _tokens.pop(self._key, None)
         return _ok(r, what)
 
     # ---------- recursos ----------

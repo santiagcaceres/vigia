@@ -1,40 +1,62 @@
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
+import time
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 import httpx
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from core.gestos import GESTURE_TYPES, GestureConfig
 from core.metrics import empty_bucket, merge_bucket, post_stats, restrict_bucket, wait_stats
-from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
+from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, NO_WAIT_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
 from . import hikconnect, hpp, nube, pool, probe, training
-from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident, SessionToken, User,
+from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, Event, FilterModel, Incident,
+                 LoginFailure, SessionToken, User,
                  VideoImport, iso, make_session_factory, utcnow)
-from .security import SecretBox, hash_password, new_token, token_hash, verify_password
+from .security import SecretBox, hash_password, needs_rehash, new_token, password_problem, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
 from .storage import LocalStorage, Storage, StorageError, SupabaseStorage
 
 log = logging.getLogger("vigia.server")
+
+# la política de contenido de la web (la misma que vercel.json): scripts solo propios (y onnxruntime de jsdelivr para
+# «Prueba»), imágenes y videos propios o de los archivos firmados de Supabase, y nadie puede meter la web en un marco
+CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ 'wasm-unsafe-eval'; "
+       "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; "
+       "media-src 'self' blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/; "
+       "worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; "
+       "frame-ancestors 'none'")
+MAX_IMAGE = 2 * 1024 * 1024  # foto de una alerta o imagen de una cámara (una de 640 px pesa ~50 KB)
+MAX_LIVE_FRAME = 512 * 1024  # cuadro en vivo (~30 KB)
+MAX_EVENTS_PER_HOUR = 120  # alertas de una cámara por hora
+MAX_SUMMARY_ROWS = 60_000  # horas-cámara en /api/metrics y el PDF (≈ 7 cámaras todo un año)
+MAX_EXPORT_ROWS = 20_000  # filas del Excel (≈ 4 MB: el tope de una respuesta de Vercel es 4,5)
+MAX_MACHINES = int(os.getenv("VIGIA_MAX_MAQUINAS_SERVIDOR", "40"))  # máquinas de análisis dadas de alta a la vez
+SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+                    "Cross-Origin-Opener-Policy": "same-origin"}
 COOKIE = "vigia_session"
 PUBLIC_DIR = Path(__file__).resolve().parents[1] / "public"
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m4v"}
@@ -140,9 +162,22 @@ class Settings:
 PlanName = Literal["hurto", "comercio", "estacion", "empleados"]
 
 
+def _host(v: str | None) -> str | None:
+    """IP o nombre (DDNS) de un grabador, sin http://, puerto, ruta ni usuario: el servidor y las máquinas arman con eso
+    las direcciones, así que algo como «otro-host/ruta?x#» las desviaría a otro lado."""
+    v = v.strip() if isinstance(v, str) else v
+    if v and not probe.valid_host(v):
+        raise ValueError("Poné solo la IP o el DDNS del grabador (sin http://, puerto, ruta ni usuario): el puerto y el "
+                         "canal van en sus campos y un link RTSP completo, en «Link RTSP»")
+    return v
+
+
+HostStr = Annotated[str, AfterValidator(_host)]
+
+
 class LoginIn(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=80)
+    password: str = Field(max_length=200)
 
 
 class ClientIn(BaseModel):
@@ -151,8 +186,11 @@ class ClientIn(BaseModel):
     telegram_chat_id: str | None = None
     contact_whatsapp: str | None = Field(None, max_length=32)
     contact_email: str | None = Field(None, max_length=200)
-    webhook_url: str | None = None
+    webhook_url: str | None = Field(None, max_length=500)
     plans: list[PlanName] = ["hurto"]
+    # los planes que conoce quien manda el pedido (la app desde la 1.40 y la web). Sin esto (app 1.39 o anterior, que
+    # solo conoce hurto, comercio y estación) se conservan los planes que esa app no muestra (`keep_unknown_plans`)
+    known_plans: list[str] | None = Field(None, max_length=20)
     # Acceso a la web del cliente (opcional). Al crear: usuario y clave. Al editar: cambia el usuario
     # existente (la clave solo si viene) o lo crea si el cliente no tenía.
     web_username: str | None = Field(None, max_length=80)
@@ -171,14 +209,15 @@ class ClientIn(BaseModel):
     # cómo se conectan sus cámaras: hikconnect (AppKey) | ip (IP o DDNS y puertos). Con «ip», los datos del grabador:
     # sus cámaras se cargan eligiendo los canales. Solo se tocan si vienen; la clave vacía deja la que estaba.
     cam_access: Literal["hikconnect", "ip"] | None = None
-    ip_host: str | None = Field(None, max_length=255)
+    ip_host: HostStr | None = Field(None, max_length=255)
     ip_rtsp_port: int | None = Field(None, ge=1, le=65535)
     ip_http_port: int | None = Field(None, ge=1, le=65535)
     ip_username: str | None = Field(None, max_length=80)
     ip_password: str | None = Field(None, max_length=200)
 
     def client_fields(self) -> dict:
-        return self.model_dump(exclude={"web_username", "web_password", "hc_app_key", "hc_secret", "hc_api_url",
+        return self.model_dump(exclude={"known_plans", "web_username", "web_password", "hc_app_key", "hc_secret",
+                                        "hc_api_url",
                                         "hc_code", "hours", "analysis_location", "cam_access", "ip_host",
                                         "ip_rtsp_port", "ip_http_port", "ip_username", "ip_password"})
 
@@ -193,6 +232,26 @@ class HikConnectKeyIn(BaseModel):
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
               "empleados": "Seguimiento de empleados"}
 PLAN_ORDER = tuple(PLAN_NAMES)  # hurto, comercio, estacion, empleados: así se devuelven siempre
+OLD_APP_PLANS = ("hurto", "comercio", "estacion")  # los que conocen las apps 1.38 y 1.39
+
+
+def keep_unknown_plans(sent: list[str] | None, before: list[str], known: list[str] | None,
+                       client_plans: list[str] | None = None) -> list[str] | None:
+    """Lo que se guarda cuando alguien manda planes: si quien manda no dice qué planes conoce (app 1.39 o anterior), los
+    que no conoce y estaban se conservan; si no, una app vieja que solo cambió el horario le borraría «Seguimiento de
+    empleados» al cliente (o a la cámara) sin que nadie se entere.
+    En una cámara (`client_plans` = lo del cliente), la app vieja manda None para «todo lo que yo conozco», no «todo lo
+    del cliente»; y si la cámara no medía nada que esa app conozca (solo «empleados»), la app le mostró una casilla
+    forzada y no eligió nada: queda como estaba (si no, le prendía «hurto» a una cámara de solo empleados)."""
+    known_set = set(known) if known is not None else set(OLD_APP_PLANS)
+    if sent is None:
+        if known is not None or client_plans is None:
+            return None  # la app nueva o la web: None = como el cliente
+        shown = [p for p in client_plans if p in known_set]
+        if not any(p in known_set for p in before):
+            return list(before)
+        sent = shown
+    return list(sent) + [p for p in before if p not in known_set and p not in sent]
 
 
 def file_safe(name: str, default: str) -> str:
@@ -257,7 +316,19 @@ def clean_camera_plans(plans: list[str] | None, client, camera: str | None = Non
 # Excel de métricas: tiempo de espera (plan «comercio») y puestos del personal (plan «empleados»), al final de cada fila
 WAIT_CSV_HEAD = ("Esperas", "Espera promedio (min)", "Espera máxima (min)", "Esperaron más de 5 min", "Fila promedio",
                  "Esperando sin nadie en el puesto (min)")
-STAFF_CSV_HEAD = ("Puesto cubierto (%)", "Puesto sin nadie (min)", "Empleados a la vez (máx.)")
+STAFF_CSV_HEAD = ("Puesto cubierto (%)", "Puesto sin nadie, el que más (min)", "Empleados a la vez (máx.)")
+
+
+NUMBER_CELL = re.compile(r"-?\d+(,\d+)?")
+
+
+def csv_cell(text: str) -> str:
+    """Una celda del Excel de métricas: sin «;» (separa columnas) y, si es texto que empieza con = + - @ (un nombre de
+    cliente, cámara o zona), con un apóstrofo adelante para que Excel no lo tome como fórmula (OWASP, CSV injection)."""
+    text = str(text).replace(";", ",")
+    if text[:1] in ("=", "+", "-", "@", "\t", "\r") and not NUMBER_CELL.fullmatch(text):
+        return "'" + text
+    return text
 
 
 def wait_csv_cells(b: dict, num) -> list[str]:
@@ -284,14 +355,15 @@ def wait_csv_cells(b: dict, num) -> list[str]:
 def staff_csv_cells(b: dict, num) -> list[str]:
     """Las columnas del personal de una fila del Excel: qué parte del tiempo hubo alguien en los puestos (zonas de
     personal; con varias, segundos cubiertos sobre segundos mirados de todas), el tiempo sin nadie y el máximo de
-    empleados a la vez. Vacío si la cámara no tiene zona de personal ni vio empleados."""
+    empleados a la vez. Con varios puestos, el tiempo sin nadie es el del puesto que más estuvo vacío (sumarlos daría
+    más de 60 minutos en una hora). Vacío si la cámara no tiene zona de personal ni vio empleados."""
     posts = [post_stats(p) for p in (b.get("posts") or {}).values()]
     obs = sum(p["obs_s"] for p in posts)
     if not obs and not b.get("staff_max"):
         return [""] * len(STAFF_CSV_HEAD)
     covered = sum(p["covered_s"] for p in posts)
-    return [num(100 * covered / obs, 0) if obs else "", num(sum(p["uncovered_s"] for p in posts) / 60) if obs else "",
-            str(b.get("staff_max", 0))]
+    worst = max((p["uncovered_s"] for p in posts), default=0.0)
+    return [num(100 * covered / obs, 0) if obs else "", num(worst / 60) if obs else "", str(b.get("staff_max", 0))]
 
 
 class MetricBucketIn(BaseModel):
@@ -306,15 +378,15 @@ class MetricsIn(BaseModel):
 
 class UserIn(BaseModel):
     username: str = Field(min_length=3, max_length=80)
-    password: str | None = Field(None, min_length=8)
+    password: str | None = Field(None, min_length=8, max_length=200)
     role: Literal["admin", "entrenador", "cliente"]
     client_id: int | None = None
     active: bool = True
 
 
 class PasswordIn(BaseModel):
-    current: str
-    new: str = Field(min_length=8)
+    current: str = Field(max_length=200)
+    new: str = Field(min_length=8, max_length=200)
 
 
 class UserCamerasIn(BaseModel):
@@ -359,6 +431,7 @@ class CamerasPlansIn(BaseModel):
     """Qué mide cada cámara de lo que contrató su cliente. None = todo lo del cliente."""
     camera_ids: list[int] = Field(min_length=1, max_length=500)
     plans: list[PlanName] | None
+    known_plans: list[str] | None = Field(None, max_length=20)  # como en ClientIn
 
 
 class EnrollIn(BaseModel):
@@ -472,7 +545,7 @@ class CameraIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     # hikconnect = Hikvision por la nube; ip = por IP y puertos, la PC central detecta si es Hikvision o Dahua
     brand: Literal["hikvision", "dahua", "hikconnect", "ip"] = "hikvision"
-    host: str = Field("", max_length=255)
+    host: HostStr = Field("", max_length=255)
     username: str = "admin"
     password: str | None = None
     channel: int = Field(1, ge=1, le=256)
@@ -505,6 +578,7 @@ class CameraIn(BaseModel):
     # qué mide de lo que contrató el cliente. None = todo lo del cliente. Al editar solo se toca si viene en el pedido
     # (`null` = volver a «como el cliente»)
     plans: list[PlanName] | None = None
+    known_plans: list[str] | None = Field(None, max_length=20)  # como en ClientIn
 
 
 class StreamUrlIn(BaseModel):
@@ -642,7 +716,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception:
                 s.rollback()  # otra instancia lo creó al mismo tiempo
 
-    app = FastAPI(title="Analítica Crítica API", version="2.0.0")
+    # sin /docs, /redoc ni /openapi.json públicos (el mapa de la API y una consola para mandar pedidos); en desarrollo sí
+    docs = {} if not st.on_vercel else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    app = FastAPI(title="Analítica Crítica API", version="2.0.0", **docs)
     app.state.Session = Session
     app.state.storage = storage
     app.state.settings = st
@@ -652,11 +728,105 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with Session() as s:
             yield s
 
-    def current_user(request: Request, s=Depends(db)) -> User:
-        token = request.cookies.get(COOKIE)
+    # ------------------------------------------------------------ freno a quien prueba claves
+    # Por IP y usuario: 5 fallos seguidos → 1 min sin poder probar, y cada fallo más el doble (hasta 1 h). Por IP: 30 en
+    # 15 min → 15 min (quien prueba muchos usuarios). Por usuario, desde cualquier lado: 100 en 1 h → 15 min (muchas IPs
+    # contra una cuenta; alto para que nadie pueda dejar afuera al dueño de la cuenta con poco). Se mira antes de
+    # calcular la clave (el bloqueado no gasta procesador) y un acierto borra lo de esa IP y usuario.
+    THROTTLE = (("iu", 5, timedelta(hours=1), None), ("ip", 30, timedelta(minutes=15), timedelta(minutes=15)),
+                ("u", 100, timedelta(hours=1), timedelta(minutes=15)))
+    dummy: list[str] = []  # una clave cualquiera, para tardar lo mismo con un usuario que no existe (se arma al usarla)
+
+    def client_ip(request: Request) -> str:
+        """La IP de quien pide (para el freno). Las IPv6 van por su red /64: una sola conexión tiene millones."""
+        ip = ""
+        if st.on_vercel:  # Vercel pone la IP real (y pisa la que mande el cliente)
+            ip = (request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0]).strip()
+        ip = ip or (request.client.host if request.client else "") or "?"
+        try:
+            addr = ipaddress.ip_address(ip)
+            if addr.version == 6:
+                return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+        except ValueError:
+            pass
+        return ip[:64]
+
+    def trusted_key(ip: str, who: str) -> str:
+        return token_hash(f"ok:{ip}|{(who or '').strip().lower()[:80]}")
+
+    def trusted(s, ip: str, who: str) -> bool:
+        """Desde esta IP ya se entró bien con este usuario hace poco: el freno por usuario (el que frena a muchas IPs
+        contra una cuenta) no la deja afuera, así el dueño sigue entrando aunque estén atacando su usuario."""
+        row = s.get(LoginFailure, trusted_key(ip, who))
+        return bool(row and row.locked_until and row.locked_until > utcnow())
+
+    def throttle_keys(kind: str, ip: str, who: str) -> list[tuple[str, int, timedelta, timedelta | None]]:
+        who = (who or "").strip().lower()[:80]
+        parts = {"iu": f"{ip}|{who}", "ip": ip, "u": who}
+        return [(token_hash(f"{kind}:{k}:{parts[k]}"), limit, window, lock) for k, limit, window, lock in THROTTLE]
+
+    def check_throttle(s, kind: str, ip: str, who: str) -> None:
+        now = utcnow()
+        keys = [k for k, *_ in throttle_keys(kind, ip, who)]
+        if who and trusted(s, ip, who):
+            keys = keys[:2]  # sin el freno por usuario
+        for row in s.query(LoginFailure).filter(LoginFailure.key.in_(keys)):
+            if row.locked_until and row.locked_until > now:
+                wait = max(1, int((row.locked_until - now).total_seconds() // 60) + 1)
+                raise HTTPException(429, f"Demasiados intentos fallidos. Probá de nuevo en {wait} minuto"
+                                         f"{'s' if wait != 1 else ''}.", headers={"Retry-After": str(wait * 60)})
+
+    def record_failure(s, kind: str, ip: str, who: str) -> None:
+        now = utcnow()
+        for key, limit, window, lock in throttle_keys(kind, ip, who):
+            row = s.get(LoginFailure, key)
+            if row is None or now - row.first_at > window and not (row.locked_until and row.locked_until > now):
+                if row is None:
+                    row = LoginFailure(key=key, count=0, first_at=now)
+                    s.add(row)
+                row.count, row.first_at, row.locked_until = 0, now, None
+            row.count += 1
+            if row.count >= limit:
+                # por IP y usuario, cada fallo más duplica la espera: 1, 2, 4… hasta 60 min
+                row.locked_until = now + (lock or timedelta(minutes=min(60, 2 ** min(row.count - limit, 6))))
+        try:
+            s.commit()
+        except Exception:  # noqa: BLE001 (dos fallos al mismo tiempo crearon la misma fila: con uno alcanza)
+            s.rollback()
+        log.warning("Intento fallido (%s) desde %s para %r", kind, ip, (who or "")[:40])
+
+    def clear_failures(s, kind: str, ip: str, who: str) -> None:
+        key = throttle_keys(kind, ip, who)[0][0]  # solo lo de esa IP y usuario (lo demás vence solo)
+        s.query(LoginFailure).filter(LoginFailure.key == key).delete()
+        if who:  # esta IP queda como conocida para este usuario 30 días
+            row = s.get(LoginFailure, trusted_key(ip, who))
+            if row is None:
+                row = LoginFailure(key=trusted_key(ip, who), count=0, first_at=utcnow())
+                s.add(row)
+            row.locked_until = utcnow() + timedelta(days=30)
+
+    def check_password(user: User | None, password: str) -> bool:
+        """La clave es la del usuario (activo). Con un usuario que no existe se calcula igual (misma demora: no se
+        puede saber qué usuarios existen por cuánto tarda)."""
+        if user is None and not dummy:
+            dummy.append(hash_password(new_token()))
+        ok = verify_password(password, user.password_hash if user else dummy[0])
+        return bool(user and user.active and ok)
+
+    def strong_password(password: str | None, username: str | None) -> None:
+        problem = password_problem(password or "", username) if password else None
+        if problem:
+            raise HTTPException(422, problem)
+
+    def request_token(request: Request) -> str | None:
+        """El token de sesión del pedido: la cabecera Bearer (la app) o la cookie (la web)."""
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
+            return auth[7:].strip() or None
+        return request.cookies.get(COOKIE) or None
+
+    def current_user(request: Request, s=Depends(db)) -> User:
+        token = request_token(request)
         if not token:
             raise HTTPException(401, "Iniciá sesión")
         sess = s.query(SessionToken).filter_by(token_hash=token_hash(token)).first()
@@ -683,6 +853,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ag = s.query(Agent).filter_by(token_hash=token_hash(x_agent_token)).first()
         if not ag:
             raise HTTPException(401, "Token de agente inválido")
+        if ag.user_id is not None:  # la PC de un usuario: deja de servir si al usuario lo dieron de baja
+            owner = s.get(User, ag.user_id)
+            if owner is None or not owner.active or owner.role not in ("admin", "entrenador"):
+                raise HTTPException(401, "Token de agente inválido")
         if not ag.last_seen or utcnow() - ag.last_seen > timedelta(seconds=20):
             ag.last_seen = utcnow()
             s.commit()
@@ -706,14 +880,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if user.role == "cliente" and (ev.client_id != user.client_id or ev.source == "ajuste"):
             raise HTTPException(404, "Evento no encontrado")
 
-    def redirect_to(path: str | None) -> RedirectResponse:
+    def redirect_to(path: str | None, public: bool = False) -> RedirectResponse:
+        """Redirección al archivo firmado. `public` (el link del aviso, sin sesión): firma por 5 minutos y sin caché,
+        así un aviso revocado deja de abrir enseguida y la dirección firmada copiada vence pronto."""
         if not path:
             raise HTTPException(404, "Archivo todavía no disponible")
         try:
-            url = storage.signed_download_url(path, 3600)
+            url = storage.signed_download_url(path, 300 if public else 3600)
         except StorageError as exc:
             raise HTTPException(502, str(exc)) from exc
-        return RedirectResponse(url, status_code=307, headers={"Cache-Control": "private, max-age=600"})
+        return RedirectResponse(url, status_code=307,
+                                headers={"Cache-Control": "no-store" if public else "private, max-age=600"})
 
     def client_dict(c: Client) -> dict:
         return {"id": c.id, "name": c.name, "timezone": c.timezone, "telegram_chat_id": c.telegram_chat_id,
@@ -820,6 +997,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError:
             return pool.DEFAULT_CAPACITY
 
+    def capacity_of(a: Agent, cap: float) -> float:
+        """Lo que aguanta una máquina: lo que midió ella, pero no más del doble de «Cámaras por máquina» (una máquina
+        falsa que dice 1000 se quedaba con todas las cámaras, y sus claves, sin analizar nada)."""
+        return min(a.capacity or cap, 2 * cap)
+
     def bump_rev(s) -> None:
         """Algo cambió en cámaras, zonas o clientes: las PCs y máquinas piden la configuración ya."""
         try:
@@ -869,7 +1051,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             m.online = m.online or is_online(a, now)
             m.draining = m.draining and bool(a.draining)
             m.leaving = m.leaving or is_leaving(a)
-            m.capacity += a.capacity or cap
+            m.capacity += capacity_of(a, cap)
             m.load += load.get(a.id, 0.0)
         for m in groups.values():
             m.online = m.online and not m.leaving  # se va: el plan pide otra si hace falta
@@ -900,7 +1082,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return False
         set_setting(s, "balance_at", now.isoformat())
         cap = pool_capacity(s)
-        servers = {a.id: (a.capacity or cap) for a in server_agents(s) if is_online(a, now) and not a.draining}
+        servers = {a.id: capacity_of(a, cap) for a in server_agents(s) if is_online(a, now) and not a.draining}
         if not servers:
             s.commit()
             return False
@@ -1006,7 +1188,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def alarm_cfg_of(c: Camera) -> dict:
         return {**AlarmCfgIn().model_dump(), **(c.alarm_cfg or {})}
 
-    def event_dict(e: Event, cam_name: str | None = None, client_name: str | None = None) -> dict:
+    def event_dict(e: Event, cam_name: str | None = None, client_name: str | None = None, user: User | None = None) -> dict:
+        if user is not None and user.role == "cliente":  # la nota es del equipo («es la encargada, no avisar»)
+            return {**event_dict(e, cam_name, client_name), "note": None}
         return {
             "id": e.id, "uuid": e.uuid, "client_id": e.client_id, "client_name": client_name,
             "camera_id": e.camera_id, "camera_name": cam_name, "source": e.source, "import_id": e.import_id,
@@ -1030,7 +1214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def report_link(token: str) -> str:
         base = (st.public_url or "").rstrip("/")
-        return f"{base}/aviso.html?t={token}"
+        return f"{base}/aviso.html#t={token}"  # (en el fragmento: no viaja en los pedidos ni queda en registros)
 
     def report_dict(r: ClientReport, for_client: bool, ev: Event | None = None,
                     cam_name: str | None = None, client_name: str | None = None) -> dict:
@@ -1064,10 +1248,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ------------------------------------------------------------ sesión
     @app.post("/api/login")
-    def login(body: LoginIn, response: Response, s=Depends(db)) -> dict:
+    def login(body: LoginIn, request: Request, response: Response, s=Depends(db)) -> dict:
+        ip = client_ip(request)
+        check_throttle(s, "login", ip, body.username)
         u = s.query(User).filter_by(username=body.username).first()
-        if not u or not u.active or not verify_password(body.password, u.password_hash):
+        if not check_password(u, body.password):
+            record_failure(s, "login", ip, body.username)
             raise HTTPException(401, "Usuario o clave incorrectos")
+        clear_failures(s, "login", ip, body.username)
+        if needs_rehash(u.password_hash):  # guardada con lo de antes: se rehace con lo de ahora
+            u.password_hash = hash_password(body.password)
         token = new_token()
         s.add(SessionToken(token_hash=token_hash(token), user_id=u.id,
                            expires_at=utcnow() + timedelta(days=st.session_days)))
@@ -1078,7 +1268,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/logout")
     def logout(request: Request, response: Response, s=Depends(db)) -> dict:
-        token = request.cookies.get(COOKIE)
+        token = request_token(request)  # (la app cierra sesión con su Bearer: antes quedaba viva)
         if token:
             s.query(SessionToken).filter_by(token_hash=token_hash(token)).delete()
             s.commit()
@@ -1090,11 +1280,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return user_dict(user)
 
     @app.post("/api/me/password")
-    def change_password(body: PasswordIn, user: User = Depends(current_user), s=Depends(db)) -> dict:
+    def change_password(body: PasswordIn, request: Request, user: User = Depends(current_user), s=Depends(db)) -> dict:
         u = s.get(User, user.id)
+        ip = client_ip(request)
+        check_throttle(s, "password", ip, u.username)
         if not verify_password(body.current, u.password_hash):
+            record_failure(s, "password", ip, u.username)
             raise HTTPException(422, "La clave actual no es correcta")
+        strong_password(body.new, u.username)
         u.password_hash = hash_password(body.new)
+        # las demás sesiones abiertas con la clave vieja se cierran (esta sigue)
+        mine = token_hash(request_token(request) or "")
+        s.query(SessionToken).filter(SessionToken.user_id == u.id, SessionToken.token_hash != mine).delete()
         s.commit()
         return {"ok": True}
 
@@ -1111,6 +1308,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(app_update(download=True, _=user)["url"], status_code=302,
                                 headers={"Cache-Control": "no-store"})
 
+    release_cache: dict[str, tuple[float, dict]] = {}
+
     @app.get("/api/app/update")
     def app_update(download: bool = False, _: User = Depends(staff)) -> dict:
         """Última versión de la app de escritorio publicada en GitHub Releases. Con `download=1`
@@ -1122,12 +1321,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers["Authorization"] = "Bearer " + st.github_token
         try:
             with httpx.Client(timeout=15, headers=headers) as h:
-                r = h.get(gh + "/releases/latest")
-                if r.status_code in (401, 403, 404):
-                    raise HTTPException(503, "El servidor no puede leer las versiones publicadas en GitHub (si el "
-                                             "repositorio es privado, falta GITHUB_TOKEN en Vercel o venció).")
-                r.raise_for_status()
-                rel = r.json()
+                # la última versión se guarda 5 minutos: GitHub sin token deja 60 consultas por hora por IP y Vercel
+                # sale por IPs compartidas (cada app que abre pregunta)
+                cached = release_cache.get("rel")
+                if cached and time.time() - cached[0] < 300:
+                    rel = cached[1]
+                else:
+                    r = h.get(gh + "/releases/latest")
+                    if r.status_code == 403 and r.headers.get("x-ratelimit-remaining") == "0":
+                        raise HTTPException(503, "GitHub está limitando las consultas: probá de nuevo en unos minutos")
+                    if r.status_code in (401, 403, 404):
+                        raise HTTPException(503, "El servidor no puede leer las versiones publicadas en GitHub (si el "
+                                                 "repositorio es privado, falta GITHUB_TOKEN en Vercel o venció).")
+                    r.raise_for_status()
+                    rel = r.json()
+                    release_cache["rel"] = (time.time(), rel)
                 asset = next((x for x in rel.get("assets") or [] if x.get("name", "").endswith("windows.zip")), None)
                 tag = rel.get("tag_name") or ""
                 out = {"version": tag.removeprefix("agente-v").removeprefix("v"), "tag": tag,
@@ -1236,7 +1444,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if "hc_secret" in sent and (body.hc_secret or "").strip():
             c.hc_secret_enc = box.encrypt(body.hc_secret.strip())
         if "hc_api_url" in sent:
-            c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+            try:
+                c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         code = (body.hc_code or "").strip() if "hc_code" in sent else ""
         if code == "-":
             c.hc_code_enc = None
@@ -1260,6 +1471,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "El usuario para la web necesita al menos 3 letras")
         if password and len(password) < 8:
             raise HTTPException(422, "La clave para la web necesita al menos 8 caracteres")
+        strong_password(password, username)
         u = client_web_user(s, c.id) if c.id else None
         other = s.query(User).filter(User.username == username)
         if u:
@@ -1277,9 +1489,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             u.password_hash = hash_password(password)
             s.query(SessionToken).filter_by(user_id=u.id).delete()
 
-    def check_client_plans(body: ClientIn) -> None:
+    def check_client_plans(body: ClientIn, before: Client | None = None) -> None:
         if not body.plans:  # sin planes la cámara no sabría qué medir (y cada lado lo leía distinto)
             raise HTTPException(422, "Elegí al menos un plan para el cliente")
+        body.webhook_url = (body.webhook_url or "").strip() or None
+        if body.webhook_url and (before is None or body.webhook_url != before.webhook_url):
+            # el servidor le manda ahí el link del clip: solo https y a internet (no a una red interna de la nube)
+            if why := probe.public_https_url(body.webhook_url):
+                raise HTTPException(422, f"Webhook: {why}")
 
     @app.post("/api/clients", status_code=201)
     def create_client(body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
@@ -1299,14 +1516,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/clients/{cid}")
     def update_client(cid: int, body: ClientIn, _: User = Depends(staff), s=Depends(db)) -> dict:
-        check_client_plans(body)
         c = get_or_404(s, Client, cid, "Cliente")
+        check_client_plans(body, c)
         other = s.query(Client).filter(Client.name == body.name, Client.id != cid).first()
         if other:
             raise HTTPException(409, "Ya existe un cliente con ese nombre")
         before = locations(s)
+        plans_before = plans_of(c)
         for k, v in body.client_fields().items():
             setattr(c, k, v)
+        if body.known_plans is None and not set(plans_before) & set(OLD_APP_PLANS):
+            # una app 1.39 no muestra ninguno de los planes de este cliente (solo «empleados») y obliga a tildar uno
+            # para guardar: lo tildado no vale (le prendería hurto o comercio a un cliente que no los compró)
+            c.plans = plans_before
+        else:
+            c.plans = ordered_plans(keep_unknown_plans(body.plans, plans_before, body.known_plans))
         if body.analysis_location is not None:
             c.analysis_location = body.analysis_location
         set_client_hours(c, body)
@@ -1330,7 +1554,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             c.hc_secret_enc = box.encrypt(body.hc_secret.strip())
         elif not c.hc_secret_enc:
             raise HTTPException(422, "Falta el SecretKey de Hik-Connect")
-        c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+        try:
+            c.hc_api_url = hikconnect.normalize_url(body.hc_api_url)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         bump_rev(s)
         s.commit()
         return client_out(s, c)
@@ -1405,6 +1632,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "Un usuario de cliente necesita client_id")
         if s.query(User).filter_by(username=body.username).first():
             raise HTTPException(409, "Ese usuario ya existe")
+        strong_password(body.password, body.username)
         u = User(username=body.username, password_hash=hash_password(body.password), role=body.role,
                  client_id=body.client_id if body.role == "cliente" else None, active=body.active)
         s.add(u)
@@ -1451,12 +1679,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         other = s.query(User).filter(User.username == body.username, User.id != uid).first()
         if other:
             raise HTTPException(409, "Ese usuario ya existe")
+        demoted = u.role != body.role or u.client_id != (body.client_id if body.role == "cliente" else None)
         u.username, u.role, u.active = body.username, body.role, body.active
         u.client_id = body.client_id if body.role == "cliente" else None
         if body.password:
+            strong_password(body.password, body.username)
             u.password_hash = hash_password(body.password)
-        if body.password or not body.active:
+        if body.password or not body.active or demoted:
+            # clave nueva, baja o cambio de rol: se cierran sus sesiones y su PC deja de servir (tiene que volver a
+            # entrar; antes el token de la PC seguía bajando las claves de las cámaras)
             s.query(SessionToken).filter_by(user_id=u.id).delete()
+            s.query(Agent).filter(Agent.user_id == u.id).update({"token_hash": token_hash(new_token())},
+                                                                synchronize_session=False)
         s.commit()
         return user_dict(u)
 
@@ -1490,13 +1724,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "analysis_mode": analysis_mode(s)}
 
     @app.post("/api/agent/login")
-    def agent_login(body: AgentLoginIn, s=Depends(db)) -> dict:
+    def agent_login(body: AgentLoginIn, request: Request, s=Depends(db)) -> dict:
         """Vincula una PC central con usuario y clave de administrador (sin copiar tokens a mano).
         Si ya existe una PC central con ese nombre, se le genera un token nuevo (el anterior deja de
         servir); si no, se crea. Devuelve el token, que el programa guarda en agente.env."""
+        ip = client_ip(request)
+        check_throttle(s, "login", ip, body.username.strip())  # (el mismo freno que la entrada de la web y la app)
         u = s.query(User).filter_by(username=body.username.strip()).first()
-        if not u or not u.active or not verify_password(body.password, u.password_hash):
+        if not check_password(u, body.password):
+            record_failure(s, "login", ip, body.username.strip())
             raise HTTPException(401, "Usuario o clave incorrectos")
+        clear_failures(s, "login", ip, body.username.strip())
         if u.role != "admin":
             raise HTTPException(403, "Solo un administrador puede vincular una PC central")
         name = body.pc_name.strip()
@@ -1512,14 +1750,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {**agent_dict(a), "token": token}
 
     @app.post("/api/agent/enroll")
-    def agent_enroll(body: EnrollIn, s=Depends(db)) -> dict:
+    def agent_enroll(body: EnrollIn, request: Request, s=Depends(db)) -> dict:
         """Una máquina de análisis se da de alta sola al arrancar, con la clave de máquinas. Si ya existía
         (mismo nombre), se le genera un token nuevo."""
-        check_pool_key(s, body.key)
+        ip = client_ip(request)
+        check_throttle(s, "enroll", ip, "")
+        try:
+            check_pool_key(s, body.key)
+        except HTTPException:
+            record_failure(s, "enroll", ip, "")
+            raise
         name = body.name.strip()
         a = s.query(Agent).filter(Agent.kind == "servidor", Agent.name == name).order_by(Agent.id).first()
         token = new_token()
         if a is None:
+            # tope de máquinas (las vistas en los últimos 3 días): con la clave de máquinas no se puede dar de alta un
+            # sinfín de máquinas falsas
+            seen = s.query(Agent).filter(Agent.kind == "servidor",
+                                         Agent.last_seen >= utcnow() - timedelta(days=3)).count()
+            if seen >= MAX_MACHINES:
+                raise HTTPException(409, f"Ya hay {seen} máquinas de análisis (el tope es {MAX_MACHINES}, "
+                                         "VIGIA_MAX_MAQUINAS en el servidor): borrá las que no se usan")
             a = Agent(client_id=None, name=name, kind="servidor", token_hash=token_hash(token),
                       process_imports=body.process_imports)
             s.add(a)
@@ -1551,10 +1802,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "cameras_left": left}
 
     @app.get("/api/agent/scale")
-    def agent_scale(x_pool_key: str = Header(...), s=Depends(db)) -> dict:
+    def agent_scale(request: Request, x_pool_key: str = Header(..., max_length=200), s=Depends(db)) -> dict:
         """El encendedor (agent/escalador.py) pregunta cuántas máquinas tienen que estar prendidas y cuáles se
         pueden apagar. Marca para vaciar las que sobran; se apagan cuando ya no tienen cámaras."""
-        check_pool_key(s, x_pool_key)
+        ip = client_ip(request)
+        check_throttle(s, "enroll", ip, "")
+        try:
+            check_pool_key(s, x_pool_key)
+        except HTTPException:
+            record_failure(s, "enroll", ip, "")
+            raise
         rebalance(s)
         out = analysis_overview(s, apply_draining=True)
         rebalance(s, force=True)  # sacarle ya las cámaras a las que se están vaciando
@@ -1688,13 +1945,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rebalance(s, force=True)
 
     # ------------------------------------------------------------ cámaras
+    STATUS_KEY = re.compile(r"^[a-z_]{1,40}$")
+
+    def finite(v) -> float | None:
+        """Un número de verdad (no texto, no infinito ni NaN), o None."""
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        return float(v) if math.isfinite(v) else None
+
+    def short_text(v, n: int) -> str | None:
+        return str(v)[:n] if isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v) else None
+
+    def num_list(v, n: int) -> list[float] | None:
+        """Una lista de `n` números (un recuadro, un tamaño de imagen), o None."""
+        if not isinstance(v, (list, tuple)) or len(v) != n:
+            return None
+        out = [finite(x) for x in v]
+        return None if any(x is None for x in out) else out
+
+    def clean_features(v) -> dict[str, float]:
+        if not isinstance(v, dict):
+            return {}
+        return {k: f for k, x in v.items() if k in FEATURE_NAMES and (f := finite(x)) is not None}
+
+    def clean_status(cs: dict) -> dict:
+        """El estado de una cámara que manda una PC, con solo datos simples: números, sí/no, textos cortos y listas
+        cortas de eso (claves en minúscula). Lo raro se descarta (no se guarda ni se muestra)."""
+        def ok(v):
+            return v is None or isinstance(v, (bool, int, float)) or (isinstance(v, str) and len(v) <= 300)
+        out = {}
+        for k, v in list(cs.items())[:30]:
+            if not isinstance(k, str) or not STATUS_KEY.match(k):
+                continue
+            if ok(v):
+                out[k] = v
+            elif isinstance(v, list) and len(v) <= 20 and all(ok(x) for x in v):
+                out[k] = v
+            elif isinstance(v, str):
+                out[k] = v[:300]
+        if type(out.get("camera_id")) is not int:
+            out.pop("camera_id", None)
+        return out
+
     def agent_status_map(s) -> dict[int, dict]:
         out = {}
         for a in s.query(Agent).all():
             online = bool(a.last_seen and utcnow() - a.last_seen < timedelta(minutes=3))
-            live = set((a.last_status or {}).get("live") or [])
+            live = {x for x in ((a.last_status or {}).get("live") or []) if type(x) is int}
             for cs in (a.last_status or {}).get("cameras", []):
-                out[cs["camera_id"]] = {**cs, "agent_online": online, "live": cs["camera_id"] in live}
+                cid = cs.get("camera_id") if isinstance(cs, dict) else None
+                if type(cid) is not int:  # (un estado roto de una PC no puede tirar abajo la lista de cámaras)
+                    continue
+                out[cid] = {**cs, "agent_online": online, "live": cid in live}
             for cid in live:  # cámaras en modo alarmas no figuran en cameras[] pero sí pueden estar en vivo
                 out.setdefault(cid, {"camera_id": cid, "state": "escuchando", "agent_online": online, "live": True})
         return out
@@ -1716,7 +2018,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def camera_fields(body: CameraIn) -> dict:
         f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password", "keep_source_url",
-                                     "plans"})
+                                     "plans", "known_plans"})
         if "agent_id" not in body.model_fields_set:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
         if f.get("off_hours") is None:
@@ -1809,7 +2111,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_not_repeated(s, body, exclude=cam_id)
         client = s.get(Client, body.client_id)
         if "plans" in body.model_fields_set:  # solo si vino: null = como el cliente (lo elegido no se recorta solo)
-            c.plans = clean_camera_plans(body.plans, client)
+            sent = body.plans
+            if client is not None and body.client_id == c.client_id:
+                sent = keep_unknown_plans(sent, camera_plans(c, client), body.known_plans, plans_of(client))
+            c.plans = clean_camera_plans(sent, client)
         elif body.client_id != c.client_id:  # pasó a otro cliente: lo elegido era para el otro, sigue al nuevo
             c.plans = None
         before = locations(s)
@@ -1835,8 +2140,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_analysis(cam_id: int, body: AnalysisIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         # una app vieja todavía manda el tiempo de merodeo: se descarta
-        # «wait» (medir la espera) se guarda solo si está prendido: una zona sin espera queda como siempre
-        cfg = {"zones": [{k: v for k, v in z.model_dump(exclude_none=True).items() if k != "wait" or v}
+        # «wait» (medir la espera) se guarda solo si está prendido: una zona sin espera queda como siempre. En una zona de
+        # personal o de surtidor no va: se saca sin dar error (una app 1.39 que le cambia el tipo a una zona que medía
+        # espera no tiene esa casilla para destildarla)
+        cfg = {"zones": [{k: v for k, v in z.model_dump(exclude_none=True).items()
+                          if k != "wait" or (v and z.type not in NO_WAIT_TYPES)}
                          for z in body.zones], "rules": clean_rules(body.rules)}
         try:
             parse_config(cfg)
@@ -1934,7 +2242,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not cams:
             raise HTTPException(404, "No se encontraron esas cámaras")
         clients = {cl.id: cl for cl in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))}
-        new = {c.id: clean_camera_plans(body.plans, clients.get(c.client_id), c.name) for c in cams}
+        new = {}
+        for c in cams:
+            client = clients.get(c.client_id)
+            sent = body.plans
+            if client is not None:
+                sent = keep_unknown_plans(sent, camera_plans(c, client), body.known_plans, plans_of(client))
+            new[c.id] = clean_camera_plans(sent, client, c.name)
         for c in cams:
             c.plans = new[c.id]
         bump_rev(s)  # cambia qué hace cada cámara (reglas, vehículos, cuadros por segundo)
@@ -2053,10 +2367,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         agent_online = bool(ag and ag.last_seen and utcnow() - ag.last_seen < timedelta(minutes=3))
         frame_url, frame_age = None, None
         try:
-            mtime = storage.modified_at(live_path(c))
-            if mtime is not None:
+            info = storage.stat(live_path(c))
+            # un cuadro de verdad pesa unos 30 KB: uno enorme no se le da al navegador (lo bajaría cada segundo y se
+            # iría el tráfico de Supabase)
+            if info is not None and (info[1] is None or info[1] <= MAX_LIVE_FRAME):
                 frame_url = storage.signed_download_url(live_path(c), 600)
-                frame_age = max(0.0, round(datetime.now(timezone.utc).timestamp() - mtime, 1))
+                frame_age = max(0.0, round(datetime.now(timezone.utc).timestamp() - info[0], 1))
         except StorageError:
             frame_url = None
         # "activo" si la PC central dice que transmite o si el último cuadro es de hace pocos segundos
@@ -2324,9 +2640,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def agent_status(payload: dict, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         a = s.get(Agent, ag.id)
         prev = a.last_status
-        a.last_status = {"cameras": payload.get("cameras", [])[:200],
-                         "live": [int(x) for x in (payload.get("live") or [])[:200] if isinstance(x, int)],
-                         "outbox_pending": payload.get("outbox_pending"), "version": payload.get("version"),
+        # solo el estado de las cámaras que analiza esta PC o máquina, con datos simples y cortos: lo muestran la web
+        # y la app de todos los clientes (antes cualquier token podía escribir el estado de cualquier cámara)
+        own = {cid for (cid,) in agent_cameras_q(s, ag).with_entities(Camera.id)}
+        raw_cams = payload.get("cameras") if isinstance(payload.get("cameras"), list) else []
+        cams = [clean_status(cs) for cs in raw_cams[:200] if isinstance(cs, dict)]
+        live = payload.get("live") if isinstance(payload.get("live"), list) else []
+        pending = payload.get("outbox_pending")
+        a.last_status = {"cameras": [cs for cs in cams if cs.get("camera_id") in own],
+                         "live": [x for x in live[:200] if type(x) is int and x in own],
+                         "outbox_pending": pending if type(pending) is int else None,
+                         "version": str(payload["version"])[:40] if isinstance(payload.get("version"), str) else None,
                          "at": iso(utcnow()),
                          **{k: payload[k] for k in ("alarms_with_person", "alarms_discarded", "alarms_failed")
                             if isinstance(payload.get(k), int)}}
@@ -2366,7 +2690,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 start = datetime.fromisoformat(b.bucket_start).replace(tzinfo=None, minute=0, second=0, microsecond=0)
             except ValueError:
                 continue
-            data = merge_bucket(empty_bucket(), b.data)  # normaliza claves y tipos
+            # una hora de verdad (hora del local: hasta 1 día de diferencia con la del servidor), no del año 9999 ni de
+            # hace años; y un cubo de tamaño normal. Lo raro se saltea (sin dar error: no se traba la cola de la PC)
+            if not utcnow() - timedelta(days=40) <= start <= utcnow() + timedelta(days=1):
+                continue
+            data = merge_bucket(empty_bucket(), b.data)  # normaliza claves y tipos (números, zonas, tamaños)
+            if len(json.dumps(data)) > 64 * 1024:
+                continue
             row = s.query(CameraMetric).filter_by(camera_id=c.id, bucket_start=start).first()
             if row is None:
                 row = CameraMetric(client_id=c.client_id, camera_id=c.id, bucket_start=start)
@@ -2418,23 +2748,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         existing = s.query(Event).filter_by(uuid=uuid).first()
         if existing:
             return {"id": existing.id, "duplicate": True}
-        data = snapshot.file.read(5 * 1024 * 1024 + 1)
-        if len(data) > 5 * 1024 * 1024:
+        # una cámara de verdad no da cientos de alertas por hora: un token robado no puede llenar la base y el
+        # almacenamiento (la PC lo reintenta más tarde)
+        recent = s.query(Event).filter(Event.camera_id == cam.id,
+                                       Event.received_at >= utcnow() - timedelta(hours=1)).count()
+        if recent >= MAX_EVENTS_PER_HOUR:
+            raise HTTPException(429, "Demasiadas alertas de esta cámara en la última hora")
+        data = snapshot.file.read(MAX_IMAGE + 1)
+        if len(data) > MAX_IMAGE:
             raise HTTPException(413, "Imagen demasiado grande")
         snap_path = f"c{cam.client_id}/cam{cam.id}/{uuid}.jpg"
         try:
             storage.put(snap_path, data, "image/jpeg")
         except StorageError as exc:
             raise HTTPException(502, str(exc)) from exc
+        # lo que manda la PC, con tipos y largos de verdad (algo raro se descarta en vez de dar error o llenar la base)
         ev = Event(uuid=uuid, client_id=cam.client_id, camera_id=cam.id, source=source, import_id=import_id,
-                   type=m["type"], severity=SEVERITY[m["type"]], zone=m.get("zone"),
-                   description=str(m.get("description", ""))[:500], track_id=int(m.get("track_id") or 0),
-                   video_ts=float(m.get("video_ts") or 0), occurred_at=parse_occurred_at(m.get("occurred_at")),
-                   features={k: float(v) for k, v in (m.get("features") or {}).items() if k in FEATURE_NAMES},
-                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size"),
+                   type=m["type"], severity=SEVERITY[m["type"]], zone=short_text(m.get("zone"), 120),
+                   description=str(m.get("description", ""))[:500], track_id=int(finite(m.get("track_id")) or 0),
+                   video_ts=finite(m.get("video_ts")) or 0.0, occurred_at=parse_occurred_at(m.get("occurred_at")),
+                   features=clean_features(m.get("features")),
+                   meta={"bbox": num_list(m.get("bbox"), 4), "frame_size": num_list(m.get("frame_size"), 2),
                          **({"alarm": {"id": alarm.id, "dvr_event": alarm.event_type, "triggers": alarm.triggers,
-                                       "stats": m.get("clip_stats") or {}}} if alarm else {})},
-                   score=m.get("score"), alert=bool(m.get("alert", True)), snapshot_path=snap_path)
+                                       "stats": clean_status(m.get("clip_stats") or {})
+                                       if isinstance(m.get("clip_stats"), dict) else {}}} if alarm else {})},
+                   score=finite(m.get("score")), alert=bool(m.get("alert", True)), snapshot_path=snap_path)
         s.add(ev)
         s.commit()
         if ev.alert and source in ("vivo", "alarma"):
@@ -2467,8 +2805,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if c is None or not agent_owns(ag, c):
             watcher(s, ag)  # la app de un usuario del equipo, al ajustar una cámara, deja su imagen
             c = get_or_404(s, Camera, cam_id, "Cámara")
-        data = image.file.read(5 * 1024 * 1024 + 1)
-        if len(data) > 5 * 1024 * 1024:
+        data = image.file.read(MAX_IMAGE + 1)
+        if len(data) > MAX_IMAGE:
             raise HTTPException(413, "Imagen demasiado grande")
         path = f"c{c.client_id}/previews/{c.id}.jpg"
         storage.put(path, data, "image/jpeg")
@@ -2548,10 +2886,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, "Falta configurar HPP_APP_KEY y HPP_SECRET_KEY en Vercel")
         return hpp.HppClient(st.hpp_app_key, st.hpp_secret_key)
 
+    # clave propia en la dirección que se registra en HPP: la firma de HPP solo cubre la hora y el lote (no el cuerpo) y
+    # el GET de validación firma lo que le pidan, así que sin esta clave cualquiera podía inventar alarmas
+    hook_key = hmac.new(box.secret.encode(), b"hpp-webhook", "sha256").hexdigest()[:32]
+    app.state.hook_key = hook_key
+
     def webhook_url() -> str:
         if not st.public_url:
             raise HTTPException(503, "Falta PUBLIC_URL (la dirección pública del panel)")
-        return st.public_url.rstrip("/") + "/api/hpp/webhook"
+        return st.public_url.rstrip("/") + "/api/hpp/webhook?k=" + hook_key
+
+    def check_hook_key(k: str) -> None:
+        if not secrets.compare_digest((k or "").encode(), hook_key.encode()):
+            raise HTTPException(404, "Not Found")
 
     def alarm_dict(a: Alarm, cam_name: str | None = None, client_name: str | None = None) -> dict:
         return {"id": a.id, "client_id": a.client_id, "client_name": client_name, "camera_id": a.camera_id,
@@ -2623,21 +2970,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         occurred = hpp.parse_device_time(body.occurred_at, client.timezone)
         serial = cam.hpp_serial or f"CAM{cam.id}"
         result = store_alarm(s, cam, serial, cam.channel, body.event_type, occurred, body.target,
-                             {"brand": cam.brand, **body.raw}, dedup_key=f"equipo:{cam.id}:{body.event_type}:{body.occurred_at}",
+                             {"brand": cam.brand, **clean_status(body.raw or {})}, dedup_key=f"equipo:{cam.id}:{body.event_type}:{body.occurred_at}",
                              source="equipo")
         return {"result": result}
 
     @app.get("/api/hpp/webhook")
-    def hpp_webhook_check(x_hook_batch_id: str = Header(""), x_hook_timestamp: str = Header("")):
+    def hpp_webhook_check(k: str = "", x_hook_batch_id: str = Header(""), x_hook_timestamp: str = Header("")):
         """HPP valida la URL al registrarla: espera la firma en el encabezado X-Hook-Signature."""
+        check_hook_key(k)
         if not hpp_sign_secret:
             raise HTTPException(503, "Hik-Partner Pro no configurado")
         return Response(status_code=200, headers={
             "X-Hook-Signature": hpp.sign(hpp_sign_secret, x_hook_timestamp, x_hook_batch_id)})
 
     @app.post("/api/hpp/webhook")
-    async def hpp_webhook(request: Request, x_hook_batch_id: str = Header(""), x_hook_timestamp: str = Header(""),
-                          x_hook_signature: str = Header("")):
+    async def hpp_webhook(request: Request, k: str = "", x_hook_batch_id: str = Header(""),
+                          x_hook_timestamp: str = Header(""), x_hook_signature: str = Header("")):
+        check_hook_key(k)
         if not hpp_sign_secret:
             raise HTTPException(503, "Hik-Partner Pro no configurado")
         if not hpp.verify(hpp_sign_secret, x_hook_timestamp, x_hook_batch_id, x_hook_signature):
@@ -2668,7 +3017,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def hpp_status(check: bool = False, _: User = Depends(staff), s=Depends(db)) -> dict:
         last = s.query(Alarm).order_by(Alarm.id.desc()).first()
         d = {"configured": bool(st.hpp_app_key and st.hpp_secret_key), "webhook_url":
-             (st.public_url.rstrip("/") + "/api/hpp/webhook") if st.public_url else None,
+             (st.public_url.rstrip("/") + "/api/hpp/webhook?k=…") if st.public_url else None,
              "last_alarm_at": iso(last.received_at) if last else None,
              "cameras": s.query(Camera).filter(Camera.mode == "alarmas").count()}
         if check and d["configured"]:
@@ -2804,7 +3153,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not ev or ev.camera_id != a.camera_id:
                 raise HTTPException(422, "Falta el evento de la alarma")
             a.event_id = ev.id
-        a.status, a.stats, a.error = body.result, body.stats, None
+        # solo números (cuadros, cuadros con persona…): lo muestran la web y la app (antes un texto entraba como HTML)
+        stats = {k: v for k, v in list((body.stats or {}).items())[:20]
+                 if isinstance(k, str) and STATUS_KEY.match(k) and finite(v) is not None}
+        a.status, a.stats, a.error = body.result, stats, None
         s.commit()
         return {"ok": True}
 
@@ -2859,7 +3211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = s.execute(select(Event, Camera.name, Client.name).join(Camera, Camera.id == Event.camera_id)
                          .join(Client, Client.id == Event.client_id).where(*conds)
                          .order_by(*ordering).limit(limit).offset(offset)).all()
-        return {"items": [event_dict(e, cn, kn) for e, cn, kn in rows], "total": total, "limit": limit,
+        return {"items": [event_dict(e, cn, kn, user) for e, cn, kn in rows], "total": total, "limit": limit,
                 "offset": offset}
 
     @app.post("/api/events/manual", status_code=201)
@@ -2888,11 +3240,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except StorageError as exc:
             raise HTTPException(502, str(exc)) from exc
         ev = Event(uuid=uid, client_id=cam.client_id, camera_id=cam.id, source="prueba", type=etype,
-                   severity=SEVERITY[etype], zone=(m.get("zone") or None),
+                   severity=SEVERITY[etype], zone=short_text(m.get("zone"), 120),
                    description=str(m.get("description", "Prueba desde la pantalla"))[:500],
                    occurred_at=parse_occurred_at(m.get("occurred_at")),
-                   features={k: float(v) for k, v in (m.get("features") or {}).items() if k in FEATURE_NAMES},
-                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size"), "prueba": True,
+                   features=clean_features(m.get("features")),
+                   meta={"bbox": num_list(m.get("bbox"), 4), "frame_size": num_list(m.get("frame_size"), 2), "prueba": True,
                          "clip_path": clip_path}, score=None, alert=True, snapshot_path=snap_path)
         s.add(ev)
         s.commit()
@@ -2915,7 +3267,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_event(eid: int, user: User = Depends(current_user), s=Depends(db)) -> dict:
         e = get_or_404(s, Event, eid, "Evento")
         event_visible(user, e)
-        return event_dict(e, s.get(Camera, e.camera_id).name, s.get(Client, e.client_id).name)
+        return event_dict(e, s.get(Camera, e.camera_id).name, s.get(Client, e.client_id).name, user)
 
     @app.patch("/api/events/{eid}")
     def label_event(eid: int, body: LabelIn, user: User = Depends(staff), s=Depends(db)) -> dict:
@@ -3028,13 +3380,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def public_report_clip(token: str, s=Depends(db)):
         r = _report_by_token(s, token)
         ev = s.get(Event, r.event_id)
-        return redirect_to(ev.clip_path if ev else None)
+        return redirect_to(ev.clip_path if ev else None, public=True)
 
     @app.get("/api/r/{token}/snapshot")
     def public_report_snapshot(token: str, s=Depends(db)):
         r = _report_by_token(s, token)
         ev = s.get(Event, r.event_id)
-        return redirect_to(ev.snapshot_path if ev else None)
+        return redirect_to(ev.snapshot_path if ev else None, public=True)
 
     @app.get("/api/metrics")
     def metrics(client_id: int | None = None, days: int = Query(1, ge=1, le=90), camera_id: int | None = None,
@@ -3055,6 +3407,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                          CameraMetric.bucket_start < until + timedelta(days=1))
         if camera_id is not None:
             q = q.filter(CameraMetric.camera_id == camera_id)
+        if q.count() > MAX_SUMMARY_ROWS:  # un año de muchas cámaras: pasa los 60 s de Vercel y carga la base
+            raise HTTPException(422, "Es un período muy largo para tantas cámaras: pedí menos días")
         rows = q.all()
         own = plans_of(client)
         cams, measures = {}, {}
@@ -3064,13 +3418,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         by_day: dict[str, dict] = {}
         by_hour: dict[int, dict] = {}
         by_cam: dict[int, dict] = {}
-        for r in rows:
-            # cada cámara suma solo lo que mide: la de afuera no cuenta gente si el cliente mide eso con otra
-            data = restrict_bucket(r.data, own, measures.get(r.camera_id, own))
-            total = merge_bucket(total, data)
+        # cada cámara suma solo lo que mide: la de afuera no cuenta gente si el cliente mide eso con otra
+        restricted = [(r, restrict_bucket(r.data, own, measures.get(r.camera_id, own))) for r in rows]
+        # esperas y puestos son de un lugar: dos cámaras con «Caja» o «personal_2» no son la misma caja. En los totales
+        # (no en «Por cámara»), un nombre que está en más de una cámara va con el nombre de la cámara adelante
+        seen: dict[str, set[int]] = {}
+        for r, data in restricted:
+            for key in ("waits", "posts", "staff_dwell"):
+                for name in (data.get(key) or {}):
+                    seen.setdefault(name, set()).add(r.camera_id)
+        shared = {name for name, ids in seen.items() if len(ids) > 1}
+        names = list(cams.values())
+        twin = {n for n in names if names.count(n) > 1}  # dos «Camera 01» (un grabador por Hik-Connect cada una)
+        for r, data in restricted:
+            whole = data
+            if shared:
+                whole = dict(data)
+                cam = cams.get(r.camera_id, f"Cámara {r.camera_id}")
+                cam = f"{cam} (#{r.camera_id})" if cam in twin else cam
+                for key in ("waits", "posts", "staff_dwell"):
+                    whole[key] = {(f"{cam} · {name}" if name in shared else name): v
+                                  for name, v in (data.get(key) or {}).items()}
+            total = merge_bucket(total, whole)
             d = r.bucket_start.date().isoformat()
-            by_day[d] = merge_bucket(by_day.get(d, empty_bucket()), data)
-            by_hour[r.bucket_start.hour] = merge_bucket(by_hour.get(r.bucket_start.hour, empty_bucket()), data)
+            by_day[d] = merge_bucket(by_day.get(d, empty_bucket()), whole)
+            by_hour[r.bucket_start.hour] = merge_bucket(by_hour.get(r.bucket_start.hour, empty_bucket()), whole)
             by_cam[r.camera_id] = merge_bucket(by_cam.get(r.camera_id, empty_bucket()), data)
         return {"client_id": client.id, "client_name": client.name, "plans": list(client.plans or ["hurto"]),
                 "since": since.date().isoformat(), "until": until.date().isoformat(),
@@ -3176,6 +3548,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q = s.query(CameraMetric).filter(CameraMetric.bucket_start >= d1, CameraMetric.bucket_start < d2 + timedelta(days=1))
         if client_id is not None:
             q = q.filter(CameraMetric.client_id == client_id)
+        if q.count() > (MAX_EXPORT_ROWS if agrupar == "hora" else MAX_SUMMARY_ROWS):  # (no entra en una respuesta)
+            raise HTTPException(422, "Son demasiados datos para un solo archivo: pedí menos días, un solo cliente o "
+                                     "agrupado por día")
         rows = q.order_by(CameraMetric.bucket_start, CameraMetric.camera_id).all()
         cls, own = {}, {}
         for cl_id, cl_name, cl_plans in s.query(Client.id, Client.name, Client.plans):
@@ -3219,7 +3594,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # app, la web y el PDF) o si la cámara no tiene zonas para eso
                 *(wait_csv_cells(b, num) if "comercio" in cl_plans else [""] * len(WAIT_CSV_HEAD)),
                 *(staff_csv_cells(b, num) if "empleados" in cl_plans else [""] * len(STAFF_CSV_HEAD))]
-            lines.append(";".join(c.replace(";", ",") for c in cells))
+            lines.append(";".join(csv_cell(c) for c in cells))
         name = file_safe(cls.get(client_id, "cliente"), "cliente") if client_id else "todos"
         fname = f"metricas_{name}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.csv"
         return Response(content="\ufeff" + "\r\n".join(lines) + "\r\n", media_type="text/csv; charset=utf-8",
@@ -3416,7 +3791,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
         except Exception as exc:
             raise HTTPException(422, f"Datos inválidos: {exc}") from exc
-        features = {k: float(v) for k, v in (m.get("features") or {}).items() if k in FEATURE_NAMES}
+        features = clean_features(m.get("features"))
         existing = s.query(Event).filter_by(uuid=uid).first()
         if existing:
             if existing.source != "ajuste" or existing.camera_id != cam.id:
@@ -3434,13 +3809,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except StorageError as exc:
             raise HTTPException(502, str(exc)) from exc
         ev = Event(uuid=uid, client_id=cam.client_id, camera_id=cam.id, source="ajuste", type=m["type"],
-                   severity=SEVERITY[m["type"]], zone=(m.get("zone") or None),
+                   severity=SEVERITY[m["type"]], zone=short_text(m.get("zone"), 120),
                    description=str(m.get("description") or "")[:500], track_id=int(m.get("track_id") or 0),
                    video_ts=float(m.get("video_ts") or 0), occurred_at=parse_occurred_at(m.get("occurred_at")),
                    features=features,
-                   meta={"bbox": m.get("bbox"), "frame_size": m.get("frame_size"),
+                   meta={"bbox": num_list(m.get("bbox"), 4), "frame_size": num_list(m.get("frame_size"), 2),
                          "video": str(m.get("video") or "")[:200] or None, "ajuste": True},
-                   score=m.get("score"), alert=False, snapshot_path=snap_path, label=m["label"],
+                   score=finite(m.get("score")), alert=False, snapshot_path=snap_path, label=m["label"],
                    labeled_by=user.id, labeled_at=utcnow())
         s.add(ev)
         s.commit()
@@ -3523,6 +3898,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.query(Alarm).filter(Alarm.event_id.is_(None), Alarm.status != "procesando",
                               Alarm.received_at < utcnow() - timedelta(days=14)).delete(synchronize_session=False)
         s.query(SessionToken).filter(SessionToken.expires_at < utcnow()).delete()
+        # intentos fallidos viejos (y las IPs conocidas vencidas): la tabla no crece sin fin
+        s.query(LoginFailure).filter(LoginFailure.first_at < utcnow() - timedelta(days=1),
+                                     (LoginFailure.locked_until.is_(None)) | (LoginFailure.locked_until < utcnow())
+                                     ).delete(synchronize_session=False)
         # máquinas de análisis que no se ven hace días: en la nube se terminan (Spot) y cada máquina nueva se da
         # de alta con otro nombre. Si alguna vuelve, se da de alta sola de nuevo.
         gone = [a for a in server_agents(s) if not a.last_seen or utcnow() - a.last_seen > MACHINE_FORGET]
@@ -3538,6 +3917,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"deleted": len(unlabeled), "media_removed": len(labeled), "retention_days": st.retention_days,
                 "machines_removed": len(gone)}
 
+    # cabeceras de seguridad: en Vercel las pone vercel.json (también a public/, que sirve su CDN); acá, cuando el servidor
+    # sirve la web (local o Docker). Las respuestas de la API no se guardan en ningún caché (traen datos de clientes),
+    # salvo las que dicen otra cosa (las redirecciones a los archivos firmados)
+    secure_headers = {} if st.on_vercel else {"Content-Security-Policy": CSP, **SECURITY_HEADERS}
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for k, v in secure_headers.items():
+            response.headers.setdefault(k, v)
+        if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     if not st.serve_public:
         @app.get("/", include_in_schema=False)
         def root():
@@ -3551,7 +3944,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _misconfigured_app(missing: list[str]) -> FastAPI:
-    app = FastAPI(title="Analítica Crítica (falta configuración)")
+    app = FastAPI(title="Analítica Crítica (falta configuración)", docs_url=None, redoc_url=None, openapi_url=None)
     msg = ("Falta configurar en Vercel (Settings > Environment Variables) y volver a desplegar: "
            + ", ".join(missing))
     log.error(msg)

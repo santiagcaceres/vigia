@@ -115,12 +115,14 @@ def test_la_zona_con_espera_se_guarda_y_llega_a_las_maquinas(app):
         tok = {"X-Agent-Token": e.post("/api/agent/session").json()["token"]}
         tune = TestClient(app).post("/api/agent/tune", json={"camera_id": cam["id"]}, headers=tok).json()
         assert {z["name"] for z in tune["raw"]["zones"] if z.get("wait")} == {"Fila caja", "Fila farmacia"}
-        # en una zona de personal o de surtidor no se mide espera: 422 con el motivo y no se guarda nada
+        # en una zona de personal o de surtidor no se mide espera: se saca sin dar error (una app 1.39 que le cambia
+        # el tipo a una zona que medía espera no tiene la casilla para destildarla)
         for ztype in ("staff", "pump"):
             bad = zones[:1] + [{"name": "Mal", "type": ztype, "polygon": OTHER, "wait": True}]
             r = a.put(f"/api/cameras/{cam['id']}/analysis", json={"zones": bad, "rules": {}})
-            assert r.status_code == 422 and "tiempo de espera" in r.json()["detail"] and "Mal" in r.json()["detail"]
-        assert len(a.get(f"/api/cameras/{cam['id']}").json()["zones"]) == 4
+            assert r.status_code == 200, r.text
+            saved = {z["name"]: z for z in a.get(f"/api/cameras/{cam['id']}").json()["zones"]}
+            assert "wait" not in saved["Mal"] and saved["Fila caja"]["wait"] is True
 
 
 # ------------------------------------------------------------------ métricas
@@ -134,11 +136,12 @@ def wait(n, sum_s, max_s, hist, obs_s, queue_s, queue_max, busy_s, unattended_s=
 CAJA_10 = {"people": 9, "people_dwell_s": 900.0, "frames": 1000,
            "waits": {"Fila caja": wait(3, 530.0, 400.0, [1, 1, 0, 1, 0], 3600.0, 1800.0, 4, 1500.0, 120.0, 1)},
            "posts": {"Mostrador": {"obs_s": 3600.0, "covered_s": 2700.0, "people_s": 3240.0, "max": 2}},
-           "staff_s": 5400.0, "staff_max": 2, "staff_dwell": {"Mostrador": 3000.0, "Depósito": 1200.0}}
+           "staff_s": 5400.0, "staff_obs_s": 3600.0, "staff_max": 2,
+           "staff_dwell": {"Mostrador": 3000.0, "Depósito": 1200.0}}
 CAJA_11 = {"people": 2, "people_dwell_s": 800.0, "frames": 500,
            "waits": {"Fila caja": wait(1, 700.0, 700.0, [0, 0, 0, 0, 1], 1800.0, 900.0, 2, 700.0, 300.0, 0)},
            "posts": {"Mostrador": {"obs_s": 1800.0, "covered_s": 1800.0, "people_s": 1800.0, "max": 1}},
-           "staff_s": 1800.0, "staff_max": 1, "staff_dwell": {"Mostrador": 1800.0}}
+           "staff_s": 1800.0, "staff_obs_s": 1800.0, "staff_max": 1, "staff_dwell": {"Mostrador": 1800.0}}
 # la de la calle mide solo hurto: lo que haya contado de espera y de personal no se suma al cliente
 CALLE_10 = {"people": 30, "people_dwell_s": 300.0, "frames": 1000,
             "waits": {"Vereda": wait(5, 100.0, 30.0, [5, 0, 0, 0, 0], 3600.0, 50.0, 1, 100.0)},
@@ -181,7 +184,8 @@ def test_espera_y_empleados_en_las_metricas_del_cliente(app):
         assert cams["Calle"]["frames"] == 1000
         assert sum(h["waits"].get("Fila caja", {}).get("n", 0) for h in m["by_hour"]) == 4
         # la calle mide todo de nuevo (como el cliente): ahora sí se suma
-        a.post("/api/cameras/plans", json={"camera_ids": [cams["Calle"]["camera_id"]], "plans": None})
+        a.post("/api/cameras/plans", json={"camera_ids": [cams["Calle"]["camera_id"]], "plans": None,
+                                           "known_plans": ["hurto", "comercio", "estacion", "empleados"]})
         t = a.get("/api/metrics", params={"client_id": cid, "days": 1}).json()["total"]
         assert set(t["waits"]) == {"Fila caja", "Vereda"} and set(t["posts"]) == {"Mostrador", "Garita"}
         assert t["staff_max"] == 3 and t["staff_dwell"]["Garita"] == 500.0
@@ -202,7 +206,7 @@ def csv_rows(a, cid, day, agrupar="dia"):
 
 
 NEW_COLS = ["Esperas", "Espera promedio (min)", "Espera máxima (min)", "Esperaron más de 5 min", "Fila promedio",
-            "Esperando sin nadie en el puesto (min)", "Puesto cubierto (%)", "Puesto sin nadie (min)",
+            "Esperando sin nadie en el puesto (min)", "Puesto cubierto (%)", "Puesto sin nadie, el que más (min)",
             "Empleados a la vez (máx.)"]
 
 
@@ -244,7 +248,7 @@ def test_el_excel_junta_varias_zonas_de_una_camara():
         "staff_max": 3})
     # esperas y segundos sumados, el máximo el mayor, la fila por zona y el rato sin nadie, el mayor de las dos
     assert wait_csv_cells(b, num) == ["4", num(1200 / 4 / 60), num(700 / 60), "1", num(5400 / 7200), num(600 / 60)]
-    assert staff_csv_cells(b, num) == ["75", num(1800 / 60), "3"]
+    assert staff_csv_cells(b, num) == ["75", num(1800 / 60), "3"]  # sin nadie: el puesto que más estuvo vacío
     assert wait_csv_cells(empty_bucket(), num) == [""] * 6 and staff_csv_cells(empty_bucket(), num) == [""] * 3
     # sin zona de personal, el rato sin nadie no se sabe
     solo = {"waits": {"Fila": wait(1, 90.0, 90.0, [0, 1, 0, 0, 0], 600.0, 90.0, 1, 90.0, staffed=0)}}
@@ -264,9 +268,9 @@ def test_el_pdf_trae_tiempo_de_espera_y_empleados(app):
         assert "Seguimiento de empleados" in text  # en los planes del encabezado
         assert "Tiempo de espera" in text and "Fila caja" in text
         assert "5:08" in text and "11:40" in text  # promedio (307,5 s) y máximo (700 s)
-        assert "con clientes esperando y nadie en el puesto: 7 min" in text
+        assert "con clientes esperando y nadie en su puesto (la zona de personal más cercana): 7 min" in text
         assert "se fueron sin que hubiera nadie: 1" in text
-        assert "Empleados a la vista: máximo 2 a la vez, promedio 1,3" in text
+        assert "Empleados a la vista (por cámara): promedio 1,3, máximo 2 a la vez" in text  # 7200 s en 5400 s
         assert "Mostrador" in text and "83 %" in text and "15:00" in text
         assert "Dónde pasan el tiempo: Mostrador 1 h 20 min · Depósito 20:00" in text
         assert "Vereda" not in text and "Garita" not in text  # la calle no lo mide
@@ -297,5 +301,74 @@ def test_el_pdf_de_varios_dias_y_sin_zona_de_personal():
     text = text_of(metrics_pdf("Almacén", ["comercio", "empleados"], date(2026, 11, 2), date(2026, 11, 3), m, None))
     assert "Tiempo de espera" in text and "lun 02/11" in text and "mar 03/11" in text  # una fila por día
     assert "marcá la zona «Personal (empleados)»" in text  # sin personal: no se sabe si había quien atienda
-    assert "falta marcar la zona «Personal (empleados)»" in text  # ni puestos
-    assert "Empleados a la vista: máximo 1 a la vez" in text and "promedio" not in text.split("a la vista")[1][:40]
+    # ni puestos ni tiempo mirado (una máquina sin actualizar): se dice qué falta, sin inventar «máximo 1, promedio 0»
+    assert "Sin datos de los puestos en este período" in text and "Empleados a la vista" not in text
+
+
+# ------------------------------------------------------------------ revisión adversarial (3 nov)
+def test_una_app_vieja_no_borra_el_plan_empleados(app):
+    with admin(app) as a:
+        cid = a.post("/api/clients", json={"name": "Super", "plans": ["hurto", "comercio", "empleados"],
+                                           "timezone": TZ}).json()["id"]
+        cam = a.post("/api/cameras", json=cam_body(cid, "Caja", plans=["comercio", "empleados"])).json()
+        # la app 1.39 solo conoce hurto, comercio y estación: cambia el horario y manda [hurto, comercio]
+        r = a.put(f"/api/clients/{cid}", json={"name": "Super", "timezone": TZ, "plans": ["hurto", "comercio"]})
+        assert r.status_code == 200 and r.json()["plans"] == ["hurto", "comercio", "empleados"]
+        # y en la cámara manda lo que ve tildado
+        body = cam_body(cid, "Caja", plans=["comercio"])
+        assert a.put(f"/api/cameras/{cam['id']}", json=body).json()["plans"] == ["comercio", "empleados"]
+        a.post("/api/cameras/plans", json={"camera_ids": [cam["id"]], "plans": ["hurto"]})
+        assert a.get(f"/api/cameras/{cam['id']}").json()["plans"] == ["hurto", "empleados"]
+        # la app nueva y la web dicen qué planes conocen: ahí sí se puede sacar
+        known = ["hurto", "comercio", "estacion", "empleados"]
+        r = a.put(f"/api/clients/{cid}", json={"name": "Super", "timezone": TZ, "plans": ["hurto", "comercio"],
+                                               "known_plans": known})
+        assert r.json()["plans"] == ["hurto", "comercio"]
+        a.put(f"/api/clients/{cid}", json={"name": "Super", "timezone": TZ, "plans": ["hurto", "comercio",
+                                                                                      "empleados"],
+                                           "known_plans": known})
+        a.post("/api/cameras/plans", json={"camera_ids": [cam["id"]], "plans": ["comercio"], "known_plans": known})
+        assert a.get(f"/api/cameras/{cam['id']}").json()["plans"] == ["comercio"]
+
+
+def test_zonas_con_el_mismo_nombre_en_dos_camaras_no_se_juntan(app):
+    with admin(app) as a:
+        cid = a.post("/api/clients", json={"name": "Dos cajas", "plans": ["comercio", "empleados"],
+                                           "timezone": TZ}).json()["id"]
+        ag = a.post("/api/agents", json={"name": "central dos", "client_id": None}).json()
+        c1 = a.post("/api/cameras", json=cam_body(cid, "Caja 1", agent_id=ag["id"])).json()
+        c2 = a.post("/api/cameras", json=cam_body(cid, "Caja 2", agent_id=ag["id"])).json()
+        today = datetime.now(ZoneInfo(TZ)).replace(hour=10, minute=0, second=0, microsecond=0, tzinfo=None)
+        one = {"frames": 100, "waits": {"caja_1": wait(1, 60.0, 60.0, [0, 1, 0, 0, 0], 3600.0, 60.0, 1, 60.0)},
+               "posts": {"personal_2": {"obs_s": 3600.0, "covered_s": 0.0, "people_s": 0.0, "max": 0}},
+               "staff_dwell": {"Depósito": 50.0}}
+        a.post("/api/agent/metrics", headers={"X-Agent-Token": ag["token"]}, json={"buckets": [
+            {"camera_id": c1["id"], "bucket_start": today.isoformat(), "data": one},
+            {"camera_id": c2["id"], "bucket_start": today.isoformat(), "data": {**one, "staff_dwell": {"Caja": 9.0}}}]})
+        m = a.get("/api/metrics", params={"client_id": cid, "days": 1}).json()
+        t = m["total"]
+        assert set(t["waits"]) == {"Caja 1 · caja_1", "Caja 2 · caja_1"}
+        assert set(t["posts"]) == {"Caja 1 · personal_2", "Caja 2 · personal_2"}
+        assert t["staff_dwell"] == {"Depósito": 50.0, "Caja": 9.0}  # los que no se repiten quedan como están
+        assert all(set(c["waits"]) == {"caja_1"} for c in m["by_camera"])  # «Por cámara», con su nombre
+
+
+def test_una_app_vieja_no_le_prende_hurto_a_lo_que_es_solo_empleados(app):
+    with admin(app) as a:
+        known = ["hurto", "comercio", "estacion", "empleados"]
+        cid = a.post("/api/clients", json={"name": "Oficina", "plans": ["hurto", "empleados"], "timezone": TZ,
+                                           "known_plans": known}).json()["id"]
+        cam = a.post("/api/cameras", json=cam_body(cid, "Back", plans=["empleados"], known_plans=known)).json()
+        assert cam["plans"] == ["empleados"]
+        # la app 1.39 ve la casilla «hurto» forzada (es lo único que conoce) y manda «como el cliente» (None)
+        r = a.put(f"/api/cameras/{cam['id']}", json=cam_body(cid, "Back renombrada", plans=None))
+        assert r.status_code == 200 and r.json()["plans"] == ["empleados"]
+        # cliente de solo empleados: la app vieja obliga a tildar algo para guardar el horario; no cuenta
+        solo = a.post("/api/clients", json={"name": "Solo", "plans": ["empleados"], "timezone": TZ,
+                                            "known_plans": known}).json()["id"]
+        r = a.put(f"/api/clients/{solo}", json={"name": "Solo", "timezone": TZ, "plans": ["comercio"]})
+        assert r.status_code == 200 and r.json()["plans"] == ["empleados"]
+        # la app nueva sí lo cambia
+        r = a.put(f"/api/clients/{solo}", json={"name": "Solo", "timezone": TZ, "plans": ["comercio"],
+                                                "known_plans": known})
+        assert r.json()["plans"] == ["comercio"]

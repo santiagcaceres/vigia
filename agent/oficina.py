@@ -148,9 +148,10 @@ def fmt_minutes(s: float | None) -> str:
     """Un rato largo dicho en una frase: «12 min», «menos de 1 min» o «1 h 12 min» (como el PDF)."""
     if not s:
         return "0 min"
-    if s >= 3600:
-        return fmt_clock(s)
-    return "menos de 1 min" if s < 30 else f"{round(s / 60)} min"
+    if s < 30:
+        return "menos de 1 min"
+    m = int(s / 60 + 0.5)  # (round() redondea 30 s a «0 min»)
+    return _hours_min(m * 60) if m >= 60 else f"{m} min"
 
 
 def fmt_dec(x: float | None, nd: int = 1) -> str:
@@ -213,8 +214,34 @@ def door_text(b: dict, staff: bool = False) -> str:
 LIMITS_TEXT = ("Límites: reconoce a los empleados solo por su zona «Personal» o por el horario; no sabe quién es quién ni "
                "los sigue de una cámara a otra; quien pisa el puesto cuenta como «alguien en el puesto»; la espera es el "
                "tiempo en la zona marcada (si incluye donde se atiende, incluye la atención).")
-NO_POSTS_TEXT = ("Para medir los puestos, marcá la zona «Personal (empleados)» en las cámaras (detrás del mostrador, la "
-                 "caja por dentro): a los empleados se los reconoce por esa zona o porque llegan con el local cerrado.")
+NO_POSTS_TEXT = ("Sin datos de los puestos: hace falta la zona «Personal (empleados)» en las cámaras (detrás del "
+                 "mostrador, la caja por dentro) y que la máquina que las analiza esté actualizada (se actualiza al "
+                 "reiniciarla). A los empleados se los reconoce por esa zona o porque llegan con el local cerrado.")
+
+
+NO_STAFF_CAMERA_TEXT = ("Ninguna cámara mide «Seguimiento de empleados»: elegilo en «Qué mide esta cámara» (Editar de la "
+                        "cámara, o «Más» → «Qué mide…» para varias).")
+
+
+def overlapping_waits(zones: list[dict]) -> tuple[str, str] | None:
+    """Dos zonas que miden la espera y se pisan (un vértice de una adentro de la otra, o se cruzan sus bordes): el mismo
+    cliente contaría en las dos. Devuelve sus nombres o None."""
+    from core.geometry import point_in_polygon
+
+    def cross(a, b, c, d) -> bool:
+        def side(p, q, r):
+            return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0
+
+    waits = [z for z in zones if z.get("wait") and len(z.get("polygon") or []) >= 3]
+    for i, a in enumerate(waits):
+        for b in waits[i + 1:]:
+            pa, pb = [tuple(p) for p in a["polygon"]], [tuple(p) for p in b["polygon"]]
+            if any(point_in_polygon(*p, pb) for p in pa) or any(point_in_polygon(*p, pa) for p in pb) or any(
+                    cross(pa[k], pa[(k + 1) % len(pa)], pb[m], pb[(m + 1) % len(pb)])
+                    for k in range(len(pa)) for m in range(len(pb))):
+                return a["name"], b["name"]
+    return None
 
 
 def has_waits(b: dict | None) -> bool:
@@ -237,8 +264,9 @@ def wait_lines(name: str, st: dict) -> list[str]:
         head += f" · fila promedio {fmt_dec(st['queue_avg'])}, máxima {st.get('queue_max', 0)}"
     lines = [head]
     if st.get("staffed"):
-        lines.append(f"con clientes esperando y nadie en el puesto: {fmt_minutes(st.get('unattended_s'))} · "
-                     f"se fueron sin que hubiera nadie: {st.get('left_alone') or 0}")
+        lines.append(f"con clientes esperando y nadie en su puesto (la zona de personal más cercana): "
+                     f"{fmt_minutes(st.get('unattended_s'))} · se fueron sin que hubiera nadie: "
+                     f"{st.get('left_alone') or 0}")
     return lines
 
 
@@ -261,18 +289,17 @@ def post_text(name: str, st: dict) -> str:
 
 
 def staff_lines(b: dict | None, hint: bool = True) -> list[str]:
-    """Lo de los empleados de un cubo (plan «Seguimiento de empleados»): cada puesto, cuántos se vieron a la vez (el
-    promedio, sobre el tiempo mirado: el del puesto más mirado) y dónde pasan el tiempo (las 6 zonas con más). Sin
-    puestos y con `hint`, cómo marcarlos."""
+    """Lo de los empleados de un cubo (plan «Seguimiento de empleados»): cada puesto, cuántos se vieron a la vez (por
+    cámara: el promedio sobre lo que miró cada cámara, `staff_obs_s`) y dónde pasan el tiempo (las 6 zonas con más). Sin
+    puestos y con `hint`, cómo marcarlos (o que la máquina todavía no lo mide)."""
     b = b or {}
     posts = [(name, post_stats(p)) for name, p in sorted((b.get("posts") or {}).items())]
     posts = [(name, st) for name, st in posts if st["obs_s"]]
     lines = [post_text(name, st) for name, st in posts]
-    watched = max((st["obs_s"] for _, st in posts), default=0.0)  # segundos mirados
-    seen = f"Empleados a la vista: máximo {b.get('staff_max', 0)} a la vez"
+    watched = b.get("staff_obs_s") or 0.0  # segundos mirados, sumando cámaras (0: la máquina no lo mide todavía)
     if watched:
-        seen += f", promedio {fmt_dec((b.get('staff_s') or 0.0) / watched)}"
-    lines.append(seen)
+        lines.append(f"Empleados a la vista (por cámara): promedio {fmt_dec((b.get('staff_s') or 0.0) / watched)}, "
+                     f"máximo {b.get('staff_max', 0)} a la vez")
     dwell = sorted(((n, s) for n, s in (b.get("staff_dwell") or {}).items() if (s or 0) > 0), key=lambda kv: -kv[1])
     if dwell:
         lines.append("Dónde pasan el tiempo: " + " · ".join(f"{n} {fmt_clock(s)}" for n, s in dwell[:6]))
@@ -375,7 +402,11 @@ def metrics_text(c: dict, today: dict, week: dict) -> str:
         for title, b in (("Hoy", t), ("Últimos 7 días", w)):
             lines.append(f"  {title}:")
             lines += ["    " + line for line in staff_lines(b, hint=False)]
-        if not any(post_stats(p)["obs_s"] for p in (w.get("posts") or {}).values()):
+        cams_all = (today.get("by_camera") or []) + (week.get("by_camera") or [])
+        if cams_all and all(isinstance(cam.get("measures"), list) for cam in cams_all) and not any(
+                "empleados" in cam["measures"] for cam in cams_all):
+            lines.append("  " + NO_STAFF_CAMERA_TEXT)  # el plan está, pero ninguna cámara lo mide
+        elif not any(post_stats(p)["obs_s"] for p in (w.get("posts") or {}).values()):
             lines.append("  " + NO_POSTS_TEXT)  # (una sola vez, no en hoy y en la semana)
     if extra:
         lines += ["", LIMITS_TEXT]
@@ -1339,6 +1370,7 @@ class Oficina:
             body["timezone"] = body["timezone"] or "America/Montevideo"
             body["webhook_url"] = c.get("webhook_url")
             body["plans"] = [p for p, var in plans.items() if var.get()]
+            body["known_plans"] = list(PLAN_NAMES)  # así el servidor no conserva lo que se destildó acá
             if not body["plans"]:  # (el servidor tampoco lo acepta: sin planes las cámaras no sabrían qué medir)
                 return self.mb.showwarning(NOMBRE, "Elegí al menos un plan para el cliente.", parent=top)
             body["hours"] = {d: var.get().strip() for d, var in hours.items()}
@@ -1774,6 +1806,7 @@ class Oficina:
                 return self.mb.showwarning(NOMBRE, "Los cuadros por segundo tienen que ser un número.", parent=top)
             try:  # todas marcadas = como el cliente (None); va en todos los pedidos (una cámara, links, canales…)
                 common["plans"] = plans_to_save([p for p, var in pv.items() if var.get()], cplans)
+                common["known_plans"] = list(PLAN_NAMES)
             except ValueError as exc:
                 return self.mb.showwarning(NOMBRE, str(exc), parent=top)
             skip: list[str] = []  # canales que ya estaban cargados: no se repiten
@@ -2010,7 +2043,8 @@ class Oficina:
                 self.mb.showinfo(NOMBRE, f"{n} cámara{'s' if n != 1 else ''}: ahora mide{'n' if n != 1 else ''} "
                                          f"{plans_names(plans or cplans)}"
                                          + (" (todo lo del cliente)." if plans is None else "."))
-            self.bg.run(lambda: self.api.post("/api/cameras/plans", {"camera_ids": ids, "plans": plans}), done,
+            self.bg.run(lambda: self.api.post("/api/cameras/plans", {"camera_ids": ids, "plans": plans,
+                                                                    "known_plans": list(PLAN_NAMES)}), done,
                         lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
         bb.grid(row=r + 1, column=0, columnspan=2, sticky="e", pady=(10, 0))
@@ -3224,6 +3258,12 @@ class ZonesEditor:
         ttk.Label(left, text="Zona nueva: «＋ Zona nueva» y clics en el piso, doble clic para cerrarla. Corregir: clic en "
                              "una zona, arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",
                   foreground="#666", wraplength=self.W, justify="left").pack(anchor="w")
+        # (debajo de la imagen, donde sobra lugar: en la columna de la derecha, con una zona de espera elegida, la
+        # ventana pasaba los 768 de alto y «Guardar zonas» quedaba debajo de la barra de tareas)
+        ttk.Label(left, text="Al guardar, la cámara cuenta cuántas personas entran a cada zona y, en las de espera, "
+                             "cuánto esperan (se ve en «● En vivo» y, si se analiza, en las métricas). Los tiempos de "
+                             "las alertas se prueban en «● En vivo» o «🎞 Clips».", style="Suave.TLabel",
+                  wraplength=self.W, justify="left").pack(anchor="w", pady=(6, 0))
         right = ttk.Frame(frm, padding=(12, 0, 0, 0))
         right.grid(row=0, column=1, sticky="n")
         self.zname = tk.StringVar()
@@ -3279,10 +3319,6 @@ class ZonesEditor:
             ttk.Label(right, text=f"{footmap.persons} personas en {fmt_dur(footmap.seconds)} de video · celeste: "
                                   "caminan · rojo: se paran", foreground="#666", wraplength=320,
                       justify="left").pack(anchor="w")
-        ttk.Label(right, text="Al guardar, la cámara cuenta cuántas personas entran a cada zona y, en las de espera, "
-                              "cuánto esperan (se ve en «● En vivo» y, si se analiza, en las métricas). Los tiempos de "
-                              "las alertas se prueban en «● En vivo» o «🎞 Clips».", style="Suave.TLabel",
-                  wraplength=320, justify="left").pack(anchor="w", pady=(10, 0))
         bb = ttk.Frame(right)
         bb.pack(anchor="e", pady=(10, 0), fill="x")
         ttk.Button(bb, text="Cancelar", command=self.top.destroy).pack(side="right")
@@ -3538,6 +3574,12 @@ class ZonesEditor:
         if self.confirm and not self.app.mb.askyesno(NOMBRE, self.confirm, parent=self.top):
             return
         zones = [{k: v for k, v in z.items() if k != "sugerida"} for z in self.zones]
+        overlap = overlapping_waits(zones)
+        if overlap and not self.app.mb.askyesno(
+                NOMBRE, f"Las zonas «{overlap[0]}» y «{overlap[1]}» miden la espera y se pisan: un cliente que espera "
+                        "en la parte común cuenta en las dos (y el total de esperas sale de más). Conviene que una sola "
+                        "mida la espera. ¿Guardar igual?", parent=self.top):
+            return
         body = {"zones": zones, "rules": rules}
         if self.cam.get("save_gestures") is not None:  # aparte de las reglas (nunca dentro de `rules`)
             body["gestures"] = self.cam["save_gestures"]
