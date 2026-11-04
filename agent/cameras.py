@@ -307,6 +307,16 @@ def probe_connection(cfg: dict) -> dict:
     return {"http": http, "video": video, "brand": brand}
 
 
+OTHER_PORT = ("Pedí que redirijan un puerto al RTSP del grabador (el 554 de adentro) y usá ese; los del programa de la "
+              "marca (8000 en Hikvision, 37777 en Dahua) no sirven para tomar el video")
+# Puertos que los técnicos pasan a menudo porque son los que usan los programas de la marca (iVMS-4200, SmartPSS, la app):
+# por ahí no sale el video RTSP.
+SDK_PORTS = {
+    8000: "el 8000 es el puerto del programa de Hikvision (iVMS-4200 y la app), no el de video. " + OTHER_PORT,
+    37777: "el 37777 es el puerto del programa de Dahua (SmartPSS y la app), no el de video. " + OTHER_PORT,
+}
+
+
 class _NoReply(Exception):
     """El grabador aceptó la conexión pero no contestó el pedido (no es lo mismo que un puerto que no contesta)."""
 
@@ -407,11 +417,19 @@ def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
                 res = _rtsp_request(host, port, "DESCRIBE", clean, {"Authorization": auth}, timeout)
         return res
 
+    not_video = SDK_PORTS.get(port, "")
     try:
         res = ask(url)
     except _NoReply:
+        if not_video:
+            return f"{host}:{port} acepta la conexión pero no contesta el pedido de video: {not_video}"
         return (f"{host}:{port} acepta la conexión pero no contesta el pedido de video: el grabador puede haber "
                 "bloqueado a esta PC por intentos fallidos (esperá unos 30 minutos) o la conexión es muy lenta")
+    except (ConnectionResetError, ConnectionAbortedError):
+        # Conectó (el nombre, el router y el reenvío andan) y la otra punta cortó al recibir el pedido de video: lo
+        # típico de un puerto que no es RTSP, como el 8000 de Hikvision.
+        return (f"se llega a {host}:{port} (el DDNS y el router andan) pero corta la conexión al pedir el video: ese "
+                f"puerto no es el de video (RTSP). {not_video or OTHER_PORT}")
     except (TimeoutError, socket.timeout):
         return (f"{host} no contesta en el puerto {port} desde esta PC: no está abierto (o no está redirigido al "
                 "grabador) en el router del local, el DDNS apunta a otra IP, o el proveedor de internet del local no "
@@ -424,8 +442,8 @@ def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
         return (f"no se puede llegar a {host}:{port} ({exc.strerror or exc}): revisá el DDNS, el router del local y "
                 "el internet de esta PC")
     if res is None:
-        return (f"{host}:{port} contesta pero no como video (RTSP): ¿ese es el puerto de video? (el 554 de adentro; "
-                "quizá se redirigió el de la página)")
+        return (f"{host}:{port} contesta pero no como video (RTSP): "
+                f"{not_video or '¿ese es el puerto de video? (el 554 de adentro; quizá se redirigió el de la página)'}")
     code = res[0]
     if code == 200:
         return ("el grabador entrega el video (usuario, clave y canal están bien) pero esta PC no lo pudo leer: "

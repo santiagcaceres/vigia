@@ -4,6 +4,7 @@ encontró la auditoría y que ahora se frena. Todo contra un servidor local de p
 import io
 import json
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -190,7 +191,8 @@ def test_el_excel_no_ejecuta_formulas():
 
 def test_datos_raros_de_una_pc_no_rompen_nada(app):
     a, o, tok, cam_a, *_ = setup(app)
-    now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    # Los cubos van en hora del local: con la hora UTC, de 21 a 24 (Montevideo) el cubo caía en «mañana».
+    now = datetime.now(ZoneInfo("America/Montevideo")).replace(tzinfo=None, minute=0, second=0, microsecond=0)
     r = TestClient(app).post("/api/agent/metrics", headers=tok, json={"buckets": [
         {"camera_id": cam_a["id"], "bucket_start": "9999-12-31T23:00:00", "data": {"people": 5}},
         {"camera_id": cam_a["id"], "bucket_start": now.isoformat(),

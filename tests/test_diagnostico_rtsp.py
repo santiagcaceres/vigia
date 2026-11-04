@@ -98,6 +98,35 @@ def test_acepta_la_conexion_pero_no_contesta():
     mudo.close()
 
 
+def _corta_al_pedir(srv):
+    """Acepta y, al llegar el pedido, corta con RST (como el puerto 8000 de un Hikvision ante un pedido RTSP)."""
+    import struct
+
+    conn, _ = srv.accept()
+    conn.recv(4096)
+    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    conn.close()
+
+
+def test_conecta_pero_corta_no_es_el_puerto_de_video(monkeypatch):
+    """Ancap San Luis (3 nov): el técnico pasó el 8000 y la app decía «revisá el DDNS y el router», que andaban."""
+    import agent.cameras as cameras
+
+    for hint in (None, "el 8000 es el puerto del programa de Hikvision"):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        if hint:
+            monkeypatch.setitem(cameras.SDK_PORTS, port, hint)
+        threading.Thread(target=_corta_al_pedir, args=(srv,), daemon=True).start()
+        msg = rtsp_diagnose(f"rtsp://a:b@127.0.0.1:{port}/Streaming/Channels/102", timeout=2.0)
+        srv.close()
+        assert "el DDNS y el router andan" in msg and "no es el de video" in msg
+        assert "revisá el DDNS" not in msg
+        assert (hint or "554") in msg
+
+
 def test_con_link_la_marca_sale_del_link_sin_probar(monkeypatch):
     import agent.cameras as cameras
 
