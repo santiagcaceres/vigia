@@ -2679,7 +2679,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, f"Hora mal formada: {exc}") from exc
         except hikconnect.HikConnectError as exc:
             raise HTTPException(502, str(exc)) from exc
-        return {"url": url}
+        # el formato que se pidió (así la máquina sabe si el servidor ya entiende FLV y RTMP)
+        return {"url": url, "protocol": body.protocol if body.kind == "live" else "hls"}
 
     @app.post("/api/agent/status")
     def agent_status(payload: dict, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:

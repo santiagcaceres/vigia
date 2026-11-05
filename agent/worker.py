@@ -237,6 +237,7 @@ class CameraWorker:
         return {"camera_id": self.id, "state": self.state, "error": self.error, "fps": round(self.fps, 2),
                 "events": self.events, "live": self.live.active,
                 "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
+                **({"protocol": self.hik.protocol} if self.hik.brand == "hikconnect" else {}),
                 "metrics_only": self.metrics_only, "gestures": self.analyzer.gestures, "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
 
@@ -263,6 +264,7 @@ class CameraWorker:
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error = "en_linea", None
+            self.hik.opened()  # (Hik-Connect: este formato anda)
             log.info("[%s] conectada", self.name)
             connected_at = time.monotonic()
             self._bursty = bursty(self.hik.brand, url)

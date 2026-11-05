@@ -213,7 +213,10 @@ class ServerClient:
             except ValueError:
                 detail = r.text[:200]
             raise RuntimeError(f"Hik-Connect: {detail or r.status_code}")
-        return r.json()["url"]
+        data = r.json()
+        if protocol != "hls" and data.get("protocol") != protocol:
+            raise RuntimeError(f"el servidor todavía no sabe pedir el video en {protocol.upper()} (falta publicarlo)")
+        return data["url"]
 
     def live_upload_url(self, camera_id: int) -> str:
         r = self.http.post(f"/api/agent/cameras/{camera_id}/live-url")

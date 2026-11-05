@@ -449,6 +449,7 @@ class Tuner:
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error, backoff = "en_linea", None, 2.0
+            cam.opened()  # (Hik-Connect: este formato anda)
             # Hik-Connect (o un link HLS) manda el video en ráfagas: se usa el reloj del video, como en las máquinas
             clock = MediaClock(cap) if bursty(cam.brand, url) else None
             sar = pixel_aspect(cap)  # «1080p lite»: con píxeles cuadrados, como en las máquinas

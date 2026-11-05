@@ -149,6 +149,7 @@ class ViewWorker:
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error, backoff = "en_linea", None, 2.0
+            getattr(self.hik, "opened", lambda: None)()  # (Hik-Connect: este formato anda)
             self._sar = pixel_aspect(cap)  # «1080p lite»: con píxeles cuadrados, como en las máquinas
             self._bursty = bursty(getattr(self.hik, "brand", ""), url)
             try:

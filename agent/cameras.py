@@ -81,6 +81,9 @@ class BaseCamera:
         """Por qué no abrió el video, si se puede averiguar (OpenCV no lo dice). None = no se sabe."""
         return rtsp_diagnose(url) if url.lower().startswith("rtsp://") else None
 
+    def opened(self) -> None:
+        """El video de `live_url` abrió (Hik-Connect recuerda en qué formato; las demás marcas no hacen nada)."""
+
 
 @dataclass
 class AutoCamera(BaseCamera):
@@ -209,6 +212,7 @@ def test_stream(cam: BaseCamera, stream: str = "sub", explain: bool = False) -> 
         if not ok:
             why = cam.open_failure(url) if explain else None
             return {"ok": False, "error": why or "No se pudo leer video (revisar usuario, clave, puerto RTSP y canal)"}
+        cam.opened()
         return {"ok": True, "width": frame.shape[1], "height": frame.shape[0],
                 "fps": cap.get(cv2.CAP_PROP_FPS)}
     finally:

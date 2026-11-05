@@ -203,11 +203,15 @@ class LiveWorker:
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
                 self.state, self.error = "sin_conexion", f"No se pudo abrir {self.cam.redacted(url)}"
+                why = self.cam.open_failure(url)  # (Hik-Connect: la próxima vez prueba otro formato)
+                if why:
+                    self.error += f" — {why}"
                 log.warning("[%s] vivo: %s", self.name, self.error)
                 cap.release()
                 self._stop.wait(5.0)
                 continue
             self.state, self.error = "en_linea", None
+            self.cam.opened()
             log.info("[%s] vivo: conectada", self.name)
             try:
                 fails = 0

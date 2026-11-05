@@ -16,14 +16,29 @@ from .cameras import build_camera
 GRAB_FRAMES = 12  # los primeros cuadros de un video a veces vienen grises (falta el cuadro completo)
 
 
+def _open(cam) -> cv2.VideoCapture:
+    """El video abierto. Con Hik-Connect prueba los otros formatos si el primero no abre (5 nov: el HLS de Hikvision
+    estaba caído y el FLV andaba); con las demás, un intento."""
+    from .hikconnect import PROTOCOLS
+
+    tries = len(PROTOCOLS) if cam.brand == "hikconnect" else 1
+    why = "no se pudo abrir el video"
+    for _ in range(tries):
+        url = cam.live_url()
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if cap.isOpened():
+            cam.opened()
+            return cap
+        cap.release()
+        why = cam.open_failure(url) or why
+    raise RuntimeError(why)
+
+
 def grab_frame(conn: dict, timeout: float = 25.0) -> np.ndarray:
     """Un cuadro del video en vivo de la cámara. RuntimeError con el motivo si no se pudo."""
     cam = build_camera(conn)
-    url = cam.live_url()
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    cap = _open(cam)
     try:
-        if not cap.isOpened():
-            raise RuntimeError(cam.open_failure(url) or "no se pudo abrir el video")
         frame, n, t0 = None, 0, time.monotonic()
         while n < GRAB_FRAMES and time.monotonic() - t0 < timeout:
             ok, f = cap.read()

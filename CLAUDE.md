@@ -1141,6 +1141,20 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   y 13 de E02380030 andaban en DESKTOP-JL2DU44 y los 1 y 2 no abrían en la PC de admin (misma versión de librerías
   desde la 1.13: no era la app); sospecha: límite de transmisiones simultáneas por grabador en la nube. El segundo
   grabador de Minas (GE7132986) tiene el cifrado prendido (EVZ60019).
+- **Corte del HLS de Hik-Connect y plan B por FLV (5 nov, app 1.41.1).** Desde las 5-7 de la mañana (hora local) del 5
+  nov, todos los links HLS que da la API (`https://vtmsaopaulo.ezvizlife.com:4443/v3/openlive/<serie>_<canal>_2.m3u8`)
+  cortaban la conexión sin responder (`RemoteProtocolError`), en las dos cuentas (Minas y la de la empresa), desde la
+  máquina de Google y desde una PC, mientras la app y el portal de Hik-Connect se veían bien. Las cámaras por puertos no
+  se vieron afectadas. Arreglo: el servidor pide el vivo en el formato que diga la máquina (`StreamUrlIn.protocol`:
+  hls/flv/rtmp = 2/4/3 en la API; responde `protocol` para que la máquina sepa que lo entendió) y la cámara
+  (`agent/hikconnect.py`, `PROTOCOLS = ("hls", "flv")`) prueba FLV si HLS no abre, recuerda el que anduvo por cámara y
+  para todo el programa (`_good`, `_last_good`, `opened()`), reintenta una vez el bueno antes de cambiar y vuelve a él;
+  un error del servidor o de HLS no cambia de formato; la grabación sigue en HLS. **RTMP no se usa:** con el `timeout`
+  de `OPENCV_FFMPEG_CAPTURE_OPTIONS` (agent/worker.py, lo necesitan las cámaras por puertos) FFmpeg abre RTMP en modo
+  escucha. Con la máquina reiniciada (código de e5fdc0e), las 10 cámaras de Hik-Connect volvieron por FLV. El mensaje
+  «revisá el antivirus» ya no sale cuando el servidor de video corta o deja de mandar. Ese día, a pedido del dueño, la
+  máquina quedó analizando solo Minas · Entrada (7), Minas · Pasillo bebidas (44) y DVR PRUEBA · Camera 03 (140): las
+  otras 12 cámaras (resto de Minas, Cristino, Almacén Sol y Luz) en «No analizar». Pruebas: `tests/test_hikconnect.py`.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
   y otros en UTC. Se elige por cámara con `playback_time`; si el clip llega corrido, probar la otra.

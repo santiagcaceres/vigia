@@ -1,6 +1,7 @@
 """Cámaras Hikvision por la nube de Hik-Connect (sin puertos): servidor (API simulada) y agente."""
 
 import json
+import types
 
 import httpx
 import pytest
@@ -99,7 +100,7 @@ def test_camara_por_hik_connect_de_punta_a_punta(app, fake):
         # plan B (5 nov): el vivo en FLV o RTMP (4 y 3 en la API); un formato que no existe, 422
         for proto, num in (("flv", 4), ("rtmp", 3)):
             r = c.post(f"/api/agent/cameras/{cam['id']}/stream-url", json={"kind": "live", "protocol": proto}, headers=h)
-            assert r.status_code == 200, r.text
+            assert r.status_code == 200, r.text and r.json()["protocol"] == proto
             assert [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["protocol"] == num
         assert c.post(f"/api/agent/cameras/{cam['id']}/stream-url", json={"protocol": "otro"}, headers=h).status_code == 422
         # grabación del disco con hora de inicio y fin
@@ -216,38 +217,130 @@ def test_diagnostico_cuando_no_abre_el_video(monkeypatch):
     assert "vtm.example:4443" in hikconnect.diagnose("https://vtm.example:4443/caida.m3u8?t=1")
 
 
-def test_si_un_formato_no_abre_la_proxima_conexion_prueba_otro(monkeypatch):
-    """5 nov: el HLS de Hik-Connect cortaba todo y su app andaba: se prueban FLV y RTMP y se queda con el que anda."""
-    cam = build_camera({"brand": "hikconnect", "host": "", "camera_id": 7, "serial": "F1", "channel": 2})
-    pedidos, rechaza = [], set()
+@pytest.fixture
+def proveedor(monkeypatch):
+    """Un servidor falso que da links en el formato pedido y puede rechazar formatos; diagnóstico sin red."""
+    agent_hc.forget_formats()
+    st = types.SimpleNamespace(pedidos=[], rechaza=set())
 
     def provider(cid, kind, q, s, e, protocol="hls"):
-        pedidos.append(protocol)
-        if protocol in rechaza:
-            raise RuntimeError(f"Hik-Connect: formato {protocol} no soportado")
-        return f"https://x/{cid}.{protocol}?t=1"
+        st.pedidos.append((kind, protocol))
+        if protocol in st.rechaza:
+            raise RuntimeError(f"Hik-Connect: error con {protocol}")
+        return f"https://x/{cid}.{kind}.{protocol}?t=1"
     monkeypatch.setattr(agent_hc, "diagnose", lambda url, timeout=10.0: "cortó la conexión")
     agent_hc.set_url_provider(provider)
-    try:
-        assert cam.live_url().endswith(".hls?t=1")
-        assert "ahora pruebo en FLV" in cam.open_failure("https://x/7.hls")
-        assert cam.live_url().endswith(".flv?t=1")  # anda: se queda en FLV
-        assert cam.live_url().endswith(".flv?t=1")
-        cam.open_failure("https://x/7.flv")
-        rechaza.add("rtmp")  # Hik-Connect no da RTMP: pasa a HLS en el mismo pedido
-        assert cam.live_url().endswith(".hls?t=1") and pedidos[-2:] == ["rtmp", "hls"]
-        rechaza.add("hls")  # un error con HLS (cifrado, grabador sin conexión) se muestra como siempre
-        with pytest.raises(RuntimeError, match="hls"):
-            cam.live_url()
-    finally:
-        agent_hc.set_url_provider(None)
-    # un proveedor viejo de 5 argumentos sigue andando con HLS
+    yield st
+    agent_hc.set_url_provider(None)
+    agent_hc.forget_formats()
+
+
+def _cam(cid=7):
+    return build_camera({"brand": "hikconnect", "host": "", "camera_id": cid, "serial": "F1", "channel": 2})
+
+
+def test_si_un_formato_no_abre_la_proxima_conexion_prueba_otro(proveedor):
+    """5 nov: el HLS de Hik-Connect cortaba todo y su app andaba: se prueban FLV y RTMP y se queda con el que anda."""
+    cam = _cam()
+    assert cam.live_url().endswith(".live.hls?t=1")
+    assert cam.open_failure("https://x/7.live.hls").startswith("[HLS no abrió; pruebo FLV]")
+    assert cam.live_url().endswith(".flv?t=1")
+    cam.opened()  # FLV anduvo
+    assert cam.live_url().endswith(".flv?t=1") and cam.protocol == "flv"
+    # la cámara rearmada (cambio de configuración, «En vivo», «Nombres e imágenes») arranca por FLV, y cualquier otra
+    # también (el corte es del servidor de video, para todas)
+    assert _cam().live_url().endswith(".flv?t=1") and _cam(8).live_url().endswith(".flv?t=1")
+
+
+def test_un_corte_no_saca_a_la_camara_del_formato_que_anda(proveedor):
+    cam = _cam()
+    cam._proto = 1
+    cam.live_url()
+    cam.opened()  # anda en FLV
+    # un corte del grabador: el formato que anduvo se reintenta una vez antes de probar otro…
+    assert cam.open_failure("https://x/7.live.flv").startswith("[FLV, reintento]") and cam.protocol == "flv"
+    assert cam.open_failure("https://x/7.live.flv").startswith("[FLV no abrió; pruebo HLS]")
+    assert cam.live_url().endswith(".hls?t=1")
+    # …y si el otro tampoco abre, vuelve al que anduvo (cuando el grabador vuelve, casi siempre está en FLV)
+    assert cam.open_failure("https://x/7.live.hls").startswith("[HLS no abrió; pruebo FLV]")
+    assert cam.live_url().endswith(".flv?t=1")
+
+
+def test_un_error_del_servidor_no_cambia_el_formato_que_anda(proveedor):
+    """Antes, un 502 pasajero con la cámara en FLV recorría los otros formatos en el mismo pedido y la dejaba en HLS
+    (caído)."""
+    cam = _cam()
+    cam._proto = 1
+    cam.live_url()
+    cam.opened()
+    proveedor.rechaza.add("flv")
+    with pytest.raises(RuntimeError, match="flv"):
+        cam.live_url()
+    assert cam.protocol == "flv" and proveedor.pedidos[-1] == ("live", "flv")
+    # un formato que todavía no anduvo y Hik-Connect no da: se saltea en el mismo pedido
+    agent_hc.forget_formats()
+    otra = _cam(9)
+    otra._proto = 1
+    proveedor.rechaza = {"flv"}
+    assert otra.live_url().endswith(".live.hls?t=1") and proveedor.pedidos[-2:] == [("live", "flv"), ("live", "hls")]
+    # todos fallan: queda en el que estaba, con el error de HLS (el de siempre)
+    otra._proto = 1
+    proveedor.rechaza = {"flv", "hls"}
+    with pytest.raises(RuntimeError, match="hls"):
+        otra.live_url()
+    assert otra.protocol == "flv"
+
+
+def test_la_grabacion_no_mueve_el_formato_del_vivo(proveedor):
+    from datetime import datetime
+
+    cam = _cam()
+    url = cam.playback_url(datetime(2026, 11, 5, 10), datetime(2026, 11, 5, 10, 30))
+    assert ".playback.hls" in url
+    assert cam.open_failure(url) == "cortó la conexión" and cam.protocol == "hls"
+
+
+def test_un_proveedor_viejo_de_cinco_argumentos_sigue_andando():
+    agent_hc.forget_formats()
     agent_hc.set_url_provider(lambda cid, kind, q, s, e: "https://x/viejo.m3u8")
     try:
-        assert build_camera({"brand": "hikconnect", "host": "", "camera_id": 8, "serial": "F1",
-                             "channel": 1}).live_url() == "https://x/viejo.m3u8"
+        assert _cam(8).live_url() == "https://x/viejo.m3u8"
     finally:
         agent_hc.set_url_provider(None)
+
+
+def test_un_servidor_viejo_que_no_confirma_el_formato_no_engaña():
+    """Un servidor sin el cambio ignora «protocol» y manda HLS: la máquina no tiene que creer que probó FLV."""
+    from agent.outbox import ServerClient
+
+    def responde(req):
+        body = json.loads(req.content)
+        data = {"url": "https://hls/x.m3u8"} if body.get("protocol") == "flv" else {"url": "https://x", "protocol": "rtmp"}
+        return httpx.Response(200, json=data)
+    sc = ServerClient("http://t", "tok", http=httpx.Client(base_url="http://t", transport=httpx.MockTransport(responde)))
+    with pytest.raises(RuntimeError, match="FLV"):
+        sc.stream_url(7, protocol="flv")
+    assert sc.stream_url(7, protocol="rtmp") == "https://x"
+
+
+def test_nombres_e_imagenes_prueba_los_formatos(proveedor, monkeypatch):
+    import numpy as np
+
+    from agent import nombres
+
+    class Cap:
+        def __init__(self, url, *_):
+            self.ok = ".flv" in url  # solo abre FLV, como el 5 nov
+        def isOpened(self):
+            return self.ok
+        def read(self):
+            return True, np.zeros((4, 4, 3), np.uint8)
+        def release(self):
+            pass
+    monkeypatch.setattr(nombres.cv2, "VideoCapture", Cap)
+    frame = nombres.grab_frame({"brand": "hikconnect", "host": "", "camera_id": 5, "serial": "F1", "channel": 1})
+    assert frame.shape == (4, 4, 3) and [p for _, p in proveedor.pedidos] == ["hls", "flv"]
+    assert _cam(5).protocol == "flv"
 
 
 def test_el_diagnostico_no_se_queda_bajando_un_flv_en_vivo():
@@ -279,3 +372,44 @@ def test_el_diagnostico_no_se_queda_bajando_un_flv_en_vivo():
         srv.close()
     assert "llega (FLV)" in msg
     assert "RTMP" in agent_hc.diagnose("rtmp://x.example/live/X")
+
+
+def test_el_diagnostico_cuando_el_flv_empieza_y_se_corta():
+    """Contesta 200 y la cabecera FLV y después se calla (el grabador sin video): no es «revisá el antivirus»."""
+    import socket
+    import threading
+    import time as _t
+
+    def servidor(cuerpo):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+
+        def atender():
+            conn, _ = srv.accept()
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\n\r\n")
+            cuerpo(conn)
+            _t.sleep(3)
+            conn.close()
+        threading.Thread(target=atender, daemon=True).start()
+        return srv
+
+    srv = servidor(lambda c: c.sendall(b"FLV\x01\x05"))
+    t0 = _t.monotonic()
+    msg = agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
+    srv.close()
+    assert "empezó a mandar el video (FLV)" in msg and "antivirus" not in msg and _t.monotonic() - t0 < 3
+
+    def goteo(c):  # un byte cada 0,2 s: no tiene que trabar el hilo de la cámara
+        try:
+            for _ in range(12):
+                c.sendall(b"x")
+                _t.sleep(0.2)
+        except OSError:
+            pass  # (el diagnóstico ya cortó: es lo que se quiere)
+    srv = servidor(goteo)
+    t0 = _t.monotonic()
+    agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
+    srv.close()
+    assert _t.monotonic() - t0 < 2.0
