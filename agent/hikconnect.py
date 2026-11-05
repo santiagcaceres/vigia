@@ -59,6 +59,13 @@ def diagnose(url: str, timeout: float = 10.0) -> str:
     parts = urlsplit(url)
     try:
         r = httpx.get(url, timeout=timeout, follow_redirects=True)
+    except httpx.RemoteProtocolError:
+        # Conectó y el servidor de video de Hikvision cortó sin mandar nada (5 nov: todas las cámaras de Hik-Connect,
+        # de dos cuentas y dos grabadores, desde la máquina y desde una PC a la vez): no es el antivirus de la PC.
+        return (f"el servidor de video de Hik-Connect ({parts.hostname}) cortó la conexión sin mandar el video. Suele "
+                "ser del lado de Hikvision: si les pasa a todas las cámaras de Hik-Connect a la vez, es su servidor; si es "
+                "solo un grabador, puede que esté sin internet o con todas sus transmisiones ocupadas. Probá verla en la "
+                "app Hik-Connect")
     except httpx.HTTPError as exc:
         return (f"no se pudo conectar con {parts.hostname}:{parts.port or 443} ({type(exc).__name__}); "
                 "revisá que el antivirus o el firewall de esta PC o de la red no lo bloqueen")

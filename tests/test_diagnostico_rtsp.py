@@ -148,3 +148,22 @@ def test_la_marca_se_detecta_aunque_no_este_la_calidad_secundaria(monkeypatch):
     monkeypatch.setattr(cameras, "test_stream", test_stream)
     assert cameras.detect_brand({"host": "solo-principal", "channel": 4}) == "hikvision"
     assert pedidos == [("hikvision", "sub"), ("dahua", "sub"), ("hikvision", "main")]
+
+
+def test_hik_connect_que_corta_no_es_el_antivirus():
+    """5 nov: el servidor de video de Hikvision cortaba sin responder y la app decía «revisá el antivirus de esta PC»."""
+    from agent.hikconnect import diagnose
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def corta():
+        conn, _ = srv.accept()
+        conn.recv(4096)
+        conn.close()  # sin respuesta HTTP: httpx levanta RemoteProtocolError
+    threading.Thread(target=corta, daemon=True).start()
+    msg = diagnose(f"http://127.0.0.1:{port}/v3/openlive/X_1_2.m3u8", timeout=3.0)
+    srv.close()
+    assert "cortó la conexión sin mandar el video" in msg and "antivirus" not in msg
