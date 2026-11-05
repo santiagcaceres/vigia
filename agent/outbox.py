@@ -214,9 +214,13 @@ class ServerClient:
                 detail = r.text[:200]
             raise RuntimeError(f"Hik-Connect: {detail or r.status_code}")
         data = r.json()
-        if protocol != "hls" and data.get("protocol") != protocol:
-            raise RuntimeError(f"el servidor todavía no sabe pedir el video en {protocol.upper()} (falta publicarlo)")
-        return data["url"]
+        url, got = data["url"], data.get("protocol")
+        # Un servidor de antes del plan B ignora el formato y manda HLS; el de e5fdc0e manda el formato pedido sin
+        # decirlo; los nuevos lo confirman. Solo se rechaza si confirma otro o si, sin confirmar, mandó un HLS.
+        if protocol != "hls" and (got not in (None, protocol) or (got is None and ".m3u8" in url.split("?")[0])):
+            from .hikconnect import FormatNotGiven
+            raise FormatNotGiven(f"el servidor todavía no sabe pedir el video en {protocol.upper()} (falta publicarlo)")
+        return url
 
     def live_upload_url(self, camera_id: int) -> str:
         r = self.http.post(f"/api/agent/cameras/{camera_id}/live-url")

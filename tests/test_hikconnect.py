@@ -240,10 +240,11 @@ def _cam(cid=7):
 
 
 def test_si_un_formato_no_abre_la_proxima_conexion_prueba_otro(proveedor):
-    """5 nov: el HLS de Hik-Connect cortaba todo y su app andaba: se prueban FLV y RTMP y se queda con el que anda."""
+    """5 nov: el HLS de Hik-Connect cortaba todo y su app andaba: se prueba FLV y se queda con el que anda."""
     cam = _cam()
-    assert cam.live_url().endswith(".live.hls?t=1")
-    assert cam.open_failure("https://x/7.live.hls").startswith("[HLS no abrió; pruebo FLV]")
+    url = cam.live_url()
+    assert url.endswith(".live.hls?t=1")
+    assert cam.open_failure(url).startswith("[HLS no abrió; pruebo FLV]")
     assert cam.live_url().endswith(".flv?t=1")
     cam.opened()  # FLV anduvo
     assert cam.live_url().endswith(".flv?t=1") and cam.protocol == "flv"
@@ -255,35 +256,39 @@ def test_si_un_formato_no_abre_la_proxima_conexion_prueba_otro(proveedor):
 def test_un_corte_no_saca_a_la_camara_del_formato_que_anda(proveedor):
     cam = _cam()
     cam._proto = 1
-    cam.live_url()
+    url = cam.live_url()
     cam.opened()  # anda en FLV
     # un corte del grabador: el formato que anduvo se reintenta una vez antes de probar otro…
-    assert cam.open_failure("https://x/7.live.flv").startswith("[FLV, reintento]") and cam.protocol == "flv"
-    assert cam.open_failure("https://x/7.live.flv").startswith("[FLV no abrió; pruebo HLS]")
-    assert cam.live_url().endswith(".hls?t=1")
+    assert cam.open_failure(url).startswith("[FLV, reintento]") and cam.protocol == "flv"
+    url = cam.live_url()
+    assert cam.open_failure(url).startswith("[FLV no abrió; pruebo HLS]")
+    url = cam.live_url()
+    assert url.endswith(".hls?t=1")
     # …y si el otro tampoco abre, vuelve al que anduvo (cuando el grabador vuelve, casi siempre está en FLV)
-    assert cam.open_failure("https://x/7.live.hls").startswith("[HLS no abrió; pruebo FLV]")
+    assert cam.open_failure(url).startswith("[HLS no abrió; pruebo FLV]")
     assert cam.live_url().endswith(".flv?t=1")
 
 
 def test_un_error_del_servidor_no_cambia_el_formato_que_anda(proveedor):
-    """Antes, un 502 pasajero con la cámara en FLV recorría los otros formatos en el mismo pedido y la dejaba en HLS
-    (caído)."""
+    """Antes, un 502 pasajero con la cámara en FLV la dejaba en HLS (caído). Pero si el error se repite, se prueba el
+    otro: si Hik-Connect deja de dar FLV, la cámara no queda caída hasta reiniciar."""
     cam = _cam()
     cam._proto = 1
     cam.live_url()
     cam.opened()
     proveedor.rechaza.add("flv")
-    with pytest.raises(RuntimeError, match="flv"):
-        cam.live_url()
-    assert cam.protocol == "flv" and proveedor.pedidos[-1] == ("live", "flv")
+    for _ in range(agent_hc.LINK_FAILS_BEFORE_SWITCH - 1):
+        with pytest.raises(RuntimeError, match="flv"):
+            cam.live_url()
+        assert cam.protocol == "flv" and proveedor.pedidos[-1] == ("live", "flv")
+    assert cam.live_url().endswith(".live.hls?t=1")  # al tercero seguido, prueba HLS en el mismo pedido
     # un formato que todavía no anduvo y Hik-Connect no da: se saltea en el mismo pedido
     agent_hc.forget_formats()
     otra = _cam(9)
     otra._proto = 1
     proveedor.rechaza = {"flv"}
     assert otra.live_url().endswith(".live.hls?t=1") and proveedor.pedidos[-2:] == [("live", "flv"), ("live", "hls")]
-    # todos fallan: queda en el que estaba, con el error de HLS (el de siempre)
+    # todos fallan: queda en el que estaba y se muestra el error de HLS (el de siempre: cifrado, grabador sin conexión…)
     otra._proto = 1
     proveedor.rechaza = {"flv", "hls"}
     with pytest.raises(RuntimeError, match="hls"):
@@ -291,10 +296,25 @@ def test_un_error_del_servidor_no_cambia_el_formato_que_anda(proveedor):
     assert otra.protocol == "flv"
 
 
+def test_un_servidor_que_no_da_el_formato_hace_pasar_al_siguiente_aunque_haya_andado(proveedor):
+    cam = _cam()
+    cam._proto = 1
+    cam.live_url()
+    cam.opened()
+
+    def viejo(cid, kind, q, s, e, protocol="hls"):
+        if protocol != "hls":
+            raise agent_hc.FormatNotGiven("el servidor todavía no sabe pedir el video en FLV")
+        return "https://x/7.hls?t=1"
+    agent_hc.set_url_provider(viejo)
+    assert cam.live_url() == "https://x/7.hls?t=1" and cam._known_good() is None
+
+
 def test_la_grabacion_no_mueve_el_formato_del_vivo(proveedor):
     from datetime import datetime
 
     cam = _cam()
+    cam.live_url()
     url = cam.playback_url(datetime(2026, 11, 5, 10), datetime(2026, 11, 5, 10, 30))
     assert ".playback.hls" in url
     assert cam.open_failure(url) == "cortó la conexión" and cam.protocol == "hls"
@@ -309,18 +329,28 @@ def test_un_proveedor_viejo_de_cinco_argumentos_sigue_andando():
         agent_hc.set_url_provider(None)
 
 
-def test_un_servidor_viejo_que_no_confirma_el_formato_no_engaña():
-    """Un servidor sin el cambio ignora «protocol» y manda HLS: la máquina no tiene que creer que probó FLV."""
+def test_el_servidor_que_esta_en_produccion_y_uno_mas_viejo():
+    """El servidor de e5fdc0e pide FLV de verdad pero no lo confirma: se acepta. Uno más viejo ignora el formato y
+    manda HLS: no se lo toma por FLV."""
     from agent.outbox import ServerClient
 
     def responde(req):
         body = json.loads(req.content)
-        data = {"url": "https://hls/x.m3u8"} if body.get("protocol") == "flv" else {"url": "https://x", "protocol": "rtmp"}
-        return httpx.Response(200, json=data)
-    sc = ServerClient("http://t", "tok", http=httpx.Client(base_url="http://t", transport=httpx.MockTransport(responde)))
-    with pytest.raises(RuntimeError, match="FLV"):
-        sc.stream_url(7, protocol="flv")
-    assert sc.stream_url(7, protocol="rtmp") == "https://x"
+        pide = body.get("protocol", "hls")
+        if req.headers.get("x-servidor") == "previo":
+            return httpx.Response(200, json={"url": "https://vtm/x.m3u8?t=1"})
+        if req.headers.get("x-servidor") == "e5fdc0e":
+            return httpx.Response(200, json={"url": f"https://vtm/x.{pide}?t=1"})
+        return httpx.Response(200, json={"url": f"https://vtm/x.{pide}?t=1", "protocol": pide})
+
+    def cliente(version):
+        http = httpx.Client(base_url="http://t", transport=httpx.MockTransport(responde), headers={"x-servidor": version})
+        return ServerClient("http://t", "tok", http=http)
+    assert cliente("e5fdc0e").stream_url(7, protocol="flv") == "https://vtm/x.flv?t=1"
+    assert cliente("nuevo").stream_url(7, protocol="flv") == "https://vtm/x.flv?t=1"
+    with pytest.raises(agent_hc.FormatNotGiven, match="FLV"):
+        cliente("previo").stream_url(7, protocol="flv")
+    assert cliente("previo").stream_url(7) == "https://vtm/x.m3u8?t=1"
 
 
 def test_nombres_e_imagenes_prueba_los_formatos(proveedor, monkeypatch):
@@ -413,3 +443,59 @@ def test_el_diagnostico_cuando_el_flv_empieza_y_se_corta():
     agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
     srv.close()
     assert _t.monotonic() - t0 < 2.0
+
+
+def test_el_diagnostico_cuando_el_servidor_acepta_y_no_responde_o_cierra_enseguida():
+    import socket
+    import threading
+    import time as _t
+
+    def servidor(atender):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        threading.Thread(target=lambda: atender(srv.accept()[0]), daemon=True).start()
+        return srv
+
+    def mudo(conn):
+        conn.recv(4096)
+        _t.sleep(3)
+        conn.close()
+    srv = servidor(mudo)
+    msg = agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
+    srv.close()
+    assert "aceptó la conexión pero no respondió" in msg and "antivirus" not in msg
+
+    def cierra(conn):
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\nContent-Length: 13\r\n\r\nFLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00")
+        conn.close()
+    srv = servidor(cierra)
+    msg = agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
+    srv.close()
+    assert "lo cortó" in msg and "H.264" not in msg
+
+    def nada(conn):  # 200 y después nada (espera al grabador apagado)
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\n\r\n")
+        _t.sleep(3)
+        conn.close()
+    srv = servidor(nada)
+    msg = agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
+    srv.close()
+    assert "no mandó el video" in msg and "ReadTimeout" not in msg
+
+    def cabeceras_goteando(conn):  # cabeceras de a un byte: el tope total no las deja trabar el hilo
+        conn.recv(4096)
+        try:
+            for ch in b"HTTP/1.1 200 OK\r\nX-Algo: " + b"a" * 200:
+                conn.sendall(bytes([ch]))
+                _t.sleep(0.2)
+        except OSError:
+            pass
+        conn.close()
+    srv = servidor(cabeceras_goteando)
+    t0 = _t.monotonic()
+    msg = agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
+    srv.close()
+    assert _t.monotonic() - t0 < 4 and "tardó más de" in msg

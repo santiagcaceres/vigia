@@ -1152,7 +1152,15 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   un error del servidor o de HLS no cambia de formato; la grabación sigue en HLS. **RTMP no se usa:** con el `timeout`
   de `OPENCV_FFMPEG_CAPTURE_OPTIONS` (agent/worker.py, lo necesitan las cámaras por puertos) FFmpeg abre RTMP en modo
   escucha. Con la máquina reiniciada (código de e5fdc0e), las 10 cámaras de Hik-Connect volvieron por FLV. El mensaje
-  «revisá el antivirus» ya no sale cuando el servidor de video corta o deja de mandar. Ese día, a pedido del dueño, la
+  «revisá el antivirus» ya no sale cuando el servidor de video corta o deja de mandar.
+  **Revisión (app 1.41.1):** el servidor confirma el formato (`{"url", "protocol"}`); la app acepta la respuesta sin
+  `protocol` del servidor de e5fdc0e y, si recibe un .m3u8 cuando pidió FLV (servidor de antes del plan B), salta al
+  siguiente (`FormatNotGiven`). Un error pidiendo el link con HLS o con el formato que anduvo no cambia de formato salvo
+  que se repita 3 veces seguidas (`LINK_FAILS_BEFORE_SWITCH`: si Hik-Connect deja de dar ese formato, la cámara no queda
+  caída). `diagnose` corre en otro hilo con tope total (un servidor que gotea bytes no traba la cámara) y distingue «cortó
+  sin mandar», «aceptó y no respondió», «empezó y cortó» y «no se pudo conectar» (solo ahí el antivirus). La grabación
+  (otro link, otro hilo) no mueve el formato del vivo; «Nombres e imágenes» prueba los dos formatos; el error de la cámara
+  ya no lleva el link (que se cortaba a 300 letras), solo el motivo. Ese día, a pedido del dueño, la
   máquina quedó analizando solo Minas · Entrada (7), Minas · Pasillo bebidas (44) y DVR PRUEBA · Camera 03 (140): las
   otras 12 cámaras (resto de Minas, Cristino, Almacén Sol y Luz) en «No analizar». Pruebas: `tests/test_hikconnect.py`.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.

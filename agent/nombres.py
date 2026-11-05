@@ -21,7 +21,7 @@ def _open(cam) -> cv2.VideoCapture:
     estaba caído y el FLV andaba); con las demás, un intento."""
     from .hikconnect import PROTOCOLS
 
-    tries = len(PROTOCOLS) if cam.brand == "hikconnect" else 1
+    tries = len(PROTOCOLS) + 1 if cam.brand == "hikconnect" else 1  # (el formato que anduvo se reintenta una vez)
     why = "no se pudo abrir el video"
     for _ in range(tries):
         url = cam.live_url()
