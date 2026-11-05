@@ -585,6 +585,7 @@ class CameraIn(BaseModel):
 class StreamUrlIn(BaseModel):
     kind: Literal["live", "playback", "cloud"] = "live"
     quality: Literal["sub", "main"] = "sub"
+    protocol: Literal["hls", "flv", "rtmp"] = "hls"  # (las apps viejas no lo mandan: HLS, como siempre)
     start: str | None = None  # hora local del grabador, ISO
     end: str | None = None
 
@@ -2613,7 +2614,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     def hc_stream_url(s, c: Camera, kind: str, quality: str = "sub", start: datetime | None = None,
-                      end: datetime | None = None) -> str:
+                      end: datetime | None = None, protocol: str = "hls") -> str:
         """Link de video de una cámara por Hik-Connect. Si no se eligió la cámara de Hik-Connect, la busca
         por serie del grabador y canal (y la guarda)."""
         client = s.get(Client, c.client_id)
@@ -2632,7 +2633,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 s.commit()
             # sin `code`: con el cifrado de video prendido Hikvision no entrega HLS aunque se mande el código
             # (EVZ60019; solo sirve para su reproductor EZOPEN). Hay que apagar el cifrado en el grabador.
-            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end)
+            url = api.stream_url(c.hc_resource_id, c.hpp_serial or "", kind, quality, start, end,
+                                 protocol=protocol if kind == "live" else "hls")
             if client.hc_api_url is None and api.server:
                 client.hc_api_url = api.server  # recordar la región que anduvo
                 s.commit()
@@ -2672,7 +2674,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             start = datetime.fromisoformat(body.start).replace(tzinfo=None) if body.start else None
             end = datetime.fromisoformat(body.end).replace(tzinfo=None) if body.end else None
-            url = hc_stream_url(s, c, body.kind, body.quality, start, end)
+            url = hc_stream_url(s, c, body.kind, body.quality, start, end, body.protocol)
         except ValueError as exc:
             raise HTTPException(422, f"Hora mal formada: {exc}") from exc
         except hikconnect.HikConnectError as exc:

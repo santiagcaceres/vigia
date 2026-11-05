@@ -17,8 +17,12 @@ import httpx
 
 from .cameras import BaseCamera
 
-# (camera_id, kind, quality, inicio, fin) -> url. Lo instala el agente con su conexión al servidor.
-UrlProvider = Callable[[int, str, str, datetime | None, datetime | None], str]
+# (camera_id, kind, quality, inicio, fin[, protocol]) -> url. Lo instala el agente con su conexión al servidor.
+UrlProvider = Callable[..., str]
+# Formatos en que se le pide el vivo a Hik-Connect, en orden. El 5 nov, desde las 6, el servidor de video de São Paulo
+# cortaba todos los HLS (las dos cuentas, los dos grabadores) mientras la app de Hikvision andaba: si un formato no
+# abre, la conexión siguiente prueba el próximo, y se queda con el que anda.
+PROTOCOLS = ("hls", "flv", "rtmp")
 _provider: UrlProvider | None = None
 
 
@@ -33,13 +37,34 @@ class HikConnectCamera(BaseCamera):
     serial: str | None = None
     brand: str = "hikconnect"
 
-    def _url(self, kind: str, quality: str, start: datetime | None = None, end: datetime | None = None) -> str:
+    _proto: int = 0  # índice en PROTOCOLS del formato que se pide ahora
+
+    def _url(self, kind: str, quality: str, start: datetime | None = None, end: datetime | None = None,
+             protocol: str = "hls") -> str:
         if _provider is None:
             raise RuntimeError("Las cámaras por Hik-Connect solo andan en la PC central conectada al servidor")
-        return _provider(self.camera_id, kind, quality, start, end)
+        if protocol == "hls":
+            return _provider(self.camera_id, kind, quality, start, end)
+        return _provider(self.camera_id, kind, quality, start, end, protocol)
+
+    @property
+    def protocol(self) -> str:
+        return PROTOCOLS[self._proto % len(PROTOCOLS)]
 
     def live_url(self, stream: str | None = None) -> str:
-        return self._url("live", stream or self.detect_stream)
+        """Link nuevo en el formato de ahora. Si Hik-Connect no da ese formato (FLV o RTMP), prueba el próximo; un error
+        con HLS (cifrado prendido, grabador sin conexión…) se muestra como siempre."""
+        quality = stream or self.detect_stream
+        error: Exception | None = None
+        for _ in PROTOCOLS:
+            try:
+                return self._url("live", quality, protocol=self.protocol)
+            except RuntimeError as exc:
+                if self.protocol == "hls":
+                    raise
+                error = exc
+                self._proto += 1
+        raise error if error else RuntimeError("Hik-Connect no dio el link de video")
 
     def playback_url(self, start: datetime, end: datetime) -> str:
         return self._url("playback", "main", self._utc_or_local(start), self._utc_or_local(end))
@@ -51,14 +76,25 @@ class HikConnectCamera(BaseCamera):
         return url.split("?")[0]  # el link lleva un token en la consulta
 
     def open_failure(self, url: str) -> str | None:
-        return diagnose(url)
+        why = diagnose(url)
+        tried = self.protocol.upper()
+        self._proto += 1  # la próxima conexión pide otro formato
+        return f"{why} (pedido en {tried}; ahora pruebo en {self.protocol.upper()})"
 
 
 def diagnose(url: str, timeout: float = 10.0) -> str:
-    """Pide la lista de video (HLS) directo para saber por qué OpenCV no la pudo abrir."""
+    """Pide el link directo para saber por qué OpenCV no lo pudo abrir (de un video en vivo, solo el principio)."""
     parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return f"no se pudo abrir el video por {parts.scheme.upper()} desde {parts.hostname}"
     try:
-        r = httpx.get(url, timeout=timeout, follow_redirects=True)
+        with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as resp:
+            head = b""
+            for chunk in resp.iter_bytes():
+                head += chunk
+                if len(head) >= 2048:
+                    break
+        r = httpx.Response(resp.status_code, content=head[:2048])
     except httpx.RemoteProtocolError:
         # Conectó y el servidor de video de Hikvision cortó sin mandar nada (5 nov: todas las cámaras de Hik-Connect,
         # de dos cuentas y dos grabadores, desde la máquina y desde una PC a la vez): no es el antivirus de la PC.
@@ -72,6 +108,8 @@ def diagnose(url: str, timeout: float = 10.0) -> str:
     body = " ".join(r.text[:300].split())
     if r.status_code != 200:
         return f"Hik-Connect respondió {r.status_code}: {body[:200] or 'sin detalle'}"
+    if head[:3] == b"FLV":
+        return "el video llega (FLV) pero no se pudo leer: revisá que la segunda señal de esa cámara esté en H.264"
     if "#EXTM3U" not in body:
         return f"Hik-Connect no mandó una lista de video: {body[:200] or 'respuesta vacía'}"
     return ("la lista de video llega bien pero el video no se pudo leer: revisá que la segunda señal de esa "

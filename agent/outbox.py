@@ -200,10 +200,12 @@ class ServerClient:
 
     # ---- vista en vivo ----
     def stream_url(self, camera_id: int, kind: str = "live", quality: str = "sub",
-                   start: datetime | None = None, end: datetime | None = None) -> str:
+                   start: datetime | None = None, end: datetime | None = None, protocol: str = "hls") -> str:
         """Link de video de una cámara por Hik-Connect (lo pide el servidor a la API de Hikvision)."""
         body = {"kind": kind, "quality": quality, "start": start.isoformat() if start else None,
                 "end": end.isoformat() if end else None}
+        if protocol != "hls":
+            body["protocol"] = protocol
         r = self.http.post(f"/api/agent/cameras/{camera_id}/stream-url", json=body, timeout=40.0)
         if r.status_code >= 400:
             try:

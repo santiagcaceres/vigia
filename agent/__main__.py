@@ -98,8 +98,8 @@ class Agent:
         # máquina de análisis (servidor): {"capacity": .., "instance_id": ..}; se informa con cada estado
         self.machine = machine
         # cámaras por Hik-Connect: el link de video lo da el servidor (siempre con el cliente vigente)
-        hikconnect.set_url_provider(lambda cid, kind, quality, start, end:
-                                    self.client.stream_url(cid, kind, quality, start, end))
+        hikconnect.set_url_provider(lambda cid, kind, quality, start, end, protocol="hls":
+                                    self.client.stream_url(cid, kind, quality, start, end, protocol))
         self.relogin = relogin  # pide usuario y clave de nuevo (ventana) y devuelve el token nuevo
         self.pc_name = pc_name
         self._logout_requested = False

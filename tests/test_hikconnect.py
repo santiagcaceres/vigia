@@ -96,6 +96,12 @@ def test_camara_por_hik_connect_de_punta_a_punta(app, fake):
         assert c.get("/api/cameras").json()[0]["hc_resource_id"] == "res-2"
         sent = [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]
         assert sent["protocol"] == 2 and sent["quality"] == "2" and sent["deviceSerial"] == "F12345678"
+        # plan B (5 nov): el vivo en FLV o RTMP (4 y 3 en la API); un formato que no existe, 422
+        for proto, num in (("flv", 4), ("rtmp", 3)):
+            r = c.post(f"/api/agent/cameras/{cam['id']}/stream-url", json={"kind": "live", "protocol": proto}, headers=h)
+            assert r.status_code == 200, r.text
+            assert [b for u, b in fake.calls if u.endswith("/live/address/get")][-1]["protocol"] == num
+        assert c.post(f"/api/agent/cameras/{cam['id']}/stream-url", json={"protocol": "otro"}, headers=h).status_code == 422
         # grabación del disco con hora de inicio y fin
         c.post(f"/api/agent/cameras/{cam['id']}/stream-url", headers=h,
                json={"kind": "playback", "quality": "main", "start": "2026-10-23T10:00:00", "end": "2026-10-23T10:02:00"})
@@ -195,13 +201,81 @@ def test_diagnostico_cuando_no_abre_el_video(monkeypatch):
 
     respuestas = {"limite": (403, '{"code":"EVZ60011","msg":"stream limit"}'), "ok": (200, "#EXTM3U\nseg0.ts\n")}
 
-    def falso_get(url, **_):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def falso_stream(method, url, **_):  # (lee solo el principio: un video en vivo no termina)
         if "caida" in url:
             raise httpx.ConnectTimeout("timeout")
         code, body = respuestas["limite" if "limite" in url else "ok"]
-        return httpx.Response(code, text=body)
+        yield httpx.Response(code, text=body)
 
-    monkeypatch.setattr(hikconnect.httpx, "get", falso_get)
+    monkeypatch.setattr(hikconnect.httpx, "stream", falso_stream)
     assert "403" in hikconnect.diagnose("https://vtm.example:4443/limite.m3u8?t=1")
     assert "H.264" in hikconnect.diagnose("https://vtm.example:4443/ok.m3u8?t=1")
     assert "vtm.example:4443" in hikconnect.diagnose("https://vtm.example:4443/caida.m3u8?t=1")
+
+
+def test_si_un_formato_no_abre_la_proxima_conexion_prueba_otro(monkeypatch):
+    """5 nov: el HLS de Hik-Connect cortaba todo y su app andaba: se prueban FLV y RTMP y se queda con el que anda."""
+    cam = build_camera({"brand": "hikconnect", "host": "", "camera_id": 7, "serial": "F1", "channel": 2})
+    pedidos, rechaza = [], set()
+
+    def provider(cid, kind, q, s, e, protocol="hls"):
+        pedidos.append(protocol)
+        if protocol in rechaza:
+            raise RuntimeError(f"Hik-Connect: formato {protocol} no soportado")
+        return f"https://x/{cid}.{protocol}?t=1"
+    monkeypatch.setattr(agent_hc, "diagnose", lambda url, timeout=10.0: "cortó la conexión")
+    agent_hc.set_url_provider(provider)
+    try:
+        assert cam.live_url().endswith(".hls?t=1")
+        assert "ahora pruebo en FLV" in cam.open_failure("https://x/7.hls")
+        assert cam.live_url().endswith(".flv?t=1")  # anda: se queda en FLV
+        assert cam.live_url().endswith(".flv?t=1")
+        cam.open_failure("https://x/7.flv")
+        rechaza.add("rtmp")  # Hik-Connect no da RTMP: pasa a HLS en el mismo pedido
+        assert cam.live_url().endswith(".hls?t=1") and pedidos[-2:] == ["rtmp", "hls"]
+        rechaza.add("hls")  # un error con HLS (cifrado, grabador sin conexión) se muestra como siempre
+        with pytest.raises(RuntimeError, match="hls"):
+            cam.live_url()
+    finally:
+        agent_hc.set_url_provider(None)
+    # un proveedor viejo de 5 argumentos sigue andando con HLS
+    agent_hc.set_url_provider(lambda cid, kind, q, s, e: "https://x/viejo.m3u8")
+    try:
+        assert build_camera({"brand": "hikconnect", "host": "", "camera_id": 8, "serial": "F1",
+                             "channel": 1}).live_url() == "https://x/viejo.m3u8"
+    finally:
+        agent_hc.set_url_provider(None)
+
+
+def test_el_diagnostico_no_se_queda_bajando_un_flv_en_vivo():
+    """Un FLV en vivo no termina nunca: el diagnóstico lee solo el principio."""
+    import socket
+    import threading
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    stop = threading.Event()
+
+    def flv_sin_fin():
+        conn, _ = srv.accept()
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\n\r\nFLV\x01\x05")
+        try:
+            while not stop.is_set():
+                conn.sendall(b"\x00" * 1024)
+        except OSError:
+            pass
+        conn.close()
+    threading.Thread(target=flv_sin_fin, daemon=True).start()
+    try:
+        msg = agent_hc.diagnose(f"http://127.0.0.1:{port}/live/X.flv", timeout=3.0)
+    finally:
+        stop.set()
+        srv.close()
+    assert "llega (FLV)" in msg
+    assert "RTMP" in agent_hc.diagnose("rtmp://x.example/live/X")

@@ -34,6 +34,8 @@ log = logging.getLogger("vigia.hikconnect")
 
 # Servidores por región. Se prueban en orden hasta que uno acepta las credenciales (o se usa el
 # que se cargó en el cliente, ej. el dominio que muestra el navegador al entrar al portal).
+# `protocol` de /video/v1/live/address/get (los de la plataforma de EZVIZ que Hik-Connect envuelve)
+PROTOCOLS = {"hls": 2, "rtmp": 3, "flv": 4}
 REGION_URLS = ("https://isa.hikcentralconnect.com", "https://ius.hikcentralconnect.com",
                "https://ieu.hikcentralconnect.com", "https://isgp.hikcentralconnect.com")
 # `type` de /video/v1/live/address/get: 1 vivo, 2 grabación del disco del grabador, 3 grabación en la nube (guía
@@ -196,10 +198,13 @@ class HikConnect:
 
     def stream_url(self, resource_id: str, serial: str, kind: str = "live", quality: str = "sub",
                    start: datetime | None = None, end: datetime | None = None, expire: int = 3600,
-                   code: str | None = None) -> str:
-        """Link HLS temporal. `kind`: live (vivo), playback (disco del grabador) o cloud (nube).
-        `start`/`end` en hora del grabador (local)."""
-        body = {"resourceId": resource_id, "deviceSerial": serial, "type": TYPES[kind], "protocol": 2,
+                   code: str | None = None, protocol: str = "hls") -> str:
+        """Link de video temporal. `kind`: live (vivo), playback (disco del grabador) o cloud (nube).
+        `start`/`end` en hora del grabador (local). `protocol`: hls (el de siempre), flv o rtmp: el 5 nov el HLS
+        del servidor de video de São Paulo cortaba todas las conexiones y se prueban los otros formatos de la
+        plataforma de EZVIZ (1 EZOPEN, 2 HLS, 3 RTMP, 4 FLV)."""
+        body = {"resourceId": resource_id, "deviceSerial": serial, "type": TYPES[kind],
+                "protocol": PROTOCOLS.get(protocol, 2),
                 "quality": "2" if quality == "sub" else "1", "expireTime": int(expire)}
         if code:
             body["code"] = code  # código de verificación del grabador (si tiene el cifrado de video prendido)
