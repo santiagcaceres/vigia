@@ -105,6 +105,10 @@ class Agent:
         self._logout_requested = False
         self._force_config = False
         self._rev: str | None = None  # versión de la configuración (el servidor la sube cuando algo cambia)
+        # app de escritorio: lo último que dijo el servidor de clientes y cámaras («rev») y de alertas («alerts_rev»);
+        # si otro usuario cambia algo, cambia y se avisa a las pestañas (`on_remote_change`, en el hilo de la ventana)
+        self._seen: dict[str, str] = {}
+        self.on_remote_change: "Callable[[set[str]], None] | None" = None
         self._cfg_ids: set[int] = set()
         self.analysis_mode = "pcs"
         self._stats_at = time.monotonic()
@@ -376,6 +380,7 @@ class Agent:
                     if (rev is not None and self._rev is not None and str(rev) != self._rev) or \
                             (isinstance(ids, list) and set(ids) != self._cfg_ids):
                         self._force_config = True
+                    self._note_changes(resp)
                 elif not isinstance(resp, httpx.HTTPError):
                     raise resp
             if self.on_demand and self.window is not None:
@@ -399,6 +404,27 @@ class Agent:
             else:
                 self._stop.wait(1.0)
         self.shutdown()
+
+    def _note_changes(self, resp: dict) -> None:
+        """Otro usuario (o la web) cambió clientes, cámaras o zonas, o llegó o se revisó una alerta: la lista de «En
+        vivo», las zonas de lo que se está mirando y las pestañas se ponen al día solas (como mucho a los
+        STATUS_EVERY_SECONDS, sin pedidos de más: viene en la respuesta del estado)."""
+        changed: set[str] = set()
+        for key, kind in (("rev", "config"), ("alerts_rev", "alerts")):
+            val = resp.get(key)
+            if val is None:
+                continue
+            old, self._seen[key] = self._seen.get(key), str(val)
+            if old is not None and old != str(val):
+                changed.add(kind)
+        if "config" in changed:
+            self._catalog_at = -1e9
+            self._views_stale = True
+        if changed and self.on_remote_change is not None:
+            try:
+                self.on_remote_change(changed)
+            except Exception:  # noqa: BLE001 - una pestaña que falla no frena el análisis ni la ventana
+                log.exception("No se pudo poner al día la app con los cambios del servidor")
 
     def refresh_config(self) -> None:
         """Pedir ya la configuración (se guardaron cámaras, zonas o reglas en la app). Las cámaras que se están mirando
@@ -1131,6 +1157,7 @@ def run_app(a, env: dict, cfg_path: Path, data_dir: Path, ventana: Ventana, veri
                   pc_name=f"PC de {user.get('username')}", on_demand=True,
                   beat=lambda cid: api.post(f"/api/cameras/{cid}/live"))
     holder["agent"] = agent
+    agent.on_remote_change = oficina.remote_changed  # lo que cambian los demás usuarios aparece solo
     signal.signal(signal.SIGTERM, lambda *_: agent.stop())
     signal.signal(signal.SIGINT, lambda *_: agent.stop())
     try:

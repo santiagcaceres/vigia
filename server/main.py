@@ -1003,6 +1003,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         falsa que dice 1000 se quedaba con todas las cámaras, y sus claves, sin analizar nada)."""
         return min(a.capacity or cap, 2 * cap)
 
+    def alerts_rev(s) -> str:
+        """Cambia cuando llega una alerta o alguien etiqueta una: las apps de los demás usuarios recargan su lista
+        (sin escribir nada en la base: es la última alerta y la última etiqueta)."""
+        last_id, last_label = s.query(func.max(Event.id), func.max(Event.labeled_at)).filter(
+            Event.alert.is_(True)).one()
+        return f"{last_id or 0}.{last_label.isoformat() if last_label else ''}"
+
     def bump_rev(s) -> None:
         """Algo cambió en cámaras, zonas o clientes: las PCs y máquinas piden la configuración ya."""
         try:
@@ -1516,6 +1523,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.add(c)
         s.flush()
         set_client_web_user(s, c, body)  # si falla, no queda el cliente a medias
+        bump_rev(s)  # las apps de los demás usuarios lo ven enseguida
         s.commit()
         return client_out(s, c)
 
@@ -1596,6 +1604,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for a in s.query(Agent).filter_by(client_id=cid):  # agentes "de local" de ese cliente
             s.delete(a)
         s.delete(c)
+        bump_rev(s)
         s.commit()
         try:
             storage.remove(files)
@@ -2709,8 +2718,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         live = [c.id for c in agent_cameras_q(s, ag).filter(Camera.live_requested_at >= since, Camera.enabled.is_(True))]
         # para que la PC pida la configuración apenas cambie algo (sin esperar al minuto)
         mine = sorted(cid for (cid,) in agent_cameras_q(s, ag).with_entities(Camera.id))
-        return {"ok": True, "live": live, "rev": setting(s, "config_rev", "0"), "cameras": mine,
-                "draining": bool(a.draining)}
+        out = {"ok": True, "live": live, "rev": setting(s, "config_rev", "0"), "cameras": mine,
+               "draining": bool(a.draining)}
+        if a.user_id is not None:  # la app de un usuario: si llegó una alerta o alguien revisó una, se lo dice
+            out["alerts_rev"] = alerts_rev(s)
+        return out
 
     @app.post("/api/agent/metrics")
     def agent_metrics(body: MetricsIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:

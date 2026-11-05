@@ -67,6 +67,7 @@ ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
 # cámara («✔ Analizar» / «✘ No analizar») manda sobre esto.
 LOCATION_NAMES = {"general": "Como el ajuste general", "pcs": "Solo las cámaras marcadas «Analizar»",
                   "servidores": "Todas sus cámaras"}
+SYNC_TEXT = "⟳ Actualizar clientes y cámaras"
 AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes» (solo con la pestaña a la vista)
 MODE_NAMES = {"vivo": "En vivo", "alarmas_equipo": "Alarmas del propio grabador", "alarmas": "Alarmas por Hik-Partner Pro"}
 BRAND_NAMES = {"hikconnect": "Hik-Connect", "ip": "IP", "hikvision": "Hikvision", "dahua": "Dahua"}
@@ -750,6 +751,9 @@ class Oficina:
             # el botón de actualizar aparece solo si hay versión nueva (o mientras se busca); buscar a mano y la
             # versión instalada están en el menú del usuario
             self.upd_btn = ttk.Button(header, text="", command=self.update_dialog, style="Primario.TButton")
+            # lo que cambian los demás usuarios llega solo (ver `remote_changed`); el botón es para no esperar
+            self.sync_btn = ttk.Button(header, text=SYNC_TEXT, command=self.sync_now)
+            self.sync_btn.pack(side="right", padx=8)
             menu = getattr(self.v, "user_menu", None)
             if menu is not None:
                 menu.insert_command(0, label="Buscar actualización", command=self.update_dialog)
@@ -896,13 +900,56 @@ class Oficina:
         if self.on_config_saved:
             self.on_config_saved()
 
-    def refresh_all(self) -> None:
+    def sync_now(self) -> None:
+        """«⟳ Actualizar clientes y cámaras»: trae ya lo último de todo (clientes, cámaras, alertas, la lista de «En
+        vivo» y las zonas de lo que se está mirando), sin esperar a que llegue solo."""
+        if str(self.sync_btn["state"]) == "disabled":
+            return
+        self.sync_btn.configure(text="⟳ Actualizando…", state="disabled")
+
+        def finish(ok: bool = True) -> None:
+            self.sync_btn.configure(text=SYNC_TEXT, state="normal")
+            if ok:
+                log.info("Clientes, cámaras y alertas al día")
+        self.refresh_all(on_done=finish, on_fail=lambda exc: (finish(False), self._net_fail(exc)))
+        self.v.root.after(20000, lambda: str(self.sync_btn["state"]) == "disabled" and finish(False))
+        if self.on_config_saved:
+            self.on_config_saved()  # la lista de «En vivo» y las zonas de las cámaras que se están mirando
+
+    def remote_changed(self, kinds: set[str]) -> None:
+        """Otro usuario (o la web) cambió algo: «config» = clientes, cámaras o zonas; «alerts» = llegó una alerta o
+        alguien revisó una. Se pone al día lo que corresponde sin tocar lo que se está haciendo: sigue elegido el mismo
+        cliente, cámara y alerta, y el clip que se está viendo no se corta."""
+        if not self.v.open:
+            return
+        try:
+            tab = self.notebook.select()
+        except Exception:  # noqa: BLE001
+            tab = ""
+        if "config" in kinds or ("alerts" in kinds and tab == str(self.tab_clients)):
+            # (las alertas cambian los «Por revisar» de la lista de clientes)
+            def done(res):
+                self.clients, self.cameras, self.agents, self.alert_counts = res
+                self._fill_clients(keep_info=True)
+                self._fill_alert_filters()
+            self.bg.run(lambda: (self.api.get("/api/clients"), self.api.get("/api/cameras"),
+                                 self.api.get("/api/agents"), self.api.get("/api/stats/alerts")),
+                        done, lambda e: log.debug("No se pudo poner al día la lista de clientes: %s", e))
+            if "config" in kinds:
+                log.info("Hubo cambios en clientes o cámaras (de otro usuario o de la web): lista al día")
+        if "alerts" in kinds and tab == str(self.tab_alerts):
+            self.load_alerts(remote=True)
+
+    def refresh_all(self, on_done: Callable[[], None] | None = None,
+                    on_fail: Callable[[Exception], None] | None = None) -> None:
         def load():
             return (self.api.get("/api/clients"), self.api.get("/api/cameras"),
                     self.api.get("/api/agents"), self.api.get("/api/stats/alerts"))
 
         def done(res):
             self.clients, self.cameras, self.agents, self.alert_counts = res
+            if on_done:
+                on_done()
             self._fill_clients()
             self._fill_alert_filters()
             if self.is_admin:  # después de los clientes: muestran sus nombres (antes salía «—» si llegaban primero)
@@ -913,7 +960,7 @@ class Oficina:
                     mq_visible = False
                 if mq_visible:  # (le pregunta a Google: solo si se está mirando)
                     self.load_machines()
-        self.bg.run(load, done, self._net_fail)
+        self.bg.run(load, done, on_fail or self._net_fail)
         self.load_alerts()
 
     def _net_fail(self, exc: Exception) -> None:
@@ -2481,13 +2528,16 @@ class Oficina:
     def _fill_alert_filters(self) -> None:
         self.al_client_cb.configure(values=["Todos"] + [c["name"] for c in self.clients])
 
-    def load_alerts(self) -> None:
+    def load_alerts(self, remote: bool = False) -> None:
+        """La lista de alertas. Con `remote` la recarga es porque otro usuario revisó una o llegó una nueva."""
         label = {"Sin revisar": "sin_etiqueta", "Todas": None}.get(self.al_state.get())
         if label is None and self.al_state.get() != "Todas":
             label = next((k for k, t in LABEL_NAMES.items() if t == self.al_state.get()), None)
         cid = next((c["id"] for c in self.clients if c["name"] == self.al_client.get()), None)
 
         def done(res):
+            prev = self.al_tree.selection()
+            self._al_refill_until = time.monotonic() + 1.0  # (vaciar la lista no es «dejar de mirar la alerta»)
             self.alerts = res["items"]
             self.al_tree.delete(*self.al_tree.get_children())
             for e in self.alerts:
@@ -2495,6 +2545,13 @@ class Oficina:
                     fmt_date(e["occurred_at"]), e.get("client_name") or "", e.get("camera_name") or "",
                     TYPE_NAMES.get(e["type"], e["type"]), LABEL_NAMES.get(e.get("label"), "Sin revisar")))
             self.al_count.configure(text=f"{res['total']} en total")
+            keep = [i for i in prev if self.al_tree.exists(i)]
+            if keep:  # sigue elegida la misma (si otro usuario la revisó y ya no entra en el filtro, queda a la vista)
+                self.al_tree.selection_set(keep)
+                self.al_tree.see(keep[0])
+            elif remote and prev and str(getattr(self, "_al_shown", "")) == prev[0]:
+                self.al_desc.configure(text=f"{self.al_desc.cget('text')}  · ya no está en la lista: ¿la revisó otro "
+                                            "usuario?")
         self.bg.run(lambda: self.api.get("/api/events", label=label, client_id=cid, limit=200), done, self._net_fail)
 
     def _sel_alert(self) -> dict | None:
@@ -2502,8 +2559,13 @@ class Oficina:
         return next((e for e in self.alerts if str(e["id"]) == (sel[0] if sel else "")), None)
 
     def show_alert(self) -> None:
-        self.stop_clip()
         e = self._sel_alert()
+        if e is None and time.monotonic() < getattr(self, "_al_refill_until", 0.0):
+            return  # se está recargando la lista (llegó una alerta o otro usuario revisó una): no cortar el clip
+        if e is not None and e["id"] == getattr(self, "_al_shown", None):
+            return  # la misma alerta, otra vez elegida al recargar la lista
+        self.stop_clip()
+        self._al_shown = e["id"] if e else None
         if not e:
             return
         self.al_title.configure(text=f"{TYPE_NAMES.get(e['type'], e['type'])} · {e.get('client_name')} · {e.get('camera_name')}")
@@ -2592,11 +2654,13 @@ class Oficina:
 
         def done(res):
             e["label"] = res.get("label")
+            iid = str(e["id"])  # (la lista se pudo recargar mientras tanto: llegó otra alerta o la revisó otro)
             if self.al_state.get() == "Sin revisar":
-                self.al_tree.delete(str(e["id"]))
+                if self.al_tree.exists(iid):
+                    self.al_tree.delete(iid)
                 self.alerts = [x for x in self.alerts if x["id"] != e["id"]]
-            else:
-                self.al_tree.set(str(e["id"]), "etiqueta", LABEL_NAMES.get(label, label))
+            elif self.al_tree.exists(iid):
+                self.al_tree.set(iid, "etiqueta", LABEL_NAMES.get(label, label))
             kids = self.al_tree.get_children()
             if kids:  # pasa a la siguiente
                 nxt = kids[min(idx if self.al_state.get() == "Sin revisar" else idx + 1, len(kids) - 1)]

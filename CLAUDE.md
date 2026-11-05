@@ -240,6 +240,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     la casa del dueño quedó en la historia del repo (commits del 21 al 23 oct): cerrar esos reenvíos si no se usan o
     forzar otra IP; la sesión de la app queda en claro en `agente.env` (cifrarla con DPAPI de Windows, sin probar);
     versiones fijas en `requirements-servidor*.txt` (las máquinas instalan lo último al prender) y proteger `main`.
+- **Varios usuarios a la vez (5 nov, pedido del dueño: «un botón que diga actualizar clientes y canales que sirva para
+  coordinar todo entre usuarios… o cómo hacerlo de forma instantánea»; app 1.41.0).** Sin pedidos de más: la respuesta de
+  `/api/agent/status` (la app la pide cada 10 s) trae `rev` (`config_rev`, que ahora sube también al crear y borrar
+  clientes) y, para la PC de un usuario, `alerts_rev` (`alerts_rev()`: última alerta y última etiqueta, sin escribir en
+  la base). Si cambian, `Agent._note_changes` refresca la lista de «En vivo» y las zonas de lo que se mira, y llama a
+  `Oficina.remote_changed`: con «config», clientes y cámaras (sin perder lo elegido); con «alerts», la lista de Alertas
+  si está a la vista (o los «Por revisar» en Clientes). La lista de alertas se recarga sin cortar el clip ni cambiar la
+  elegida (`_al_shown`, `_al_refill_until`); si otro usuario revisó la que se está mirando, lo dice. Botón
+  «⟳ Actualizar clientes y cámaras» en la cabecera (`Oficina.sync_now`). Medido con la app en Xvfb y un servidor local:
+  un cliente creado por otro usuario apareció a los 2 s. Un push de verdad (Supabase Realtime) se descartó: pide claves
+  en la app y reglas de acceso, para ganar como mucho 10 s. Lo que no hace: si dos editan a la vez la misma cámara, gana
+  el último que guarda. Prueba: `tests/test_sincronizar_usuarios.py`.
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
