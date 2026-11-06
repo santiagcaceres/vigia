@@ -1,0 +1,1359 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Analítica Crítica · Manual del técnico: conectar las cámaras de un local</title>
+<style>
+  @page { size: A4; margin: 12mm 11mm 13mm 11mm;
+          @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt Arial, sans-serif; color: #5b6470; } }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#011b5d; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 9.7pt; line-height: 1.33; margin: 0;
+         -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  h1 { font-size: 24pt; margin: 0 0 2px; letter-spacing: -0.3px; color: var(--accent); line-height: 1.15; }
+  h2 { font-size: 14.5pt; margin: 14px 0 6px; padding-top: 8px; border-top: 2px solid var(--accent); color: var(--accent);
+       page-break-after: avoid; }
+  h2 .n { display: inline-block; min-width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 50%;
+          background: var(--accent); color: #fff; font-size: 12.5pt; margin-right: 8px; }
+  h3 { font-size: 11.4pt; margin: 10px 0 4px; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ol, ul { margin: 5px 0 5px 22px; padding: 0; }
+  li { margin: 3px 0; }
+  .steps > li { margin: 5px 0; }
+  code { font-family: Consolas, "Courier New", monospace; background: var(--bg); padding: 1px 4px; border-radius: 4px;
+         font-size: 9.2pt; word-break: normal; overflow-wrap: anywhere; }
+  pre { font-family: Consolas, "Courier New", monospace; background: var(--bg); border: 1px solid var(--line); padding: 7px 10px;
+        border-radius: 6px; font-size: 9.1pt; line-height: 1.38; white-space: pre-wrap; word-break: normal; overflow-wrap: anywhere;
+        margin: 6px 0; page-break-inside: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 8.8pt; }
+  thead { display: table-header-group; }
+  table.links td:first-child { width: 16%; }
+  table.links code, table.nowrap code { white-space: nowrap; font-size: 7.8pt; }
+  tr { page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 2px 5px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  table.keep { page-break-inside: avoid; }
+  td.k { width: 32%; font-weight: 600; }
+  td.msg { font-style: italic; font-size: 8.4pt; width: 40%; color: #22303f; }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); background: #fff; padding: 6px 11px; margin: 8px 0;
+         border-radius: 6px; page-break-inside: avoid; }
+  .box.ok { border-left-color: var(--ok); }
+  .box.warn { border-left-color: var(--warn); }
+  .box p:first-child { margin-top: 2px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 9.2pt; }
+  .tag { display: inline-block; font-size: 8.2pt; padding: 0 6px; border-radius: 9px; background: var(--bg); border: 1px solid var(--line);
+         color: var(--muted); font-weight: normal; white-space: nowrap; }
+  .tag.nv { background: #fff7e6; border-color: #f0c674; color: #8a5a00; }
+  .tag.of { background: #eaf5ec; border-color: #9fd1aa; color: #22683a; }
+  .tag.pr { background: #e8f0fb; border-color: #9db8e3; color: #0b3a82; }
+  .tag.ob { background: #fdecea; border-color: #e6a39b; color: #8f2318; }
+  .who { font-size: 9.5pt; color: var(--muted); font-weight: normal; }
+  .check { list-style: none; margin-left: 0; }
+  .check li::before { content: "☐ "; }
+  .fill { display: inline-block; min-width: 150px; border-bottom: 1px dotted #888; }
+  .pb { page-break-before: always; }
+  .cover { display: flex; align-items: center; gap: 18px; border-bottom: 3px solid var(--accent); padding-bottom: 12px; margin-bottom: 12px; }
+  .cover img { width: 84px; height: 84px; }
+  .brand { font-size: 10.5pt; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .sub { font-size: 12.5pt; color: var(--muted); margin-top: 3px; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 10px 0; }
+  .facts div { border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 6px; padding: 6px 10px; font-size: 9.6pt; }
+  .facts b.t { display: block; color: var(--accent); font-size: 10.4pt; margin-bottom: 2px; }
+  .toc { columns: 2; column-gap: 26px; font-size: 10pt; margin-left: 20px; }
+  .toc li { margin: 2px 0; break-inside: avoid; }
+  .toc a { color: inherit; text-decoration: none; }
+  .toc ul { margin: 1px 0 3px 14px; font-size: 9pt; color: var(--muted); }
+  /* dibujo de punta a punta */
+  .diag { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 8px 0; background: #fbfcfd; page-break-inside: avoid; }
+  .chain { display: flex; align-items: stretch; gap: 4px; }
+  .chain .node { flex: 1; border: 1.5px solid var(--accent); border-radius: 7px; background: #fff; padding: 5px 6px; font-size: 8.6pt;
+                 text-align: center; line-height: 1.3; }
+  .chain code, .ddnsrow code { word-break: normal; white-space: nowrap; font-size: 7.4pt; padding: 0 2px; }
+  .chain .node b { display: block; color: var(--accent); font-size: 9.3pt; }
+  .chain .node.opt { border-style: dashed; }
+  .chain .node.cloud { background: #eef2fa; }
+  .chain .arr { align-self: center; color: var(--accent); font-weight: 700; font-size: 13pt; }
+  .chain .where { font-size: 7.8pt; color: var(--muted); display: block; margin-top: 2px; }
+  .zones { display: flex; gap: 4px; margin-top: 3px; font-size: 7.8pt; color: var(--muted); text-align: center; }
+  .zones span { border-top: 2px solid var(--line); padding-top: 2px; }
+  .ddnsrow { display: flex; gap: 8px; margin-top: 8px; align-items: stretch; }
+  .ddnsrow .node { border: 1.5px solid var(--ok); border-radius: 7px; padding: 5px 8px; font-size: 8.8pt; background: #fff; flex: 1.3; }
+  .ddnsrow .node b { color: var(--ok); }
+  .ddnsrow .exp { flex: 2; font-size: 8.8pt; }
+  .steps8 { counter-reset: s; list-style: none; margin: 6px 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; }
+  .steps8 li { counter-increment: s; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px 4px 36px; position: relative;
+               margin: 0; font-size: 9.6pt; page-break-inside: avoid; }
+  .steps8 li::before { content: counter(s); position: absolute; left: 7px; top: 5px; width: 21px; height: 21px; line-height: 21px;
+                       border-radius: 50%; background: var(--accent); color: #fff; text-align: center; font-weight: 700; font-size: 9.5pt; }
+  .no { color: var(--bad); font-weight: 700; }
+  .grp th { background: var(--accent); color: #fff; }
+  .foot { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 8.6pt; color: var(--muted); }
+  .sheet td { height: 28px; }
+  .sheet td.k { width: 30%; }
+  .sheet td.sig { height: 45px; }
+  .keepall { break-inside: avoid; page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<!-- ============================== PORTADA ============================== -->
+<div class="cover">
+  <img src="data:image/png;base64,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" alt="">
+  <div>
+    <div class="brand">Analítica Crítica</div>
+    <h1>Manual del técnico: conectar las cámaras de un local</h1>
+    <div class="sub">La metodología de la empresa, por puertos + DDNS: del grabador a nuestras máquinas, con las pruebas y la solución de cada problema</div>
+    <p class="muted small">Versión del 6 de noviembre de 2026 · Reemplaza a la «Guía del técnico: instalación de un local» (23 oct) · Grabadores Hikvision y Dahua · Routers de Antel</p>
+  </div>
+</div>
+
+<div class="facts">
+  <div><b class="t">Para quién</b>El técnico que va al local y el operador que lo ayuda desde la oficina. Sirve para cualquier cliente nuevo y para arreglar uno que dejó de andar.</div>
+  <div><b class="t">Tiempo</b>Oficina: 20 a 30 min. Local con 1 grabador: 1,5 a 2 h. Cada grabador más: 30 a 40 min. Doble router: sumá 30 min.</div>
+  <div><b class="t">Resultado</b>Todas las cámaras del local llegan a nuestro sistema por internet, <b>sin nada instalado en el local</b>, y vuelven solas cuando Antel cambia la IP o vuelve la luz.</div>
+</div>
+
+<div class="box ok">
+  <b>Qué tiene que quedar funcionando.</b> Nuestras máquinas de análisis (en la nube) y la app de la oficina entran por internet al
+  grabador del local y leen el video. Para eso: (1) el grabador con <b>IP fija</b> dentro del local y un usuario propio, <code>vigia</code>;
+  (2) la <b>segunda calidad en H.264</b>; (3) <b>un puerto alto por grabador</b> reenviado en el router (o en los dos routers, si hay doble router);
+  (4) un <b>nombre DDNS</b> (ej. <code>vigia-deposito.ddns.net</code>) que sigue a la IP pública del local aunque Antel la cambie;
+  (5) <b>las pruebas desde afuera</b> hechas y anotadas.
+</div>
+
+<div class="box warn">
+  <b>La regla de oro de las direcciones.</b> Adentro del local: la IP de adentro con los puertos del grabador
+  (<code>192.168.10.201</code> con <code>554</code>). Desde afuera: el nombre DDNS con el puerto del router
+  (<code>vigia-deposito.ddns.net</code> con <code>21554</code>). <b>Nunca se mezclan:</b> <code>192.168.10.201:21554</code> no anda nunca, y
+  una cámara cargada en la app con <code>192.168.10.x</code> puede andar en la PC del local pero <b>nunca</b> en nuestras máquinas.
+</div>
+
+<p class="small muted"><b>Cómo leer este manual.</b> Las direcciones, nombres y claves de los ejemplos son inventados
+(<code>vigia-deposito.ddns.net</code>, <code>192.168.10.201</code>, <code>203.0.113.25</code>). Los nombres de los menús de los grabadores y
+routers <b>cambian según el modelo y el firmware</b>: tomalos como guía, buscá el parecido. Lo que no está comprobado lleva la marca
+<span class="tag nv">sin verificar</span>; lo que viene de la documentación del fabricante o del proveedor, <span class="tag of">oficial</span>;
+lo que probamos nosotros con un equipo real, <span class="tag pr">probado</span>; las pruebas que no se pueden saltear, <span class="tag ob">obligatoria</span>.
+Los textos entre comillas «así» son los <b>exactos</b> de una pantalla (la app de Analítica Crítica, el grabador, el router o una página) o lo que hay que escribir.</p>
+
+<h3>Contenido</h3>
+<ol class="toc" start="0">
+  <li><a href="#s0">La metodología en resumen</a></li>
+  <li><a href="#s1">Antes de ir (oficina)</a>
+    <ul><li>Datos del cliente · llamada el día antes · nombre DDNS · esquema de puertos · la app antes de salir · qué llevar</li></ul></li>
+  <li><a href="#s2">En el local: diagnóstico de 5 minutos</a>
+    <ul><li>Los pasos · tabla de decisión · plan B si no se pueden abrir puertos</li></ul></li>
+  <li><a href="#s3">El grabador paso a paso (Hikvision y Dahua)</a>
+    <ul><li>Hora · IP fija · puertos · usuario <code>vigia</code> · autenticación · bloqueo · segunda calidad · cifrado · UPnP · DDNS · filtro de IP · firmware · primera prueba · reinicios y servicios</li></ul></li>
+  <li><a href="#s4">El o los routers</a>
+    <ul><li>Entrar · reserva de IP · reenvío · doble router · DMZ · modo puente · mesh · anotar · grabador lejos del router</li></ul></li>
+  <li><a href="#s5">DDNS: el estándar de la empresa</a>
+    <ul><li>Por qué · No-IP pago · dónde va · cómo verificarlo · cambio de IP · Tigo</li></ul></li>
+  <li><a href="#s6">Pruebas antes de irse</a>
+    <ul><li>VLC con datos · reinicio del router · aviso forzado del DDNS · corte de luz · subida · todo abierto · la app · anotar · seguimiento de la oficina</li></ul></li>
+  <li><a href="#s7">Cargar las cámaras en la app</a>
+    <ul><li>Cliente · cámaras · varias a la vez · nombres · probar · en vivo · zonas y Analizar · estados · editar</li></ul></li>
+  <li><a href="#s8">Solución de problemas</a>
+    <ul><li>Por síntoma · diagnóstico a distancia · por mensaje exacto de la app · herramientas</li></ul></li>
+  <li><a href="#s9">Mantenimiento y seguridad</a>
+    <ul><li>Revisión mensual · luz y UPS · cambio de claves · seguridad · cambios del cliente</li></ul></li>
+  <li><a href="#s10">Planilla de entrega</a></li>
+</ol>
+
+<h3>Palabras que vas a ver</h3>
+<table class="small keep">
+  <tr><td class="k">IP pública / IP privada</td><td>La pública es la dirección del local en internet (la da Antel, ej. <code>203.0.113.25</code>). Las privadas son las de adentro (<code>192.168.x</code>, <code>10.x</code>, <code>172.16-31.x</code>): desde internet no se llega a ellas.</td></tr>
+  <tr><td class="k">NAT</td><td>Lo que hace el router: todos los aparatos de adentro salen a internet con la única IP pública del local.</td></tr>
+  <tr><td class="k">Reenvío de puertos</td><td>Una regla en el router: «lo que llegue de afuera al puerto 21554, pasalo al grabador 192.168.10.201, puerto 554».</td></tr>
+  <tr><td class="k">Doble NAT (doble router)</td><td>Un router del cliente conectado detrás del router de Antel: hay dos NAT y la regla tiene que estar en los dos.</td></tr>
+  <tr><td class="k">CG-NAT</td><td>El proveedor comparte una IP pública entre muchos clientes. El local no tiene IP propia y <b>ningún reenvío de puertos anda</b>.</td></tr>
+  <tr><td class="k">DDNS</td><td>Un nombre (ej. <code>vigia-deposito.ddns.net</code>) que un aparato del local mantiene apuntando a la IP pública, aunque cambie.</td></tr>
+  <tr><td class="k">RTSP</td><td>La forma en que se pide el video al grabador (los links <code>rtsp://…</code> que abre VLC). Puerto 554 adentro.</td></tr>
+  <tr><td class="k">Segunda calidad (subflujo)</td><td>La versión liviana del video que da el grabador además de la que graba. Es la que usamos.</td></tr>
+</table>
+
+<!-- ============================== 0. METODOLOGÍA ============================== -->
+<h2 id="s0"><span class="n">0</span>La metodología en resumen</h2>
+
+<h3>El camino estándar (siempre el mismo, en este orden)</h3>
+<ol class="steps8">
+  <li><b>Oficina:</b> datos del cliente, nombre DDNS creado en la cuenta de la empresa, puertos elegidos según el esquema (sección 1).</li>
+  <li><b>Diagnóstico de 5 minutos</b> en el local: IP pública real, CG-NAT, doble router o 4G (sección 2).</li>
+  <li><b>Grabador con IP fija</b> (y DNS), hora por NTP, UPnP apagado (sección 3).</li>
+  <li><b>Usuario <code>vigia</code></b> con solo vista en vivo y reproducción, y el bloqueo por intentos prendido.</li>
+  <li><b>Segunda calidad en H.264</b>, 8 cuadros por segundo, liviana, en todos los canales; cifrado apagado.</li>
+  <li><b>Puertos altos</b> en el router o en los dos routers: grabador N → <code>2N554</code> (sección 4).</li>
+  <li><b>DDNS</b> actualizado por un solo aparato y verificado (sección 5). <b>Pruebas desde afuera</b>: VLC con datos del celular, reinicio del router, aviso forzado del DDNS, corte de luz, subida (sección 6).</li>
+  <li><b>Carga en la app</b> pegando el link que anduvo en VLC, «Probar conexión», «● En vivo», «Analizar» hasta ver «En línea» (sección 7). <b>Entrega</b>: planilla completa (sección 10) y el seguimiento de la oficina a las 24 h y a los 7 días (6.7).</li>
+</ol>
+
+<h3>Por qué puertos + DDNS y no la nube</h3>
+<p>El <b>5 de noviembre</b>, desde las 5 a 7 de la mañana, los links HLS de la nube de Hik-Connect dejaron de andar en nuestras dos cuentas,
+mientras las apps de Hik-Connect se veían bien. Lo resolvimos ese día pidiendo otro formato (FLV), pero mostró que dependemos de un servidor
+ajeno. Las cámaras conectadas <b>por puertos no tuvieron cortes</b>. Con la nube dependemos además de que el cliente no tenga el cifrado prendido,
+de un límite de transmisiones por grabador (sospecha) y, encima, solo existe para Hikvision (Dahua no tiene nada equivalente que podamos usar).
+Por puertos, en cambio:</p>
+<ul>
+  <li>anda igual con <b>Hikvision y Dahua</b>, y el video va <b>directo</b> del grabador a nuestras máquinas;</li>
+  <li>lo controlamos nosotros (el nombre, los puertos y el usuario son nuestros) y se diagnostica con VLC;</li>
+  <li>en el local <b>no se instala nada</b>: ni PC ni aparatos.</li>
+</ul>
+<div class="box warn small"><b>El precio honesto:</b> el grabador queda expuesto a internet. Por eso las reglas de seguridad no son opcionales:
+puertos altos, nunca 8000 ni 37777, nada de DMZ al grabador, UPnP apagado, usuario <code>vigia</code> con lo mínimo, clave larga, bloqueo por
+intentos y firmware al día (sección 9). <b>Decisión del dueño (6 nov):</b> por puertos primero; Hik-Connect solo para un Hikvision donde no se pueden
+abrir puertos (sección 2.3).</div>
+
+<h3>De punta a punta</h3>
+<div class="diag">
+  <div class="chain">
+    <div class="node"><b>Cámaras</b>analógicas o IP<span class="where">van por cable al grabador</span></div>
+    <div class="arr">→</div>
+    <div class="node"><b>Grabador 1</b>DVR / NVR<br><code>192.168.10.201</code><br>RTSP 554 · web 80<span class="where">IP fija · usuario vigia · H.264</span></div>
+    <div class="arr">→</div>
+    <div class="node opt"><b>Router del cliente</b>solo si hay<br>doble router<span class="where">regla 21554 → grabador:554</span></div>
+    <div class="arr">→</div>
+    <div class="node"><b>Router de Antel</b>IP pública<br><code>203.0.113.25</code><br>(cambia)<span class="where">regla 21554 → 554 (o → router del cliente)</span></div>
+    <div class="arr">→</div>
+    <div class="node cloud"><b>Internet</b>las máquinas piden<br><code>vigia-deposito</code><br><code>.ddns.net:21554</code></div>
+    <div class="arr">→</div>
+    <div class="node cloud"><b>Nuestras máquinas</b>de análisis (nube)<br>+ la app de la oficina<br>+ VLC del técnico</div>
+  </div>
+  <div class="zones">
+    <span style="flex:2.1">dentro del local (IPs privadas, puertos del grabador)</span>
+    <span style="flex:1">borde del local</span>
+    <span style="flex:2.1">afuera (nombre DDNS + puerto externo)</span>
+  </div>
+  <div class="ddnsrow">
+    <div class="node"><b>No-IP (DDNS)</b><br><code>vigia-deposito.ddns.net → 203.0.113.25</code><br>Lo actualiza <b>un solo</b> aparato: el grabador 1.</div>
+    <div class="exp">Cuando Antel cambia la IP, el grabador 1 le avisa a No-IP la nueva en pocos minutos (si actualiza bien: se verifica en 6.2 y 6.2 bis); nuestras máquinas preguntan el nombre,
+      reciben la IP nueva y se reconectan solas. Entre medio, la app muestra «Reconectando» o «Sin conexión» unos minutos.</div>
+  </div>
+</div>
+<pre>Qué pasa cuando una máquina abre la cámara:
+1. Pregunta qué IP tiene vigia-deposito.ddns.net    → No-IP contesta 203.0.113.25
+2. Se conecta a 203.0.113.25, puerto 21554 (TCP)    → llega al router de Antel
+3. La regla del router la pasa a 192.168.10.201:554 → llega al grabador 1
+4. El grabador pide usuario y clave (vigia)         → entrega la segunda calidad, en H.264</pre>
+
+<h3>Lo que no hacemos nunca</h3>
+<table class="keep small">
+  <tr><td class="no">✘</td><td>Instalar una PC o un aparato de red nuestro en el local (la UPS o el circuito aparte los pone el cliente).</td><td class="no">✘</td><td>Reenviar 554, 80, 8000, 37777, 37778 o 443 tal cual hacia afuera.</td></tr>
+  <tr><td class="no">✘</td><td>Usar el usuario <code>admin</code> del cliente en la app.</td><td class="no">✘</td><td>DMZ apuntando al grabador.</td></tr>
+  <tr><td class="no">✘</td><td>Dejar UPnP prendido (router o grabador).</td><td class="no">✘</td><td>Usar No-IP gratis en producción.</td></tr>
+  <tr><td class="no">✘</td><td>Cargar una IP <code>192.168.x</code> en la app.</td><td class="no">✘</td><td>Irse del local sin la prueba desde datos móviles, la de reinicio y las demás obligatorias (6.6).</td></tr>
+</table>
+
+<!-- ============================== 1. ANTES DE IR ============================== -->
+<h2 id="s1"><span class="n">1</span>Antes de ir <span class="who">(oficina, con el técnico)</span></h2>
+
+<h3>1.1 Qué pedirle al cliente</h3>
+<table>
+  <thead><tr><th style="width:34%">Dato</th><th>Para qué</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Proveedor de internet y plan (foto de la factura)</td><td>Fibra de Antel, ADSL, 4G (Antel inalámbrico, Tigo —la ex Movistar— o Claro), Pyme con IP fija. Si dice «con límite» hay tope de GB por mes (sección 6.4).</td></tr>
+  <tr><td class="k">Quién maneja la red</td><td>¿Hay un router propio del cliente, un sistema mesh (Deco y similares), un informático? Si hay doble router, avisar: suma 30 min.</td></tr>
+  <tr><td class="k">Clave del router de Antel</td><td>Suele estar en la etiqueta de abajo (usuario <code>admin</code>). Si no entra, la da Antel. Si hay router propio, también la suya.</td></tr>
+  <tr><td class="k">Usuario y clave de administrador de cada grabador</td><td>Para crear el usuario <code>vigia</code> y configurar. Los da el cliente o quien lo instaló. Nunca se cargan en la app.</td></tr>
+  <tr><td class="k">Grabadores: cuántos, marca, modelo, canales</td><td>Define cuántos puertos y nombres. Pedí fotos de las etiquetas (modelo y fecha de firmware si se ve).</td></tr>
+  <tr><td class="k">Qué mira cada canal</td><td>Puerta, caja, góndolas, depósito: sirve para los nombres y el tipo de cámara en la app.</td></tr>
+  <tr><td class="k">Horario del local</td><td>Se carga en la app: fuera de horario no se gasta video ni análisis.</td></tr>
+  <tr><td class="k">¿Cortan la luz al cerrar?</td><td>Si cortan la llave general, router y grabador quedan apagados toda la noche (sección 9.2).</td></tr>
+  <tr><td class="k">¿Usan Hik-Connect y tienen el cifrado prendido?</td><td>En Hikvision el cifrado de video rompe también la conexión por puertos: hay que apagarlo (sección 3.8).</td></tr>
+  <tr><td class="k">Contacto en el local y permiso</td><td>Alguien que esté el día de la visita y autorice <b>reiniciar el router y cortar la luz</b> unos minutos para las pruebas.</td></tr>
+  <tr><td class="k">¿Cómo miran hoy las cámaras en el celular?</td><td>Por número de serie (Hik-Connect, DMSS, P2P) o por IP / DDNS con el 8000 o el 37777. Si es lo segundo, al borrar esas reglas (4.3) hay que pasarles la app a P2P en el momento.</td></tr>
+  </tbody>
+</table>
+
+<h3>1.1 bis Llamada de 10 minutos el día antes</h3>
+<p>Hay cosas que recién se descubren en el local y obligan a llamar a alguien o a irse. Para no perder la visita, el día antes el cliente:</p>
+<ol class="steps">
+  <li><b>Entra al router de Antel con <code>admin</code></b> y manda una captura de la primera pantalla. Si no puede, que el <b>titular</b> llame al 121, pida
+      la clave de admin y los <b>datos PPPoE</b> (por si hace falta el modo puente, 4.6). Si el router lo administra Antel Empresas, que pida por reclamo la apertura
+      de los puertos del esquema o el modo puente <span class="tag nv">sin verificar</span>.</li>
+  <li><b>Prueba la clave de admin de cada grabador</b> en su monitor.</li>
+  <li>Confirma <b>quién maneja el router propio</b> (si hay) y que esa persona esté el día de la visita o pase la clave.</li>
+</ol>
+<p class="small"><b>Sin los pasos 1 y 2 confirmados, no se agenda la visita.</b></p>
+
+<h3>1.2 Crear el nombre DDNS en la cuenta de la empresa</h3>
+<ol class="steps">
+  <li>Entrá a <b>noip.com</b> con la <b>cuenta de la empresa</b> (plan pago, sección 5.2). Nunca crees el nombre en una cuenta personal ni del cliente.</li>
+  <li><b>Dynamic DNS → No-IP Hostnames → Create Hostname</b>. Nombre según la convención de abajo, dominio <code>ddns.net</code>, tipo <b>DNS Host (A)</b>.
+      La IP que pongas al crearlo da igual: el grabador la corrige.</li>
+  <li>Si el plan lo permite, bajá el tiempo de caché (TTL) a <b>60 s</b> en «DNS Records»: los cambios de IP se notan antes.</li>
+  <li>Generá una <b>DDNS Key</b> para ese nombre (también en «DNS Records»): es un usuario y una clave que <b>solo sirven para actualizar ese nombre</b>
+      y van en <b>un solo aparato</b>. Se ve una sola vez: guardala en el gestor de claves de la empresa, no en la planilla.
+      <span class="tag nv">probala en el primer grabador donde la cargues</span> (un artículo de No-IP dice que «valen una sola vez», el resto de su documentación dice lo contrario).</li>
+</ol>
+<table class="keep">
+  <thead><tr><th style="width:30%">Convención de nombres</th><th>Regla</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Forma</td><td><code>vigia-&lt;local&gt;.ddns.net</code>: minúsculas, sin tildes ni eñes, palabras con guion. Ej. <code>vigia-deposito</code>, <code>vigia-super-centro</code>.</td></tr>
+  <tr><td class="k">Uno por local</td><td>Un nombre por <b>IP pública</b>, no por grabador. Un local con 4 grabadores detrás de la misma conexión = un solo nombre.</td></tr>
+  <tr><td class="k">Largo</td><td>En el plan gratis, como mucho 19 letras antes del punto (con <code>vigia-</code> quedan 13). En el pago, hasta 49.</td></tr>
+  <tr><td class="k">Letras al azar</td><td>No: el nombre va sin letras al azar al final.</td></tr>
+  </tbody>
+</table>
+
+<h3>1.3 Elegir los puertos: el esquema de la empresa</h3>
+<p>Afuera siempre puertos <b>altos</b>, uno por grabador y por servicio. Adentro se dejan los de fábrica del grabador (554 video, 80 web):</p>
+<table>
+  <thead><tr><th>Grabador del local</th><th>Video (RTSP) afuera → adentro</th><th>Página web afuera → adentro</th><th>En la app</th></tr></thead>
+  <tbody>
+  <tr><td>Grabador 1</td><td><code>21554</code> → 554</td><td><code>21080</code> → 80</td><td>«Puerto RTSP» 21554</td></tr>
+  <tr><td>Grabador 2</td><td><code>22554</code> → 554</td><td><code>22080</code> → 80</td><td>«Puerto RTSP» 22554</td></tr>
+  <tr><td>Grabador 3</td><td><code>23554</code> → 554</td><td><code>23080</code> → 80</td><td>«Puerto RTSP» 23554</td></tr>
+  <tr><td>Grabador 4</td><td><code>24554</code> → 554</td><td><code>24080</code> → 80</td><td>«Puerto RTSP» 24554</td></tr>
+  <tr><td>Grabador 5 a 9</td><td><code>25554</code> … <code>29554</code></td><td><code>25080</code> … <code>29080</code></td><td>igual</td></tr>
+  <tr><td>Grabador 10 a 19</td><td><code>3(N-10)554</code>: 10 → <code>30554</code>, 11 → <code>31554</code> … 19 → <code>39554</code></td><td><code>3(N-10)080</code>: 10 → <code>30080</code> … 19 → <code>39080</code></td><td>igual (avisá a la oficina antes)</td></tr>
+  </tbody>
+</table>
+<div class="box small">
+  <p><b>El video (2N554) va siempre. La página (2N080) solo cuando hace falta.</b> El video en vivo y las grabaciones viajan por el puerto RTSP.
+  La página web del grabador solo la usan: la parte «Página del grabador» de «Probar conexión», los modos de alarma (y «Con el local cerrado» →
+  «Escuchar solo las alarmas del grabador (por IP y puertos)») y las cámaras viejas con marca «ip». Es además por donde entraron los ataques conocidos
+  (sección 9.4). Regla de este manual: <b>abrí 2N080 solo si alguna cámara va en modo alarmas, o si la oficina lo pide para un diagnóstico, y
+  siempre con el firmware al día</b>. El número igual queda reservado.</p>
+</div>
+<ul class="small">
+  <li><b>Nunca</b> reenviar hacia afuera 554, 80, 8000 (programa de Hikvision), 37777/37778 (programa de Dahua) ni 443: son los primeros que
+      prueban los que buscan grabadores, y 8000/37777 <b>no sirven para tomar el video</b>.</li>
+  <li>Un puerto alto no esconde el grabador (los escáneres prueban todos), pero evita el ruido y esquiva a los proveedores que bloquean el 554.</li>
+  <li>Los locales instalados antes con otros puertos altos (la guía vieja ponía <code>38554/38080</code> de ejemplo) se dejan como están; los nuevos van
+      con este esquema. Si a un local viejo se le suma un grabador, el que ya estaba queda como está y los nuevos van con <code>22554</code>, <code>23554</code>…
+      (como grabadores 2, 3…), salvo que choquen con un puerto que ya se usa.</li>
+  <li><b>Cámara IP suelta</b> (sin grabador, o además del grabador): cuenta como un grabador más. Lleva su IP fija, su puerto <code>2N554</code> → 554 y, en la app,
+      su link (Hikvision <code>…/Streaming/Channels/102</code>, Dahua <code>…/cam/realmonitor?channel=1&amp;subtype=1</code>).</li>
+  <li><b>Router viejo que no acepta puertos de 5 cifras</b> (reportes en el ZTE F660, 2.2 F) y Antel no lo cambia ese día: esquema de 4 cifras
+      <code>9N54</code> / <code>9N80</code> (grabador 1 → <code>9154</code> y <code>9180</code>; grabador 2 → <code>9254</code> y <code>9280</code> … grabador 9 →
+      <code>9954</code> y <code>9980</code>). Nunca 8000, 8080 ni 8443. Anotalo en la planilla, cargá en la app el puerto que quedó y, cuando Antel cambie
+      el router, pasá al esquema normal.</li>
+</ul>
+
+<h3>1.4 En la app, antes de salir</h3>
+<ul>
+  <li>El <b>cliente creado</b>: pestaña «Clientes» → «＋ Nuevo», con planes, «Horario del local (fuera de horario no se gasta video ni análisis)» y
+      «Acceso a la web del cliente» (sección 7.1).</li>
+  <li>El técnico con <b>su usuario</b> de rol «Operador» (lo crea un admin en Administración): puede cargar, probar, analizar y aprobar, pero no borrar.</li>
+  <li>Una <b>máquina de análisis en línea</b> (pestaña «Máquinas», la ve un admin). Sin máquina, las cámaras marcadas quedan «Esperando máquina».</li>
+</ul>
+
+<h3>1.5 Qué llevar</h3>
+<ul class="check">
+  <li>Celular con <b>datos móviles</b> y <b>VLC</b> instalado (gratis), para probar desde afuera y compartir internet a la notebook.</li>
+  <li>Notebook con <b>VLC</b> y la <b>app de Analítica Crítica</b> (se baja desde la web con tu usuario) ya iniciada con tu usuario.</li>
+  <li>En la notebook, instalados: <b>SADP</b> (Hikvision) y <b>ConfigTool</b> (Dahua), que encuentran el grabador en la red y le cambian la IP.</li>
+  <li><b>Monitor HDMI y mouse</b> por si el grabador no tiene pantalla; un <b>switch chico</b> y <b>dos cables de red</b> de repuesto (el grabador va siempre por cable).</li>
+  <li>Las claves: router(es), admin de cada grabador, la DDNS Key del nombre (desde el gestor de claves).</li>
+  <li>Una <b>clave para el usuario <code>vigia</code></b>, distinta para cada local: <b>12 a 16 caracteres</b> (Hikvision acepta hasta 16), mayúsculas,
+      minúsculas y números, <b>sin</b> <code>@ : / # ? &amp; %</code> ni espacios (tampoco comillas ni <code>\</code>). Esos símbolos rompen el link RTSP: el
+      <code>#</code>, <code>/</code> y <code>?</code> hacen que la app diga «El puerto del link no es un número» o, peor, que lea mal la dirección sin avisar
+      («Link de otra forma»), y el <code>%</code> hace que la clave llegue cambiada (el grabador la rechaza y puede bloquear por intentos).</li>
+  <li>Etiquetas para pegar en el router (sección 4.8) y esta guía con la planilla de la sección 10.</li>
+</ul>
+
+<!-- ============================== 2. DIAGNÓSTICO ============================== -->
+<h2 id="s2"><span class="n">2</span>En el local: diagnóstico de 5 minutos</h2>
+<p>Antes de tocar nada, averiguá en qué caso está el local. Cambia todo lo que sigue.</p>
+
+<h3>2.1 Los pasos</h3>
+<ol class="steps">
+  <li><b>Qué internet entra.</b> Cable de fibra (conector verde) = fibra de Antel · cable de teléfono = ADSL · chip o antena = 4G. Mirá en la factura si el plan es «con límite» o Pyme con IP fija.</li>
+  <li><b>La puerta de enlace del grabador</b> (en el grabador: Red → TCP/IP). Conectá la notebook <b>con cable al mismo router o switch que el grabador</b>
+      (o al wifi de ese router) y abrí esa puerta de enlace en el navegador: ¿es el router de Antel?
+      Si es otro (TP-Link, Deco, Mercusys…), entrá y mirá su dirección WAN: si es privada (<code>192.168.x</code>, <code>10.x</code>, <code>172.16-31.x</code>), hay <b>doble router</b>.</li>
+  <li><b>En el router al que está conectado el grabador</b>: anotá la red (ej. <code>192.168.10.x</code>), el rango que reparte el DHCP y la lista de equipos
+      conectados. Con eso elegís la IP fija del grabador (3.2).</li>
+  <li><b>En el router de Antel</b>, la IP<b>v4</b> de la conexión <b>PPPoE / INTERNET</b> (ZTE F6600: Internet → Estado, o Estado → Internet). Mirá solo esa: las
+      otras (VOIP, IPTV o TV) tienen <code>10.x</code> y no cuentan. Si la de INTERNET tiene <code>10.x</code>, <code>100.64</code> a <code>100.127</code>,
+      <code>172.16</code> a <code>172.31</code> o <code>192.168.x</code>, es el <b>caso D</b> (CG-NAT). Si el router de Antel no tiene ninguna conexión PPPoE
+      con IP, puede estar en modo puente (caso H).</li>
+  <li><b>Con el celular en el wifi del local</b> (datos apagados), abrí <code>ipv4.icanhazip.com</code> o <code>api.ipify.org</code>: muestran solo la IPv4.
+      Si una página muestra una dirección con «:» (IPv6, ej. <code>2800:…</code>), no la tomes en cuenta: siempre se comparan las IPv4. Para ver el proveedor,
+      <code>ipinfo.io/</code> + esa IP tiene que decir <b>AS6057 ANTEL</b> (si el proveedor es Antel). Compará con el paso 4.</li>
+  <li><b>4G:</b> si la WAN del router dice LTE o APN y es privada, asumí CG-NAT. Revisá también el tope de GB del plan.</li>
+  <li><b>Anotá</b> el caso en la planilla.</li>
+</ol>
+<div class="box small"><b>Lo que no sirve para saberlo:</b> el <code>tracert</code> (en el medio de la red los proveedores usan direcciones privadas aunque
+  vos tengas IP pública) ni lo que muestra No-IP o «cuál es mi IP» por sí solos: los dos ven la IP pública aunque haya doble router. Lo que manda es
+  comparar la WAN del router de Antel (paso 4) con «cuál es mi IP» (paso 5).</div>
+
+<h3>2.2 Tabla de decisión</h3>
+<table>
+  <thead><tr class="grp"><th style="width:20%">Caso</th><th style="width:38%">Cómo lo reconocés</th><th>Qué hacer</th></tr></thead>
+  <tbody>
+  <tr><td><b>A. IP pública real</b> (lo normal en fibra de Antel)</td><td>WAN PPPoE del router de Antel = «cuál es mi IP». La IP cambia cada tanto (a veces todos los días).</td>
+      <td><b>El camino estándar</b>: reenvío en el router de Antel (4.3) + DDNS (5).</td></tr>
+  <tr><td><b>B. IP fija</b> (Internet Pyme, Emprendedor o Corporativo de Antel)</td><td>La factura o el contrato lo dicen. La IP no cambia nunca.</td>
+      <td>Reenvío como en A. Ningún aparato tiene que actualizar el DDNS, pero <b>igual creá</b> <code>vigia-&lt;local&gt;.ddns.net</code> en la cuenta de la
+      empresa apuntando a la IP fija y cargá las cámaras con el nombre: si el cliente cambia de plan o de proveedor, se cambia la IP en noip.com y nada más.
+      Con varias IP fijas (Emprendedor, Corporativo), el grabador va igual con IP privada detrás del router: <b>nunca le pongas una IP pública al grabador</b>.</td></tr>
+  <tr><td><b>C. Doble router</b></td><td>La puerta de enlace del grabador no es el router de Antel, y la WAN del router del cliente es privada.</td>
+      <td>Una de las 3 soluciones de la sección 4.4 (reenvío en los dos, DMZ al router del cliente o modo puente). DDNS en el grabador 1, <b>nunca en el router del cliente</b>.</td></tr>
+  <tr><td><b>D. CG-NAT</b></td><td>WAN del router de Antel entre <code>100.64.0.0</code> y <code>100.127.255.255</code>, o en <code>10.x</code> / <code>172.16-31.x</code> / <code>192.168.x</code>, o distinta de «cuál es mi IP».</td>
+      <td><b>Los puertos no van a andar.</b> No pierdas tiempo: plan B (2.3). En fibra de Antel no encontramos reportes de CG-NAT <span class="tag nv">sin verificar</span>.</td></tr>
+  <tr><td><b>E. 4G / LTE</b> (Antel inalámbrico, Tigo, Claro)</td><td>Chip o antena; WAN que dice LTE o APN.</td>
+      <td>Asumí CG-NAT (en el mundo, más del 90 % de las redes de celular lo usan). Comprobalo igual con los pasos 4 y 5. Si hay IP pública, como A, pero mirá el tope de GB. Si no, plan B.</td></tr>
+  <tr><td><b>F. Router viejo de Antel</b> (ZTE F660, F670, F680)</td><td>Modelo en la etiqueta.</td>
+      <td>Antel cambia <b>gratis</b> el F660 y el F670 por un F6600 <span class="tag of">oficial</span>: pedirlo. El F680: pedir el cambio <span class="tag nv">sin confirmar si es gratis</span>.
+      En el F660 hay reportes de que solo andan puertos de 4 cifras y en el F680 de que no reenvía <span class="tag nv">foros viejos</span>. Si el router no acepta
+      <code>21554</code> y no lo cambian ese día, usá el esquema de 4 cifras de 1.3.</td></tr>
+  <tr><td><b>G. ADSL</b></td><td>Cable de teléfono.</td><td>Sirve, pero la subida da para 1 o 2 cámaras. Medir (6.4) y ofrecerle fibra al cliente.</td></tr>
+  <tr><td><b>H. Antel ya en modo puente</b></td><td>El router de Antel no muestra IP en ninguna conexión PPPoE: el PPPoE lo hace el router del cliente y la IP pública está en su WAN.</td>
+      <td>Reenvío solo en el router del cliente (como A) y DDNS en el grabador.</td></tr>
+  <tr><td><b>I. Dos conexiones</b> (respaldo o balanceo: fibra + 4G)</td><td>El router tiene dos WAN, o un equipo aparte para el 4G.</td>
+      <td>El grabador puede avisarle a No-IP la IP del 4G (con CG-NAT) y el nombre apunta mal o va y viene. En el router, que el grabador salga siempre por la
+      fibra (regla de ruta por IP de origen) y que el reenvío esté en esa WAN; si no se puede, DDNS en el router, atado a la WAN de fibra
+      <span class="tag nv">sin verificar</span>. Hacé la 6.1 dos veces: con el 4G de respaldo conectado y desconectado.</td></tr>
+  <tr><td><b>J. Satelital</b> (Starlink y parecidos)</td><td>Antena satelital.</td><td>Asumí CG-NAT: plan B (2.3).</td></tr>
+  </tbody>
+</table>
+
+<h3>2.3 Plan B honesto: cuando no se pueden abrir puertos</h3>
+<p>Con CG-NAT o 4G sin IP pública, el reenvío de puertos no existe. Decíselo al cliente claro y elegí, en este orden:</p>
+<table>
+  <thead><tr><th style="width:30%">Opción</th><th>Cómo</th><th style="width:26%">A tener en cuenta</th></tr></thead>
+  <tbody>
+  <tr><td><b>1. Pedir IP pública a Antel</b></td><td>Si es fibra y aparece CG-NAT, el cliente pregunta en el 121 si le pueden dar IP pública
+      <span class="tag nv">sin verificar</span>. Si no, el plan Pyme con IP fija (opción 2).</td><td>Trámite del cliente. Después, camino estándar.</td></tr>
+  <tr><td><b>2. IP fija de Antel</b></td><td>Plan <b>Internet Pyme</b> (1 IP fija, contrato de 1 año; el 250/40 figuraba a $ 2.802 + IVA por mes), Emprendedor (5 IP) o Corporativo (hasta 29). Antel Empresas: 0800 2030 o empresas@antel.com.uy.</td><td>Precio a confirmar con Antel <span class="tag nv">verificar</span>. No encontramos si venden una IP fija suelta para un plan de hogar.</td></tr>
+  <tr><td><b>3. Pasar a fibra</b></td><td>Si el local está en 4G porque no tenía fibra, preguntar si ya llegó.</td><td>Es lo que mejor resuelve la subida.</td></tr>
+  <tr><td><b>4. Hikvision: Hik-Connect</b> (último recurso)</td><td>En la cámara, «Marca» = «Hikvision por Hik-Connect (sin abrir puertos)», con la clave de Hik-Connect for Teams del cliente («Clave de Hik-Connect…»). El cliente sigue el «Tutorial Hikvision» (cifrado apagado, H.264).</td><td>Depende del servidor de Hik-Connect (el corte del 5 nov), del cifrado y de un límite de transmisiones por grabador (sospecha).</td></tr>
+  <tr><td><b>5. Dahua sin IP pública</b></td><td>No tenemos camino por la nube para Dahua.</td><td>No se puede conectar hasta tener IP pública (1, 2 o 3).</td></tr>
+  <tr><td><b>6. A futuro: red privada de Tigo</b></td><td>La oficina le pregunta a Tigo si un router 4G con chip de su «Red Privada Móvil» puede terminar en nuestra nube por una VPN (lo averigua la oficina).</td><td><span class="tag nv">sin verificar</span> No está contratado y necesitaría un aparato en el local (sería la única excepción: decisión del dueño).</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================== 3. GRABADOR ============================== -->
+<h2 id="s3"><span class="n">3</span>El grabador paso a paso (Hikvision y Dahua)</h2>
+<p>Se hace con el mouse en el monitor del grabador o desde la notebook, en el navegador (<code>http://IP-del-grabador</code>, usuario <code>admin</code>).
+Los menús son los de la página web; en el monitor se llaman parecido. <b>Guardá al final de cada pantalla.</b> El grabador va <b>por cable</b> al
+router, nunca por wifi. Si tiene disco, que figure «Normal» (sin disco igual anda el vivo, pero no se bajan tramos de la grabación).</p>
+<div class="box small"><b>Si no encontrás el grabador en la red:</b> en Hikvision, el programa SADP lo encuentra y le cambia la IP aunque la web no deje.
+Los grabadores nuevos de las dos marcas obligan a una clave de admin fuerte la primera vez: si el cliente no la sabe, no sigas sin él.</div>
+
+<h3>3.1 Fecha y hora</h3>
+<table class="keep">
+  <thead><tr><th style="width:18%"></th><th>Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Dónde</td><td>Configuración → Sistema → Config. del sistema → Hora</td><td>Sistema → General → Fecha y hora</td></tr>
+  <tr><td class="k">Zona</td><td colspan="2">Una de <b>GMT-03:00</b>. Uruguay está en UTC-3 todo el año desde 2015 <span class="tag of">oficial</span>; cualquier ciudad de -3 sirve.</td></tr>
+  <tr><td class="k">Horario de verano</td><td>Pestaña DST: <b>destildar</b> «Enable DST» y «Auto DST Adjustment»</td><td>Apagado</td></tr>
+  <tr><td class="k">NTP</td><td colspan="2">Activado, servidor <code>pool.ntp.org</code> o <code>time.google.com</code>, puerto 123, cada 60 minutos.</td></tr>
+  <tr><td class="k">Cámaras IP</td><td>Horario de verano apagado también en cada cámara, si no quedan corridas una hora.</td><td>En NVR: «IPC Time Sync» para pasarles la hora.</td></tr>
+  </tbody>
+</table>
+<p class="small muted">Por qué importa: los tramos de grabación se piden por hora. Si la hora está mal, el clip sale de otro momento. Después de un corte de luz la
+corrige el NTP; si la pila del reloj está gastada, arranca con la hora mal hasta que el NTP la arregla <span class="tag nv">sin verificar</span>.</p>
+
+<h3>3.2 IP fija del grabador (y DNS)</h3>
+<table class="keep">
+  <thead><tr><th style="width:18%"></th><th>Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Dónde</td><td>Configuración → Red → Config. básica → TCP/IP (en el monitor: Menú → Configuración → Red → General)</td><td>Red → TCP/IP (en el monitor: Menú principal → Red → TCP/IP)</td></tr>
+  <tr><td class="k">DHCP</td><td><b>Apagado</b> (si no, la puerta de enlace y el DNS quedan grises)</td><td>Modo <b>Estático</b></td></tr>
+  </tbody>
+</table>
+<ol class="steps">
+  <li>Anotá la IP que tiene ahora y la <b>MAC</b> (ej. <code>54:8c:81:00:00:01</code>).</li>
+  <li>Elegí la IP: <b>fuera del rango que reparte el router</b> (lo anotaste en 2.1, paso 3). Usá <code>.201</code> a <code>.209</code> (grabador N →
+      <code>.20N</code>, igual que su puerto <code>2N554</code>) si el DHCP termina antes; si no, achicá el DHCP (ej. de .2 a .199). Si no podés ver el rango,
+      dejá la que tiene y <b>reservala por MAC en el router</b> (4.2). Hacé las dos cosas siempre que puedas.</li>
+  <li><b>Antes de fijarla, comprobá que esté libre:</b> <code>ping</code> sin respuesta, que no figure en la lista de equipos del router ni en SADP o ConfigTool.
+      Ojo con las cámaras IP de fábrica: vienen en <code>192.168.1.64</code> (Hikvision) y <code>192.168.1.108</code> (Dahua).</li>
+  <li>Máscara <code>255.255.255.0</code>. Puerta de enlace = la IP del router al que está conectado (en los ZTE de Antel suele ser <code>192.168.1.1</code>; en los ejemplos de este manual la red es <code>192.168.10.x</code>).</li>
+  <li>DNS preferido <code>8.8.8.8</code>, alternativo <code>1.1.1.1</code>. <b>Sin DNS no anda ni el NTP ni el DDNS.</b></li>
+  <li>Varios grabadores: IPs seguidas (<code>.201</code>, <code>.202</code>, <code>.203</code>…) y anotadas en la planilla.</li>
+  <li><b>No cambies la red de fábrica del router de Antel</b>: si Antel lo cambia, lo más probable es que el nuevo venga con la de fábrica y el grabador siga
+      con internet (y con el DDNS al día) <span class="tag nv">sin verificar en los Huawei</span>.</li>
+</ol>
+
+<h3>3.3 Puertos del grabador</h3>
+<table class="keep">
+  <thead><tr><th style="width:18%"></th><th>Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Dónde</td><td>Configuración → Red → Config. básica → Puerto (NVR nuevos: Sistema → Red → Avanzado → Más configuraciones)</td><td>Red → Puerto</td></tr>
+  <tr><td class="k">De fábrica</td><td>HTTP 80 · HTTPS 443 · <b>RTSP 554</b> · servidor/SDK 8000 <span class="tag of">oficial</span></td><td>HTTP 80 · HTTPS 443 · <b>RTSP 554</b> · TCP 37777 · UDP 37778 <span class="tag of">oficial</span></td></tr>
+  </tbody>
+</table>
+<p>Anotá el RTSP y el HTTP. <b>Lo simple es dejar 554 y 80 adentro</b> y traducir en el router (21554 → 554). Cambiá el RTSP del grabador solo si el
+router no deja que el puerto de afuera y el de adentro sean distintos. En Dahua, cambiar puertos reinicia el equipo.</p>
+
+<h3>3.4 Usuario <code>vigia</code> y permisos</h3>
+<table class="keep">
+  <thead><tr><th style="width:50%">Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td>Configuración → Sistema → Gestión de usuarios → <b>Agregar</b>. Usuario <code>vigia</code>, nivel <b>Operador</b> del grabador (no es el rol «Operador» de la app; o Usuario), la clave del local.<br>
+      Permisos: <b>Vista en vivo remota</b> y <b>Reproducción remota</b> (para bajar tramos), en <b>todos</b> los canales.<br>
+      <span class="small muted">Las cámaras que se agregan después de crear el usuario pueden quedar afuera: volvé a editarlo. Hubo un caso que necesitó también «Vista en vivo local».</span></td>
+      <td>Cuenta (o Sistema → Cuenta) → <b>Agregar usuario</b>. Usuario <code>vigia</code>, grupo <b>user</b>, la clave del local.<br>
+      Permisos por pestaña: <b>Monitor</b> (vista en vivo) y <b>Reproducción</b>, con <b>todos</b> los canales tildados.<br>
+      <span class="small muted">Hubo un reporte de error «Current group is in use» al recortar canales <span class="tag nv">un solo caso</span>.</span></td></tr>
+  </tbody>
+</table>
+<ul class="small">
+  <li>Clave: la de 1.5 (12 a 16, letras y números). Hikvision pide de 8 a 16 con al menos 2 tipos <span class="tag of">oficial</span>; Dahua 8 o más con 2 tipos.</li>
+  <li>La clave de <code>admin</code> no se carga nunca en la app. Si es de fábrica o fácil, <b>cambiala con el cliente presente</b> y que la guarde él.</li>
+</ul>
+
+<h3>3.5 Que el grabador acepte la conexión de video</h3>
+<ul>
+  <li><b>Hikvision:</b> autenticación RTSP en <b>digest</b> (o «digest/basic»), que es lo que recomienda Hikvision <span class="tag of">oficial</span>. Está en
+      Sistema → Servicio del sistema (en firmware viejo, Sistema → Seguridad → Autenticación). Si la página da 401 en «Probar conexión», revisá la
+      autenticación web (digest) <span class="tag nv">sin verificar</span>.</li>
+  <li><b>Dahua:</b> acepta basic y digest según pida el equipo; el RTSP y la API suelen venir habilitados <span class="tag nv">sin verificar</span>. Verificá que el RTSP esté en 554.</li>
+</ul>
+
+<h3>3.6 Bloqueo por intentos fallidos: prendido</h3>
+<table class="keep">
+  <thead><tr><th style="width:50%">Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td>Configuración → Sistema → Seguridad → Servicio de seguridad → «Enable Illegal Login Lock». 5 claves mal seguidas bloquean <span class="tag of">oficial</span>;
+      en firmware viejo 30 min, en los nuevos se elige y puede <b>bloquear la IP de origen</b>.</td>
+      <td>Menú principal → SEGURIDAD → Defensa ante ataques → Bloqueo de cuenta (intentos y tiempo). Viene prendido. Que sean 5 intentos y 30 min <span class="tag nv">sin verificar</span>.</td></tr>
+  </tbody>
+</table>
+<div class="box warn small"><b>No lo apagues:</b> es la principal defensa de un grabador expuesto. Pero tené en cuenta lo peligroso: si bloquea por IP, una
+  máquina nuestra con la clave mal deja a <b>esa IP sin ningún canal</b> de ese grabador, y reintenta cada minuto como máximo (puede mantener el bloqueo).
+  Si te equivocás de clave: corregila rápido en la app o tocá «Dejar de analizar» primero. Para desbloquear: esperar, reiniciar el grabador, o (Hikvision)
+  apagar y prender el bloqueo con <code>admin</code>.<br>
+  <b>Probá la clave primero en VLC.</b> Con la clave mal, cada «Probar conexión» cuenta varios intentos (la página, el video y el diagnóstico: estimado 2 a 4):
+  no la repitas más de una vez seguida.</div>
+
+<h3>3.7 Segunda calidad: la que usamos</h3>
+<table class="keep">
+  <thead><tr><th style="width:18%"></th><th>Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Dónde</td><td>Configuración → Video/Audio → Video → Tipo de stream «Sub Stream» (DVR Turbo, en el monitor: Configuración → Grabación → Parámetros → Sub-stream)</td>
+      <td>Cámara → Codificación → Audio/Video → Sub Stream 1, <b>habilitado</b></td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th style="width:24%">Campo</th><th>Valor estándar</th><th style="width:36%">Por qué</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Codificación</td><td><b>H.264</b> (en Dahua H.264H sirve; H.264B gasta más). <b>No</b> H.265, H.265+, H.264+ ni Smart Codec.</td><td>Usamos H.264: es lo probado y lo más liviano para las máquinas. Con H.265 puede no leerse o gastar más procesador (si pasa, el mensaje es «el grabador entrega el video… pero esta PC no lo pudo leer»).</td></tr>
+  <tr><td class="k">Resolución</td><td>640×360 si existe (NVR con cámaras IP). En DVR analógicos: <b>WD1</b> (960×576) si está; si no, D1/4CIF (unos 704×576).</td><td>La IA trabaja a 640. Más resolución gasta internet y procesador sin servir.</td></tr>
+  <tr><td class="k">Cuadros por segundo</td><td><b>8</b></td><td>Analizamos 5; el subflujo tiene que tener al menos eso, con margen.</td></tr>
+  <tr><td class="k">Tasa de bits</td><td><b>Variable</b>, máximo <b>384 kbps</b> (hasta 512 si se ve con cuadritos; 256 si la subida es justa, 6.4)</td><td>≈ 0,4 Mbps de subida por cámara.</td></tr>
+  <tr><td class="k">Intervalo de cuadro I</td><td>8 a 16 (1 a 2 s), si aparece el campo</td><td>La imagen aparece rápido al reconectar.</td></tr>
+  <tr><td class="k">Tipo de video</td><td>Solo video (sin audio)</td><td>Menos datos.</td></tr>
+  </tbody>
+</table>
+<ul class="small">
+  <li>Hacelo en <b>todos los canales</b> que se van a cargar. La grabación del cliente (calidad principal) no se toca.</li>
+  <li><b>NVR Hikvision:</b> apagá «H.265 Auto Switch» (Cámara → Más configuraciones): si no, cada cámara nueva pasa sola a H.265 <span class="tag of">oficial</span>.</li>
+  <li><b>Dahua:</b> Smart Codec apagado (con él la imagen tarda mucho en aparecer al reconectar).</li>
+  <li><b>640×360 casi nunca existe</b> en la segunda calidad de un DVR analógico (dan CIF, 4CIF, WD1, D1…). Con cámaras 16:9 esas medidas pueden dar
+      <b>píxeles no cuadrados</b>: la gente sale más ancha o más flaca. Si lo ves en «● En vivo», probá otra medida y avisá a la oficina con el modelo <span class="tag nv">probar con un grabador real</span>.</li>
+</ul>
+
+<h3>3.8 Cifrado de video: cuándo importa</h3>
+<table class="keep">
+  <thead><tr><th style="width:18%"></th><th>Hikvision</th><th>Dahua</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Qué es</td><td>«Stream Encryption» de Hik-Connect (lo prende la app del cliente o el instalador).</td><td>«RTSP over TLS» (cifra el RTSP).</td></tr>
+  <tr><td class="k">¿Importa por puertos?</td><td><b>Sí.</b> Con el cifrado prendido VLC y otros programas quedan en negro o sin imagen; se arregló apagándolo <span class="tag nv">foro, arreglo confirmado</span>. <b>Siempre apagado en todos los Hikvision</b> (Hik-Connect lo puede volver a prender).</td>
+      <td>Si está prendido, apagarlo es lo que se sugiere <span class="tag nv">foro, sin confirmar</span>.</td></tr>
+  <tr><td class="k">Dónde</td><td>Configuración → Red → Avanzado → Acceso a plataforma → destildar «Enable Stream Encryption» (también desde la app Hik-Connect o el menú local).</td><td>Seguridad → Servicio del sistema.</td></tr>
+  <tr><td class="k">Cuándo no importa</td><td>— (en Hikvision, siempre apagado)</td><td><b>Solo Dahua:</b> si en VLC, desde afuera, <b>se ve la imagen</b> de todos los canales, el RTSP over TLS no molesta: no lo toques.</td></tr>
+  </tbody>
+</table>
+
+<h3>3.9 UPnP apagado</h3>
+<p><b>Hikvision:</b> Red → NAT. <b>Dahua:</b> Red → UPnP. UPnP abre puertos solo (también la web y el 8000) y choca con el reenvío a mano <span class="tag of">oficial</span>,
+y se usó en ataques <span class="tag nv">foro</span>. Apagalo aunque hayas reenviado a mano. Apagalo también en el router (4.3).</p>
+
+<h3>3.10 DDNS en el grabador <span class="tag">solo en el que actualiza el nombre (el grabador 1 de los ejemplos; orden en 5.3)</span></h3>
+<p class="small"><b>Si el grabador ya tiene un DDNS en uso, no lo pises:</b> preguntá de quién es (del instalador o del cliente; el grabador guarda uno solo y, si lo
+cambiás, ellos se quedan sin acceso). Poné el nuestro en otro grabador del local o en el router de Antel (5.3) y, si no hay otro aparato, acordalo con el cliente.</p>
+<table>
+  <thead><tr><th style="width:24%">Campo</th><th>Hikvision (Configuración → Red → Config. básica → DDNS)</th><th>Dahua (Red → DDNS)</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Habilitar</td><td colspan="2">Sí</td></tr>
+  <tr><td class="k">Tipo</td><td><b>NO-IP</b></td><td><b>NO-IP DDNS</b></td></tr>
+  <tr><td class="k">Servidor</td><td colspan="2"><code>dynupdate.no-ip.com</code> (si lo pide)</td></tr>
+  <tr><td class="k">Nombre / dominio</td><td colspan="2"><code>vigia-deposito.ddns.net</code></td></tr>
+  <tr><td class="k">Usuario y clave</td><td colspan="2">Los de la <b>DDNS Key</b> de ese nombre (no la clave de la cuenta de la empresa).</td></tr>
+  <tr><td class="k">Intervalo</td><td>— (no lo encontramos documentado)</td><td>En minutos: 5</td></tr>
+  <tr><td class="k">Debe quedar</td><td>Estado «Normal»</td><td>Sin error</td></tr>
+  </tbody>
+</table>
+<p class="small">En los <b>otros</b> grabadores del local y en los routers, el DDNS queda <b>apagado</b>: un solo aparato por nombre. No uses los DDNS de
+fábrica: el HiDDNS de Hikvision cerró el 15 feb 2022 y el de Dahua no acepta equipos nuevos desde fines de 2017 <span class="tag of">oficial</span>.
+Hay reportes de Hikvision que actualizan cada 2 días o nunca <span class="tag nv">foro</span>: por eso se verifica en 5.4.</p>
+
+<h3>3.11 Filtro de IP (lista blanca): por ahora no</h3>
+<p class="small">Hikvision (Sistema → Seguridad → Filtro de dirección IP) y Dahua (Seguridad → Firewall, o Red → Filtro IP) dejan entrar solo a IPs
+elegidas. <b>Hoy no se usa</b>: nuestras máquinas cambian de IP pública, igual que las PCs de la oficina y tu celular. Queda para cuando las máquinas
+tengan IP fija (lo decide la oficina). Si alguna vez lo prendés, sumá primero tu propia IP para no quedar afuera, y probá que filtre también el video <span class="tag nv">sin verificar</span>.</p>
+
+<h3>3.12 Firmware y clave de admin</h3>
+<ul class="small">
+  <li>Firmware viejo: Hikvision anterior a <b>210628</b> (junio 2021) tiene la falla CVE-2021-36260 de la página web,
+      usada por la botnet Moobot; Dahua anterior a mediados de 2020, CVE-2021-33044/33045 (entrar sin clave) <span class="tag of">oficial</span>.</li>
+  <li><b>Qué hacer en el local con un firmware anterior a esas fechas:</b> (a) nunca reenvíes la web (<code>2N080</code>) ni uses modos de alarma;
+      (b) si el cliente está, tenés el archivo del modelo exacto bajado del portal oficial y la luz es estable, actualizalo antes de reenviar nada;
+      (c) si no, seguí solo con el video y anotá «firmware viejo: actualizar» en la planilla para otra visita. Avisá a la oficina igual.</li>
+  <li>Bajarlo solo del portal oficial y del <b>modelo exacto</b>. Actualizar con alguien en el local: si se corta a la mitad, el equipo puede quedar inservible.</li>
+</ul>
+
+<div class="keepall">
+<h3>3.13 Primera prueba, adentro del local</h3>
+<p>Con la notebook en el <b>wifi o cable del local</b>, en VLC (Medio → Abrir ubicación de red):</p>
+<pre>Hikvision:  rtsp://vigia:CLAVE@192.168.10.201:554/Streaming/Channels/102
+Dahua:      rtsp://vigia:CLAVE@192.168.10.201:554/cam/realmonitor?channel=1&amp;subtype=1</pre>
+</div>
+<p class="small">Hikvision: <code>102</code> = canal 1, segunda calidad; <code>202</code> el canal 2; <code>101</code> la principal. Dahua: <code>channel=</code> es el canal
+(desde 1), <code>subtype=1</code> la segunda, <code>0</code> la principal. Si adentro no se ve, desde afuera tampoco: revisá usuario, clave, permisos y 3.5.</p>
+<div class="box small"><b>Canales de las cámaras IP en un grabador Hikvision híbrido</b> (analógicas + IP): el número es (cantidad de canales analógicos +
+número del canal IP) × 100 + calidad <span class="tag of">oficial</span>. La primera cámara IP de un DVR de 4 canales es <code>502</code>, de uno de 8 <code>902</code>,
+de uno de 16 <code>1702</code> (en la app, canal 5, 9 o 17). Lo seguro: en el navegador, adentro, <code>http://192.168.10.201/ISAPI/Streaming/channels</code> (pide usuario
+y clave) y mirar los <code>&lt;id&gt;</code>. En un NVR, D1 = <code>101/102</code>. En un XVR Dahua, los canales IP probablemente siguen a los analógicos
+(<code>channel=9</code> en uno de 8) <span class="tag nv">sin verificar: probá en VLC</span>.</div>
+
+<h3>3.14 Reinicios programados y servicios que sobran</h3>
+<ul class="small">
+  <li><b>Dahua:</b> Sistema → Mantenimiento automático: el reinicio a una hora con el local cerrado, o apagado (a qué hora viene de fábrica
+      <span class="tag nv">sin verificar</span>). Un reinicio en horario de atención se ve como un corte todos los días a la misma hora (8.1).</li>
+  <li><b>Hikvision y Dahua:</b> SSH y Telnet apagados en un grabador que queda expuesto (Hikvision: Sistema → Seguridad → Servicio de seguridad; Dahua:
+      Seguridad → Servicio del sistema; el nombre varía).</li>
+</ul>
+
+<!-- ============================== 4. ROUTERS ============================== -->
+<h2 id="s4"><span class="n">4</span>El o los routers</h2>
+
+<h3>4.1 Entrar y saber qué router es</h3>
+<p>En la notebook, <code>http://</code> + la puerta de enlace (ZTE de Antel: <code>http://192.168.1.1</code>), con el usuario y la clave de la etiqueta.
+Si la etiqueta dice <code>user</code> y no aparecen las opciones (o están en gris), entrá con <code>admin</code> o pedile la clave a Antel (1.1 bis). Antel puede cambiarla a distancia.
+<b>Nunca uses claves de instalador que circulan en foros.</b></p>
+<table class="keep">
+  <thead><tr><th style="width:24%">Router</th><th>Dónde está cada cosa</th></tr></thead>
+  <tbody>
+  <tr><td class="k">ZTE F6600 (fibra, el actual)</td><td>Reserva: Red local → LAN → Vinculación DHCP (DHCP Binding). Reenvío: Internet → Seguridad → Reenvío de puertos (en algunos, Aplicación → Reenvío de puertos). WAN: Internet → Estado.
+      Probado por el dueño (reserva por MAC + dos puertos altos, anduvo desde datos móviles) <span class="tag pr">probado</span>. DMZ y DDNS: menú no confirmado.</td></tr>
+  <tr><td class="k">ZTE F660 / F670 / F680</td><td>El F660 y el F670: pedir el cambio gratis a F6600 <span class="tag of">oficial</span>; el F680, pedir el cambio <span class="tag nv">sin confirmar si es gratis</span>. Si no queda otra: Red → LAN → DHCP Binding y Aplicación → Reenvío de puertos <span class="tag nv">manual del F660</span>.</td></tr>
+  <tr><td class="k">Huawei HG8145V5 / HG8145X6</td><td>Configuración avanzada → Reglas de reenvío → Asignación de puertos / DMZ; LAN → IP fija por DHCP; Aplicación → DDNS <span class="tag nv">manual de Huawei; Antel puede tener su firmware</span>.</td></tr>
+  <tr><td class="k">4G de hogar / ADSL</td><td>No se sabe qué router dan ni si hay IP pública: diagnóstico de la sección 2.</td></tr>
+  <tr><td class="k">Otros (TP-Link, Mercusys, Tenda…)</td><td>Mismo concepto en «Reenvío de puertos», «Servidor virtual» o «NAT», y la reserva en DHCP.</td></tr>
+  </tbody>
+</table>
+
+<h3>4.2 Reservar la IP de cada grabador</h3>
+<p>ZTE F6600: <b>Red local → LAN → Vinculación DHCP</b> → <b>+ Crear nuevo</b>: MAC del grabador e IP fija (la misma de 3.2). Aplicar. Si no aparece,
+buscá dentro de «Servidor DHCP» una tabla de «asignación estática» o «reserva». Con IP fija en el grabador <b>y</b> reserva en el router, la IP no
+cambia nunca y las reglas siempre le apuntan.</p>
+
+<h3>4.3 Reenviar los puertos</h3>
+<div class="box warn small"><b>Primero, lo que ya hay.</b> Mirá y sacale foto a las reglas y a la DMZ que ya están. Borrá las que abran hacia el grabador el 80, 8000, 443,
+  554, 37777 o 37778 con el mismo número afuera, cualquiera que lleve al 8000, 37777 o 37778 de adentro (con el número que sea afuera) y cualquier DMZ
+  hacia el grabador. Antes, preguntale al cliente cómo mira las cámaras en el celular: si es por número de serie
+  (Hik-Connect, DMSS, P2P), no le cambia nada; si es por IP o DDNS con el 8000 o el 37777, pasale la app a P2P en el momento y probala con él.
+  Comprobá también que la <b>administración del router desde internet</b> esté apagada (el menú varía) <span class="tag nv">sin verificar</span>.
+  Anotá en la planilla qué reglas viejas encontraste y cuáles borraste.</div>
+<div class="keepall">
+<p>ZTE F6600: <b>Internet → Seguridad → Reenvío de puertos</b> → <b>+ Crear nuevo</b>, una regla por fila, <b>Aplicar</b> después de cada una:</p>
+<table>
+  <thead><tr><th style="width:26%">Campo</th><th>Regla de video del grabador 1</th><th>Regla de la web del grabador 1 <span class="tag">solo si hace falta (1.3)</span></th></tr></thead>
+  <tbody>
+  <tr><td class="k">Encendido</td><td>sí</td><td>sí</td></tr>
+  <tr><td class="k">Nombre</td><td><code>vigia-g1-rtsp</code></td><td><code>vigia-g1-web</code></td></tr>
+  <tr><td class="k">Protocolo</td><td><b>TCP</b></td><td>TCP</td></tr>
+  <tr><td class="k">Conexión WAN</td><td>la de INTERNET (PPPoE) o Auto</td><td>la misma</td></tr>
+  <tr><td class="k">IP WAN Host (origen)</td><td><code>0.0.0.0 ~ 0.0.0.0</code> (todo en 0: <b>no limitar el origen</b>)</td><td>igual</td></tr>
+  <tr><td class="k">LAN Host</td><td><code>192.168.10.201</code></td><td>la misma</td></tr>
+  <tr><td class="k">Puerto WAN</td><td><code>21554 ~ 21554</code></td><td><code>21080 ~ 21080</code></td></tr>
+  <tr><td class="k">Puerto de LAN Host</td><td><code>554 ~ 554</code> (el RTSP del grabador, <b>nunca</b> 8000, 37777 ni 80)</td><td><code>80 ~ 80</code></td></tr>
+  </tbody>
+</table>
+</div>
+<p class="small">La app pide el video por <b>TCP dentro del mismo puerto</b>: alcanza con una regla TCP por grabador, sin UDP ni rangos. No limites el
+origen: nuestras máquinas y la app salen por IPs que cambian. <b>Nada de DMZ al grabador ni UPnP en el router.</b></p>
+<table class="keep nowrap">
+  <thead><tr><th>Grabador</th><th>IP adentro (ej.)</th><th>Regla de video</th><th>Regla web (si hace falta)</th><th>Link de prueba desde afuera (Hikvision, canal 1)</th></tr></thead>
+  <tbody>
+  <tr><td>1</td><td><code>192.168.10.201</code></td><td>21554 → .201:554</td><td>21080 → .201:80</td><td><code>…:21554/Streaming/Channels/102</code></td></tr>
+  <tr><td>2</td><td><code>192.168.10.202</code></td><td>22554 → .202:554</td><td>22080 → .202:80</td><td><code>…:22554/Streaming/Channels/102</code></td></tr>
+  <tr><td>3</td><td><code>192.168.10.203</code></td><td>23554 → .203:554</td><td>23080 → .203:80</td><td><code>…:23554/Streaming/Channels/102</code></td></tr>
+  <tr><td>4</td><td><code>192.168.10.204</code></td><td>24554 → .204:554</td><td>24080 → .204:80</td><td><code>…:24554/Streaming/Channels/102</code></td></tr>
+  <tr><td colspan="5" class="small">Para seguir: grabador N → <code>2N554</code> y <code>2N080</code> hasta el 9 (1.3). El mismo nombre DDNS para todos.</td></tr>
+  </tbody>
+</table>
+
+<div class="keepall">
+<h3>4.4 Doble router (doble NAT)</h3>
+<p>Se reconoce como en 2.1 (paso 2). Hay tres soluciones:</p>
+<table class="keep">
+  <thead><tr><th style="width:24%">Solución</th><th>A favor</th><th>En contra</th></tr></thead>
+  <tbody>
+  <tr><td><b>1. Reenvío en los dos</b> <span class="tag">la de siempre</span><br><span class="small">Antel: puertos → WAN del router del cliente (reservada por MAC). Cliente: puertos → cada grabador.</span></td>
+      <td>No se toca el servicio de Antel.</td><td>Dos lugares para mantener. Si Antel cambia su router, se pierde la parte de Antel.</td></tr>
+  <tr><td><b>2. DMZ en el de Antel → WAN del router del cliente</b></td><td>Una sola cosa en Antel; los reenvíos van en el router del cliente, que sigue con su firewall.</td>
+      <td>Si la WAN del router del cliente cambia de IP, la DMZ apunta a otro aparato (peligroso): <b>reservala sí o sí</b>.</td></tr>
+  <tr><td><b>3. Modo puente en el de Antel</b></td><td>Un solo NAT: la IP pública llega al router del cliente.</td>
+      <td>Se apaga el wifi de Antel (y el WiFi Max). Hacen falta los datos PPPoE. Cambio grande: con permiso de quien maneja la red (4.6).</td></tr>
+  </tbody>
+</table>
+</div>
+<pre>Ejemplo: un local con 4 grabadores detrás de un router propio del cliente (solución 1)
+
+Internet ── Router de Antel ─ IP pública 203.0.113.25 (cambia: la sigue el DDNS)
+              │ red 192.168.1.x
+              │ reserva: MAC del router del cliente → 192.168.1.2
+              │ reglas:  21554, 22554, 23554, 24554 → 192.168.1.2 (mismo número)
+              ▼
+            Router del cliente ─ WAN 192.168.1.2
+              │ red 192.168.10.x
+              │ reglas:  21554 → 192.168.10.201:554    22554 → 192.168.10.202:554
+              │          23554 → 192.168.10.203:554    24554 → 192.168.10.204:554
+              ▼
+            Grabador 1 (.201, actualiza el DDNS) · Grabador 2 (.202)
+            Grabador 3 (.203) · Grabador 4 (.204)</pre>
+<ul class="small">
+  <li>Si falta la regla del segundo router, la app dice «… no contesta en el puerto … desde esta PC…» (igual que si faltara en el primero).</li>
+  <li>El DDNS va en el <b>grabador 1</b> (el que más tiempo está prendido). <b>Nunca en el router del cliente</b>: publicaría su IP de afuera, que es privada (192.168.1.2).</li>
+</ul>
+
+<h3>4.5 DMZ</h3>
+<p class="small">Solo como en la solución 2: <b>hacia el router del cliente, nunca hacia el grabador</b>. Un grabador en la DMZ queda con todos sus puertos
+(8000, 37777, la web) abiertos a internet.</p>
+
+<h3>4.6 Modo puente</h3>
+<p class="small">Los equipos de Antel funcionan como puente o como router; el cambio lo hace el titular desde <b>MiAntel</b> o llamando al <b>121</b>
+(*121 desde un celular de Antel) <span class="tag of">oficial</span>. En MiAntel, según foros, está en Gestión de internet → Cambiar modo de red <span class="tag nv">foro</span>.
+Antes, pedile a Antel el <b>usuario y la clave PPPoE</b> y cargalos en el router del cliente: hay un caso de alguien que quedó sin internet por no tenerlos listos.
+El WiFi Max de Antel necesita el router de Antel en modo router.</p>
+
+<h3>4.7 Redes mesh</h3>
+<p class="small">Un Deco (u otro mesh) en modo router detrás del de Antel agrega otro NAT. Pasalo a <b>modo punto de acceso</b> (cambia toda la red mesh junta) y
+el caso vuelve a ser de un solo router. El WiFi Max de Antel no debería sumar otro NAT <span class="tag nv">deducción</span>.
+Si el cliente no quiere pasar el mesh a punto de acceso, la cadena Antel → router → mesh es un <b>triple NAT</b>: una regla de reenvío en cada router de la
+cadena (el mismo número de puerto hasta el último, que lo lleva al 554) y una reserva de IP en cada uno.</p>
+
+<h3>4.8 Anotar todo (si Antel cambia el router, se pierde)</h3>
+<p>Antel cambió más de 300.000 routers desde 2021, los cambia gratis y los maneja a distancia: un cambio, un reseteo o a veces una actualización
+<b>borra la reserva, los reenvíos, la DMZ y el DDNS del router</b>. Por eso:</p>
+<ul class="check">
+  <li>En la planilla: modelo del router, su IP, MAC e IP de cada grabador, cada regla (externo → interno), dónde está el DDNS y foto de la etiqueta.</li>
+  <li>Una etiqueta pegada en el router: <b>«Tiene reglas para las cámaras. Si Antel lo cambia, avisar a Analítica Crítica»</b> y el teléfono.</li>
+  <li>Si podés, achicá el rango que reparte el DHCP para que la IP del grabador nunca se la den a otro.</li>
+  <li>Si un router nuevo usa otra red (192.168.1.x en vez de 192.168.10.x), el grabador con IP fija queda sin internet: hay que cambiarle la IP <span class="tag nv">poco común</span>.</li>
+</ul>
+
+<h3>4.9 Grabador lejos del router</h3>
+<p class="small">El grabador va por cable. Si no se puede tender, en este orden: (1) <b>cable</b> (lo mejor); (2) <b>adaptadores por la red eléctrica (PLC)</b> o un
+nodo del mesh con puerto de red, en modo punto de acceso; (3) un <b>enlace inalámbrico en modo puente</b> (AP-cliente), <b>nunca</b> en modo router o WISP
+(agrega otro NAT). Los compra el cliente. En 2 y 3, <b>IP fija en el grabador</b> (los repetidores «universales» cambian la MAC y la reserva por MAC puede no
+andar) y una prueba de 30 min de «● En vivo» sin «Reconectando».</p>
+
+<!-- ============================== 5. DDNS ============================== -->
+<h2 id="s5"><span class="n">5</span>DDNS: el estándar de la empresa</h2>
+
+<h3>5.1 Por qué hace falta</h3>
+<p>En los planes de hogar, Antel da <b>IP pública dinámica</b>: cambia al reiniciar el router, con un corte o cuando se reconecta, y a veces <b>todos los días</b>
+(lo vimos). Antel no dice cada cuánto. Por eso la cámara se carga con un <b>nombre</b> y no con la IP. Con IP fija de Antel (caso B) no hace falta.</p>
+
+<h3>5.2 Proveedor y plan: No-IP pago, una cuenta de la empresa</h3>
+<table class="keep">
+  <thead><tr><th style="width:24%">Plan de No-IP</th><th style="width:16%">Nombres</th><th style="width:18%">Precio por año</th><th>Qué pasa</th></tr></thead>
+  <tbody>
+  <tr><td><b>Gratis</b></td><td>1 por cuenta (antes 3)</td><td>US$ 0</td><td>Hay que <b>confirmar cada 30 días</b>. Si no, a los 7 días queda 14 días en espera y <b>se borra: cualquiera lo puede registrar</b>. Que el grabador actualice no cuenta como confirmación. <b>Solo para pruebas.</b></td></tr>
+  <tr><td><b>Enhanced</b> <span class="tag">el estándar</span></td><td>3 / 5 / <b>25</b></td><td>29,99 / 39,99 / <b>59,99</b></td><td>No vencen mientras se pague, sin confirmaciones, hasta 49 letras, TTL elegible.</td></tr>
+  <tr><td><b>Pro Dynamic DNS</b></td><td>50 / 100 / 200</td><td>149,99 / 299,99 / 599,99</td><td>Cuando haya más de 25 locales.</td></tr>
+  </tbody>
+</table>
+<p class="small muted">Precios vistos en la página oficial a través del buscador, sin fecha <span class="tag nv">verificar en noip.com</span>. Pueden subir: según un foro, en 2023 el de 25
+nombres pasó de US$ 24,95 a 59,99. Con 25 nombres sale unos US$ 2,40 por local por año.</p>
+<div class="box warn"><b>Por qué no el gratis:</b> si un nombre gratis se borra y otra persona lo registra, nuestras máquinas y la app se conectarían a <b>su</b> aparato y le
+mandarían el usuario y la clave del grabador <span class="tag nv">deducción</span>. Además se cae el local entero sin aviso.</div>
+<table class="keep">
+  <thead><tr><th style="width:30%">Reglas de la cuenta</th><th>Qué</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Titular</td><td>Un mail de la empresa (no personal). Clave en el gestor de claves. Dos administradores con acceso. Si No-IP tiene verificación en dos pasos, prenderla <span class="tag nv">verificar</span>.</td></tr>
+  <tr><td class="k">Quién paga</td><td>La empresa, con <b>renovación automática</b> y un recordatorio 30 días antes del vencimiento: <b>si vence, se caen todos los locales a la vez</b>.</td></tr>
+  <tr><td class="k">Quién responde</td><td>Un responsable designado por el dueño (anotarlo en la oficina). Si hay un nombre gratis de prueba, ese responsable lo confirma cada mes.</td></tr>
+  <tr><td class="k">Claves de cada local</td><td>Una <b>DDNS Key</b> por nombre (1.2). Si se filtra la de un grabador, solo se toca ese nombre; cambiar la clave de la cuenta no rompe ningún local.</td></tr>
+  </tbody>
+</table>
+<p class="small"><b>Otros servicios:</b> DynDNS (Oracle) también viene en los grabadores, pero es pago (unos US$ 55 por año, hasta 30 nombres <span class="tag nv">verificar</span>): queda
+como plan B. PeanutHull y CN99 vienen en algunos grabadores, pero son servicios chinos: no se usan. DuckDNS, FreeDNS y Dynu no vienen en los grabadores
+(Dynu con «Custom» falló en un Hikvision <span class="tag nv">foro</span>): no se usan.</p>
+
+<h3>5.3 Dónde se configura</h3>
+<table class="keep">
+  <thead><tr><th style="width:28%">Quién actualiza el nombre</th><th>Cuándo</th></tr></thead>
+  <tbody>
+  <tr><td><b>El grabador 1</b> <span class="tag">el estándar</span></td><td>Siempre que traiga NO-IP (casi todos). Lo configurás vos, anda con cualquier router, no se pierde si Antel cambia el router y funciona
+      detrás de doble router (No-IP toma la IP desde donde le llega el aviso, que es la pública <span class="tag nv">foro + protocolo; se verifica en 5.4</span>). Paso 3.10.</td></tr>
+  <tr><td><b>El router de Antel</b></td><td>Solo si el grabador no trae NO-IP o no actualiza (se nota en 5.4). Ve la IP pública directo y está siempre prendido, pero hay reportes de ZTE que no
+      actualizan al reiniciar y de Huawei que fallan con No-IP (en Huawei se usa «DynDNS-custom») <span class="tag nv">foros</span>. Qué servicios trae el F6600, sin confirmar. Se pierde si Antel cambia el router.</td></tr>
+  <tr><td class="no">Nunca</td><td>El router propio del cliente cuando hay doble router (publica una IP privada), ni dos aparatos con el mismo nombre (No-IP advierte que no funciona bien).</td></tr>
+  </tbody>
+</table>
+<div class="box small"><b>Orden fijo para elegir quién actualiza:</b> (1) el grabador que más tiempo está prendido (o el que está en la UPS); entre marcas,
+  mejor un Dahua, que deja elegir el intervalo; (2) otro grabador del local; (3) el router de Antel; (4) DynDNS pago en el grabador (lo resuelve la oficina).
+  <b>Nunca la clave de la cuenta de No-IP en un aparato:</b> si la DDNS Key no anda con ese firmware, frená y avisá a la oficina. Si se cambia o se saca el
+  grabador que actualiza, pasá el DDNS a otro en la misma visita. Si falla la prueba forzada (6.2 bis), poné la IP real a mano en noip.com y pasá al
+  siguiente de la lista.</div>
+<p class="small">¿Y si se corta la luz? Apagado no actualiza, pero apagado tampoco hay video. Al volver, avisa la IP nueva: lo comprobás en la prueba de corte de luz (6.3).</p>
+
+<h3>5.4 Verificar que apunta a la IP correcta</h3>
+<ol class="steps">
+  <li>En noip.com, la lista de nombres muestra la IP y la última actualización: tiene que ser la <b>IP pública del local</b> (la del paso 2.1-4).
+      Nunca <code>10.x</code>, <code>172.16-31.x</code>, <code>192.168.x</code> ni <code>100.64-127.x</code>. <span class="small muted">En cuentas gratis la fecha puede no moverse si la IP no cambió.</span></li>
+  <li>Desde la oficina o la notebook (cmd de Windows): <code>nslookup vigia-deposito.ddns.net 8.8.8.8</code> → tiene que dar la misma IP.</li>
+  <li>Si da error: el nombre venció o está mal escrito. Si da una IP privada o 100.64.x: el que actualiza está mal elegido, o hay CG-NAT.</li>
+  <li>Si da la IP correcta y la cámara no conecta, <b>el problema no es el DDNS</b>: son los puertos, el router o el grabador.</li>
+</ol>
+<p class="small">Para ver la respuesta sin cachés en el medio: <code>nslookup -type=NS ddns.net</code> (da los servidores de No-IP) y después
+<code>nslookup vigia-deposito.ddns.net &lt;uno de esos servidores&gt;</code>.</p>
+
+<h3>5.5 Cuando Antel cambia la IP</h3>
+<p>Tarda lo que el aparato en darse cuenta (los grabadores no publican cada cuánto revisan; el programa de No-IP para PC, 5 min como mínimo) + la caché del
+nombre (60 a 300 s). <b>En la práctica, unos minutos.</b> En la app la cámara pasa a «Reconectando · Se perdió la señal» o «Sin conexión» y <b>vuelve sola</b>
+cuando el nombre se actualiza, más el reintento (cada 2 s, duplicando hasta 60 s). No hay que hacer nada. Si no vuelve en 15 minutos, sección 8.</p>
+<p class="small">Si la IP cambia todos los días, esos minutos sin video pueden caer en horario de atención. Si el router tiene reconexión o reinicio programado,
+ponelo de madrugada, con el local cerrado: la sesión de Antel arranca de cero a esa hora y los cambios de IP caen de noche <span class="tag nv">sin verificar</span>.</p>
+
+<h3>5.6 Tigo y el DDNS</h3>
+<div class="box ok"><b>Para el técnico:</b> Tigo no da DDNS ni IP fija para los locales: no hay nada que pedirle. El DDNS es siempre el No-IP de la empresa (5.2).</div>
+<p class="small">Lo contratado con Tigo es solo de nube (las máquinas de análisis en AWS): no incluye DDNS, ni IP fija para los locales, ni dominios. Y aunque
+diera un DNS propio, los grabadores solo actualizan los servicios que traen de fábrica (NO-IP y DynDNS). Tigo tampoco es el internet de los locales: Tigo
+(Millicom) compró Movistar Uruguay (la compra cerró en octubre de 2025, según la prensa) y desde abril de 2026 usa su marca; es operador móvil y vende a
+empresas Internet Dedicado, MPLS y una «Red Privada Móvil», pero la banda ancha fija de los locales es casi toda de <b>Antel</b>. Lo que sí puede aportar la nube más adelante (IP fija para nuestras máquinas) lo ve la oficina.</p>
+
+<!-- ============================== 6. PRUEBAS ============================== -->
+<h2 id="s6"><span class="n">6</span>Pruebas antes de irse</h2>
+<div class="box warn"><b>Desde afuera de verdad:</b> el celular en <b>datos móviles con el wifi apagado</b> (o compartiéndole internet a la notebook).
+Desde el wifi del local, el nombre DDNS con el puerto externo puede fallar aunque desde afuera ande: muchos routers no dejan «volver a entrar» por la IP
+pública desde adentro (NAT loopback). Que el celular tenga CG-NAT no molesta: la conexión sale de él.</div>
+
+<h3>6.1 VLC con datos del celular: todos los grabadores, al menos dos canales cada uno <span class="tag ob">obligatoria</span></h3>
+<table class="keep links">
+  <thead><tr><th style="width:22%">Prueba</th><th>Link (cambiá CLAVE, el puerto y el canal)</th></tr></thead>
+  <tbody>
+  <tr><td>Hikvision, grabador 1, canal 1</td><td><code>rtsp://vigia:CLAVE@vigia-deposito.ddns.net:21554/Streaming/Channels/102</code></td></tr>
+  <tr><td>Hikvision, grabador 1, canal 2</td><td><code>rtsp://vigia:CLAVE@vigia-deposito.ddns.net:21554/Streaming/Channels/202</code></td></tr>
+  <tr><td>Dahua, grabador 2, canal 1</td><td><code>rtsp://vigia:CLAVE@vigia-deposito.ddns.net:22554/cam/realmonitor?channel=1&amp;subtype=1</code></td></tr>
+  <tr><td>Dahua, grabador 2, canal 3</td><td><code>rtsp://vigia:CLAVE@vigia-deposito.ddns.net:22554/cam/realmonitor?channel=3&amp;subtype=1</code></td></tr>
+  <tr><td>Web (si se reenvió)</td><td><code>http://vigia-deposito.ddns.net:21080</code> → tiene que aparecer la pantalla de entrada del grabador. Que no muestre video en el navegador es normal.</td></tr>
+  </tbody>
+</table>
+<ul class="small">
+  <li><b>Puede tardar:</b> VLC suele probar primero el video por UDP y pasa a TCP recién a los 10 s más o menos (solo reenviamos TCP; la app usa siempre
+      TCP). En la PC: Herramientas → Preferencias → Mostrar ajustes: Todo → Entrada / Códecs → Demuxers → RTP/RTSP → tildá «Usar RTP sobre RTSP (TCP)»
+      (igual que la app; el nombre puede variar) <span class="tag nv">sin verificar</span>. En el celular, esperá 15 s antes de darlo por malo.</li>
+  <li><b>El H.264 se comprueba en la PC</b>, con al menos un canal por grabador: Herramientas → Información del códec muestra el códec y la resolución
+      (si dice H.265 / HEVC, volvé a 3.7).</li>
+  <li><b>Los links que anduvieron</b> son los que vas a pegar en la app. Llevan la clave de <code>vigia</code> en claro: guardalos en la nota del local en el
+      gestor de claves. Si los anotás en otro lado, poné <code>CLAVE</code> en lugar de la clave y, antes de pegarlos en la app, cambiá <code>CLAVE</code> por
+      la clave real en el link (la app toma la clave del link). Al terminar, borrá el historial de VLC (PC: Medio → Abrir medio reciente → Vaciar; celular:
+      Historial → borrar) y cualquier archivo de texto con links.</li>
+</ul>
+
+<h3>6.2 Prueba de cambio de IP (reinicio del router de Antel) <span class="tag ob">obligatoria</span></h3>
+<ol class="steps">
+  <li>Anotá la IP pública actual (2.1-4).</li>
+  <li>Apagá el router de Antel 30 segundos y prendelo. Esperá <b>hasta 15 minutos</b>.</li>
+  <li>Mirá la IP pública de nuevo (puede haber cambiado o no) y que noip.com muestre <b>la nueva</b>.</li>
+  <li>Repetí 6.1 <b>con el nombre DDNS</b>. Si anda, sobrevive a un reinicio. Si hay doble router, reiniciá también el del cliente.</li>
+  <li><b>Si la IP no cambió</b>, esta prueba no demuestra que el grabador actualice el DDNS: anotá «IP no cambió» y hacé la 6.2 bis. <b>Si cambió y a los
+      15 minutos noip.com sigue con la vieja</b>, el grabador no actualiza: 5.3 (orden de quién actualiza).</li>
+</ol>
+
+<h3>6.2 bis Prueba forzada del aviso del DDNS <span class="tag ob">obligatoria</span></h3>
+<ol class="steps">
+  <li>Anotá la IP real (2.1-4).</li>
+  <li>En noip.com, editá el nombre y poné a mano <code>203.0.113.1</code> (una dirección de ejemplo que no existe).</li>
+  <li>Cortá la luz del router y el grabador juntos, como lo hace el cliente (o, si no hay permiso para cortar, reiniciá solo el grabador que actualiza).</li>
+  <li>En hasta 15 minutos, noip.com tiene que volver a mostrar la IP real y VLC tiene que abrir por el nombre.</li>
+  <li>Si no vuelve: poné la IP real a mano en noip.com y cambiá quién actualiza (el orden fijo de 5.3).</li>
+</ol>
+<p class="small">Esto prueba el aviso <b>al prender</b>. El aviso con el grabador prendido (cuando Antel cambia la IP en el día) solo se prueba con el seguimiento
+de 24 h y 7 días de la oficina (6.7).</p>
+
+<h3>6.3 Prueba de corte de luz <span class="tag ob">obligatoria si el local corta la luz al cerrar</span> <span class="tag">si no, si el cliente lo permite</span></h3>
+<ol class="steps">
+  <li>Cortá la luz como la cortan ellos (la llave general o el circuito de router + grabador), 1 minuto.</li>
+  <li>Volvé la luz. Esperá <b>hasta 15 minutos</b>: router y grabador tienen que volver <b>solos</b>.</li>
+  <li>Repetí 6.1 con el nombre y mirá en el grabador que la <b>hora</b> esté bien (NTP).</li>
+</ol>
+<p class="small">Si algo no vuelve solo (el grabador queda apagado, un router pide un botón), anotalo y avisá: es lo que va a pasar cada noche si el local corta la luz (9.2).</p>
+
+<div class="keepall">
+<h3>6.4 Subida del local: cuántas cámaras aguanta <span class="tag">recomendada</span></h3>
+<p>Medí en <code>fast.com</code> («Más información») o <code>speedtest.net</code> con un servidor de Montevideo, desde una PC <b>con cable</b>, en horario de
+trabajo, 3 veces. Anotá la peor.</p>
+<table>
+  <thead><tr><th style="width:22%">Cuenta</th><th>Valor</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Cada cámara analizada</td><td>≈ <b>0,4 Mbps de subida</b> (segunda calidad a 384 kbps + lo que suma la red), mientras se mira.</td></tr>
+  <tr><td class="k">Cada vista extra</td><td>Otros 0,4 Mbps cada vez que alguien la abre además («● En vivo», «Ver con la IA», «Tomar foto del vivo»). Si la cámara baja tramos de la grabación, cada alerta es una ráfaga en calidad principal.</td></tr>
+  <tr><td class="k">Margen</td><td>Dejá libre el 30 a 50 %.</td></tr>
+  <tr><td class="k">Ejemplos</td><td>1 Mbps (ADSL) → 1 cámara · 5 Mbps → 7 · 10 Mbps → 15 · 30 Mbps (fibra Básico 400/30) → decenas. Las fibras de Antel van de 30 a 300 Mbps de subida: sobra.</td></tr>
+  <tr><td class="k">Planes con tope</td><td>1 cámara las 24 h ≈ 4,3 GB por día ≈ 130 GB por mes (12 h por día, unos 65). Con fibra «con límite» (250 / 450 GB) o inalámbricos (150-500 GB) el tope se puede comer.
+      <span class="tag nv">No confirmamos si la subida cuenta para el tope: preguntar a Antel</span>. El Pyme inalámbrico, pasados los 600 GB, baja a 512 kbps de subida.</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="small">Si no alcanza: se pierden cuadros, hay atrasos y reconexiones. Remedio: bajá la tasa de la segunda calidad a 256 kbps (aunque se vea con algún
+cuadrito); si no alcanza, 6 cuadros/s (nunca menos de 5); si tampoco, menos cámaras o un plan mejor.</p>
+<div class="box small"><b>La cuenta es del local entero:</b> cámaras analizadas de <b>todos</b> los grabadores × 0,4 Mbps, más 0,4 por cada vista abierta a la vez.
+  La subida solo baja con la segunda calidad del grabador (tasa de bits y cuadros): <b>no</b> baja con los «Cuadros por segundo» de la app ni con «solo métricas»
+  (el grabador manda igual todo el subflujo). Si no entran todas: cargalas todas y marcá «Analizar» solo en las prioritarias (caja, puerta, las góndolas que
+  pidió el cliente) hasta el número que da la cuenta; las demás quedan para mirar. Con el horario y «No mirar» no se gasta de noche. Anotá en la planilla
+  cuántas entran y cuáles se eligieron.</div>
+
+<h3>6.4 bis Prueba con todo abierto <span class="tag">recomendada</span></h3>
+<p class="small">Con todas las cámaras que se van a analizar en «En línea», abrí desde la notebook (en datos) «● En vivo» de dos cámaras y pedile al cliente que
+mire en su app. Durante 10 minutos, ninguna pasa a «Reconectando» y no sale «el grabador no da más transmisiones a la vez». Si falla: bajá la tasa de bits,
+sacá cámaras de «Analizar» o revisá el máximo de conexiones del grabador (8.1).</p>
+
+<h3>6.5 La app, desde afuera <span class="tag ob">obligatoria</span></h3>
+<p>Con la notebook en los datos del celular: cargá las cámaras (sección 7), «Más ▾ → Probar conexión» de cada una y «● En vivo» de al menos una por grabador.
+Recordá: eso prueba desde <b>tu</b> PC; nuestras máquinas están en la nube con otra IP. La prueba final es «Analizar» y ver «En línea» en la lista (7.7).
+Coordiná con el operador: después de ver «En línea», dejala analizando solo si él ya marcó las zonas; si no, «Dejar de analizar» hasta que las marque
+(sin zonas, en cámaras «General» o «Góndola» con hurto, los gestos igual pueden dar alertas a los operadores).</p>
+
+<h3>6.6 Anotar: cuándo el local está instalado</h3>
+<p>Cada prueba con su resultado, fecha y hora en la planilla (sección 10).</p>
+<div class="box warn"><b>El local se da por instalado solo con:</b> 6.1 (todos los grabadores), 6.2, 6.2 bis (aviso forzado del DDNS), 6.3 si el local corta la
+  luz al cerrar, y 7.7: en <b>cada grabador</b>, al menos una cámara en «Analizar» que muestre «En línea · N fps» durante <b>10 minutos seguidos</b> sin pasar por
+  «Reconectando». Si esa cámara no se va a analizar (el cliente no lo contrató): «Analizar», esperar «En línea» y después «Dejar de analizar».
+  Es la única prueba que demuestra que <b>nuestras máquinas</b> llegan al grabador (una regla limitada a una IP de origen, un filtro de IP, la IP de la máquina
+  bloqueada por intentos o una <code>192.168.x</code> cargada solo se ven ahí).</div>
+
+<h3>6.7 Seguimiento de la oficina <span class="tag ob">obligatoria</span></h3>
+<p>A las <b>24 horas</b> y a los <b>7 días</b> de la instalación, la oficina mira:</p>
+<ol class="steps">
+  <li><b>noip.com:</b> la IP y la «última actualización» del nombre. Si la IP es distinta de la que se anotó al instalar, el DDNS se está actualizando solo
+      (la «última actualización» tiene que ser posterior al cambio). Si es la misma, Antel todavía no la cambió: volver a mirar a los 7 días.</li>
+  <li><b>«Clientes»:</b> todas las cámaras analizadas en «En línea · N fps».</li>
+  <li><b>Si el local corta la luz:</b> 30 minutos después de la hora de apertura, que hayan vuelto solas.</li>
+</ol>
+<p class="small">Si algo falla, se agenda otra visita. Se anota en la planilla: «Seguimiento 24 h ☐ OK · 7 días ☐ OK · quién y cuándo».</p>
+
+<!-- ============================== 7. APP ============================== -->
+<h2 id="s7"><span class="n">7</span>Cargar las cámaras en la app</h2>
+<div class="box small"><b>Ojo con lo que cambió:</b> ya no existe «Probar desde esta PC» (era de «Editar cliente» en las apps 1.33 y 1.34), ni «Por IP y puertos
+(la marca se detecta sola)», ni «Ajustar…», ni la pantalla «Cámaras». En el cliente <b>no va nada de cámaras</b>. El formulario de la cámara no tiene botón
+de prueba: <b>se guarda primero y se prueba después</b>.</div>
+
+<h3>7.1 El cliente (si no lo creó la oficina)</h3>
+<ol class="steps">
+  <li>Pestaña «Clientes» → «＋ Nuevo» (arriba de la lista de la izquierda). Se abre «Nuevo cliente».</li>
+  <li>«Nombre», «Zona horaria» (viene <code>America/Montevideo</code>), «WhatsApp», «Email» y «Chat de Telegram» (opcionales), «Planes contratados».</li>
+  <li>«Horario del local (fuera de horario no se gasta video ni análisis)»: <code>09:00-17:00</code> o cortado <code>09:00-13:00, 16:00-20:00</code>; vacío = cerrado.
+      «Martes a viernes = lunes» copia el lunes. <b>Cargalo siempre</b>, y más si el local corta la luz al cerrar.</li>
+  <li>A la derecha, «Acceso a la web del cliente»: «Usuario», «Clave» y «Generar». Solo un admin ve «Qué cámaras se analizan (en las máquinas)»: viene «Como el ajuste general»; dejalo (o «Solo las cámaras marcadas «Analizar»», que es lo mismo con el ajuste de siempre).</li>
+  <li>«Guardar». Si pusiste clave web, aparece el texto para el cliente con «Copiar»: mandalo <b>por privado</b>.</li>
+</ol>
+
+<h3>7.2 Las cámaras</h3>
+<p>Elegí el cliente a la izquierda → «＋ Agregar cámaras». Se abre «Nueva cámara · &lt;cliente&gt;».</p>
+<table>
+  <thead><tr><th style="width:32%">Campo</th><th>Qué poner</th></tr></thead>
+  <tbody>
+  <tr><td class="k">«Marca»</td><td>«Hikvision» o «Dahua». <b>Ojo:</b> si el cliente tiene la clave de Hik-Connect cargada, viene elegida «Hikvision por Hik-Connect (sin abrir puertos)»: cambiala.</td></tr>
+  <tr><td class="k">«Link RTSP (el de VLC; varios = uno por línea)»</td><td>Pegá <b>el link que anduvo en VLC desde afuera</b>, ej. <code>rtsp://vigia:CLAVE@vigia-deposito.ddns.net:21554/Streaming/Channels/102</code>.
+      Se completa solo al pegar, al salir del recuadro o con Enter.</td></tr>
+  <tr><td class="k">«IP o DDNS del grabador»</td><td>Lo llena el link: <code>vigia-deposito.ddns.net</code>. Solo el nombre o la IP: sin <code>http://</code>, puerto, <code>/</code> ni usuario. <b>Nunca</b> una 192.168.x (la app no avisa).</td></tr>
+  <tr><td class="k">«Puerto RTSP»</td><td>El externo: <code>21554</code> (grabador 1), <code>22554</code> (grabador 2)… <b>Nunca</b> 8000 ni 37777.</td></tr>
+  <tr><td class="k">«Canal(es): 4 · 1-8 · 1, 2, 5»</td><td>Lo llena el link. Para varios canales del mismo grabador: <code>1-8</code> o <code>1, 2, 5</code>.</td></tr>
+  <tr><td class="k">«Usuario del grabador» / «Clave del grabador»</td><td><code>vigia</code> y su clave (los llena el link). <b>Si cargás a mano sin link, el campo viene con <code>admin</code>: cambialo a <code>vigia</code></b> (la app no avisa).</td></tr>
+  <tr><td class="k">«Calidad del video»</td><td>«Secundaria (recomendada: menos internet)». Si pegaste un link <code>…01</code> queda en «Principal (más resolución y más internet)»: pasala a secundaria cuando ande.</td></tr>
+  <tr><td class="k">«Nombre»</td><td>Opcional al crear (ver 7.4).</td></tr>
+  <tr><td class="k">«Más opciones (puerto HTTP, alarmas del grabador)»</td><td>«Puerto HTTP (la página)» viene en 80: si reenviaste la web, poné el externo (<code>21080</code>); si no la reenviaste, poné igual el externo reservado (<code>21080</code>): da «NO responde» sin tocar el router de Antel. «Modo»: «En vivo» (lo normal), «Alarmas del propio grabador» o «Alarmas por Hik-Partner Pro».
+      También «Alarmas del grabador que se analizan (modos de alarma)» y «Bajar el clip de la grabación del grabador (si tiene disco)».</td></tr>
+  <tr><td class="k">«Habilitada»</td><td>Tildada (destildada no se analiza ni se puede mirar).</td></tr>
+  <tr><td class="k">Columna derecha</td><td>«Qué mide esta cámara» · «Tipo de cámara (qué mira)» · «Con el local cerrado»: «No mirar (ahorra todo: video, internet y análisis)» por defecto · «Cuadros por segundo (5 a 15)»: dejar 5.</td></tr>
+  </tbody>
+</table>
+<div class="keepall">
+<p>Antes de «Guardar», mirá la línea debajo del link (aparece al pegar, al salir del recuadro o con Enter):</p>
+<table class="keep small">
+  <tr><td class="msg">✔ Datos tomados del link: canal N, calidad principal/secundaria.</td><td>Link de la marca elegida: la app arma la dirección con los campos (se pueden cambiar canal y calidad).</td></tr>
+  <tr><td class="msg">✔ N links: se crea una cámara por link (abajo, los datos del primero).</td><td>Pegaste varios.</td></tr>
+  <tr><td class="msg">✔ Link de otra forma: se va a usar tal cual, como en VLC.</td><td>No es la forma estándar: se guarda cifrado y se usa tal cual (no se baja el clip del grabador). Revisá que «IP o DDNS del grabador» diga el DDNS (un símbolo raro en la clave puede hacer que lea mal la dirección).</td></tr>
+  <tr><td class="msg">✔ Datos tomados del link… ⚠ El link tiene la forma de Dahua (o Hikvision): se va a usar tal cual.</td><td>Elegiste una marca y el link es de la otra: revisá la «Marca».</td></tr>
+  <tr><td class="msg">⚠ &lt;error&gt;</td><td>No lo entendió: tabla 8.2.</td></tr>
+</table>
+</div>
+
+<h3>7.3 Varias cámaras de una vez</h3>
+<ul>
+  <li><b>Mismo grabador, varios canales:</b> un link (o IP/DDNS, puerto, usuario y clave) y en «Canal(es)» <code>1-8</code> o <code>1, 2, 5</code>: una cámara por canal, misma conexión y calidad (máximo 64 por vez, canales 1 a 256).</li>
+  <li><b>Varios links:</b> uno por línea, una cámara por link con su dirección, puerto, canal y calidad. El «Puerto HTTP» y lo de la derecha valen para todas:
+      si la web está reenviada y los links son de grabadores distintos, cargá cada grabador por separado, o corregí después el «Puerto HTTP» de cada cámara.</li>
+  <li><b>No se repiten:</b> si ya hay una cámara Hikvision o Dahua con la misma dirección, puerto RTSP y canal, se saltea («Ya están cargados: canal N («…»)» o «Se agregaron X cámara(s). Y ya estaban cargadas…»).
+      Por eso <b>4 grabadores con el mismo DDNS y puertos distintos no chocan</b>; el mismo grabador cargado con dos nombres distintos sí se duplicaría.</li>
+  <li>Un link de otra forma no se combina con varios canales: «Ese link se usa tal cual: una cámara por link.»</li>
+</ul>
+
+<h3>7.4 Cómo se llaman</h3>
+<table class="keep">
+  <thead><tr><th style="width:42%">Caso</th><th>Nombre</th></tr></thead>
+  <tbody>
+  <tr><td>Sin «Nombre»</td><td>«Canal N»</td></tr>
+  <tr><td>Con «Nombre» y un solo canal o link</td><td>ese nombre</td></tr>
+  <tr><td>Con «Nombre» y varios canales</td><td>«Nombre N», N = número de canal</td></tr>
+  <tr><td>Con «Nombre» y varios links</td><td>«Nombre 1», «Nombre 2»… por el <b>orden de los links</b>, no por el canal</td></tr>
+  </tbody>
+</table>
+<p class="small">Después se renombran con «Más ▾ → Nombres e imágenes de todas…»: tarjetas con la imagen, grabador y canal, nombre, tipo, «La IA ve: …» y
+«Sugerencia: …» con «Usar». Arriba, «Traer imágenes nuevas» (abre las cámaras de a una) y «Guardar nombres». Renombrar no corta el video; el nombre cambia en
+la app, no en el grabador. Usá lo que mira: «Caja», «Puerta», «Góndola bebidas».</p>
+
+<h3>7.5 Probar</h3>
+<p>Elegí la cámara → «Más ▾ → Probar conexión» (o clic derecho). Prueba <b>desde esta PC</b> (hasta 30 s) y el resultado sale a la derecha de la imagen:</p>
+<pre>Caja · prueba desde esta PC
+Página del grabador (HTTP): OK · &lt;modelo&gt; · serie &lt;serie&gt;   | NO responde · &lt;motivo&gt;
+Canales: 1: …, 2: …
+Video (RTSP): OK · 640x360                                  | NO anda · &lt;motivo&gt;
+Enlace: rtsp://***@vigia-deposito.ddns.net:21554/Streaming/Channels/102
+Revisá: misma red → IP de adentro y puertos 554/80; otra red → DDNS/IP pública y puertos externos (38554/38080); usuario y clave del GRABADOR.</pre>
+<ul class="small">
+  <li>Lo que importa es <b>«Video (RTSP): OK»</b>. Si no reenviaste la web, «Página del grabador (HTTP): NO responde» es <b>esperable</b> y no afecta el vivo.</li>
+  <li>La línea «Revisá:» sale si falla el video o la página. Los puertos <code>38554/38080</code> que nombra son un ejemplo de la guía vieja: los tuyos son los del esquema (21554…).</li>
+  <li>Solo prueba la calidad cargada. Si esa no existe, el motivo lo dice.</li>
+  <li>Probá con la notebook en los <b>datos del celular</b>, no en el wifi del local (6).</li>
+  <li>Prueba desde <b>tu</b> PC; el análisis lo hace la máquina en la nube, con otra IP: una prueba OK no garantiza «En línea» (7.7).
+      Y cada vista («● En vivo», la pestaña «En vivo», «Tomar foto del vivo», «Nombres e imágenes») abre <b>otra transmisión</b> del grabador.</li>
+</ul>
+
+<h3>7.6 Mirar: «● En vivo»</h3>
+<p>En la barra de la cámara, «● En vivo» abre la ventana de la cámara con la IA de esta PC. Estados: «Conectando con la cámara…» → «En vivo · se analizan N cuadros
+por segundo en esta PC». Si falla: «Sin conexión: &lt;motivo completo&gt;» (tabla 8.2), «Error: …» o «Detenido». Pasá caminando frente a una cámara y mirá que el
+recuadro siga a la persona. En la pestaña «En vivo» (con la casilla «Ver con la IA de esta PC») los estados son «Abriendo...», «Conectando...», «Viendo · N fps»,
+«IA · N personas · x de y cuadros/s» o «Sin conexión: &lt;motivo&gt;»; el motivo completo queda en «Registro ▴» (abajo): «[cliente · cámara] Para mirar: &lt;motivo&gt;».</p>
+
+<h3>7.7 Zonas y Analizar</h3>
+<ol class="steps">
+  <li>«✎ Marcar zonas»: si la cámara no tiene imagen, saca una foto del vivo sola. «Tomar foto del vivo» la cambia; «＋ Zona nueva»; «Guardar zonas». (Las zonas las afina el operador; ver la guía de operadores.)</li>
+  <li>Aprobar: «✔ Aprobar y analizar», dentro de «● En vivo» o «🎞 Clips».</li>
+  <li>O elegir una o varias (Ctrl o Mayús; Ctrl+A o «Más ▾ → Elegir todas») → «Analizar». Si no están aprobadas, pregunta: «N cámara(s) sin aprobar en «● En vivo» o «🎞 Clips»… ¿Analizarlas igual?».</li>
+  <li><b>Una cámara nueva no se analiza hasta tocar «Analizar»</b> (su «Estado» es «—»). Después de analizar, esperá a ver <b>«En línea · N fps»</b>: recién ahí está probado que <b>nuestra máquina</b> llega.
+      Para dar el local por instalado: una cámara por grabador, 10 minutos seguidos en «En línea» sin «Reconectando» (6.6). Coordiná con el operador lo de las zonas (6.5).</li>
+  <li><b>Si estás fuera del horario del local</b> y ya cargaste el horario con «No mirar…», la máquina no abre el video («Local cerrado (no se mira)»). En una cámara
+      por grabador, poné «Con el local cerrado» = «Seguir analizando igual (24 h, gasta todo)», esperá «En línea» y, antes de irte, volvé a
+      «No mirar (ahorra todo: video, internet y análisis)».</li>
+</ol>
+
+<h3>7.8 Qué significa cada estado de la lista</h3>
+<p class="small">Columnas: Cámara · Estado · Se analiza · Mide · Puesta a punto · Alertas hoy. Se refresca cada 30 s con la pestaña a la vista, o con «⟳ Actualizar clientes y cámaras».</p>
+<table>
+  <thead><tr><th style="width:32%">«Estado»</th><th>Qué significa</th></tr></thead>
+  <tbody>
+  <tr><td>—</td><td>No se analiza (normal recién cargada). Igual se puede mirar en «En vivo».</td></tr>
+  <tr><td>Deshabilitada</td><td>«Habilitada» destildada. Tampoco se puede mirar («No disponible»).</td></tr>
+  <tr><td>Esperando máquina</td><td>Marcada para analizar, pero no hay máquina de análisis en línea. No es la cámara.</td></tr>
+  <tr><td>Sin datos de la máquina</td><td>Ya tiene máquina pero todavía no informó (unos segundos a un minuto).</td></tr>
+  <tr><td>Máquina desconectada</td><td>La máquina no da noticias hace 3 min. No es la cámara: avisá a un admin.</td></tr>
+  <tr><td>Iniciando</td><td>La máquina está abriendo el video.</td></tr>
+  <tr><td>En línea · N fps [· N% quieta] [· solo métricas]</td><td><b>Anda.</b> «quieta» = escena sin movimiento.</td></tr>
+  <tr><td>Sin conexión</td><td>No abre. El motivo está en el detalle: «Estado: Sin conexión · No se pudo abrir rtsp://***@host:puerto/ruta — &lt;motivo&gt;» (tabla 8.2; cortado a 300 caracteres: el completo, en «Probar conexión» o «● En vivo»).</td></tr>
+  <tr><td>Reconectando</td><td>Se cortó y reintenta. Con «· Se perdió la señal» = abrió y dejó de llegar video (luz, internet, cambio de IP).</td></tr>
+  <tr><td>Error</td><td>Falló el análisis o la configuración (texto en el detalle).</td></tr>
+  <tr><td>Local cerrado (no se mira)</td><td>Fuera del horario del cliente con «No mirar»: no se abre el video. Normal.</td></tr>
+  <tr><td>Escuchando alarmas</td><td>Modo alarmas, conectado al grabador por la web (HTTP).</td></tr>
+  <tr><td>Detenida</td><td>La máquina la soltó.</td></tr>
+  </tbody>
+</table>
+<p class="small">«Se analiza»: «Sí · &lt;máquina&gt;», «Sí · esperando máquina» o «No». «Puesta a punto»: «—», «En ajuste» o «✔ Aprobada». El detalle de abajo muestra
+«Conexión: Hikvision vigia-deposito.ddns.net · canal 4 · RTSP 21554 · HTTP 80».</p>
+
+<h3>7.9 Editar después</h3>
+<ul class="small">
+  <li>Doble clic en la cámara o «Editar» → «Editar cámara». La clave dice «(vacía = sin cambios)». Un solo link y un solo canal («Al editar, un solo link.» / «Al editar, un solo canal.»).</li>
+  <li>Si la cámara usa un link tal cual («Pegá un link nuevo solo si cambió. Ahora usa un link tal cual.»): cambiar la dirección, el puerto, el canal o la clave <b>descarta ese link</b> y la cámara
+      pasa a armarse con los campos (con la ruta estándar de la marca, que en ese equipo puede no andar). Cambiar <b>solo</b> «Calidad del video» no hace nada: hay que pegar el link nuevo.</li>
+  <li>Las cámaras viejas con marca «ip» pasan a la marca que elijas al editarlas.</li>
+</ul>
+
+<!-- ============================== 8. PROBLEMAS ============================== -->
+<h2 id="s8" class="pb"><span class="n">8</span>Solución de problemas</h2>
+<p>Primero mirá el <b>mensaje</b> de «Probar conexión» o de «● En vivo» (8.2): casi siempre dice qué es. Si no hay mensaje claro, buscá el síntoma (8.1).</p>
+
+<h3>8.1 Por síntoma</h3>
+<div class="box small"><b>Diagnóstico a distancia (oficina): qué se cayó.</b>
+  <b>Todas las cámaras de todos los grabadores a la vez</b> → luz, internet, router o DDNS: <code>nslookup</code> del nombre; si da la IP actual y noip.com muestra
+  una actualización reciente, el grabador tiene internet y el router perdió las reglas (¿lo cambiaron?). <b>Un solo grabador</b> → su regla o el grabador.
+  <b>Una cámara sola</b> → canal, códec, cable o la cámara.</div>
+<table>
+  <thead><tr class="grp"><th style="width:20%">Síntoma</th><th style="width:25%">Causa probable</th><th style="width:27%">Cómo comprobarlo</th><th>Solución</th></tr></thead>
+  <tbody>
+  <tr><td colspan="4" style="background:var(--bg)"><b>No conecta</b></td></tr>
+  <tr><td>No abre desde afuera (VLC con datos no anda)</td><td>Regla ausente, apagada o con IP mal; falta la regla del segundo router; CG-NAT; DDNS con IP vieja; grabador apagado; el puerto de adentro no es el 554.</td>
+      <td>VLC con la <b>IP pública</b> en vez del nombre: si así anda, es el DDNS. Mensaje de «Probar conexión». Pasos 2.1-4 y 5 (CG-NAT).</td><td>4.3, 4.4, 5.4. Con CG-NAT, plan B (2.3).</td></tr>
+  <tr><td>Adentro anda y desde afuera no</td><td>Lo mismo que arriba (el grabador está bien).</td><td>VLC con la IP de adentro anda; con el nombre desde datos no.</td><td>Revisá las reglas campo por campo (TCP, encendida, LAN Host, puerto de adentro 554).</td></tr>
+  <tr><td>Desde afuera anda y desde el wifi del local no</td><td>El router no deja volver a entrar por la IP pública (NAT loopback).</td><td>Desde datos móviles anda.</td><td>Normal. Probá siempre desde datos.</td></tr>
+  <tr><td>Abre en VLC y no en la app</td><td>Otro link (la app pide otra calidad o canal); la otra calidad está en H.265 o no activada; firewall o antivirus de Windows; dirección cargada con <code>http://</code> o con el puerto.</td>
+      <td>Compará el «Enlace:» de «Probar conexión» con el de VLC. Si el mensaje dice «Si VLC sí lo abre desde esta misma PC, es el firewall…».</td><td>Pegá <b>el mismo link</b> de VLC. Activá la secundaria en H.264. Permitile a «Analítica Crítica» conectarse en el antivirus.</td></tr>
+  <tr><td>Anda en tu PC pero la lista dice «Sin conexión»</td><td>Cargada con IP interna; regla limitada a una IP de origen; filtro de IP en el grabador; la IP de la máquina quedó bloqueada por intentos.</td>
+      <td>Detalle «Conexión: …» de la cámara. «IP WAN Host» de la regla. Filtro de IP del grabador.</td><td>DDNS + puerto externo en la cámara; origen en 0.0.0.0; filtro apagado; esperar 30 min o reiniciar el grabador.</td></tr>
+  <tr><td>«Esperando máquina» / «Máquina desconectada»</td><td>No es la cámara: no hay máquina de análisis en línea.</td><td>Pestaña «Máquinas» (admin).</td><td>Avisá a un admin.</td></tr>
+  <tr><td colspan="4" style="background:var(--bg)"><b>Conecta pero se ve mal</b></td></tr>
+  <tr><td>Negro o gris (conecta, sin imagen)</td><td>Cifrado de Hik-Connect prendido (Hikvision); RTSP over TLS (Dahua); la cámara sin señal en el grabador.</td><td>¿En el monitor del grabador se ve ese canal? ¿VLC de afuera ve otros canales?</td><td>Apagar el cifrado (3.8). Revisar la cámara y su cable.</td></tr>
+  <tr><td>Pocos cuadros por segundo</td><td>Subflujo con menos de 5 cuadros/s; subida justa; PC del técnico que no da abasto.</td><td>VLC → Información del códec; estado «la PC no da abasto (N ms por cuadro)»; subida (6.4).</td><td>Subflujo a 8 cuadros/s; bajar tasa de bits; en la PC no es un problema del local.</td></tr>
+  <tr><td>Imagen trabada, con cuadritos o que tarda en aparecer</td><td>Tasa de bits muy baja o más alta que la subida; intervalo de cuadro I largo; Smart Codec.</td><td>Valores de 3.7; subida.</td><td>Variable, 384-512 kbps, cuadro I 8-16, Smart Codec apagado.</td></tr>
+  <tr><td>La gente sale ancha o flaca</td><td>Píxeles no cuadrados en la segunda calidad (WD1/D1 desde cámaras 16:9).</td><td>Comparar con la principal en VLC.</td><td>Probar otra resolución; avisar a la oficina con el modelo y la medida <span class="tag nv">sin verificar</span>.</td></tr>
+  <tr><td>De noche no detecta</td><td>Con infrarrojo (blanco y negro) la IA ve mucho menos. El video llega bien.</td><td>«● En vivo» de noche.</td><td>Es un límite del análisis, no de la conexión. Decíselo al cliente.</td></tr>
+  <tr><td>Los clips salen de otra hora</td><td>Hora del grabador mal (NTP, horario de verano, pila); en algunos Dahua la reproducción va en hora local o UTC.</td><td>Hora del grabador contra el celular.</td><td>3.1. Si la hora está bien y el clip sale corrido, avisá a la oficina (se ajusta por cámara).</td></tr>
+  <tr><td colspan="4" style="background:var(--bg)"><b>Se cae o no vuelve</b></td></tr>
+  <tr><td>Abre a veces / se corta y vuelve</td><td>Subida justa; IP que cambia; grabador por wifi; demasiadas transmisiones; router que se reinicia.</td><td>Subida (6.4); ¿«Reconectando · Se perdió la señal» seguido?</td><td>Cable, bajar tasa de bits, cerrar vistas, revisar el router.</td></tr>
+  <tr><td>Se corta todos los días a la misma hora</td><td>El local corta la luz al cerrar; o un reinicio programado en el grabador o el router (el menú varía).</td><td>Preguntar al cliente; mirar a qué hora pasa.</td><td>Horario del local + «No mirar» (9.2); quitar o mover el reinicio programado (3.14).</td></tr>
+  <tr><td>Después de un corte de luz no vuelve</td><td>Algo no prende solo; el DDNS no avisó la IP nueva; hora mal.</td><td>¿Router y grabador prendidos? noip.com contra «cuál es mi IP».</td><td>Que el cliente lo prenda; repetir 6.3; si el DDNS no actualiza, 5.3.</td></tr>
+  <tr><td>Cambió la IP y no vuelve</td><td>DDNS sin actualizar: grabador sin DNS o puerta de enlace; DDNS Key mal; dos aparatos con el mismo nombre; el DDNS en el router del cliente (doble NAT).</td>
+      <td><code>nslookup</code> contra «cuál es mi IP» del local (pedile a alguien de ahí, en el wifi).</td><td>Corregir 3.2 / 3.10; dejar un solo aparato; pasarlo al grabador 1.</td></tr>
+  <tr><td>«no se encuentra «host»…»: el nombre venció o se borró</td><td>Plan vencido (tarjeta rechazada), nombre gratis sin confirmar, mal escrito.</td><td>noip.com; <code>nslookup</code>.</td><td>Renovar. Si se borró y <b>otro lo registró</b>: no lo reuses; nombre nuevo, cambiar la dirección en todas sus cámaras y <b>cambiar la clave de <code>vigia</code></b>.</td></tr>
+  <tr><td>Antel cambió o reseteó el router</td><td>Se perdieron reserva, reglas, DMZ y DDNS del router.</td><td>Primera pregunta al cliente: «¿les cambiaron el router?». Modelo nuevo en la etiqueta.</td><td>Rehacer la sección 4 con la planilla (también el modo puente o la DMZ si estaban, y apagar el UPnP del router nuevo). Si cambió la red interna, cambiar la IP del grabador.</td></tr>
+  <tr><td>El cliente puso un router propio o un mesh</td><td>Apareció un doble NAT.</td><td>2.1, paso 2.</td><td>4.4 o mesh en punto de acceso (4.7).</td></tr>
+  <tr><td colspan="4" style="background:var(--bg)"><b>Claves, canales y límites</b></td></tr>
+  <tr><td>El cliente cambió la clave o reseteó el grabador</td><td>El usuario <code>vigia</code> ya no existe o tiene otra clave.</td><td>Mensaje «el grabador rechazó el usuario o la clave…».</td><td>Proceso de 9.3.</td></tr>
+  <tr><td>Bloqueado por intentos</td><td>Varias claves mal (tuyas o de la máquina).</td><td>Mensajes 401 o «acepta la conexión pero no contesta…».</td><td>«Dejar de analizar», esperar unos 30 min o reiniciar el grabador, corregir la clave y volver a «Analizar».</td></tr>
+  <tr><td>Video en H.265</td><td>La calidad cargada no está en H.264 (o «H.265 Auto Switch» la cambió).</td><td>VLC → Información del códec dice HEVC.</td><td>3.7.</td></tr>
+  <tr><td>Demasiadas transmisiones</td><td>El grabador no da más (otra PC, el celular, la máquina, la app del cliente).</td><td>Mensaje «el grabador no da más transmisiones a la vez…».</td><td>Cerrar vistas; en Dahua revisar «Máx. conexiones» (Red → Puerto; 0 corta todo).</td></tr>
+  <tr><td>Se reenvió el 8000 o el 37777</td><td>Es el puerto del programa de la marca, no el video.</td><td>Mensajes de «…no es el de video…» (8.2).</td><td>La regla tiene que ir al <b>554 de adentro</b>.</td></tr>
+  <tr><td>El canal no existe</td><td>Número mal; cámara IP en un grabador híbrido.</td><td>VLC con otros números; lista ISAPI (3.13).</td><td>La fórmula de 3.13.</td></tr>
+  </tbody>
+</table>
+
+<h3 class="pb">8.2 Por mensaje exacto de la app</h3>
+<p class="small">«host» y «P» son el nombre y el puerto que cargaste. Estos motivos salen en «Probar conexión», «● En vivo», la pestaña «En vivo» y el detalle de la lista
+(ahí precedidos de «No se pudo abrir rtsp://***@host:puerto/ruta — »).</p>
+<table>
+  <thead><tr class="grp"><th style="width:40%">Mensaje</th><th style="width:28%">Qué quiere decir</th><th>Qué hacer</th></tr></thead>
+  <tbody>
+  <tr><td colspan="3" style="background:var(--bg)"><b>Video (RTSP)</b></td></tr>
+  <tr><td class="msg">no se encuentra «host»: el DDNS no existe, venció o está mal escrito (o esta PC no tiene internet)</td><td>El nombre no da ninguna IP.</td><td>Escritura; plan de No-IP vencido; internet de la PC.</td></tr>
+  <tr><td class="msg">host no contesta en el puerto P desde esta PC: no está abierto (o no está redirigido al grabador) en el router del local, el DDNS apunta a otra IP, o el proveedor de internet del local no deja entrar. Si VLC sí lo abre desde esta misma PC, es el firewall o el antivirus de Windows: permitile a «Analítica Crítica» conectarse</td>
+      <td>Nadie contesta (tiempo agotado).</td><td>Una de estas: falta la regla o está apagada; <b>doble router</b> sin la regla en el segundo; CG-NAT; DDNS con IP vieja; <b>grabador apagado</b>; firewall o antivirus.</td></tr>
+  <tr><td class="msg">host rechaza la conexión en el puerto P: ese puerto no está redirigido al grabador en el router del local</td><td>El router contesta «acá no hay nada».</td><td>La regla de ese puerto: IP del grabador, TCP, encendida.</td></tr>
+  <tr><td class="msg">se llega a host:P (el DDNS y el router andan) pero corta la conexión al pedir el video: ese puerto no es el de video (RTSP). Pedí que redirijan un puerto al RTSP del grabador (el 554 de adentro) y usá ese; los del programa de la marca (8000 en Hikvision, 37777 en Dahua) no sirven para tomar el video</td>
+      <td>Llega, pero lo de atrás no es RTSP.</td><td>Que el puerto <b>de adentro</b> de la regla sea el 554, no 8000, 37777 ni 80.</td></tr>
+  <tr><td class="msg">host:P acepta la conexión pero no contesta el pedido de video: el 8000 es el puerto del programa de Hikvision (iVMS-4200 y la app), no el de video. … (o «el 37777 es el puerto del programa de Dahua (SmartPSS y la app)…»)</td>
+      <td>Solo si cargaste literalmente el 8000 o el 37777.</td><td>Lo mismo: regla al 554 y el puerto externo del esquema.</td></tr>
+  <tr><td class="msg">host:P acepta la conexión pero no contesta el pedido de video: el grabador puede haber bloqueado a esta PC por intentos fallidos (esperá unos 30 minutos) o la conexión es muy lenta</td>
+      <td>Conecta y no responde.</td><td>Bloqueo por intentos (3.6). <b>Ojo:</b> si afuera es alto y adentro va al 8000 o 37777, también sale este (la app no ve el de adentro): revisá la regla.</td></tr>
+  <tr><td class="msg">host:P contesta pero no como video (RTSP): ¿ese es el puerto de video? (el 554 de adentro; quizá se redirigió el de la página)</td><td>Contestó otra cosa (típico: la web, 80).</td><td>Regla de video → 554.</td></tr>
+  <tr><td class="msg">no se puede llegar a host:P (&lt;error del sistema&gt;): revisá el DDNS, el router del local y el internet de esta PC</td><td>Otro error de red.</td><td>Lo mismo.</td></tr>
+  <tr><td class="msg">el grabador rechazó el usuario o la clave (o el usuario quedó bloqueado por intentos fallidos: esperá unos 30 minutos)</td><td>RTSP 401.</td><td>Usuario y clave <b>del grabador</b> (no del router ni de la app). Corregí rápido o «Dejar de analizar»: la máquina reintenta.</td></tr>
+  <tr><td class="msg">el usuario no tiene permiso para ver ese canal: dale «vista en vivo» en el grabador</td><td>RTSP 403.</td><td>Permisos de <code>vigia</code> en todos los canales (3.4).</td></tr>
+  <tr><td class="msg">ese canal existe pero la calidad que se pide no está activada en el grabador (el subflujo): activalo, o elegí la calidad principal</td><td>La otra calidad del canal sí responde.</td><td>Activar la secundaria (3.7) o «Calidad del video» = Principal.</td></tr>
+  <tr><td class="msg">el grabador contesta pero no tiene ese canal: revisá el número de canal</td><td>Ninguna calidad de ese canal existe.</td><td>Número de canal; híbridos (3.13).</td></tr>
+  <tr><td class="msg">el grabador no da más transmisiones a la vez: cerrá otras (otra PC, el celular, la máquina de análisis)</td><td>RTSP 453 o 503.</td><td>Límite del grabador.</td></tr>
+  <tr><td class="msg">el grabador entrega el video (usuario, clave y canal están bien) pero esta PC no lo pudo leer: ¿video en H.265 o un códec raro? Probá poner el subflujo del grabador en H.264</td><td>Todo bien menos el códec.</td><td>H.264, sin H.265, H.265+, H.264+ ni Smart Codec.</td></tr>
+  <tr><td class="msg">el grabador respondió N al pedir el video</td><td>Otro código.</td><td>Mandalo a la oficina.</td></tr>
+  <tr><td class="msg">No se pudo leer video (revisar usuario, clave, puerto RTSP y canal) · No se pudo abrir el video</td><td>Sin diagnóstico posible.</td><td>Probá el mismo link en VLC.</td></tr>
+  <tr><td class="msg">Se perdió la señal (con «Reconectando»)</td><td>Abrió y dejaron de llegar cuadros.</td><td>Luz o internet del local, cambio de IP (vuelve con el DDNS), grabador reiniciado.</td></tr>
+  <tr><td colspan="3" style="background:var(--bg)"><b>Página del grabador (HTTP) en «Probar conexión»</b></td></tr>
+  <tr><td class="msg">ISAPI no responde: timed out / Connection refused / … · La API CGI no responde: …</td><td>Nada en ese puerto web.</td><td>¿Reenviaste la web? ¿«Puerto HTTP (la página)» es el externo? <b>Si no la reenviaste a propósito, ignoralo.</b></td></tr>
+  <tr><td class="msg">ISAPI no responde: Client error '401 Unauthorized'…</td><td>La página rechaza usuario o clave.</td><td>Clave de <code>vigia</code>; autenticación digest (3.5).</td></tr>
+  <tr><td class="msg">ISAPI no responde: Client error '404 Not Found'…</td><td>Contestó algo que no es Hikvision.</td><td>¿Es Dahua? Elegí bien la «Marca». ¿Es el puerto de la página? O le pegó al router de Antel («Puerto HTTP» en 80 sin reenviar la web): no tiene importancia (7.2).</td></tr>
+  <tr><td colspan="3" style="background:var(--bg)"><b>En el formulario de la cámara</b></td></tr>
+  <tr><td class="msg">⚠ No parece un link RTSP (tiene que empezar con rtsp://)</td><td>No es RTSP (también un http o .m3u8) o le falta la dirección.</td><td>Pegá el <code>rtsp://…</code> completo.</td></tr>
+  <tr><td class="msg">⚠ El puerto del link no es un número</td><td>Puerto con letras o mayor a 65535, <b>o una clave con <code>#</code>, <code>/</code> o <code>?</code></b>. Ojo: si lo que está antes del símbolo son solo números, no da error y lee mal la dirección («Link de otra forma»).</td><td>Escribí la clave en su campo (ahí sí la acepta) o cambiala por una sin símbolos. Revisá que «IP o DDNS del grabador» diga el DDNS.</td></tr>
+  <tr><td class="msg">Link N: &lt;lo mismo&gt; · Pegá el link RTSP (o escribí la IP o el DDNS del grabador). · Los puertos tienen que ser números. · Los cuadros por segundo tienen que ser un número. · «x» no es un canal (ej. 4 · 1-8 · 1, 2, 5) · «x»: los canales van de 1 a 256 · Falta el canal… · Como mucho 64 canales por vez · Al editar, un solo link. · Al editar, un solo canal. · Falta el nombre.</td>
+      <td>Un campo vacío o mal escrito («Link N» = la línea N de la lista de links).</td><td>Corregir ese campo. Canales: <code>4</code>, <code>1-8</code> o <code>1, 2, 5</code>.</td></tr>
+  <tr><td class="msg">Ese link se usa tal cual: una cámara por link.</td><td>Link de otra forma con varios canales.</td><td>Un link por cámara.</td></tr>
+  <tr><td class="msg">Ya están cargados: canal N («…»).</td><td>Misma dirección, puerto RTSP y canal en ese cliente.</td><td>Nada: ya está.</td></tr>
+  <tr><td class="msg">Elegí al menos una cosa para medir.</td><td>«Qué mide esta cámara» vacío.</td><td>—</td></tr>
+  <tr><td colspan="3" style="background:var(--bg)"><b>Al «Guardar» (lo controla el servidor)</b></td></tr>
+  <tr><td class="msg">host: Value error, Poné solo la IP o el DDNS del grabador (sin http://, puerto, ruta ni usuario)…</td><td>Se aceptan letras, números, <code>.</code> y <code>-</code> (o una IPv6). Nada de <code>http://</code>, <code>:puerto</code>, <code>/</code>, <code>@</code>, <code>_</code> ni espacios.</td><td>Dejá solo <code>vigia-deposito.ddns.net</code> o <code>203.0.113.25</code>.</td></tr>
+  <tr><td class="msg">Indicá la IP del NVR/cámara o una URL RTSP · rtsp_port / http_port / channel: Input should be …</td><td>Sin dirección ni link, o puerto fuera de 1-65535, o canal fuera de 1-256.</td><td>—</td></tr>
+  <tr><td class="msg">En modo alarmas indicá el número de serie del DVR en Hik-Partner Pro · Elegí al menos un tipo de alarma · Las alarmas por Hik-Partner Pro son solo para Hikvision…</td><td>Modos de alarma.</td><td>Usá «En vivo» (o «Alarmas del propio grabador» con tipos tildados).</td></tr>
+  <tr><td class="msg">… no puede medir «X»: el cliente no lo tiene…</td><td>Planes.</td><td>«Editar cliente».</td></tr>
+  <tr><td class="msg">Sin conexión con el servidor (ConnectError…)</td><td>Tu PC no llega a nuestro servidor.</td><td>Internet de tu PC.</td></tr>
+  <tr><td class="msg">Se pidieron demasiadas cámaras en poco tiempo: esperá una hora o pedí menos (429)</td><td>Más de 300 cámaras distintas abiertas o probadas en una hora.</td><td>Esperar.</td></tr>
+  <tr><td colspan="3" style="background:var(--bg)"><b>Otros lugares</b></td></tr>
+  <tr><td class="msg">No se pudo tomar la foto: &lt;motivo&gt;… · la cámara no está disponible (¿está deshabilitada?) · el video abrió pero no llegó ninguna imagen</td><td>«✎ Marcar zonas».</td><td>El motivo es uno de los de video (cortado a 220 caracteres).</td></tr>
+  <tr><td class="msg">Sin imagen: &lt;motivo&gt; · Listo: N de M imágenes. Las que faltan dicen por qué.</td><td>«Nombres e imágenes».</td><td>Lo mismo.</td></tr>
+  <tr><td class="msg">… el servidor no llega al grabador. … Esa dirección es de una red interna: desde el servidor no se llega…</td><td>Prueba desde el servidor (solo si la app no pudo pedir la conexión, o desde la web). Solo prueba la página, nunca IPs internas.</td><td>Probá desde la app con la notebook en datos.</td></tr>
+  <tr><td class="msg">El grabador respondió N (¿usuario y clave? ¿la API HTTP está habilitada?) · El grabador cerró la conexión</td><td>Modo «Alarmas del propio grabador».</td><td>Web reenviada y «Puerto HTTP (la página)» bien cargado.</td></tr>
+  <tr><td class="msg">No se pudo abrir la grabación (¿hay grabación en ese horario? ¿el grabador está en línea?) · Como mucho 12 horas por pedido</td><td>«Bajar grabación…».</td><td>Disco y hora del grabador.</td></tr>
+  </tbody>
+</table>
+<div class="box small"><b>Ojo con «desde esta PC» en la lista:</b> en el detalle de la lista de «Clientes», el motivo viene de la <b>máquina de análisis</b> (Linux,
+  en la nube): ahí «esta PC» es la máquina y lo del firewall o el antivirus de Windows no corre. Si en tu PC anda y en la lista no, ver 8.1 «Anda en tu PC pero
+  la lista dice «Sin conexión»».</div>
+
+<h3>8.3 Herramientas</h3>
+<table>
+  <thead><tr><th style="width:22%">Herramienta</th><th>Para qué y cómo</th></tr></thead>
+  <tbody>
+  <tr><td class="k">VLC</td><td>La prueba de verdad. PC: Medio → Abrir ubicación de red. Celular: la opción de abrir una transmisión de red (el nombre varía); esperá 15 s antes de darlo por malo. En la PC, Herramientas → Información del códec muestra códec y resolución,
+      y conviene tildar «Usar RTP sobre RTSP (TCP)» (6.1). Si VLC abre desde tu PC y la app no, comparás links o es el antivirus.</td></tr>
+  <tr><td class="k">«Probar conexión»</td><td>Además de probar, <b>dice qué falla</b> (nombre, puerto cerrado, puerto que no es de video, clave, canal, calidad, códec). Es el mejor probador de puertos que tenemos.</td></tr>
+  <tr><td class="k">Cuál es mi IP</td><td><code>ipv4.icanhazip.com</code> o <code>api.ipify.org</code> (muestran solo la IPv4), desde el wifi del local con los datos apagados. Para el proveedor,
+      <code>ipinfo.io/</code> + esa IP (AS6057 ANTEL). Una dirección con «:» es IPv6: no la compares; siempre IPv4 contra IPv4.</td></tr>
+  <tr><td class="k">IP WAN del router</td><td>ZTE F6600: Internet → Estado (o Estado → Internet), la IPv4 de la conexión PPPoE / INTERNET (no las de VOIP o TV, que tienen <code>10.</code>; si la de INTERNET tiene <code>10.</code>, es CG-NAT). Huawei: la pantalla de estado de WAN (el nombre varía). Router del cliente: su estado de WAN.</td></tr>
+  <tr><td class="k"><code>nslookup</code></td><td>En el cmd de Windows: <code>nslookup vigia-deposito.ddns.net 8.8.8.8</code> → la IP a la que apunta el nombre. Error = no existe o venció.</td></tr>
+  <tr><td class="k"><code>ping</code></td><td><code>ping vigia-deposito.ddns.net</code> también muestra la IP del nombre. Que no conteste no prueba nada: muchos routers no responden al ping.</td></tr>
+  <tr><td class="k">Velocidad</td><td><code>fast.com</code> («Más información») o <code>speedtest.net</code> con servidor de Montevideo, con cable, 3 veces.</td></tr>
+  <tr><td class="k">noip.com</td><td>La IP y la última actualización de cada nombre; las DDNS Keys; el vencimiento del plan.</td></tr>
+  <tr><td class="k">Lista ISAPI (Hikvision)</td><td><code>http://IP-del-grabador/ISAPI/Streaming/channels</code> en el navegador, adentro: los números de canal reales.</td></tr>
+  </tbody>
+</table>
+<p class="small">Si no sale: mandá a la oficina el mensaje completo de «Probar conexión», captura de las reglas de los routers y de la pantalla de estado de WAN.</p>
+
+<!-- ============================== 9. MANTENIMIENTO ============================== -->
+<h2 id="s9"><span class="n">9</span>Mantenimiento y seguridad</h2>
+
+<h3>9.1 Revisión de cada mes <span class="who">(la hace la oficina)</span></h3>
+<ul class="check">
+  <li>En la pestaña «Clientes», cliente por cliente: las cámaras analizadas en <b>«En línea · N fps»</b>; las que no se analizan, que abran en la pestaña «En vivo» con <b>«Viendo · N fps»</b> o, con la IA prendida, <b>«IA · N personas · x de y cuadros/s»</b>.</li>
+  <li>Las que estén «Sin conexión» o «Reconectando» seguido: sección 8 y llamar al cliente («¿les cambiaron el router? ¿cortaron la luz?»).</li>
+  <li>noip.com: el plan pago con renovación automática y vencimiento a más de 30 días; ningún nombre gratis sin confirmar.</li>
+  <li>Que ningún nombre apunte a una IP privada o 100.64.x.</li>
+</ul>
+
+<h3>9.2 Luz: UPS y locales que cortan al cerrar</h3>
+<table class="keep">
+  <thead><tr><th style="width:34%">Equipo</th><th>Consumo aproximado</th></tr></thead>
+  <tbody>
+  <tr><td>Router de Antel</td><td>ZTE F680 menos de 13 W; F6600P (la variante del F6600) unos 7 W en promedio.</td></tr>
+  <tr><td>Grabador de 4 canales</td><td>Hikvision DS-7104HGHI-K1 hasta 16 W sin disco (el E1, hasta 8 W). Suman el disco y las fuentes de las cámaras.</td></tr>
+  <tr><td>UPS de 600 VA</td><td>≈ 52 min con 50 W · 23 min con 100 W · 4,3 h con solo módem y router (10 W) <span class="tag nv">datos de APC, modelo de 120 V</span>.</td></tr>
+  </tbody>
+</table>
+<ul class="small">
+  <li><b>Recomendación:</b> una UPS de 600 VA para router + grabador (+ fuente de cámaras) en los locales con cortes cortos. La fibra de afuera no necesita luz en la
+      calle: con el router en la UPS sigue habiendo internet.</li>
+  <li><b>Local que corta la llave general al cerrar:</b> una UPS para toda la noche no conviene (50 W × 12 h = 600 Wh, una batería grande). Lo mejor: un
+      <b>circuito aparte</b> con su propia llave para router + grabador + cámaras, marcado <b>«CÁMARAS – NO APAGAR»</b> (lo hace un electricista).</li>
+  <li>Si no se puede: cargá el <b>horario del local</b> y dejá «Con el local cerrado» en «No mirar…»: la lista muestra «Local cerrado (no se mira)» en vez de errores.
+      Se mira desde 15 min antes de abrir: si el grabador prende justo al abrir, los primeros minutos dan «Sin conexión» (normal) y vuelve solo. Cada mañana la IP
+      pública es nueva: el DDNS tiene que actualizarse al prender (pruebas 6.2 bis y 6.3). La pestaña «En vivo» no mira el horario: de noche dirá «no contesta…».</li>
+  <li>Decile al cliente que el corte de todas las noches acorta la vida del disco del grabador y que cada mañana hay unos minutos sin video hasta que el grabador
+      avisa la IP nueva.</li>
+</ul>
+
+<h3>9.3 Cambio de claves</h3>
+<p>Para cambiar la clave de <code>vigia</code> (o si el cliente la cambió) sin quedar bloqueado:</p>
+<ol class="steps">
+  <li>En la app, elegí las cámaras de ese grabador → «Dejar de analizar» (así la máquina no reintenta con la clave vieja).</li>
+  <li>Cambiá la clave en el grabador.</li>
+  <li>En la app, «Editar» cada cámara → «Clave del grabador». Si la cámara usa un link tal cual (la nota dice «Ahora usa un link tal cual»), <b>no cambies solo la clave</b>:
+      pegá el link completo con la clave nueva (cambiar solo la clave descarta el link y arma la dirección estándar de la marca, que en ese equipo puede no andar).</li>
+  <li>«Más ▾ → Probar conexión» → «Video (RTSP): OK».</li>
+  <li>«Analizar» de nuevo y esperar «En línea».</li>
+</ol>
+<p class="small">Si el cliente cambia la clave de <code>admin</code>, a nosotros no nos afecta. Si resetea el grabador de fábrica: rehacer la sección 3 entera.</p>
+
+<h3>9.4 Seguridad mínima de un grabador expuesto</h3>
+<ul class="check">
+  <li>Afuera solo puertos altos hacia el 554 (y el 80 si hace falta). Nunca 8000, 37777, 37778 ni 443. Nada de DMZ al grabador.</li>
+  <li>UPnP apagado en el router y en el grabador.</li>
+  <li>Usuario <code>vigia</code> con solo vista en vivo y reproducción; clave larga y distinta por local; bloqueo por intentos prendido.</li>
+  <li>Clave de <code>admin</code> fuerte, la tiene el cliente.</li>
+  <li><b>Firmware al día</b>: las fallas conocidas (Hikvision CVE-2021-36260, Dahua CVE-2021-33044) están en la lista de fallas explotadas de CISA. Más motivo para no abrir la web si no hace falta.</li>
+  <li>DDNS pago (un nombre borrado y registrado por otro es un riesgo) y las claves solo por privado y en el gestor.</li>
+  <li><b>A futuro:</b> IP fija para nuestras máquinas y lista blanca en router o grabador (3.11). En el ZTE, la regla se puede limitar a una IP de origen («IP WAN Host»), pero la app de la oficina dejaría de ver el grabador desde otras redes.</li>
+</ul>
+
+<h3>9.5 Cuando el cliente cambia algo</h3>
+<table>
+  <thead><tr><th style="width:30%">Cambio</th><th>Qué rehacer</th></tr></thead>
+  <tbody>
+  <tr><td>Antel cambia el router</td><td>Sección 4 con la planilla. Verificar la red interna (si cambió, la IP del grabador) y el DDNS si estaba en el router. Si estaba en
+      modo puente (4.6) o con DMZ al router del cliente (4.4, solución 2), rehacerlo: el nuevo viene en modo router (vuelve el doble NAT). Apagar el UPnP del router nuevo.</td></tr>
+  <tr><td>Cambia de proveedor o de plan</td><td>Diagnóstico completo (2): un 4G puede tener CG-NAT; reenvío y DDNS de cero. Con IP fija nueva: cargarla en las cámaras (o seguir con el DDNS).</td></tr>
+  <tr><td>Pone un router propio o mesh</td><td>4.4 o 4.7.</td></tr>
+  <tr><td>Cambia o resetea el grabador</td><td>Sección 3 entera y, si cambió la IP interna, las reglas.</td></tr>
+  <tr><td>Agrega cámaras o canales</td><td>Segunda calidad en H.264 en esos canales, permisos de <code>vigia</code> (las nuevas pueden quedar afuera), y en la app «＋ Agregar cámaras» con esos canales.</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================== 10. PLANILLA ============================== -->
+<h2 id="s10" class="pb"><span class="n">10</span>Planilla de entrega</h2>
+<p class="small">Completala a mano y mandá una foto a la oficina <b>por privado</b> (nunca en un grupo). <b>Ninguna clave va en esta hoja</b>: las claves (router,
+admin, <code>vigia</code>, DDNS Key) se guardan en el gestor de claves de la empresa.</p>
+
+<table class="sheet">
+  <thead><tr class="grp"><th colspan="4">Local</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Cliente / local</td><td></td><td class="k">Fecha de instalación</td><td></td></tr>
+  <tr><td class="k">Dirección</td><td></td><td class="k">Contacto en el local (nombre y teléfono)</td><td></td></tr>
+  <tr><td class="k">Horario del local</td><td></td><td class="k">¿Corta la luz al cerrar? ¿UPS?</td><td></td></tr>
+  <tr class="grp"><th colspan="4">Internet y red</th></tr>
+  <tr><td class="k">Proveedor y plan (¿con límite?)</td><td></td><td class="k">Subida medida (peor de 3)</td><td>_____ Mbps</td></tr>
+  <tr><td class="k">Router de Antel: modelo / IP</td><td></td><td class="k">IP WAN vista / «cuál es mi IP» (IPv4)</td><td></td></tr>
+  <tr><td class="k">Caso de red (A a J, sección 2)</td><td></td><td class="k">Doble router: cómo se resolvió</td><td>☐ reenvío en los dos ☐ DMZ ☐ puente</td></tr>
+  <tr><td class="k">Router del cliente: modelo / WAN</td><td></td><td class="k">Etiqueta pegada en el router</td><td>☐ sí</td></tr>
+  <tr><td class="k">Reglas viejas encontradas / borradas</td><td></td><td class="k">App del cliente probada después (4.3)</td><td>☐ sí ☐ no hacía falta</td></tr>
+  <tr><td class="k">Cámaras: cuántas entran en la subida / cuáles se analizan</td><td></td><td class="k">Esquema de puertos</td><td>☐ normal (2N554) ☐ 4 cifras (9N54) ☐ local viejo</td></tr>
+  <tr class="grp"><th colspan="4">DDNS</th></tr>
+  <tr><td class="k">Nombre completo</td><td>vigia-____________.ddns.net</td><td class="k">Lo actualiza</td><td>☐ grabador N.º __ ☐ router de Antel ☐ IP fija (nombre fijo, sin actualizar)</td></tr>
+  <tr><td class="k">Usuario de la DDNS Key</td><td></td><td class="k">IP que mostró noip.com</td><td></td></tr>
+  </tbody>
+</table>
+
+<p class="pb small muted">Planilla de entrega (hoja 2: por grabador) · Cliente / local: <span class="fill" style="min-width:260px"></span></p>
+<table class="sheet">
+  <thead><tr class="grp"><th style="width:28%">Por grabador <span style="font-weight:normal">(más de 4 grabadores: otra hoja «Por grabador», 5 a 8)</span></th><th>Grabador 1</th><th>Grabador 2</th><th>Grabador 3</th><th>Grabador 4</th></tr></thead>
+  <tbody>
+  <tr><td class="k">Marca y modelo</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="k">Canales / disco (sí-no)</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="k">Firmware (fecha) · ¿viejo: actualizar?</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="k">IP interna / MAC</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="k">Video: externo → interno</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="k">Web: externo → interno (o «no»)</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="k">Usuario <code>vigia</code> creado, permisos en todos los canales</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">Hora NTP GMT-3 sin verano</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">Segunda calidad H.264, 8 cuadros/s, verificada en VLC</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">Cifrado apagado</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">UPnP apagado</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">Bloqueo por intentos prendido</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">Reinicio programado revisado (3.14)</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">SSH y Telnet apagados (3.14)</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">7.7 «En línea · N fps» 10 min seguidos (una cámara)</td><td>☐</td><td>☐</td><td>☐</td><td>☐</td></tr>
+  <tr><td class="k">Fuera de horario: vuelto a «No mirar»</td><td>☐ sí ☐ no hizo falta</td><td>☐ sí ☐ no hizo falta</td><td>☐ sí ☐ no hizo falta</td><td>☐ sí ☐ no hizo falta</td></tr>
+  </tbody>
+</table>
+
+<p class="pb small muted">Planilla de entrega (hoja 3) · Cliente / local: <span class="fill" style="min-width:260px"></span></p>
+<table class="sheet">
+  <thead><tr class="grp"><th style="width:12%">Grabador</th><th style="width:10%">Canal</th><th>Qué mira</th><th style="width:26%">Nombre en la app</th><th style="width:18%">Tipo de cámara</th></tr></thead>
+  <tbody>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  <tr><td></td><td></td><td></td><td></td><td></td></tr>
+  </tbody>
+</table>
+
+<table class="sheet">
+  <thead><tr class="grp"><th style="width:40%">Prueba</th><th style="width:18%">Resultado</th><th style="width:18%">Fecha y hora</th><th>Notas</th></tr></thead>
+  <tbody>
+  <tr><td>6.1 VLC desde datos móviles, todos los grabadores, 2 canales cada uno</td><td>☐ OK ☐ falla</td><td></td><td></td></tr>
+  <tr><td>6.2 Reinicio del router de Antel (VLC de nuevo por el nombre) · ¿Cambió la IP? ☐ sí ☐ no</td><td>☐ OK ☐ falla</td><td></td><td></td></tr>
+  <tr><td>6.2 bis Aviso forzado del DDNS (noip.com vuelve a la IP real)</td><td>☐ OK ☐ falla</td><td></td><td></td></tr>
+  <tr><td>6.3 Corte de luz (todo vuelve solo, hora bien)</td><td>☐ OK ☐ falla ☐ no se hizo</td><td></td><td></td></tr>
+  <tr><td>6.4 Subida alcanza para las cámaras con margen</td><td>☐ OK ☐ justo</td><td></td><td></td></tr>
+  <tr><td>6.4 bis Todo abierto 10 min sin «Reconectando»</td><td>☐ OK ☐ falla ☐ no se hizo</td><td></td><td></td></tr>
+  <tr><td>7.5 «Probar conexión» → «Video (RTSP): OK» en todas</td><td>☐ OK ☐ falla</td><td></td><td></td></tr>
+  <tr><td>7.7 «Analizar» → «En línea · N fps» en cada grabador (hoja 2)</td><td>☐ OK ☐ falla</td><td></td><td></td></tr>
+  <tr><td>Acceso web entregado al cliente (por privado)</td><td>☐ sí</td><td></td><td></td></tr>
+  <tr><td>6.7 Seguimiento de la oficina: 24 h ☐ OK · 7 días ☐ OK</td><td>quién:</td><td></td><td></td></tr>
+  </tbody>
+</table>
+
+<table class="sheet keep">
+  <tr><td class="k sig">Técnico (nombre y firma)</td><td class="sig" style="width:30%"></td><td class="k sig">Cliente / responsable del local (nombre y firma)</td><td class="sig"></td></tr>
+</table>
+
+<p class="foot">Analítica Crítica · Manual del técnico, versión del 6 de noviembre de 2026 · Uso interno. Las claves se comparten solo por privado y se guardan en el gestor
+de claves. Los menús de los equipos cambian según el modelo y el firmware; lo marcado «sin verificar» se confirma con el primer equipo real y se corrige acá.</p>
+</body>
+</html>

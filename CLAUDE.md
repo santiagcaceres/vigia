@@ -269,6 +269,21 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   grabador o web) → substream H.264 640×360 8 fps 384 kbps → Hik-Connect for Teams → AppKey/SecretKey → planilla de
   datos y cámaras. Los nombres de menú no se verificaron en todos los modelos. PDF con Playwright
   (`executable_path="/opt/pw-browsers/chromium"`, A4, `print_background=True`).
+- **Manual del técnico (6 nov, pedido del dueño: «una metodología… que los técnicos conecten las cámaras de los clientes,
+  una solución que funcione siempre: por puertos y con DDNS… cómo solucionar cada problema»):**
+  `docs/manual-tecnico-conexion.html` + `.pdf` (30 páginas; reemplaza en la práctica a `guia-tecnico-instalacion`). Camino
+  estándar: grabador con IP fija y DNS → usuario `vigia` (solo vivo y reproducción, bloqueo por intentos prendido) →
+  segunda calidad H.264 8 cuadros/s → puertos altos (grabador N → 2N554 y 2N080) en el router o en los dos → DDNS No-IP
+  **pago** de la empresa (`vigia-<local>.ddns.net`, actualizado por un solo aparato) → pruebas desde datos del celular
+  (VLC, reinicio del router, aviso forzado del DDNS, corte de luz, subida) → carga en la app → planilla y seguimiento a
+  las 24 h y 7 días. Diagnóstico de 5 minutos (IP pública, CG-NAT, doble router, 4G, mesh), plan B honesto, tablas de
+  problemas por síntoma y por **mensaje exacto de la app**. En Hikvision el cifrado de video de Hik-Connect se apaga
+  siempre (según foros rompe también el RTSP). Hecho con un workflow de 9 agentes (4 investigan código y web, 1 escribe,
+  3 revisan, 1 corrige: 79 de 80 observaciones aplicadas). Lo de la oficina (decisiones pendientes: puerto web solo para
+  alarmas, letras al azar en el DDNS, la línea «Revisá:» de «Probar conexión» que nombra 38554/38080 y avisar al guardar
+  una IP interna; Tigo/AWS: IP fija de nuestras máquinas para lista blanca, Route 53 no reemplaza al DDNS, preguntas
+  para Tigo) va aparte en `docs/notas-oficina-conexion.html` + `.pdf`. Tigo: el contrato es solo AWS (sin DDNS ni IP
+  fija para los locales).
 - **Para convencer al cliente (3 nov, pedido del dueño):** `docs/analitica-critica-para-clientes.html` + `.pdf` (2 páginas,
   de usted: qué hace el sistema, qué guardamos y qué no, puertos contra clave de Hik-Connect, qué es la AppKey y la
   SecretKey, los 5 pasos) y un video sin voz con subtítulos grabados (`docs/video-clientes/*.mp4` + `.srt`, 2 min 15 s,
