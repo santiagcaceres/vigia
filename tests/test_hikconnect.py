@@ -632,7 +632,7 @@ def test_la_lista_de_la_app_marca_las_cargadas_y_avisa_el_canal():
         assert got and [x["channel"] for x in got[0]] == [1, 3]
         top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
         lb = next(w for w in _walk(top) if isinstance(w, tk.Listbox))
-        assert "ya cargada como «Depósito»" in lb.get(1) and "ya cargada" not in lb.get(0)
+        assert lb.get(1).startswith("✔ ya cargada («Depósito»)") and "ya cargada" not in lb.get(0)
     finally:
         root.destroy()
 

@@ -1537,10 +1537,11 @@ class Oficina:
                                   "\nElegí una y tocá «Usar»." if pick else "")).grid(row=0, column=0, sticky="w")
             lb = tk.Listbox(frm, height=min(18, max(4, len(cams))), width=80,
                             selectmode="extended" if multi else "browse")
-            for x in cams:  # (`loaded`: ya está cargada en este cliente, con ese nombre; un servidor viejo no lo manda)
-                lb.insert("end", f"{x['name']}  ·  serie {x['serial'] or '—'}  ·  canal {x['channel'] or '?'}"
-                                 f"{'  ·  ' + x['device_name'] if x.get('device_name') else ''}"
-                                 f"{'  ·  ya cargada como «' + x['loaded'] + '»' if x.get('loaded') else ''}")
+            for x in cams:  # (`loaded`: ya está cargada en este cliente, con ese nombre; un servidor viejo no lo manda.
+                # Va al principio: al final del renglón se cortaba con nombres largos)
+                lb.insert("end", f"{'✔ ya cargada («' + x['loaded'] + '»)  ·  ' if x.get('loaded') else ''}"
+                                 f"{x['name']}  ·  serie {x['serial'] or '—'}  ·  canal {x['channel'] or '?'}"
+                                 f"{'  ·  ' + x['device_name'] if x.get('device_name') else ''}")
                 if x.get("loaded"):
                     lb.itemconfigure("end", foreground="#888")
             lb.grid(row=1, column=0, sticky="ew", pady=6)

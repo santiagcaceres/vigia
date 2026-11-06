@@ -1171,6 +1171,17 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   ya no lleva el link (que se cortaba a 300 letras), solo el motivo. Ese día, a pedido del dueño, la
   máquina quedó analizando solo Minas · Entrada (7), Minas · Pasillo bebidas (44) y DVR PRUEBA · Camera 03 (140): las
   otras 12 cámaras (resto de Minas, Cristino, Almacén Sol y Luz) en «No analizar». Pruebas: `tests/test_hikconnect.py`.
+- **Cámaras de Hik-Connect «ya cargadas» que no lo estaban (6 nov, Sanfer; app 1.41.3).** La API manda el canal en
+  `device.channelInfo.no` y la lista solo lo leía de `channelNo` o del nombre por defecto («camera 3@SERIE»): las cámaras
+  con nombre propio («Camera 01») quedaban sin canal, la app las guardaba en el 1 y `check_not_repeated` (serie + canal)
+  rechazaba la segunda de ese grabador («Esa cámara ya está cargada: «Camera 03»»). Ahora `hikconnect.channel_of` lee
+  `channelInfo.no`; las repetidas se reconocen por `hc_resource_id` (serie + canal solo contra cámaras sin id); la lista
+  (`GET /api/clients/{id}/hikconnect/cameras`) trae `loaded` (la app muestra «✔ ya cargada («nombre»)») y corrige el canal
+  guardado mal, **salvo en cámaras que analiza una máquina** (`agent_id`; una máquina sin actualizar la reconectaría y
+  perdería lo medido en esa hora); en la máquina el canal de una cámara por Hik-Connect ya no cuenta para reconectar
+  (`fingerprint_of`). Al editar, abrir la lista le pasa el canal correcto a la cámara aunque no se toque «Usar».
+  Revisión con 3 agentes + verificadores: 1 defecto confirmado (el de la reconexión), arreglado. Pruebas en
+  `tests/test_hikconnect.py`.
 - **La cámara analógica va al DVR**; el agente se conecta al DVR, no a la cámara.
 - **Dahua y la hora del playback:** algunos equipos interpretan starttime/endtime en hora local
   y otros en UTC. Se elige por cámara con `playback_time`; si el clip llega corrido, probar la otra.
