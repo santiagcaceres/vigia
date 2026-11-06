@@ -155,7 +155,9 @@ def look(estimator: PoseEstimator | None, frame: np.ndarray, tracks: list, min_p
 
 def detect_with_bags(detector, frame: np.ndarray, bags: bool) -> tuple[list, list]:
     """Personas (y lo demás que el detector busque) y, en la misma pasada del modelo, bolsos, carteras y mochilas
-    para el gesto «mano en la bolsa». Un detector sin `detect_also` (movimiento) no da bolsos."""
+    para el gesto «mano en la bolsa». Un detector sin `detect_also` (movimiento) no da bolsos. El detector de una
+    cámara con su sensibilidad (core/detectors.tuned) pone él el umbral de las personas y «Personas lejos»: los
+    bolsos salen siempre de la imagen entera, desde 0,3."""
     if bags and hasattr(detector, "detect_also"):
         return detector.detect_also(frame, BAG_CLASSES, 0.3)
     return detector.detect(frame), []

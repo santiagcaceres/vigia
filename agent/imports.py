@@ -21,7 +21,7 @@ import httpx
 
 from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import video_duration, write_mp4
-from core.detectors import build_detector
+from core.detectors import DetectionConfig, build_detector, tuned
 from core.imagen import pixel_aspect, square_pixels
 from core.scorer import Scorer
 
@@ -93,6 +93,8 @@ class ImportJobRunner:
 
         # con gestos activados en la cámara, el video para entrenar se mira igual que en vivo (postura incluida)
         pose = shared_pose() if wants_gestures(cam["analysis"], bool(cam["analysis"].get("metrics_only"))) else None
+        # con la sensibilidad y «Personas lejos» de la cámara: el video para entrenar se mira igual que en vivo
+        detector = tuned(detector, DetectionConfig.from_dict(cam["analysis"].get("detection")))
         analyzer = Analyzer(cam["analysis"], detector, Scorer.maybe(job.get("filter_model")),
                             clip_pre=6, clip_post=6, clip_width=960, pose=pose)
         cap = cv2.VideoCapture(str(video))

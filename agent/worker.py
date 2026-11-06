@@ -12,7 +12,7 @@ import cv2
 
 from core.analyzer import Analyzer, ClipReady, Finding
 from core.clips import write_mp4
-from core.detectors import Detector
+from core.detectors import DetectionConfig, Detector, tuned
 from core.gestos import GESTURE_NAMES
 from core.imagen import pixel_aspect, square_pixels
 from core.metrics import MetricsCollector
@@ -35,6 +35,11 @@ NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
 
 DISPLAY_INTERVAL = 0.1  # la ventana de la PC central no necesita más de 10 cuadros por segundo
+# filtro de movimiento (core/motion.py): qué parte de la imagen chica (96x54) tiene que cambiar para mirar el cuadro.
+# Con «Personas lejos» se baja: alguien al fondo de un depósito (menos del ~8 % del alto) mueve menos puntos que eso y,
+# con la escena quieta, se analizaría un cuadro cada 2 s hasta que el detector lo viera
+MOTION_FRACTION = 0.0015
+FAR_MOTION_FRACTION = 0.0005
 
 _pose_lock = threading.Lock()
 _pose_state: dict = {}  # "est": el estimador de postura del proceso (o None), una vez que se intentó armarlo
@@ -53,6 +58,12 @@ def shared_pose():
                 log.warning("No se pudo cargar la postura de las personas (%s): los gestos quedan apagados", exc)
                 _pose_state["est"] = None
         return _pose_state["est"]
+
+
+def without_detection(analysis: dict | None) -> dict:
+    """El análisis sin la detección de personas (`analysis["detection"]`): para saber si lo único que cambió es la
+    sensibilidad o «Personas lejos», que se aplican sin rehacer las reglas ni el conteo."""
+    return {k: v for k, v in (analysis or {}).items() if k != "detection"}
 
 
 def wants_gestures(analysis: dict | None, metrics_only: bool = False) -> bool:
@@ -153,10 +164,16 @@ class CameraWorker:
         # tarda un momento y no tiene que trabar a quien arma la cámara (la ventana)
         self._analysis: dict = cam_cfg.get("analysis") or {}
         self._sar_logged: float | None = None
-        self.analyzer = Analyzer(self._analysis, detector, scorer, self.clip_pre, self.clip_post,
+        # sensibilidad y «Personas lejos» de esta cámara (`analysis["detection"]`, core/deteccion.py): el detector es
+        # el compartido de la PC; el envoltorio le pasa el umbral y el mosaico en cada llamada, sin cambiarlo para las
+        # demás cámaras. Con lo de siempre (o un agente que no lo conoce) es el detector tal cual
+        self.detection = DetectionConfig.from_dict(self._analysis.get("detection"))
+        self.analyzer = Analyzer(self._analysis, tuned(detector, self.detection), scorer, self.clip_pre, self.clip_post,
                                  clip_max=self.clip_max, clips=not self.metrics_only)
         # sin movimiento y sin nadie en escena no se usa el detector (ahorra placa de video)
-        self.gate = MotionGate()
+        self.gate = MotionGate(min_fraction=self._motion_fraction())
+        if not self.detection.is_default:
+            log.info("[%s] detección de personas: %s", self.name, self.detection.describe())
         self.idle_pct: float | None = None  # parte de los cuadros salteados por quietud (último minuto)
         self.metrics_queue = metrics_queue
         self.outbox = outbox
@@ -213,8 +230,24 @@ class CameraWorker:
         return json.dumps(cam_cfg.get("analysis") or {}, sort_keys=True, default=str)
 
     def update_analysis(self, analysis: dict) -> None:
-        """Zonas, reglas o gestos nuevos: se aplican en el próximo cuadro, sin cortar el video."""
+        """Zonas, reglas, gestos o la detección de personas nuevos: se aplican en el próximo cuadro, sin cortar el
+        video."""
         self._pending_analysis = analysis
+
+    def _motion_fraction(self) -> float:
+        return FAR_MOTION_FRACTION if self.detection.far else MOTION_FRACTION
+
+    def _apply_detection(self, analysis: dict) -> bool:
+        """Otra sensibilidad o «Personas lejos» (corre en el hilo de la cámara: sin carreras con el análisis, y sin
+        reconectar). Lo raro (de un servidor más nuevo) queda en lo de siempre. Devuelve si cambió."""
+        det = DetectionConfig.from_dict(analysis.get("detection"))
+        if det == self.detection:
+            return False
+        self.detection = det
+        self.analyzer.detector = tuned(self.analyzer.detector, det)  # (sobre el compartido: no se envuelve dos veces)
+        self.gate.min_fraction = self._motion_fraction()
+        log.info("[%s] detección de personas: %s", self.name, det.describe())
+        return True
 
     def _sync_pose(self) -> None:
         """Con algún gesto activado el analizador mira la postura (el estimador compartido del proceso); sin gestos,
@@ -243,7 +276,9 @@ class CameraWorker:
                 "events": self.events, "live": self.live.active,
                 "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
                 **({"protocol": self.hik.protocol} if self.hik.brand == "hikconnect" else {}),
-                "metrics_only": self.metrics_only, "gestures": self.analyzer.gestures, "last_frame_age_s":
+                "metrics_only": self.metrics_only, "gestures": self.analyzer.gestures,
+                # («normal», «sensibilidad 8 de 10 · personas lejos»): para saber si la máquina ya la aplica
+                "detection": self.detection.describe(), "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
 
     def run(self) -> None:
@@ -414,6 +449,12 @@ class CameraWorker:
         return self.analyzer.engine.gestures if self.analyzer.gestures else None
 
     def _apply_analysis(self, analysis: dict) -> None:
+        if without_detection(analysis) == without_detection(self._analysis):
+            # solo cambió la detección de personas (se probó otra sensibilidad): las reglas, el seguimiento y lo medido
+            # siguen como venían (no se empieza de cero a contar los segundos de cada persona en su zona)
+            self._analysis = analysis
+            self._apply_detection(analysis)
+            return
         try:
             zones, rule_cfg = parse_config(analysis)
         except Exception as exc:  # noqa: BLE001 - (un número en null, una clave rara): seguir con lo anterior
@@ -423,6 +464,7 @@ class CameraWorker:
         # motor nuevo: los tiempos de las reglas y de los gestos rigen desde este cuadro
         self.analyzer.engine = RuleEngine(zones, rule_cfg)
         self._analysis = analysis
+        self._apply_detection(analysis)  # otra sensibilidad o «Personas lejos»: desde este cuadro
         self._sync_pose()  # se prendieron o apagaron los gestos: enganchar o soltar la postura
         # lo medido hasta ahora queda con las zonas viejas y la hora en curso sigue sumando (sin pisarla en el servidor)
         old = self.metrics

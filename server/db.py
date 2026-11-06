@@ -146,6 +146,10 @@ class Camera(Base):
     # gestos de ocultamiento (core/gestos.py: mano al bolsillo, en la ropa, en la bolsa), aparte de `rules` porque un
     # agente viejo rechaza nombres que no conoce. NULL = los del tipo de cámara; {"enabled": []} = apagados a propósito
     gestures: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # detección de personas (core/deteccion.py): {"sensitivity": 1..10, "far": bool}. Más sensibilidad = ve personas
+    # más chicas o borrosas (y confunde más cosas); «far» = además analiza la imagen en 4 partes (personas lejos, unas
+    # 5 veces el detector). NULL = sensibilidad 5 (como siempre) y sin «personas lejos»
+    detection: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # qué mide de lo que contrató su cliente (Client.plans: hurto, comercio, estacion). NULL = todo lo del cliente;
     # lista = solo eso (siempre parte de lo del cliente: una cámara de adentro mide gente y una de afuera, vehículos)
     plans: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -364,7 +368,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-03.2"
+SCHEMA_VERSION = "2026-11-06.1"
 
 
 class CameraMetric(Base):

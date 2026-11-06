@@ -22,7 +22,7 @@ import numpy as np
 from .analyzer import annotate
 from .imagen import pixel_aspect, square_pixels
 from .pose import detect_with_bags, look
-from .detectors import Detector
+from .detectors import Detector, DetectionConfig, tuned
 from .rules import ALARMA_DVR, RULE_PRIORITY, SEVERITY, RuleEngine, RuleEvent, parse_config
 from .scorer import Scorer
 from .tracker import CentroidTracker, Track
@@ -89,8 +89,11 @@ def _interest(f: dict[str, float]) -> float:
 
 def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | None = None,
                  process_fps: float = 5.0, start_wall: datetime | None = None, pose=None) -> ClipResult:
-    """`pose`: core/pose.PoseEstimator para los gestos de ocultamiento (si la cámara los tiene activados)."""
+    """`pose`: core/pose.PoseEstimator para los gestos de ocultamiento (si la cámara los tiene activados).
+    `config["detection"]`: la sensibilidad y «Personas lejos» de la cámara (core/deteccion.py), sobre el detector
+    compartido que llega en `detector` (sin cambiarlo para las demás cámaras)."""
     zones, rule_cfg = parse_config(config)
+    detector = tuned(detector, DetectionConfig.from_dict((config or {}).get("detection")))
     engine = RuleEngine(zones, rule_cfg)
     gestures = pose is not None and engine.gestures is not None
     tracker = CentroidTracker()

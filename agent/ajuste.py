@@ -17,6 +17,9 @@ a las máquinas de análisis. Sirve en vivo o con videos grabados (por ejemplo, 
   recalcula todo sin volver a mirar la postura (lo caro); se dibuja el esqueleto y, bajo cada persona, la mano en el
   bolsillo, la ropa o la bolsa contra lo que pide («BOLSILLO 0.4/0.6s»). Es un indicio de posible ocultamiento para
   revisar, nunca una prueba.
+- Detección de personas (core/deteccion.py): la «Sensibilidad» y «Personas lejos» de la cámara (`analysis["detection"]`)
+  se aplican sobre el detector compartido de la app (`tuned`). `set_detection` prueba otras sin guardarlas: en vivo
+  rigen para los cuadros nuevos; con clips hay que volver a analizar (detectar es justamente lo que cambia).
 """
 
 from __future__ import annotations
@@ -35,7 +38,8 @@ import cv2
 import numpy as np
 
 from core.analyzer import ZONE_COLORS, annotate
-from core.detectors import Detection, Detector
+from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, MAX_SENSITIVITY, DetectionConfig
+from core.detectors import Detection, Detector, tuned
 from core.escena import COCO_ES, OBJECT_CONF, light
 from core.gestos import (GESTURE_NAMES, GESTURE_OF, GESTURE_TYPES, GestureConfig, MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA,
                          REF_HEIGHT, REGION_OF, body_of)
@@ -59,6 +63,7 @@ LIVE_KEEP_SECONDS = 600.0  # en vivo se recuerdan (y se recalculan) los últimos
 MAX_VIDEO_SECONDS = 30 * 60  # tope entre todos los videos de una prueba
 SHORT_TRACK_SECONDS = 2.0
 SMALL_PERSON = 0.10  # persona de menos del 10 % del alto de la imagen: el detector falla más
+SMALL_SHARE = 30.0  # si el 30 % de las personas que ve son chicas, las del fondo se están perdiendo (aunque el promedio no)
 BANNER_SECONDS = 2.0  # cuánto se ve el cartel de una alerta de prueba
 VIDEO_ORIGIN = datetime(2000, 1, 1, 12)  # videos sin hora real: la hora es esta + segundos (el horario no se aplica)
 CLIP_BEFORE = 60.0  # «⚑ Marcar hurto» en vivo: el clip va de 1 minuto antes del momento marcado...
@@ -119,6 +124,18 @@ def with_gestures(analysis: dict, gestures: dict | None) -> dict:
         a.pop("gestures", None)
     if blocked is None and (a.get("rules") or {}).get("enabled_rules") == []:
         a["metrics_only"] = not on
+    return a
+
+
+def with_detection(analysis: dict, cfg: DetectionConfig | dict | None) -> dict:
+    """La configuración con otra detección de personas (sin guardar), armada como la arma el servidor: una copia nueva
+    con `analysis["detection"]` compacto (solo lo que difiere de lo de siempre), o sin la clave si es lo de siempre."""
+    det = cfg if isinstance(cfg, DetectionConfig) else DetectionConfig.from_dict(cfg)
+    a = dict(analysis)
+    if det.is_default:
+        a.pop("detection", None)
+    else:
+        a["detection"] = det.to_dict(compact=True)
     return a
 
 
@@ -208,7 +225,10 @@ class Tuner:
         self.cfg = cfg
         self.id: int = cfg["id"]
         self.name = f"{cfg['client_name']} · {cfg['name']}" if cfg.get("client_name") else cfg["name"]
-        self.detector = detector
+        # el detector compartido de la app; `detector` es ese con la sensibilidad y «Personas lejos» de la cámara
+        # (`set_analysis` / `set_detection`), sin cambiarlo para las demás cámaras que se miran a la vez
+        self.base_detector = self.detector = detector
+        self.detection = DetectionConfig()
         # el modelo entrenado con las etiquetas del cliente (si hay): dice qué alertas descartaría, como en las máquinas
         self.scorer = Scorer.maybe(cfg.get("filter_model"))
         self.videos = [str(v) for v in videos or []]
@@ -271,6 +291,9 @@ class Tuner:
         metrics_only = bool(analysis.get("metrics_only"))
         if metrics_only:  # como en las máquinas (Analyzer sin clips): solo métricas no mira gestos
             rule_cfg.gestures = GestureConfig()
+        # la detección no vuelve a detectar lo ya analizado: rige para lo que se analice desde ahora
+        detection = DetectionConfig.from_dict(analysis.get("detection"))
+        self.detection, self.detector = detection, tuned(self.base_detector, detection)
         # qué decide el conteo por zona: si no cambia (se prueban otros tiempos o gestos), en vivo el conteo sigue
         # como venía (desde que se abrió) en lugar de rehacerse solo con los últimos 10 minutos que se recuerdan
         # (con la espera: tildar «Medir el tiempo de espera acá» en una zona también recuenta, si no la zona no la mediría)
@@ -294,6 +317,22 @@ class Tuner:
         analysis = {**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}}
         self.set_analysis(analysis if gestures is _KEEP else with_gestures(analysis, gestures))
         return self.needs_pose()
+
+    def set_detection(self, cfg: DetectionConfig | dict | None) -> bool:
+        """Probar otra sensibilidad o «Personas lejos» sin guardarla: rige para los cuadros que se analicen desde ahora
+        (en vivo, enseguida; con clips hay que volver a analizarlos). No se vuelven a pasar las reglas: lo ya analizado
+        se detectó con la anterior. En vivo, «Cómo anda la cámara» vuelve a medir el detector de cero, para que se vea
+        el efecto (cuántas personas, de qué tamaño, con qué confianza). Devuelve si cambió."""
+        det = cfg if isinstance(cfg, DetectionConfig) else DetectionConfig.from_dict(cfg)
+        with self._lock:
+            if det == self.detection:
+                return False
+            self.analysis = with_detection(self.analysis, det)
+            self.detection, self.detector = det, tuned(self.base_detector, det)
+            if self.live:
+                self._det_n, self._det_conf, self._det_h, self._det_small = 0, 0.0, 0.0, 0
+        log.info("[%s] detección de personas para probar: %s", self.name, det.describe())
+        return True
 
     def set_gestures(self, gestures: dict | None) -> bool:
         """Probar otros gestos o segundos (lo de `GestureConfig.to_dict`; None o sin "enabled" = apagados) sin
@@ -700,7 +739,8 @@ class Tuner:
                 "fps": len(self._times) / 10.0 if self.live else None, "cuts": self.cuts, "alerts": alerts,
                 "dropped": dropped,
                 "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None,
-                "door": self.door(), "gestures": self.gestures_on, "pose": pose}
+                "door": self.door(), "gestures": self.gestures_on, "pose": pose,
+                "sensitivity": self.detection.sensitivity, "far": self.detection.far}
 
     def footmap(self) -> FootMap:
         """Mapa de pisadas de lo analizado (cada video por separado): dónde camina y dónde se para la gente, para
@@ -847,13 +887,26 @@ class Tuner:
                 elif "shelf" in types and "checkout" not in types:
                     out.append("Sin zona «Caja», cualquiera que pase por una góndola y salga dispara «salida sin pago» "
                                "(aunque haya pagado). Si la caja se ve en otra cámara, mejor elegir otro tipo de cámara.")
+        det = self.detection
         if st["detections"] >= 20:
+            small = ""
             if st["height_pct"] < SMALL_PERSON * 100:
-                out.append(f"Las personas se ven chicas (en promedio {st['height_pct']:.0f} % del alto de la imagen): el "
-                           "detector falla más. Mejor una cámara más cerca o el stream principal.")
+                small = f"Las personas se ven chicas (en promedio {st['height_pct']:.0f} % del alto de la imagen)"
+            elif (st["small_pct"] or 0.0) >= SMALL_SHARE:  # (el promedio solo cuenta a las que ve: las del fondo no)
+                small = (f"El {st['small_pct']:.0f} % de las personas que ve ocupan menos del "
+                         f"{SMALL_PERSON * 100:.0f} % del alto de la imagen")
+            if small:
+                out.append(small + ": el detector pierde a las del fondo. " + self._far_advice())
             if st["conf"] < 0.5:
-                out.append(f"El detector duda (confianza media {st['conf']:.2f} de 1): poca luz, contraluz, reflejos o "
-                           "cámara muy de arriba. Probala también de noche.")
+                if det.sensitivity <= DEFAULT_SENSITIVITY:
+                    # (el pedido del 6 nov: un depósito grande, «confianza 0.49», y la gente del fondo no aparecía)
+                    out.append(f"El detector duda (confianza media {st['conf']:.2f} de 1): poca luz, contraluz, reflejos o "
+                               "cámara muy de arriba. Probala también de noche."
+                               + ("" if small else " Si no ve a las personas del fondo, " + self._far_advice(lower=True)))
+                else:  # con más sensibilidad la confianza media baja sola: acepta personas más dudosas
+                    out.append(f"Con la sensibilidad en {det.sensitivity} el detector acepta personas desde "
+                               f"{det.conf:.2f} de confianza: fijate que los recuadros nuevos sean personas y no cajas, "
+                               "maniquíes o carteles.")
         if g.enabled:
             out += self._gesture_hints(st, types)
         if st["frames"] >= 20 and st["night_pct"] > 50:
@@ -865,11 +918,14 @@ class Tuner:
         if st["persons"] >= 5 and st["short"] / st["persons"] > 0.3:
             out.append(f"{st['short']} de {st['persons']} personas se vieron menos de 2 s: detecciones falsas (reflejos, "
                        "maniquíes, carteles) o alguien que cambia de número. Mirá el video: si una persona cambia de "
-                       "número, las reglas de tiempo fallan.")
+                       "número, las reglas de tiempo fallan."
+                       + (f" Con la sensibilidad en {det.sensitivity} es más probable que sean falsas: si son cosas y no "
+                          "personas, bajala un poco." if det.sensitivity > DEFAULT_SENSITIVITY else ""))
         if self.live:
             if st["seconds"] >= 30 and st["fps"] is not None and st["fps"] < 0.7 * self.process_fps:
                 out.append(f"Se analizan {st['fps']:.1f} cuadros por segundo de {self.process_fps:.0f}: esta PC no da "
-                           "abasto o el video llega cortado.")
+                           "abasto o el video llega cortado"
+                           + (f" (con «Lejos» hace {FAR_PASSES} veces el trabajo)." if det.far else "."))
             if self.cuts >= 2:
                 out.append(f"El video se cortó {self.cuts} veces.")
             if st["seconds"] >= 60 and st["persons"] == 0:
@@ -877,6 +933,24 @@ class Tuner:
         if not out and st["detections"] >= 20:
             out.append("No se ven problemas. Antes de aprobar, revisá que cada alerta de prueba tenga sentido.")
         return out
+
+    def _far_advice(self, lower: bool = False) -> str:
+        """Qué probar cuando las personas se ven chicas, según la detección que ya tiene la cámara (`lower`: para
+        seguir una frase)."""
+        text = self._far_text()
+        return text[0].lower() + text[1:] if lower else text
+
+    def _far_text(self) -> str:
+        det = self.detection
+        if not det.far:
+            return (f"Probá subir la «Sensibilidad» (ahora {det.sensitivity}) o prender «Lejos» (analiza la imagen por "
+                    f"partes: usa unas {FAR_PASSES} veces más la máquina; sirve más con la calidad principal o con la "
+                    "secundaria del grabador en 1280x720).")
+        if det.sensitivity < MAX_SENSITIVITY:
+            return (f"Ya está «Lejos»: probá subir la «Sensibilidad» (ahora {det.sensitivity}), la calidad principal "
+                    "del grabador o una cámara más cerca.")
+        return (f"Ya está todo al máximo («Lejos» y sensibilidad {MAX_SENSITIVITY}): hace falta la calidad principal "
+                "del grabador (o la secundaria en 1280x720) o una cámara más cerca.")
 
     def _gesture_hints(self, st: dict, types: set[str]) -> list[str]:
         """Avisos de los gestos: si la postura se puede ver bien en esta cámara."""

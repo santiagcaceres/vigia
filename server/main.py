@@ -14,7 +14,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -25,6 +25,8 @@ from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+# core.deteccion es Python puro: el servidor no puede importar core.detectors (trae OpenCV, que Vercel no tiene)
+from core.deteccion import DetectionConfig
 from core.gestos import GESTURE_TYPES, GestureConfig
 from core.metrics import empty_bucket, merge_bucket, post_stats, restrict_bucket, wait_stats
 from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, NO_WAIT_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
@@ -540,6 +542,31 @@ def camera_gestures(c: Camera) -> GestureConfig:
     return cfg
 
 
+def camera_detection(c: Camera) -> DetectionConfig:
+    """Sensibilidad y «Personas lejos» de la cámara (`cameras.detection`; NULL = 5 y no). Se valida al guardar; si
+    igual hay algo raro (editado a mano en la base), lo que no se entienda queda como siempre (modo tolerante)."""
+    try:
+        return DetectionConfig.from_dict(c.detection, strict=False)
+    except (ValueError, TypeError, AttributeError):  # el modo tolerante no debería fallar nunca: por las dudas
+        log.warning("Cámara %s: detección guardada inválida %r; queda la de siempre", c.id, c.detection)
+        return DetectionConfig()
+
+
+def clean_detection(d: Any) -> dict | None:
+    """Valida la detección que llega (ValueError en castellano). Devuelve lo que se guarda: None si es la de siempre
+    (sensibilidad 5, sin «Personas lejos»), si no solo lo que difiere."""
+    if not isinstance(d, dict):
+        raise ValueError("detection: va un objeto con «sensitivity» (1 a 10) y «far» (true o false)")
+    try:
+        cfg = DetectionConfig.from_dict(d, strict=True)
+    except ValueError as exc:
+        msg = str(exc)
+        raise ValueError(msg if msg.startswith("detection") else f"detection: {msg}") from exc
+    except (TypeError, AttributeError) as exc:
+        raise ValueError("detection: va un objeto con «sensitivity» (1 a 10) y «far» (true o false)") from exc
+    return None if cfg.is_default else cfg.to_dict(compact=True)
+
+
 class CameraIn(BaseModel):
     client_id: int
     agent_id: int | None = None
@@ -580,6 +607,9 @@ class CameraIn(BaseModel):
     # (`null` = volver a «como el cliente»)
     plans: list[PlanName] | None = None
     known_plans: list[str] | None = Field(None, max_length=20)  # como en ClientIn
+    # detección de personas: {"sensitivity": 1..10, "far": bool} (core/deteccion.py). None = no cambia (la web y las
+    # apps viejas no la mandan: editar desde ahí no la borra). Se valida en clean_detection (mensajes en castellano)
+    detection: Any = None
 
 
 class StreamUrlIn(BaseModel):
@@ -607,6 +637,8 @@ class AnalysisIn(BaseModel):
     # gestos de ocultamiento (GestureConfig de core/gestos.py), aparte de `rules`. None = no cambia (app vieja);
     # {"enabled": []} = apagados a propósito; sin "enabled" = los del tipo de cámara con esos tiempos
     gestures: dict | None = None
+    # sensibilidad y «Personas lejos» (como CameraIn.detection). None = no cambia
+    detection: Any = None
 
 
 class LabelIn(BaseModel):
@@ -1038,10 +1070,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 continue
             analysis = camera_analysis(c, cl)
             fps, pose = camera_fps(c, analysis), bool(analysis.get("gestures"))  # con gestos mira posturas: pesa más
+            # «Personas lejos»: el detector pasa 5 veces por cuadro (el de movimiento no tiene partes: no cambia)
+            far = c.detector != "motion" and bool((analysis.get("detection") or {}).get("far"))
             for i, t in enumerate(times):
                 out[i][c.id] = pool.camera_weight(fps=fps, mode=c.mode or "vivo", brand=c.brand, hours=cl.hours,
                                                   tz=cl.timezone, off_hours=c.off_hours or "apagada", now=t,
-                                                  pose=pose)
+                                                  pose=pose, far=far)
         return cams, out
 
     def machines_of(s, now: datetime, weights: dict[int, float]) -> list[pool.Machine]:
@@ -1187,6 +1221,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      # los del tipo sin mirar las reglas (con las reglas apagadas a mano, el tipo no prende gestos)
                      profile_gestures=[] if camera_profile(c).get("only_metrics")
                      else list(camera_profile(c).get("gestures") or []))
+            det = camera_detection(c)  # completa (con los valores de siempre) para llenar los formularios
+            d.update(detection=det.to_dict(compact=False), detection_default=det.is_default)
             ops = ops or {}
             op_name = (ops.get("users") or {}).get(c.operator_id) if c.operator_id else None
             d.update(operator_id=c.operator_id if op_name else None, operator_name=op_name,
@@ -2032,8 +2068,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return camera_dict(c, user, agent_status_map(s).get(c.id), operator_map(s))
 
     def camera_fields(body: CameraIn) -> dict:
+        # `detection` aparte: se valida y solo se toca si vino (la web no la manda; un setattr con None la borraría)
         f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password", "keep_source_url",
-                                     "plans", "known_plans"})
+                                     "plans", "known_plans", "detection"})
         if "agent_id" not in body.model_fields_set:
             f.pop("agent_id")  # la asignación se hace por usuario (operator_id) y solo la toca el admin
         if f.get("off_hours") is None:
@@ -2119,8 +2156,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_camera_body(s, body)
         check_not_repeated(s, body)
         plans = clean_camera_plans(body.plans, s.get(Client, body.client_id))
+        detection = detection_of(body.detection) if body.detection is not None else None  # sin dato: la de siempre
         c = Camera(**camera_fields(body), password_enc=box.encrypt(body.password) or client_password(s, body),
-                   source_url_enc=box.encrypt(body.source_url), plans=plans)
+                   source_url_enc=box.encrypt(body.source_url), plans=plans, detection=detection)
         apply_operator(s, c, body, user)
         s.add(c)
         bump_rev(s)
@@ -2133,6 +2171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         c = get_or_404(s, Camera, cam_id, "Cámara")
         check_camera_body(s, body, existing=c)
         check_not_repeated(s, body, exclude=cam_id)
+        detection = detection_of(body.detection) if body.detection is not None else None  # (422 antes de tocar nada)
         client = s.get(Client, body.client_id)
         if "plans" in body.model_fields_set:  # solo si vino: null = como el cliente (lo elegido no se recorta solo)
             sent = body.plans
@@ -2141,6 +2180,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             c.plans = clean_camera_plans(sent, client)
         elif body.client_id != c.client_id:  # pasó a otro cliente: lo elegido era para el otro, sigue al nuevo
             c.plans = None
+        if body.detection is not None:  # None = no cambia (la web y las apps viejas no la mandan)
+            c.detection = detection
         before = locations(s)
         for k, v in camera_fields(body).items():
             setattr(c, k, v)
@@ -2173,14 +2214,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             parse_config(cfg)
             gestures = clean_gestures(body.gestures)
+            detection = clean_detection(body.detection) if body.detection is not None else None
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc)) from exc
         c.zones, c.rules = cfg["zones"], cfg["rules"]
         if gestures is not None:  # None = no cambia (la app vieja no los manda)
             c.gestures = gestures
+        far_before = camera_detection(c).far
+        if body.detection is not None:  # None = no cambia; la de siempre se guarda como NULL
+            c.detection = detection
         bump_rev(s)
         s.commit()
+        if camera_detection(c).far != far_before:
+            rebalance(s, force=True)  # «Personas lejos» pesa 4 veces en las máquinas: repartir ya
         return camera_dict(c, user, ops=operator_map(s))
+
+    def detection_of(d: Any) -> dict | None:
+        """Lo que se guarda en `cameras.detection` (None = la de siempre), o 422 con el motivo en castellano."""
+        try:
+            return clean_detection(d)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     def clean_gestures(g: dict | None) -> dict | None:
         """Valida los gestos que llegan (ValueError con el motivo) y guarda solo las claves que vinieron, con los
@@ -2462,6 +2516,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                "metrics_only": metrics_only}
         if gestures.enabled:  # compacto: solo los gestos y lo que difiere de lo de siempre (una clave nueva viaja
             out["gestures"] = gestures.to_dict(compact=True)  # solo a las cámaras que la cambiaron)
+        # sensibilidad y «Personas lejos»: aparte (un agente viejo la ignora) y compacta, solo si difiere de la de
+        # siempre. También en las cámaras de solo métricas y en las alarmas: contar a la gente del fondo es lo que se
+        # busca en un depósito grande
+        det = camera_detection(c)
+        if not det.is_default:
+            out["detection"] = det.to_dict(compact=True)
         if extra:
             out["extra_zones"] = extra
             staff = [z for z in extra if z.get("type") == "staff"]

@@ -43,6 +43,7 @@ import cv2
 import httpx
 import numpy as np
 
+from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, MAX_SENSITIVITY, MIN_SENSITIVITY, DetectionConfig
 from core.gestos import GESTURE_NAMES, GestureConfig
 from core.metrics import WAIT_MIN_SECONDS, post_stats, wait_stats
 from core.rules import NO_WAIT_TYPES, snap_edge
@@ -468,6 +469,39 @@ def plans_names(plans: list[str]) -> str:
     """«Detección de hurtos y Métricas de comercio»"""
     names = [PLAN_NAMES.get(p, p) for p in plans]
     return " y ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else (names[0] if names else "nada")
+
+
+# ------------------------------------------------------------------ detección de personas de cada cámara
+# Pedido del dueño (6 nov): «¿cómo puedo aumentar la facilidad o tolerancia para detectar personas? si están lejos no
+# las cuenta». Cada cámara tiene una «Sensibilidad» (1 a 10; 5 = como siempre) y «Personas lejos» (la imagen se mira
+# también en 4 partes agrandadas). Lo aplica el detector de cada PC o máquina (core/deteccion.py, core/detectors.tuned).
+DETECTION_HELP = (f"{DEFAULT_SENSITIVITY} = normal. Más alta ve gente más chica o lejana, pero confunde más cosas con "
+                  "personas. «Personas lejos» mira la imagen por partes: usa unas "
+                  f"{FAR_PASSES} veces más la máquina (sirve con 1280x720 o la calidad principal).")
+
+
+def detection_from_form(sens_text, far) -> DetectionConfig:
+    """La detección escrita en un formulario (la sensibilidad como texto, «Personas lejos» como casilla). ValueError en
+    castellano si la sensibilidad no es un entero de 1 a 10."""
+    try:
+        s = int(str(sens_text).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"La sensibilidad va de {MIN_SENSITIVITY} a {MAX_SENSITIVITY}.") from None
+    if not MIN_SENSITIVITY <= s <= MAX_SENSITIVITY:
+        raise ValueError(f"La sensibilidad va de {MIN_SENSITIVITY} a {MAX_SENSITIVITY}.")
+    return DetectionConfig(s, bool(far))
+
+
+def camera_detection(cam: dict | None) -> DetectionConfig:
+    """La detección guardada de la cámara (lo que manda el servidor en `detection`; un servidor viejo no lo manda: la
+    de siempre)."""
+    return DetectionConfig.from_dict((cam or {}).get("detection"))
+
+
+def detection_text(cam: dict | None) -> str:
+    """«» si la cámara detecta como siempre; si no, «sensibilidad 8 de 10 · personas lejos» (para el detalle)."""
+    det = camera_detection(cam)
+    return "" if det.is_default else det.describe()
 
 
 # ------------------------------------------------------------------ API
@@ -1235,7 +1269,9 @@ class Oficina:
             f"Mide: {measures_text(cam, owner, short=False)}{staff_warn}\n"
             f"Puesta a punto: {self._tuning_text(cam)}\n"
             f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
-            f"{int(cam.get('process_fps') or 5)} cuadros por segundo · {MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}\n"
+            f"{int(cam.get('process_fps') or 5)} cuadros por segundo · "
+            f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}"
+            f"{(' · detección: ' + detection_text(cam)) if detection_text(cam) else ''}\n"
             f"Zonas: {zones}\n"
             f"Conexión: {conn}")
 
@@ -1630,6 +1666,9 @@ class Oficina:
             "fps": tk.StringVar(value=str(int(max(5, cam.get("process_fps") or 5)))),
             "off_hours": tk.StringVar(value=OFF_HOURS_NAMES.get(cam.get("off_hours") or "apagada")),
         }
+        det0 = camera_detection(cam)  # la detección de personas guardada (5 y sin «lejos» si es nueva)
+        v["sens"] = tk.StringVar(value=str(det0.sensitivity))
+        far = tk.BooleanVar(value=det0.far)
         enabled = tk.BooleanVar(value=cam.get("enabled", True))
         nvr = tk.BooleanVar(value=cam.get("nvr_clips", True))
         inv = lambda d, val: next((k for k, t in d.items() if t == val), None)  # noqa: E731
@@ -1795,6 +1834,21 @@ class Oficina:
             row=5, column=0, sticky="w", pady=(0, 8))
         srow(6, "Cuadros por segundo (5 a 15)", ttk.Spinbox(side, from_=5, to=15, textvariable=v["fps"], width=6),
              sticky="w")
+        # detección de personas (pedido del dueño, 6 nov: «si están lejos no las cuenta»)
+        df = ttk.LabelFrame(side, text="Detección de personas", padding=6)
+        df.grid(row=8, column=0, sticky="ew")
+        motion = (cam.get("detector") or "yolo") == "motion"  # (el de movimiento no tiene sensibilidad)
+        sens_row = ttk.Frame(df)  # (todo en un renglón y la ayuda corta: con «Más opciones» entra en 768 de alto)
+        sens_row.pack(anchor="w")
+        ttk.Label(sens_row, text=f"Sensibilidad ({MIN_SENSITIVITY} a {MAX_SENSITIVITY})").pack(side="left")
+        sens_sb = ttk.Spinbox(sens_row, from_=MIN_SENSITIVITY, to=MAX_SENSITIVITY, textvariable=v["sens"], width=4,
+                              state="disabled" if motion else "normal")
+        sens_sb.pack(side="left", padx=(6, 12))
+        ttk.Checkbutton(sens_row, text="Personas lejos", variable=far,
+                        state="disabled" if motion else "normal").pack(side="left")
+        ttk.Label(df, text=DETECTION_HELP if not motion else
+                  "Esta cámara usa el detector de movimiento (solo para pruebas): no tiene sensibilidad.",
+                  foreground="#666", wraplength=440, justify="left").pack(anchor="w", pady=(2, 0))
 
         filled: dict = {"line": None}
 
@@ -1872,6 +1926,13 @@ class Oficina:
                 common["known_plans"] = list(PLAN_NAMES)
             except ValueError as exc:
                 return self.mb.showwarning(NOMBRE, str(exc), parent=top)
+            if not motion:  # la detección de personas: en todos los pedidos de una cámara nueva; al editar, si cambió
+                try:  # (así editar otra cosa no pisa la que guardó otro usuario en la ventana de la cámara)
+                    det = detection_from_form(v["sens"].get(), far.get())
+                except ValueError as exc:
+                    return self.mb.showwarning(NOMBRE, str(exc), parent=top)
+                if not cam.get("id") or det != det0:
+                    common["detection"] = det.to_dict(compact=False)
             skip: list[str] = []  # canales que ya estaban cargados: no se repiten
             if brand == "hikconnect":
                 if not hc_sel or not hc_sel[0].get("serial"):
@@ -3307,7 +3368,8 @@ class ZonesEditor:
         """`image`: dibujar sobre esa imagen (la del ajuste) en vez de bajar la última de la cámara. `on_saved`
         recibe lo guardado (zonas y reglas). `confirm`: pregunta antes de guardar (cámara que ya se analiza).
         `footmap`: el mapa de pisadas de lo analizado en la ventana de la cámara. Si `cam` trae "save_gestures" (los
-        gestos que se están probando ahí), se guardan junto con las zonas, como los tiempos."""
+        gestos que se están probando ahí) o "save_detection" (la sensibilidad y «Personas lejos»), se guardan junto con
+        las zonas, como los tiempos."""
         self.app, self.cam = app, cam
         self.on_saved = on_saved
         self.confirm = confirm
@@ -3734,6 +3796,8 @@ class ZonesEditor:
         body = {"zones": zones, "rules": rules}
         if self.cam.get("save_gestures") is not None:  # aparte de las reglas (nunca dentro de `rules`)
             body["gestures"] = self.cam["save_gestures"]
+        if self.cam.get("save_detection") is not None:  # la detección que se probaba en la ventana de la cámara
+            body["detection"] = self.cam["save_detection"]
 
         def done(_):
             self.top.destroy()
@@ -3805,6 +3869,11 @@ class TuneWindow:
         self._note = ""  # se agrega al estado (p. ej. «se vuelve a analizar mirando la postura»)
         self._note_until = 0.0  # en vivo, hasta cuándo se muestra la nota
         self._type_gestures: list | None = None  # los gestos del tipo de cámara (si no se eligieron a mano)
+        # detección de personas (sensibilidad y «Personas lejos»): la guardada, la que se está analizando acá y el
+        # aviso pendiente para aplicarla cuando se termine de tocar
+        self._saved_det = DetectionConfig()
+        self._det_applied = DetectionConfig()
+        self._det_after = None
         self.closed = False
         self.preview_sent = False
         self.lib = app.library()  # videos de prueba guardados de cada cámara (en esta PC)
@@ -3847,16 +3916,30 @@ class TuneWindow:
         self.photo = None
         nav = ttk.Frame(left)
         nav.pack(fill="x", pady=(4, 0))
-        self.play_btn = ttk.Button(nav, text="▶", width=3, command=self.toggle_play)
+        # (botones chicos y la barra corta, que se estira sola: con la sensibilidad, la fila medía más que la imagen y
+        # ensanchaba la ventana)
+        self.play_btn = ttk.Button(nav, text="▶", width=2, style="Chico.TButton", command=self.toggle_play)
         self.play_btn.pack(side="left")
-        self.scale = ttk.Scale(nav, from_=0, to=1, orient="horizontal", command=self.on_scale)
+        self.scale = ttk.Scale(nav, from_=0, to=1, orient="horizontal", command=self.on_scale, length=60)
         self.scale.pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(nav, text="Último ▸▸", command=self.follow).pack(side="left")
+        ttk.Button(nav, text="Último ▸▸", width=0, style="Chico.TButton", command=self.follow).pack(side="left")
         self.show_objects = tk.BooleanVar(value=True)
         ttk.Checkbutton(nav, text="Objetos", variable=self.show_objects, command=self._redraw).pack(side="left", padx=(6, 0))
         # mapa de pisadas encima (celeste: caminan, rojo: se paran): para ver dónde van de verdad las zonas
         self.show_feet = tk.BooleanVar(value=False)
         ttk.Checkbutton(nav, text="Pisadas", variable=self.show_feet, command=self._redraw).pack(side="left", padx=(4, 0))
+        # detección de personas, para probarla en el acto (pedido del dueño, 6 nov: «si están lejos no las cuenta»): en
+        # vivo rige para los cuadros nuevos y los clips se vuelven a analizar; se guarda con «Guardar» o «Aprobar»
+        self.det_sens = tk.StringVar(value=str(DEFAULT_SENSITIVITY))
+        self.det_far = tk.BooleanVar(value=False)
+        ttk.Label(nav, text="Sensibilidad").pack(side="left", padx=(8, 2))
+        sens_sb = ttk.Spinbox(nav, from_=MIN_SENSITIVITY, to=MAX_SENSITIVITY, width=3, textvariable=self.det_sens)
+        sens_sb.pack(side="left")
+        far_cb = ttk.Checkbutton(nav, text="Lejos", variable=self.det_far)
+        far_cb.pack(side="left", padx=(4, 0))
+        self.det_widgets = [sens_sb, far_cb]
+        for var in (self.det_sens, self.det_far):
+            var.trace_add("write", lambda *_a: (self._show_dirty(), self._detection_changed()))
         self.pos = ttk.Label(left, text="", style="Suave.TLabel", wraplength=self.W, justify="left")
         self.pos.pack(anchor="w")
         # (con corte de renglón: un estado largo ensanchaba la ventana más allá de 1366)
@@ -4026,6 +4109,9 @@ class TuneWindow:
             if self._type_gestures is None and "enabled" not in (self.info["raw"].get("gestures") or {}):
                 self._type_gestures = list((self.analysis.get("gestures") or {}).get("enabled") or [])
             self._set_detector_text()
+            motion = (self.info["camera"].get("detector") or self.cam.get("detector") or "yolo") == "motion"
+            for w in self.det_widgets:  # (el detector de movimiento no tiene sensibilidad)
+                w.configure(state="disabled" if motion else "normal")
             if self.info.get("analyzed"):
                 self.live_warn.configure(text="⚠ Esta cámara ya se analiza en las máquinas: las zonas y tiempos que "
                                               "guardes empiezan a regir ahí enseguida (alertas reales). Probar tiempos "
@@ -4058,6 +4144,7 @@ class TuneWindow:
                 v = float(rules.get(key, default))
                 self.tv[key].set(f"{v:g}")
             self._fill_gestures()
+            self._fill_detection()
         finally:
             self._filling = False
         self._tested = False
@@ -4066,13 +4153,15 @@ class TuneWindow:
         self._rules_text()
 
     def _view(self) -> tuple:
-        """Lo que se ve en las casillas de tiempos y gestos (para saber si se tocó algo)."""
+        """Lo que se ve en las casillas de tiempos, gestos y detección de personas (para saber si se tocó algo)."""
+        det = (self.det_sens.get(), self.det_far.get()) if hasattr(self, "det_sens") else ()
         return (tuple(v.get() for v in self.tv.values()), tuple(v.get() for v in self.gv.values()),
-                tuple(v.get() for v in self.gs.values()), self.g_take.get())
+                tuple(v.get() for v in self.gs.values()), self.g_take.get(), det)
 
     @property
     def dirty(self) -> bool:
-        """Hay tiempos o gestos probados o cambiados sin guardar («Aprobar» los guarda y «Cerrar» pregunta)."""
+        """Hay tiempos, gestos o detección probados o cambiados sin guardar («Aprobar» los guarda y «Cerrar»
+        pregunta)."""
         return self._tested or (self._saved_view is not None and self._view() != self._saved_view)
 
     def _show_dirty(self) -> None:
@@ -4103,6 +4192,77 @@ class TuneWindow:
         for w in self.g_widgets:  # el porqué lo dice `_rules_text`
             w.configure(state="disabled" if blocked else "normal")
 
+    # ---------- detección de personas (sensibilidad y «Personas lejos») ----------
+    DET_WAIT_MS = 600  # se aplica cuando se deja de tocar (cada flechita del número no vuelve a analizar los clips)
+
+    def _fill_detection(self) -> None:
+        """La sensibilidad y «Lejos» que rigen (las manda el servidor en `analysis["detection"]`; sin la clave, las de
+        siempre). Se llama con `_filling` (no es un cambio del usuario)."""
+        det = DetectionConfig.from_dict(self.analysis.get("detection"))
+        self.det_sens.set(str(det.sensitivity))
+        self.det_far.set(det.far)
+        self._saved_det = self._det_applied = det
+
+    def _detection_form(self, warn: bool = False) -> DetectionConfig | None:
+        """La detección de las casillas; None si la sensibilidad no es un número de 1 a 10 (con `warn`, lo dice)."""
+        try:
+            return detection_from_form(self.det_sens.get(), self.det_far.get())
+        except ValueError as exc:
+            if warn:
+                self.app.mb.showwarning(NOMBRE, str(exc), parent=self.top)
+            return None
+
+    def _detection_changed(self) -> None:
+        """Se tocó «Sensibilidad» o «Lejos»: se aplica cuando se termine de tocar (`_apply_detection`)."""
+        if self._filling or self.closed:
+            return
+        if self._det_after is not None:
+            try:
+                self.top.after_cancel(self._det_after)
+            except Exception:  # noqa: BLE001 - ya se había disparado
+                pass
+        self._det_after = self.top.after(self.DET_WAIT_MS, self._apply_detection)
+
+    def _flush_detection(self) -> None:
+        """Lo que quedó esperando a que se termine de tocar, ya (antes de guardar o de abrir el editor de zonas)."""
+        if self._det_after is not None:
+            try:
+                self.top.after_cancel(self._det_after)
+            except Exception:  # noqa: BLE001
+                pass
+            self._apply_detection()
+
+    def _apply_detection(self) -> None:
+        """La sensibilidad y «Lejos» de las casillas, al análisis de esta ventana (sin guardarlas), para ver en el acto
+        si aparecen las personas del fondo: en vivo rigen para los cuadros nuevos (`Tuner.set_detection`); los clips se
+        vuelven a analizar, porque lo que cambia es justamente qué se detecta."""
+        from .ajuste import with_detection
+        self._det_after = None
+        if self.closed:
+            return
+        det = self._detection_form()
+        if det is None or det == self._det_applied:
+            return  # (un número a medio escribir no hace nada)
+        self._det_applied = det
+        self.analysis = with_detection(self.analysis, det)
+        t = self.tuner
+        if t is None:
+            return  # todavía se prepara o no hay clips: lo próximo que se analice ya la usa (`_start` lee `analysis`)
+        # (nota corta: con un renglón más de estado la ventana no entra en 768 de alto; el porqué lo dice «Cómo anda la
+        # cámara»: personas chicas, confianza, falsas)
+        what = f"sensibilidad {det.sensitivity}" + (" y lejos" if det.far else "")
+        if t.live:
+            self.app.bg.run(lambda: t.set_detection(det), None,
+                            lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
+            self._note = f"{what}: rige desde ahora (acepta personas desde {det.conf:.2f})"
+            self._note_until = time.monotonic() + 15.0
+        else:
+            if self.run_videos:
+                self._start(library=self.run_videos)
+            else:
+                self._start(videos=list(t.videos))
+            self._note = f"se vuelve a analizar con {what}"
+
     def _rules_text(self) -> None:
         """Qué reglas y gestos usa la cámara y con qué detector corre (sin tocar los tiempos que se están probando)."""
         from .ajuste import gestures_blocked
@@ -4125,7 +4285,7 @@ class TuneWindow:
                     f" Gestos: {', '.join(GESTURE_NAMES.get(g, g) for g in gestures).lower()}." if gestures else
                     " Gestos: ninguno.")
         self.rules_lbl.configure(text=txt + " El tipo de cámara se cambia en «Editar» o en «Nombres e imágenes». "
-                                 + getattr(self, "detector_text", ""))
+                                 + getattr(self, "detector_text", ""))  # (la detección se ve en la barra de la imagen)
 
     def _times(self) -> dict[str, float] | None:
         try:
@@ -4677,10 +4837,15 @@ class TuneWindow:
                 "enseguida y puede dar alertas reales a los empleados.\n\n¿Guardar igual?")
 
     def save_times(self, then: Callable[[], None] | None = None) -> None:
-        """«Guardar»: los tiempos van a `rules` y los gestos aparte, a `gestures` (nunca mezclados: un agente viejo
-        rechaza en `rules` nombres que no conoce y deja de analizar la cámara)."""
+        """«Guardar»: los tiempos van a `rules`, los gestos aparte, a `gestures` (nunca mezclados: un agente viejo
+        rechaza en `rules` nombres que no conoce y deja de analizar la cámara), y la detección de personas a
+        `detection` (solo si cambió)."""
         times, gestures = self._times(), self._gestures_body()
         if times is None or gestures is None or self.info is None:
+            return
+        self._flush_detection()  # (lo que se analiza acá es lo que se guarda)
+        det = self._detection_form(warn=True)
+        if det is None:
             return
         warn = self._confirm_live()
         if then is None and warn and not self.app.mb.askyesno(NOMBRE, warn, parent=self.top):
@@ -4691,6 +4856,8 @@ class TuneWindow:
         saved_gestures = self._gestures_save(gestures)
         if saved_gestures is not None:
             body["gestures"] = saved_gestures
+        if det != self._saved_det:  # (None en el servidor = no cambia: si no se tocó, no se manda)
+            body["detection"] = det.to_dict(compact=False)
         cid, view = self.cam["id"], self._view()
 
         def work():
@@ -4702,13 +4869,21 @@ class TuneWindow:
 
         def done(saved):
             raw["rules"] = rules
+            unknown = []  # un servidor sin actualizar responde bien pero descarta lo que no conoce: decirlo
             if saved_gestures is not None:
                 raw["gestures"] = saved_gestures
                 if isinstance(saved, dict) and "gestures" not in saved:
-                    # un servidor sin actualizar responde bien pero descarta los gestos: decirlo, no darlo por hecho
-                    self.app.mb.showwarning(
-                        NOMBRE, "Se guardaron las zonas y los tiempos, pero el servidor todavía no conoce los gestos: "
-                                "no quedaron guardados. Avisá para que lo actualicen.", parent=self.top)
+                    unknown.append("los gestos")
+            if "detection" in body:
+                if isinstance(saved, dict) and "detection" not in saved:
+                    unknown.append("la sensibilidad de detección")
+                else:
+                    self._saved_det = det
+            if unknown:
+                self.app.mb.showwarning(
+                    NOMBRE, "Se guardaron las zonas y los tiempos, pero el servidor todavía no conoce "
+                            f"{' ni '.join(unknown)}: eso no quedó guardado. Avisá para que lo actualicen.",
+                    parent=self.top)
             self._tested, self._saved_view = False, view
             self._show_dirty()
             self.app.config_saved()
@@ -4732,18 +4907,22 @@ class TuneWindow:
                "rules": {**(self.info["raw"].get("rules") or {}), **times}}
         gestures = self._gestures_body(warn=False)  # los gestos que se están probando se guardan con las zonas
         cam["save_gestures"] = self._gestures_save(gestures) if gestures is not None else None
+        self._flush_detection()  # y la detección (si cambió)
+        det = self._detection_form()
+        cam["save_detection"] = det.to_dict(compact=False) if det is not None and det != self._saved_det else None
         ZonesEditor(self.app, cam, image=img, on_saved=self.zones_saved, confirm=self._confirm_live(), footmap=feet,
                     note=note)
 
     def zones_saved(self, _body: dict, external: bool = False) -> None:
         """Se guardaron zonas (y tiempos) en el editor: traer la configuración nueva y recalcular. `external`: las
-        guardó otro editor (el de la barra), que no trae los tiempos y gestos que se están probando acá: esos se
-        conservan."""
+        guardó otro editor (el de la barra), que no trae los tiempos, gestos y detección que se están probando acá:
+        esos se conservan."""
         if self.info is None or self.detector is None:
             self._reload = True  # todavía se está preparando: al terminar se vuelve a pedir
             return
+        self._flush_detection()  # (una sensibilidad recién tocada: que el motor ya la tenga)
         tested = None
-        if external and self.dirty:  # lo que se estaba probando acá (tiempos y gestos), para no perderlo
+        if external and self.dirty:  # lo que se estaba probando acá (tiempos, gestos, detección), para no perderlo
             tested = (self._times_raw(), self._tested)
 
         def done(info):
@@ -4770,13 +4949,19 @@ class TuneWindow:
                         lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
     def _times_raw(self) -> tuple:
-        """Lo escrito en las casillas de tiempos y gestos (tal cual, para volver a ponerlo)."""
+        """Lo escrito en las casillas de tiempos, gestos y detección (tal cual, para volver a ponerlo)."""
         return ({k: v.get() for k, v in self.tv.items()}, {k: v.get() for k, v in self.gv.items()},
-                {k: v.get() for k, v in self.gs.items()}, self.g_take.get())
+                {k: v.get() for k, v in self.gs.items()}, self.g_take.get(), (self.det_sens.get(), self.det_far.get()))
 
     def _restore_times(self, raw: tuple, tested: bool) -> None:
         """Vuelve a poner en las casillas lo que se estaba probando y lo aplica al análisis (sin guardarlo)."""
-        tv, gv, gs, take = raw
+        tv, gv, gs, take, (sens, far) = raw
+        self._filling = True  # la detección se aplica abajo, con lo demás (sin la espera de `_detection_changed`)
+        try:
+            self.det_sens.set(sens)
+            self.det_far.set(far)
+        finally:
+            self._filling = False
         for k, val in tv.items():
             self.tv[k].set(val)
         for k, val in gv.items():
@@ -4790,7 +4975,12 @@ class TuneWindow:
         merged = self._merged(times, gestures) if times is not None and gestures is not None else None
         if merged is not None:
             self.analysis = merged
-            self._rules_text()
+        det = self._detection_form()
+        if det is not None:  # (el motor ya la estaba usando: `zones_saved` le pasa este análisis)
+            from .ajuste import with_detection
+            self._det_applied = det
+            self.analysis = with_detection(self.analysis, det)
+        self._rules_text()
 
     # ---------- aprobar y cerrar ----------
     def approve(self) -> None:
@@ -4799,7 +4989,7 @@ class TuneWindow:
         msg = (f"¿Aprobar «{self.cam['name']}» y mandarla a analizar en las máquinas de análisis?\n\nDesde ahí da alertas "
                "de verdad (les llegan a los empleados) y métricas.")
         if self.dirty:
-            msg += "\n\nLos tiempos y gestos que estás probando se guardan."
+            msg += "\n\nLos tiempos, gestos y la detección que estás probando se guardan."
         if not self.app.mb.askyesno(NOMBRE, msg, parent=self.top):
             return
         cid, notes = self.cam["id"], self.notes.get().strip()
@@ -4825,9 +5015,16 @@ class TuneWindow:
 
     def close(self, force: bool = False) -> None:
         if not force and self.dirty and not self.app.mb.askyesno(
-                NOMBRE, "Hay tiempos o gestos cambiados sin guardar. ¿Cerrar igual?", parent=self.top):
+                NOMBRE, "Hay tiempos, gestos o la detección de personas cambiados sin guardar. ¿Cerrar igual?",
+                parent=self.top):
             return
         self.closed = True
+        if self._det_after is not None:
+            try:
+                self.top.after_cancel(self._det_after)
+            except Exception:  # noqa: BLE001
+                pass
+            self._det_after = None
         if self.tuner is not None:
             self.tuner.stop()
         if self in self.app._tune_windows:
@@ -5048,7 +5245,9 @@ class TuneWindow:
                          f"{st['people_pct']:.0f} % de los cuadros")
             per_hour = f" (≈ {st['per_hour']:.1f} por hora)" if st.get("per_hour") is not None else ""
             dropped = f" · el modelo entrenado descartaría {st['dropped']}" if st.get("dropped") else ""
-            people = (f"Personas: {st['height_pct']:.0f} % del alto · confianza {st['conf']:.2f} · "
+            sens = (f" · sensibilidad {st['sensitivity']}" + (" · lejos" if st.get("far") else "")
+                    if st.get("sensitivity") is not None else "")  # (con qué se detectó: se prueba en la barra)
+            people = (f"Personas: {st['height_pct']:.0f} % del alto · confianza {st['conf']:.2f}{sens} · "
                       if st["detections"] else "")
             lines.append(f"{people}Alertas de prueba: {st['alerts']}{per_hour}{dropped}")
             if st.get("objects"):

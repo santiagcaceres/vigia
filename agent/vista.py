@@ -27,10 +27,11 @@ import cv2
 import httpx
 import numpy as np
 
+from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, DetectionConfig
 from core.imagen import pixel_aspect, square_pixels
 
 from .cameras import build_camera
-from .worker import MediaClock, bursty
+from .worker import MediaClock, bursty, without_detection
 
 log = logging.getLogger("vigia.vista")
 SHOW_INTERVAL = 0.1  # la ventana no necesita más de 10 cuadros por segundo
@@ -222,6 +223,9 @@ class AIViewWorker(ViewWorker):
         self._cfg_lock = threading.Lock()  # zonas y reglas nuevas llegan desde otro hilo (`set_analysis`)
         self.engine = None
         self.metrics = None
+        self.detection = DetectionConfig()  # sensibilidad y «Personas lejos» de la cámara (`analysis["detection"]`)
+        self._tuned_key: tuple | None = None
+        self._tuned = None  # el detector compartido de la app con la detección de esta cámara (`_detector_for`)
         self._set(cfg.get("analysis") or {})
         self.target_fps = max(1.0, float(cfg.get("process_fps") or 5.0))
         self._detector_factory, self._pose_factory = detector_factory, pose_factory
@@ -252,6 +256,7 @@ class AIViewWorker(ViewWorker):
             rule_cfg.gestures = GestureConfig()
         with self._cfg_lock:
             self.analysis, self.zones, self.rule_cfg = analysis, zones, rule_cfg
+            self.detection = DetectionConfig.from_dict(analysis.get("detection"))  # (lo raro: lo de siempre)
             # quién cuenta las personas que entran a cada zona (las mismas reglas que las métricas de las máquinas)
             self.metrics = MetricsCollector(zones, rule_cfg.schedule)
             if self.engine is not None:  # (si la IA todavía no arrancó, el motor lo arma ella)
@@ -263,8 +268,14 @@ class AIViewWorker(ViewWorker):
         no se pierde lo contado."""
         if process_fps:
             self.target_fps = max(1.0, float(process_fps))
+        analysis = dict(analysis or {})
         with self._cfg_lock:
-            same = dict(analysis or {}) == self.analysis
+            same = analysis == self.analysis
+            if not same and without_detection(analysis) == without_detection(self.analysis):
+                # solo cambió la sensibilidad o «Personas lejos»: rige desde el próximo cuadro, sin perder lo contado
+                self.analysis = analysis
+                self.detection = DetectionConfig.from_dict(analysis.get("detection"))
+                same = True
         if same:
             return
         try:
@@ -288,8 +299,13 @@ class AIViewWorker(ViewWorker):
         if self.detector is None:
             return "Viendo · cargando la IA..."
         who = f"{self.people} persona{'s' if self.people != 1 else ''}"
+        det = self.detection
+        if not det.is_default:  # «sensibilidad 8», «lejos»: para saber con qué se está mirando
+            who += "".join((f" · sensibilidad {det.sensitivity}" if det.sensitivity != DEFAULT_SENSITIVITY else "",
+                            " · lejos" if det.far else ""))
         if self.ai_fps and self.ai_fps < 0.7 * self.target_fps and self.ai_ms > 1000.0 / self.target_fps:
-            return f"IA · {who} · la PC no da abasto ({self.ai_ms:.0f} ms por cuadro)"
+            return (f"IA · {who} · la PC no da abasto ({self.ai_ms:.0f} ms por cuadro"
+                    + (f", con «Lejos» hace {FAR_PASSES} veces el trabajo)" if det.far else ")"))
         return f"IA · {who} · {min(self.ai_fps, self.target_fps):.1f} de {self.target_fps:.0f} cuadros/s"
 
     def _ready(self) -> bool:
@@ -357,6 +373,16 @@ class AIViewWorker(ViewWorker):
                      "le llegan %.1f cuadros/s del video", self.name, self.ai_fps, self.target_fps, self.ai_ms,
                      getattr(self.detector, "device", "?"), self.fps)
 
+    def _detector_for(self, detection: DetectionConfig):
+        """El detector compartido de la app con la sensibilidad y «Personas lejos» de esta cámara (sin cambiar el
+        compartido: otras cámaras lo usan con lo suyo). Se arma de nuevo solo si cambió algo."""
+        from core.detectors import tuned
+
+        key = (id(self.detector), detection)
+        if key != self._tuned_key:
+            self._tuned_key, self._tuned = key, tuned(self.detector, detection)
+        return self._tuned
+
     def process(self, frame: np.ndarray, ts: float, wall: datetime) -> np.ndarray:
         """Un cuadro: detectar, seguir, mirar la postura, pasar las reglas (sin guardar nada) y dibujar."""
         from core.detectors import Detection
@@ -367,8 +393,9 @@ class AIViewWorker(ViewWorker):
         h, w = frame.shape[:2]
         with self._cfg_lock:  # las zonas pueden cambiar mientras tanto (`set_analysis`): se usan las de este cuadro
             zones, rule_cfg, engine, metrics = self.zones, self.rule_cfg, self.engine, self.metrics
+            detection = self.detection
         gest = bool(rule_cfg.gestures.enabled)
-        dets, objs = view_detect(self.detector, frame, gest)
+        dets, objs = view_detect(self._detector_for(detection), frame, gest)
         tracks = self.tracker.update(dets, ts, frame)
         posed = self.pose is not None
         if posed:  # la postura de cada persona, aunque la cámara no tenga gestos: para ver cómo la capta

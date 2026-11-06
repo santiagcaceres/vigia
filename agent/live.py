@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from core.analyzer import annotate
-from core.detectors import Detector
+from core.detectors import DetectionConfig, Detector, tuned
 from core.geometry import bbox_foot
 from core.rules import Zone, parse_zones
 from core.tracker import CentroidTracker, Track
@@ -166,7 +166,9 @@ class LiveWorker:
         self.name: str = (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
                           else cam_cfg["name"])
         self.cam = build_camera(cam_cfg["connection"])
-        self.detector = detector
+        # con la sensibilidad y «Personas lejos» de la cámara (sobre el detector compartido, sin cambiarlo)
+        self.detection = DetectionConfig.from_dict((cam_cfg.get("analysis") or {}).get("detection"))
+        self.detector = tuned(detector, self.detection)
         self.streamer = LiveStreamer(self.id, self.name, client, parse_zones((cam_cfg.get("analysis") or {}).get("zones")))
         self.state = "iniciando"
         self.error: str | None = None
@@ -183,6 +185,16 @@ class LiveWorker:
 
     def extend(self, seconds: float) -> None:
         self.streamer.extend(seconds)
+
+    def set_detection(self, analysis: dict | None) -> bool:
+        """Otra sensibilidad o «Personas lejos» (se guardó en la app): rige desde el próximo cuadro, sin volver a abrir
+        el video. Devuelve si cambió."""
+        det = DetectionConfig.from_dict((analysis or {}).get("detection"))
+        if det == self.detection:
+            return False
+        self.detection = det
+        self.detector = tuned(self.detector, det)  # (una sola asignación: el hilo del vivo toma uno u otro, entero)
+        return True
 
     @property
     def active(self) -> bool:

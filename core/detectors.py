@@ -5,6 +5,8 @@
   cámaras) y si no, el procesador. En NVIDIA analiza los cuadros de varias cámaras juntos (lotes).
   Es el detector para producción.
 - MotionDetector: sustracción de fondo. Solo para pruebas y demos: no distingue personas.
+- TunedDetector / `tuned`: el detector compartido con la «Sensibilidad» y «Personas lejos» de una cámara
+  (core/deteccion.py). El umbral y el mosaico van en cada llamada: el detector compartido no cambia.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import Protocol
 import cv2
 import numpy as np
 
+from .deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, DetectionConfig, conf_for  # noqa: F401 (se usan desde acá)
 from .geometry import BBox
 
 log = logging.getLogger("vigia.detectors")
@@ -167,6 +170,19 @@ class OnnxSession:
         self._queue.put((canvas, fut))
         return fut.result()
 
+    def run_many(self, canvases: list[np.ndarray]) -> list[np.ndarray]:
+        """Varios lienzos de una misma cámara (con «Personas lejos»: la imagen entera y sus 4 partes). En lotes van
+        todos juntos a la cola, así caen en el mismo lote de la placa de video en vez de esperar uno por uno; de a un
+        cuadro, uno tras otro (cada uno toma el candado: las otras cámaras no quedan esperando las 5 pasadas)."""
+        if self.max_batch == 1:
+            return [self.run(c) for c in canvases]
+        futs: list[Future] = []
+        for c in canvases:
+            fut = Future()
+            self._queue.put((c, fut))
+            futs.append(fut)
+        return [f.result() for f in futs]
+
     def _loop(self) -> None:
         while True:
             items = [self._queue.get()]
@@ -219,17 +235,70 @@ class SessionPool:
         finally:
             self._free.put(s)
 
+    def run_many(self, canvases: list[np.ndarray]) -> list[np.ndarray]:
+        """Uno tras otro, cada uno en la primera sesión libre (las otras cámaras ocupan los demás núcleos)."""
+        return [self.run(c) for c in canvases]
+
     def take_stats(self) -> tuple[int, float]:
         frames = sum(s.take_stats()[0] for s in self.pool)
         return frames, (1.0 if frames else 0.0)
 
 
+# «Personas lejos»: la imagen en 2x2 partes que se pisan un poco, cada una agrandada a la entrada del modelo.
+FAR_OVERLAP = 0.25  # cuánto se pisan dos partes vecinas (fracción de la parte): una persona chica entra entera en una
+FAR_EDGE = 0.02  # una persona a menos de esto (fracción de la parte) de un borde interno de su parte está cortada
+FAR_MIN_SIDE = 64  # un cuadro más chico que esto no se parte (no queda nada que agrandar)
+
+
+def far_tiles(w: int, h: int, overlap: float = FAR_OVERLAP) -> list[tuple[int, int, int, int]]:
+    """Las 4 partes (x1, y1, x2, y2) de un cuadro de `w` x `h`: 2 columnas y 2 filas, cada una del 57 % del lado (con
+    `overlap` 0,25), que se pisan en el 25 % de la parte (el 14 % del cuadro) y cubren todo el cuadro."""
+    if w < FAR_MIN_SIDE or h < FAR_MIN_SIDE:
+        return []
+    tw = min(w, max(1, int(round(w / (2 - overlap)))))
+    th = min(h, max(1, int(round(h / (2 - overlap)))))
+    return [(x, y, x + tw, y + th) for y in (0, h - th) for x in (0, w - tw)]
+
+
+def _covers(a: BBox, b: BBox, iou_thr: float, cover: float) -> bool:
+    """Si `a` y `b` son la misma persona: se pisan (IoU) o una está casi entera dentro de la otra (una persona cortada
+    en una parte queda dentro de la misma persona vista entera)."""
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return False
+    inter = iw * ih
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    small = min(area_a, area_b)
+    return (union > 0 and inter / union >= iou_thr) or (small > 0 and inter / small >= cover)
+
+
+def merge_far(full: list[Detection], parts: list[Detection], iou_thr: float = 0.5,
+              cover: float = 0.7) -> list[Detection]:
+    """Junta lo de la imagen entera (`full`, que gana siempre) con las personas de las partes (`parts`, en coordenadas
+    del cuadro): de las partes se suma solo lo que no es alguien ya visto (de la imagen entera o de otra parte, de más
+    puntaje). Solo se comparan detecciones de la misma etiqueta (una persona dentro de un auto no se pierde)."""
+    out = list(full)
+    for d in sorted(parts, key=lambda d: -d.conf):
+        if any(o.label == d.label and _covers(d.bbox, o.bbox, iou_thr, cover) for o in out):
+            continue
+        out.append(d)
+    return out
+
+
 class OnnxYoloDetector:
     """Personas (y opcionalmente vehículos) con YOLO (v8/11) exportado a ONNX.
     Salida esperada: (1, 4+num_clases, N). `classes`: índice COCO → etiqueta. Varias instancias (por ejemplo,
-    con y sin vehículos) pueden compartir la misma `OnnxSession`."""
+    con y sin vehículos) pueden compartir la misma `OnnxSession`.
+
+    El mismo detector lo comparten todas las cámaras: la sensibilidad de cada una (core/deteccion.py) llega en cada
+    llamada (`conf` / `person_conf`, solo para personas; los vehículos y lo demás siguen con `self.conf`) y lo mismo
+    «Personas lejos» (`far`). `self.conf` no se toca nunca."""
 
     name = "YOLO11n"
+    tunable = True  # acepta la sensibilidad y «Personas lejos» por llamada (core/detectors.tuned)
 
     def __init__(self, model_path: str | Path | None = None, conf: float = 0.35, iou: float = 0.5,
                  person_class: int = 0, threads: int = 2, classes: dict[int, str] | None = None,
@@ -245,54 +314,108 @@ class OnnxYoloDetector:
         self._cols = np.array([self.runner.col_of[c] for c in self._idx])
         self._labels = [self.classes[i] for i in self._idx]
 
-    def detect(self, frame: np.ndarray) -> list[Detection]:
-        return self._decode(self._infer(frame), self._cols, self._labels, self.conf)
+    def detect(self, frame: np.ndarray, conf: float | None = None, far: bool = False) -> list[Detection]:
+        """`conf`: confianza mínima de las personas para esta llamada (None = `self.conf`). `far`: además de la imagen
+        entera, la mira en 4 partes agrandadas y suma las personas que solo se ven ahí (unas 5 veces el trabajo)."""
+        main, _ = self._main(frame, conf, far)
+        return main
 
-    def detect_also(self, frame: np.ndarray, classes: dict[int, str], conf: float) -> tuple[list[Detection],
-                                                                                            list[Detection]]:
+    def detect_also(self, frame: np.ndarray, classes: dict[int, str], conf: float, person_conf: float | None = None,
+                    far: bool = False) -> tuple[list[Detection], list[Detection]]:
         """Una sola pasada del modelo: las detecciones de siempre (`self.classes`, idénticas a `detect`) y, aparte,
         las de `classes` (por ejemplo mochilas o botellas, para mostrar qué más ve YOLO sin tocar el seguimiento ni
-        las reglas)."""
-        res = self._infer(frame)
+        las reglas). `conf` es para esas otras clases; `person_conf` y `far`, como en `detect`. Con `far` lo demás sale
+        solo de la imagen entera (las partes suman personas)."""
+        main, res = self._main(frame, person_conf, far)
         idx = [c for c in sorted(classes) if c in self.runner.col_of and c not in self.classes]
         extra = (self._decode(res, np.array([self.runner.col_of[c] for c in idx]), [classes[c] for c in idx], conf)
                  if idx else [])
-        return self._decode(res, self._cols, self._labels, self.conf), extra
+        return main, extra
 
-    def detect_groups(self, frame: np.ndarray, groups: list[tuple[dict[int, str], float]]) -> tuple[
+    def detect_groups(self, frame: np.ndarray, groups: list[tuple[dict[int, str], float]],
+                      person_conf: float | None = None, far: bool = False) -> tuple[
             list[Detection], list[list[Detection]]]:
         """Como `detect_also` pero con varios grupos de clases, cada uno decodificado aparte (una caja es la clase de
         más puntaje DENTRO de su grupo). Así «Configurar…» saca los bolsos igual que las máquinas (entre mochila,
         cartera y valija) y además muestra todo lo demás que ve YOLO, con una sola pasada del modelo."""
-        res = self._infer(frame)
+        main, res = self._main(frame, person_conf, far)
         out = []
         for classes, conf in groups:
             idx = [c for c in sorted(classes) if c in self.runner.col_of and c not in self.classes]
             out.append(self._decode(res, np.array([self.runner.col_of[c] for c in idx]), [classes[c] for c in idx],
                                     conf) if idx else [])
-        return self._decode(res, self._cols, self._labels, self.conf), out
+        return main, out
 
-    def _infer(self, frame: np.ndarray) -> tuple:
+    def _main(self, frame: np.ndarray, person_conf: float | None, far: bool) -> tuple[list[Detection], tuple]:
+        """Las detecciones de `self.classes` (con el umbral de personas pedido y, con `far`, las personas de las
+        partes) y la salida del modelo para la imagen entera (para decodificar otras clases)."""
+        pc = self.conf if person_conf is None else person_conf
+        if not far:
+            res = self._infer(frame)
+            return self._decode(res, self._cols, self._labels, self.conf, pc), res
+        res, parts = self._far(frame, pc)
+        return merge_far(self._decode(res, self._cols, self._labels, self.conf, pc), parts), res
+
+    def _far(self, frame: np.ndarray, person_conf: float) -> tuple[tuple, list[Detection]]:
+        """La imagen entera y sus 4 partes en una tanda (en NVIDIA, el mismo lote). Devuelve la salida de la imagen
+        entera y las personas de las partes, en coordenadas del cuadro, sin las que quedaron cortadas por el borde
+        interno de su parte (esas las ve enteras la parte vecina, que se pisa con esta, o la imagen entera)."""
+        h, w = frame.shape[:2]
+        tiles = far_tiles(w, h)
+        res = self._infer_many([frame] + [frame[y1:y2, x1:x2] for x1, y1, x2, y2 in tiles])
+        parts: list[Detection] = []
+        for (x1, y1, x2, y2), r in zip(tiles, res[1:]):
+            tw, th = x2 - x1, y2 - y1
+            ex, ey = FAR_EDGE * tw, FAR_EDGE * th
+            for d in self._decode(r, self._cols, self._labels, self.conf, person_conf):
+                if d.label != "persona":
+                    continue  # de las partes solo personas: vehículos y lo demás salen de la imagen entera
+                bx1, by1, bx2, by2 = d.bbox
+                if ((x1 > 0 and bx1 <= ex) or (x2 < w and bx2 >= tw - ex)
+                        or (y1 > 0 and by1 <= ey) or (y2 < h and by2 >= th - ey)):
+                    continue
+                parts.append(Detection((bx1 + x1, by1 + y1, bx2 + x1, by2 + y1), d.label, d.conf))
+        return res[0], parts
+
+    def _letterbox(self, frame: np.ndarray) -> tuple[np.ndarray, tuple]:
+        """La imagen llevada al tamaño del modelo sin deformarla (bordes grises) y cómo volver a sus coordenadas."""
         h, w = frame.shape[:2]
         tw, th = self.size
         r = min(tw / w, th / h)
-        nw, nh = int(round(w * r)), int(round(h * r))
+        nw, nh = max(1, int(round(w * r))), max(1, int(round(h * r)))
         resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
         canvas = np.full((th, tw, 3), 114, np.uint8)
         px, py = (tw - nw) // 2, (th - nh) // 2
         canvas[py:py + nh, px:px + nw] = resized
+        return canvas, (w, h, r, px, py)
 
-        out = self.runner.run(canvas)  # (4+C, N)
-        if out.shape[0] < out.shape[1]:
-            out = out.T  # (N, 4+C)
-        return out, w, h, r, px, py
+    @staticmethod
+    def _shape(out: np.ndarray) -> np.ndarray:
+        return out.T if out.shape[0] < out.shape[1] else out  # (4+C, N) → (N, 4+C)
 
-    def _decode(self, res: tuple, cols: np.ndarray, labels: list[str], conf: float) -> list[Detection]:
+    def _infer(self, frame: np.ndarray) -> tuple:
+        canvas, geo = self._letterbox(frame)
+        return (self._shape(self.runner.run(canvas)), *geo)
+
+    def _infer_many(self, frames: list[np.ndarray]) -> list[tuple]:
+        if len(frames) == 1:
+            return [self._infer(frames[0])]
+        boxes = [self._letterbox(f) for f in frames]
+        run_many = getattr(self.runner, "run_many", None)  # (un runner de prueba puede no tenerlo)
+        outs = run_many([c for c, _ in boxes]) if run_many else [self.runner.run(c) for c, _ in boxes]
+        return [(self._shape(out), *geo) for out, (_, geo) in zip(outs, boxes)]
+
+    def _decode(self, res: tuple, cols: np.ndarray, labels: list[str], conf: float,
+                person_conf: float | None = None) -> list[Detection]:
+        """Cajas de las clases `cols` (cada caja es la clase de más puntaje entre ellas). Las personas se aceptan desde
+        `person_conf` (None = `conf`) y lo demás desde `conf`: la NMS es por etiqueta, así que cada una usa su
+        umbral."""
         out, w, h, r, px, py = res
+        pc = conf if person_conf is None else person_conf
         cls_scores = out[:, cols]  # (N, clases elegidas)
         best = cls_scores.argmax(axis=1)
         scores = cls_scores[np.arange(len(best)), best]
-        keep = scores >= conf
+        keep = scores >= (min(conf, pc) if "persona" in labels else conf)
         if not np.any(keep):
             return []
         boxes, scores, best = out[keep, :4], scores[keep], best[keep]
@@ -302,12 +425,13 @@ class OnnxYoloDetector:
         x2 = (cx + bw / 2 - px) / r
         y2 = (cy + bh / 2 - py) / r
         dets: list[Detection] = []
-        for k, label in enumerate(labels):  # NMS por etiqueta
-            sel = np.flatnonzero(best == k)
+        for k, label in enumerate(labels):  # NMS por etiqueta, cada una con su umbral
+            thr = pc if label == "persona" else conf
+            sel = np.flatnonzero((best == k) & (scores >= thr))
             if not len(sel):
                 continue
             rects = [[float(x1[i]), float(y1[i]), float(x2[i] - x1[i]), float(y2[i] - y1[i])] for i in sel]
-            idx = cv2.dnn.NMSBoxes(rects, scores[sel].astype(float).tolist(), conf, self.iou)
+            idx = cv2.dnn.NMSBoxes(rects, scores[sel].astype(float).tolist(), thr, self.iou)
             for j in np.array(idx).flatten():
                 i = sel[j]
                 dets.append(Detection((max(0.0, float(x1[i])), max(0.0, float(y1[i])),
@@ -343,7 +467,8 @@ _logged: set[tuple] = set()
 
 
 def session_stats() -> tuple[int, float]:
-    """Cuadros analizados en la placa de video y tamaño promedio del lote, desde la última consulta."""
+    """Cuadros analizados en la placa de video y tamaño promedio del lote, desde la última consulta. Con «Personas
+    lejos» cada parte cuenta como un cuadro (son pasadas del modelo: un cuadro de esa cámara son 5)."""
     frames = batches = 0
     for sess in list(_sessions.values()):
         f, avg = sess.take_stats()
@@ -387,3 +512,90 @@ def build_detector(name: str, model_path: str | Path | None = None, vehicles: bo
                          f" ({len(sess.pool)} cuadros a la vez)" if isinstance(sess, SessionPool) else "")
             return det
     raise ValueError(f"Detector desconocido: {name!r} (usar 'yolo' o 'motion')")
+
+
+class TunedDetector:
+    """El detector compartido con la sensibilidad y «Personas lejos» de UNA cámara (core/deteccion.py).
+
+    No cambia nada del detector compartido (otras cámaras lo usan con otro umbral, a veces al mismo tiempo desde otros
+    hilos): pasa el umbral de personas y el mosaico en cada llamada. Lo demás (`name`, `device`, `on_gpu`, `size`,
+    `runner`…) es el del detector de abajo. `detect_also` y `detect_groups` están solo si el de abajo los tiene (el
+    resto del programa pregunta con `hasattr` qué sabe hacer un detector). Se arma con `tuned`, no a mano."""
+
+    tunable = True
+
+    def __init__(self, base, cfg: DetectionConfig):
+        self.base = base
+        self.cfg = cfg
+        self.conf = cfg.conf  # confianza mínima de las personas en esta cámara
+        if hasattr(base, "detect_also"):
+            self.detect_also = self._detect_also
+        if hasattr(base, "detect_groups"):
+            self.detect_groups = self._detect_groups
+
+    @property
+    def name(self) -> str:
+        return self.base.name
+
+    @property
+    def device(self) -> str:
+        return self.base.device
+
+    @property
+    def on_gpu(self) -> bool:
+        return self.base.on_gpu
+
+    @property
+    def size(self):
+        return self.base.size
+
+    def _person_conf(self, conf: float | None) -> float:
+        return self.conf if conf is None else conf
+
+    def _far(self, far: bool | None) -> bool:
+        return self.cfg.far if far is None else far
+
+    def detect(self, frame: np.ndarray, conf: float | None = None, far: bool | None = None) -> list[Detection]:
+        return self.base.detect(frame, conf=self._person_conf(conf), far=self._far(far))
+
+    def _detect_also(self, frame: np.ndarray, classes: dict[int, str], conf: float, person_conf: float | None = None,
+                     far: bool | None = None) -> tuple[list[Detection], list[Detection]]:
+        return self.base.detect_also(frame, classes, conf, person_conf=self._person_conf(person_conf),
+                                     far=self._far(far))
+
+    def _detect_groups(self, frame: np.ndarray, groups: list[tuple[dict[int, str], float]],
+                       person_conf: float | None = None, far: bool | None = None) -> tuple[
+            list[Detection], list[list[Detection]]]:
+        return self.base.detect_groups(frame, groups, person_conf=self._person_conf(person_conf), far=self._far(far))
+
+    def __getattr__(self, name: str):
+        # solo llega acá lo que no está en el envoltorio: lo del detector de abajo
+        if name.startswith("__") or name in ("base", "cfg", "conf", "detect_also", "detect_groups"):
+            raise AttributeError(name)
+        return getattr(self.base, name)
+
+    def __repr__(self) -> str:
+        return f"TunedDetector({self.base!r}, {self.cfg.describe()})"
+
+
+def tuned(detector, cfg: DetectionConfig | dict | None):
+    """El detector de una cámara con su detección (`cfg`: DetectionConfig, el `analysis["detection"]` tal cual llega
+    del servidor, o None = lo de siempre).
+
+    - Con lo de siempre devuelve el detector de abajo tal cual (sin envoltorio: nada cambia para esa cámara).
+    - Un detector que no acepta el ajuste (movimiento, los de las pruebas) también vuelve tal cual.
+    - Si ya es un `TunedDetector`, se arma sobre el de abajo (no se envuelve dos veces): así cualquiera vuelve a
+      aplicar la detección en caliente con `tuned(lo_que_tenga, cfg_nueva)`; con la misma configuración devuelve el
+      mismo objeto."""
+    base = detector.base if isinstance(detector, TunedDetector) else detector
+    if isinstance(cfg, DetectionConfig):
+        pass
+    elif isinstance(cfg, dict) or cfg is None:
+        cfg = DetectionConfig.from_dict(cfg)
+    else:
+        cfg = DetectionConfig()
+    if cfg.is_default or not getattr(base, "tunable", False):
+        return base
+    if isinstance(detector, TunedDetector) and detector.cfg == cfg:
+        return detector
+    return TunedDetector(base, cfg)

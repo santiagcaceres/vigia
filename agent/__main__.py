@@ -249,10 +249,12 @@ class Agent:
                     w.update_analysis(wanted[cid].get("analysis") or {})
         for cid, lw in self.live_workers.items():  # vivo de cámaras en modo alarmas: zonas nuevas en el dibujo
             if cid in self._cams_cfg:
+                analysis = self._cams_cfg[cid].get("analysis") or {}
                 try:
-                    lw.streamer.zones = parse_zones((self._cams_cfg[cid].get("analysis") or {}).get("zones"))
+                    lw.streamer.zones = parse_zones(analysis.get("zones"))
                 except ValueError:
                     pass
+                lw.set_detection(analysis)  # y otra sensibilidad o «Personas lejos», sin volver a abrir el video
         self._broken = {cid: v for cid, v in self._broken.items() if cid in wanted}
         for cid, c in wanted.items():
             if cid in self.workers:
