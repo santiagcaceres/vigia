@@ -499,3 +499,76 @@ def test_el_diagnostico_cuando_el_servidor_acepta_y_no_responde_o_cierra_ensegui
     msg = agent_hc.diagnose(f"http://127.0.0.1:{srv.getsockname()[1]}/x.flv", timeout=0.5)
     srv.close()
     assert _t.monotonic() - t0 < 4 and "tardó más de" in msg
+
+
+# ------------------------------------------------------------------ cámaras con nombre propio (6 nov, Sanfer)
+class FakeSanfer(FakeHikConnect):
+    """Como devolvió la API el grabador de Sanfer: nombres propios («Camera 01») y el canal en device.channelInfo.no
+    (no en channelNo ni en el nombre)."""
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/areas/cameras/get"):
+            self.calls.append((f"{req.url.host}{req.url.path}", {}))
+            cams = [{"id": f"res-{n}", "name": f"Camera 0{n}", "online": "1",
+                     "device": {"devInfo": {"id": "d1", "category": "encodingDevice", "serialNo": "FZ4798527",
+                                            "streamSecretKey": ""},
+                                "channelInfo": {"id": f"ch{n}", "no": str(n)}}} for n in (1, 2, 3)]
+            return httpx.Response(200, json={"errorCode": "0", "data": {"camera": cams}})
+        return super().__call__(req)
+
+
+def test_el_canal_viene_en_channel_info():
+    sample = {"id": "47cc", "name": "Camera 01", "device": {"devInfo": {"serialNo": "FZ4798527"},
+                                                            "channelInfo": {"id": "a9ba", "no": "1"}}}
+    assert hikconnect.channel_of(sample) == 1
+    assert hikconnect.channel_of({"name": "camera 3@E02380030"}) == 3  # el nombre por defecto
+    assert hikconnect.channel_of({"channelNo": 2, "name": "x"}) == 2
+    assert hikconnect.channel_of({"name": "Caja", "channel": {"raro": 1}}) is None  # sin canal: no se inventa
+    assert hikconnect.channel_of({"name": "Caja", "device": {"channelInfo": {"no": "0"}}}) is None
+
+
+@pytest.fixture
+def fake_sanfer(monkeypatch):
+    f = FakeSanfer()
+    real = httpx.Client
+    monkeypatch.setattr("server.hikconnect.httpx.Client", lambda **kw: real(transport=httpx.MockTransport(f), **kw))
+    hikconnect._tokens.clear()
+    return f
+
+
+def test_otra_camara_del_mismo_grabador_no_choca_con_una_cargada_con_el_canal_mal(app, fake_sanfer):
+    """El dueño (6 nov): «quiero añadir otra cámara de Sanfer, que ya tiene una por la nube, y me sale que ya está
+    aunque sea otra». La «Camera 03» se había guardado como canal 1 (la lista no leía el canal) y la «Camera 01»,
+    también canal 1, chocaba con ella."""
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Sanfer", "hc_app_key": "clave", "hc_secret": "secreto"}).json()["id"]
+        base = {"client_id": cid, "brand": "hikconnect", "hpp_serial": "FZ4798527"}
+        # como quedó en producción: la «Camera 03» (res-3) con canal 1
+        c3 = c.post("/api/cameras", json={**base, "name": "Camera 03", "channel": 1, "hc_resource_id": "res-3"}).json()
+        # la «Camera 01» (otra cámara de Hik-Connect, también canal 1 en lo guardado) ahora se carga
+        r = c.post("/api/cameras", json={**base, "name": "Camera 01", "channel": 1, "hc_resource_id": "res-1"})
+        assert r.status_code == 201, r.text
+        # la misma cámara de Hik-Connect otra vez, sí se rechaza (aunque venga con otro canal)
+        r = c.post("/api/cameras", json={**base, "name": "Otra vez", "channel": 2, "hc_resource_id": "res-1"})
+        assert r.status_code == 409 and "Camera 01" in r.json()["detail"]
+        # editar una no choca consigo misma
+        assert c.put(f"/api/cameras/{c3['id']}", json={**base, "name": "Depósito", "channel": 1,
+                                                        "hc_resource_id": "res-3"}).status_code == 200
+        # la lista lee el canal, dice cuáles ya están cargadas y corrige el canal guardado mal
+        lista = {x["id"]: x for x in c.get(f"/api/clients/{cid}/hikconnect/cameras").json()["cameras"]}
+        assert [lista[f"res-{n}"]["channel"] for n in (1, 2, 3)] == [1, 2, 3]
+        assert lista["res-3"]["loaded"] == "Depósito" and lista["res-1"]["loaded"] == "Camera 01"
+        assert lista["res-2"]["loaded"] is None
+        canales = {x["hc_resource_id"]: x["channel"] for x in c.get("/api/cameras").json()}
+        assert canales == {"res-3": 3, "res-1": 1}
+        # una cargada a mano (sin id de Hik-Connect) con grabador y canal: la de la lista con ese canal es la misma
+        c.post("/api/cameras", json={**base, "name": "A mano", "channel": 2})
+        r = c.post("/api/cameras", json={**base, "name": "Camera 02", "channel": 2, "hc_resource_id": "res-2"})
+        assert r.status_code == 409 and "A mano" in r.json()["detail"]
+        # y sin id, grabador y canal repetidos, como antes
+        assert c.post("/api/cameras", json={**base, "name": "Repetida", "channel": 2}).status_code == 409
+        # en otro cliente, la misma cámara se puede cargar (cada cliente tiene lo suyo)
+        otro = c.post("/api/clients", json={"name": "Otro", "hc_app_key": "clave", "hc_secret": "secreto"}).json()["id"]
+        assert c.post("/api/cameras", json={**base, "client_id": otro, "name": "Camera 01", "channel": 1,
+                                            "hc_resource_id": "res-1"}).status_code == 201

@@ -108,6 +108,21 @@ def normalize_url(url: str | None) -> str | None:
     return url
 
 
+def channel_of(cam: dict) -> int | None:
+    """El número de canal de una cámara de la lista. La API lo manda en `device.channelInfo.no` (visto el 6 nov con el
+    grabador de Sanfer: {"device": {"devInfo": {...}, "channelInfo": {"id": "…", "no": "1"}}}); otras versiones, en
+    `channelNo` y parecidos; si no, el nombre por defecto lo dice («camera 3@E02380030»). Sin esto, las cámaras con
+    nombre propio («Camera 01») quedaban sin canal y la app las guardaba a todas como canal 1."""
+    info = (cam.get("device") or {}).get("channelInfo") or cam.get("channelInfo") or {}
+    info = info if isinstance(info, dict) else {}
+    for v in (info.get("no"), info.get("channelNo"), cam.get("channelNo"), cam.get("channel"), cam.get("cameraNo"),
+              cam.get("chanNo")):
+        if isinstance(v, (int, str)) and not isinstance(v, bool) and str(v).strip().isdigit() and int(v) > 0:
+            return int(v)
+    m = re.match(r"\s*camera\s*0*(\d+)\s*@", str(cam.get("name") or ""), re.I)
+    return int(m.group(1)) if m and int(m.group(1)) > 0 else None
+
+
 class HikConnect:
     def __init__(self, app_key: str, secret: str, api_url: str | None = None, timeout: float = 20.0):
         if not app_key or not secret:
@@ -183,14 +198,10 @@ class HikConnect:
                 if not isinstance(c, dict) or not c.get("id"):
                     continue
                 dev = (c.get("device") or {}).get("devInfo") or {}
-                channel = c.get("channelNo") or c.get("channel") or c.get("cameraNo") or c.get("chanNo")
-                if not channel:  # el nombre por defecto es «camera 3@E02380030»
-                    m = re.match(r"\s*camera\s*0*(\d+)\s*@", str(c.get("name") or ""), re.I)
-                    channel = m.group(1) if m else None
                 out.append({"id": str(c["id"]), "name": c.get("name") or str(c["id"]),
                             "serial": short_serial(dev.get("serialNo") or dev.get("deviceSerial")),
                             "device_name": dev.get("name") or "",
-                            "channel": int(channel) if str(channel or "").isdigit() else None,
+                            "channel": channel_of(c),
                             "online": c.get("onlineStatus", c.get("online"))})
             if len(items) < 200:
                 break

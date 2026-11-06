@@ -2095,13 +2095,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                      "usá «alarmas del propio grabador»")
 
     def check_not_repeated(s, body: CameraIn, exclude: int | None = None) -> None:
-        """Por Hik-Connect, el mismo grabador y canal no se carga dos veces en un cliente (se repetía al elegir
-        varias veces las mismas de la lista, y cada copia pedía su propia transmisión al grabador)."""
+        """Por Hik-Connect, la misma cámara no se carga dos veces en un cliente (se repetía al elegir varias veces las
+        mismas de la lista, y cada copia pedía su propia transmisión al grabador). La cámara elegida de la lista se
+        reconoce por su id de Hik-Connect: el canal no alcanza, porque hasta el 6 nov la lista no leía el canal de las
+        cámaras con nombre propio y la app las guardaba a todas como canal 1 (en Sanfer, «Camera 01» chocaba con la
+        «Camera 03» ya cargada). Grabador y canal se comparan solo con las que no tienen id (cargadas a mano)."""
         if body.brand != "hikconnect":
             return
-        q = s.query(Camera).filter(Camera.client_id == body.client_id, Camera.brand == "hikconnect",
-                                   Camera.hpp_serial == body.hpp_serial, Camera.channel == body.channel)
-        dup = q.filter(Camera.id != exclude).first() if exclude else q.first()
+        q = s.query(Camera).filter(Camera.client_id == body.client_id, Camera.brand == "hikconnect")
+        if exclude:
+            q = q.filter(Camera.id != exclude)
+        same_channel = (Camera.hpp_serial == body.hpp_serial) & (Camera.channel == body.channel)
+        if body.hc_resource_id:
+            dup = q.filter(or_(Camera.hc_resource_id == body.hc_resource_id,
+                               Camera.hc_resource_id.is_(None) & same_channel)).first()
+        else:
+            dup = q.filter(same_channel).first()
         if dup:
             raise HTTPException(409, f"Esa cámara ya está cargada en este cliente: «{dup.name}»")
 
@@ -2653,8 +2662,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(502, str(exc)) from exc
         finally:
             api.close()
+        # cada cámara de la lista dice si ya está cargada (y como cuál), y las cargadas con el canal mal (hasta el 6 nov
+        # la lista no leía el canal de las cámaras con nombre propio y quedaban todas en el 1) se corrigen solas: el
+        # canal sirve para las alarmas del grabador y para reconocerlas
+        mine = {c.hc_resource_id: c for c in s.query(Camera).filter(Camera.client_id == cid, Camera.brand == "hikconnect",
+                                                                   Camera.hc_resource_id.isnot(None))}
+        fixed = False
+        for x in cams:
+            c = mine.get(x["id"])
+            x["loaded"] = c.name if c is not None else None
+            if c is not None and x.get("channel") and c.channel != x["channel"]:
+                log.info("Hik-Connect: cámara %s («%s») del canal %s al %s (lo dice la lista)", c.id, c.name, c.channel,
+                         x["channel"])
+                c.channel, fixed = x["channel"], True
+        if fixed:
+            bump_rev(s)
         if client.hc_api_url is None and api.server:
             client.hc_api_url = api.server
+        if fixed or s.dirty:
             s.commit()
         return {"server": api.server, "cameras": cams}
 

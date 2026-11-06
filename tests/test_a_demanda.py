@@ -160,14 +160,18 @@ def test_borrar_usuario_y_no_repetir_camaras(app):
     with TestClient(app) as a, TestClient(app) as b:
         a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
         cl = a.post("/api/clients", json={"name": "Minas"}).json()
-        hc = {"client_id": cl["id"], "brand": "hikconnect", "hpp_serial": "E02380030", "hc_resource_id": "r1"}
-        uno = a.post("/api/cameras", json={**hc, "name": "Caja", "channel": 1})
+        # (cada cámara de Hik-Connect tiene su id: la misma cámara es el mismo id, no el mismo canal; ver
+        # test_otra_camara_del_mismo_grabador_no_choca_con_una_cargada_con_el_canal_mal)
+        hc = {"client_id": cl["id"], "brand": "hikconnect", "hpp_serial": "E02380030"}
+        uno = a.post("/api/cameras", json={**hc, "hc_resource_id": "r1", "name": "Caja", "channel": 1})
         assert uno.status_code == 201
-        rep = a.post("/api/cameras", json={**hc, "name": "Caja otra vez", "channel": 1})
+        rep = a.post("/api/cameras", json={**hc, "hc_resource_id": "r1", "name": "Caja otra vez", "channel": 1})
         assert rep.status_code == 409 and "Caja" in rep.json()["detail"]
-        dos = a.post("/api/cameras", json={**hc, "name": "Puerta", "channel": 2}).json()
-        assert a.put(f"/api/cameras/{dos['id']}", json={**hc, "name": "Puerta", "channel": 1}).status_code == 409
-        assert a.put(f"/api/cameras/{dos['id']}", json={**hc, "name": "Puerta", "channel": 2}).status_code == 200
+        dos = a.post("/api/cameras", json={**hc, "hc_resource_id": "r2", "name": "Puerta", "channel": 2}).json()
+        assert a.put(f"/api/cameras/{dos['id']}", json={**hc, "hc_resource_id": "r1", "name": "Puerta",
+                                                         "channel": 2}).status_code == 409  # pasarla a la de «Caja»
+        assert a.put(f"/api/cameras/{dos['id']}", json={**hc, "hc_resource_id": "r2", "name": "Puerta",
+                                                         "channel": 2}).status_code == 200
 
         ana = a.post("/api/users", json={"username": "ana", "password": "clave-ana-123", "role": "entrenador"}).json()
         b.post("/api/login", json={"username": "ana", "password": "clave-ana-123"})

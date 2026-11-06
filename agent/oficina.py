@@ -1534,9 +1534,12 @@ class Oficina:
                                   "\nElegí una y tocá «Usar»." if pick else "")).grid(row=0, column=0, sticky="w")
             lb = tk.Listbox(frm, height=min(18, max(4, len(cams))), width=80,
                             selectmode="extended" if multi else "browse")
-            for x in cams:
+            for x in cams:  # (`loaded`: ya está cargada en este cliente, con ese nombre; un servidor viejo no lo manda)
                 lb.insert("end", f"{x['name']}  ·  serie {x['serial'] or '—'}  ·  canal {x['channel'] or '?'}"
-                                 f"{'  ·  ' + x['device_name'] if x.get('device_name') else ''}")
+                                 f"{'  ·  ' + x['device_name'] if x.get('device_name') else ''}"
+                                 f"{'  ·  ya cargada como «' + x['loaded'] + '»' if x.get('loaded') else ''}")
+                if x.get("loaded"):
+                    lb.itemconfigure("end", foreground="#888")
             lb.grid(row=1, column=0, sticky="ew", pady=6)
             bb = ttk.Frame(frm)
             bb.grid(row=2, column=0, sticky="e")
