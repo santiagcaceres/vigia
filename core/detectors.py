@@ -248,6 +248,8 @@ class SessionPool:
 FAR_OVERLAP = 0.25  # cuánto se pisan dos partes vecinas (fracción de la parte): una persona chica entra entera en una
 FAR_EDGE = 0.02  # una persona a menos de esto (fracción de la parte) de un borde interno de su parte está cortada
 FAR_MIN_SIDE = 64  # un cuadro más chico que esto no se parte (no queda nada que agrandar)
+FAR_COVER_AREA = 0.2  # «una dentro de la otra» solo entre recuadros parecidos: la chica, al menos esto del área de la
+# grande (si no, una persona lejana que cae dentro del recuadro de una cercana se perdería)
 
 
 def far_tiles(w: int, h: int, overlap: float = FAR_OVERLAP) -> list[tuple[int, int, int, int]]:
@@ -261,8 +263,10 @@ def far_tiles(w: int, h: int, overlap: float = FAR_OVERLAP) -> list[tuple[int, i
 
 
 def _covers(a: BBox, b: BBox, iou_thr: float, cover: float) -> bool:
-    """Si `a` y `b` son la misma persona: se pisan (IoU) o una está casi entera dentro de la otra (una persona cortada
-    en una parte queda dentro de la misma persona vista entera)."""
+    """Si `a` y `b` son la misma persona: se pisan (IoU) o una está casi entera dentro de la otra y son de tamaño
+    parecido (medio cuerpo de la misma persona vista entera). Una mucho más chica dentro de una grande es otra persona
+    (la del fondo que se ve al lado de la cabeza de una cercana): esa queda, como en la imagen entera, donde la NMS
+    solo mira el IoU. Las cortadas por el borde interno de su parte ya las saca `_far` (FAR_EDGE)."""
     iw = min(a[2], b[2]) - max(a[0], b[0])
     ih = min(a[3], b[3]) - max(a[1], b[1])
     if iw <= 0 or ih <= 0:
@@ -271,8 +275,9 @@ def _covers(a: BBox, b: BBox, iou_thr: float, cover: float) -> bool:
     area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
     area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
     union = area_a + area_b - inter
-    small = min(area_a, area_b)
-    return (union > 0 and inter / union >= iou_thr) or (small > 0 and inter / small >= cover)
+    small, big = min(area_a, area_b), max(area_a, area_b)
+    return ((union > 0 and inter / union >= iou_thr)
+            or (small > 0 and small / big >= FAR_COVER_AREA and inter / small >= cover))
 
 
 def merge_far(full: list[Detection], parts: list[Detection], iou_thr: float = 0.5,

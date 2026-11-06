@@ -26,7 +26,8 @@ from core.clip_analysis import analyze_clip  # noqa: E402
 from core.detectors import FAR_PASSES, OnnxYoloDetector, TunedDetector, conf_for, tuned  # noqa: E402
 from tests.test_gestos_agente import FakePool, FakeTime  # noqa: E402
 from tests.test_sensibilidad_core import BlobRunner  # noqa: E402
-from tests.test_sensibilidad_servidor import ADMIN, admin, app, cam_body, config_of, setup  # noqa: E402,F401
+from server.main import Settings, create_app  # noqa: E402
+from tests.test_sensibilidad_servidor import ADMIN, cam_body, config_of, setup  # noqa: E402
 
 W, H = 1280, 720
 # (x1, y1, x2, y2). El modelo ve el cuadro entero a la mitad (640 de 1280) y cada parte de «Personas lejos» a 0,875;
@@ -39,6 +40,19 @@ TINY = (1150, 620, 1180, 680)  # imagen entera 0,09; en su parte 0,28: solo con 
 EVERYONE = (BIG, MID, CENTER, FAR_ONE, TINY)
 ZONE = [{"name": "Depósito", "type": "aisle", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}]
 SETTINGS = {"clip_pre_seconds": 1, "clip_post_seconds": 1, "clip_max_seconds": 5}
+
+
+@pytest.fixture
+def app(tmp_path, db_url):
+    return create_app(Settings(data_dir=tmp_path / "data", database_url=db_url, admin_password=ADMIN[1],
+                               serve_public=False))
+
+
+@pytest.fixture
+def admin(app):
+    with TestClient(app) as c:
+        assert c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]}).status_code == 200
+        yield c
 
 
 def scene(k: int = 0) -> np.ndarray:

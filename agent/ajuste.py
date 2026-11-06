@@ -726,6 +726,7 @@ class Tuner:
             short = sum(1 for k, (a, b) in self._spans.items() if b - a < SHORT_TRACK_SECONDS and k not in self._visible_now)
             objects = [(k, 100.0 * v / n) for k, v in self._objects.most_common(6)] if n else []
             dark_pct, night_pct = (100.0 * self._dark / n, 100.0 * self._night / n) if n else (0.0, 0.0)
+            size = self.samples[-1].size if self.samples else None  # el tamaño con que se detecta (píxeles cuadrados)
             pose = {"people": self._pose_people, "tried": self._pose_tried,
                     "small_pct": 100.0 * self._pose_small / self._pose_people if self._pose_people else None,
                     "ok_pct": 100.0 * self._pose_ok / self._pose_tried if self._pose_tried else None,
@@ -740,7 +741,7 @@ class Tuner:
                 "dropped": dropped,
                 "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None,
                 "door": self.door(), "gestures": self.gestures_on, "pose": pose,
-                "sensitivity": self.detection.sensitivity, "far": self.detection.far}
+                "sensitivity": self.detection.sensitivity, "far": self.detection.far, "frame_size": size}
 
     def footmap(self) -> FootMap:
         """Mapa de pisadas de lo analizado (cada video por separado): dónde camina y dónde se para la gente, para
@@ -888,8 +889,8 @@ class Tuner:
                     out.append("Sin zona «Caja», cualquiera que pase por una góndola y salga dispara «salida sin pago» "
                                "(aunque haya pagado). Si la caja se ve en otra cámara, mejor elegir otro tipo de cámara.")
         det = self.detection
+        small = ""
         if st["detections"] >= 20:
-            small = ""
             if st["height_pct"] < SMALL_PERSON * 100:
                 small = f"Las personas se ven chicas (en promedio {st['height_pct']:.0f} % del alto de la imagen)"
             elif (st["small_pct"] or 0.0) >= SMALL_SHARE:  # (el promedio solo cuenta a las que ve: las del fondo no)
@@ -907,6 +908,9 @@ class Tuner:
                     out.append(f"Con la sensibilidad en {det.sensitivity} el detector acepta personas desde "
                                f"{det.conf:.2f} de confianza: fijate que los recuadros nuevos sean personas y no cajas, "
                                "maniquíes o carteles.")
+        res = self._resolution_hint(st.get("frame_size"), small=bool(small)) if st["frames"] >= 20 else ""
+        if res:
+            out.append(res)
         if g.enabled:
             out += self._gesture_hints(st, types)
         if st["frames"] >= 20 and st["night_pct"] > 50:
@@ -925,7 +929,8 @@ class Tuner:
             if st["seconds"] >= 30 and st["fps"] is not None and st["fps"] < 0.7 * self.process_fps:
                 out.append(f"Se analizan {st['fps']:.1f} cuadros por segundo de {self.process_fps:.0f}: esta PC no da "
                            "abasto o el video llega cortado"
-                           + (f" (con «Lejos» hace {FAR_PASSES} veces el trabajo)." if det.far else "."))
+                           + (f" (con «Personas lejos» el detector hace {FAR_PASSES} veces el trabajo)." if det.far
+                              else "."))
             if self.cuts >= 2:
                 out.append(f"El video se cortó {self.cuts} veces.")
             if st["seconds"] >= 60 and st["persons"] == 0:
@@ -942,15 +947,45 @@ class Tuner:
 
     def _far_text(self) -> str:
         det = self.detection
+        far = (f"«Personas lejos» (mira la imagen por partes: el detector trabaja unas {FAR_PASSES} veces más; rinde "
+               "más con la calidad principal o con la secundaria del grabador en 1280x720)")
         if not det.far:
-            return (f"Probá subir la «Sensibilidad» (ahora {det.sensitivity}) o prender «Lejos» (analiza la imagen por "
-                    f"partes: usa unas {FAR_PASSES} veces más la máquina; sirve más con la calidad principal o con la "
-                    "secundaria del grabador en 1280x720).")
+            if det.sensitivity >= MAX_SENSITIVITY:
+                return f"La sensibilidad ya está en {MAX_SENSITIVITY}: probá prender {far}."
+            return f"Probá subir la «Sensibilidad» (ahora {det.sensitivity}) o prender {far}."
         if det.sensitivity < MAX_SENSITIVITY:
-            return (f"Ya está «Lejos»: probá subir la «Sensibilidad» (ahora {det.sensitivity}), la calidad principal "
-                    "del grabador o una cámara más cerca.")
-        return (f"Ya está todo al máximo («Lejos» y sensibilidad {MAX_SENSITIVITY}): hace falta la calidad principal "
-                "del grabador (o la secundaria en 1280x720) o una cámara más cerca.")
+            return (f"Ya está «Personas lejos»: probá subir la «Sensibilidad» (ahora {det.sensitivity}), la calidad "
+                    "principal del grabador o una cámara más cerca.")
+        return (f"Ya está todo al máximo («Personas lejos» y sensibilidad {MAX_SENSITIVITY}): hace falta la calidad "
+                "principal del grabador (o la secundaria en 1280x720) o una cámara más cerca.")
+
+    def _stream(self) -> str | None:
+        """Qué calidad del grabador mira la máquina («sub» o «main»); None si la cámara va por un link propio (no se
+        sabe qué calidad es)."""
+        conn = self.cfg.get("connection") or {}
+        if conn.get("source_url"):
+            return None
+        return conn.get("detect_stream") or self.cfg.get("detect_stream") or "sub"
+
+    def _resolution_hint(self, size, small: bool = False) -> str:
+        """Si lo que se ve acá con la detección no es lo que va a ver la máquina, por el tamaño de la imagen: un clip
+        en alta (de «Bajar grabación» o exportado del grabador) contra la calidad secundaria que mira la máquina (en
+        general 640x360), o un vivo chico con «Personas lejos» (cada parte queda de pocos píxeles)."""
+        if not size:
+            return ""
+        w, h = size
+        det = self.detection
+        if not self.live and w >= 1280 and self._stream() == "sub" and (det.far or small
+                                                                         or det.sensitivity > DEFAULT_SENSITIVITY):
+            what = "con «Personas lejos»" if det.far else "con la gente del fondo"
+            return (f"Este clip es de {w}x{h} y la máquina mira la calidad secundaria: lo que ves acá {what} puede no "
+                    "pasar allá. Confirmalo en «● En vivo» o pasá la cámara a la calidad principal (Editar → Calidad "
+                    "del video).")
+        if self.live and det.far and w <= 640:
+            return (f"La imagen llega en {w}x{h}: «Personas lejos» ayuda poco (cada parte queda de pocos píxeles). "
+                    "Subí la calidad secundaria a 1280x720 en el grabador o usá la principal (Editar → Calidad del "
+                    "video).")
+        return ""
 
     def _gesture_hints(self, st: dict, types: set[str]) -> list[str]:
         """Avisos de los gestos: si la postura se puede ver bien en esta cámara."""

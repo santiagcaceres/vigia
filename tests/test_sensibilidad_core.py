@@ -259,6 +259,17 @@ def test_juntar_lo_de_la_imagen_entera_con_lo_de_las_partes():
     assert merge_far(full, []) == full and merge_far([], []) == []
 
 
+def test_una_lejana_dentro_del_recuadro_de_una_cercana_no_se_pierde():
+    cercana = Detection((500, 200, 760, 720), "persona", 0.9)  # cerca de la cámara (imagen entera)
+    lejana = Detection((700, 215, 735, 300), "persona", 0.5)  # al fondo, al lado de su cabeza (solo en una parte)
+    assert merge_far([cercana], [lejana]) == [cercana, lejana]  # es otra persona: la NMS de siempre la dejaría
+    falsa = Detection((0, 0, 1280, 720), "persona", 0.16)  # una caja enorme falsa con sensibilidad alta
+    chica = Detection((100, 600, 140, 680), "persona", 0.49)
+    assert merge_far([falsa], [chica]) == [falsa, chica]  # no se traga a las personas chicas de verdad
+    medio = Detection((500, 460, 760, 720), "persona", 0.6)  # medio cuerpo de la cercana: la misma
+    assert merge_far([cercana], [medio]) == [cercana]
+
+
 # ---------------------------------------------------------------- tuned
 class SinAjuste:
     """Un detector de prueba como los de siempre: solo `detect(frame)`."""

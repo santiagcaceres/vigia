@@ -92,7 +92,7 @@ def test_la_maquina_usa_la_sensibilidad_de_la_camara_sin_tocar_el_detector_compa
     base.calls.clear()
     run(m, clock)
     assert m.analyzer.detector.base is base and all(c[1:] == (0.35, True) for c in base.calls)
-    assert m.gate.min_fraction == worker_mod.FAR_MOTION_FRACTION  # con «Lejos», el filtro de movimiento ve lo chico
+    assert m.gate.min_fraction == worker_mod.FAR_MOTION_FRACTION  # con «Personas lejos», el filtro de movimiento ve lo chico
     assert other.gate.min_fraction == worker_mod.MOTION_FRACTION
 
 
@@ -217,6 +217,39 @@ def test_el_vivo_de_las_camaras_en_modo_alarmas_usa_la_deteccion(tmp_path):
     ag.clip_pool.shutdown(wait=False)
     for lst in ag.listeners.values():
         lst.stop()
+    if ag.alarms is not None:  # (con una cámara en modo alarmas arranca la cola de alarmas: que no quede preguntando)
+        ag.alarms.stop()
+
+
+def test_cambiar_la_deteccion_no_corta_la_escucha_de_alarmas_del_grabador(tmp_path, monkeypatch):
+    from agent.__main__ import Agent
+    from agent.device_alarms import DeviceAlarmListener
+
+    started = []
+    monkeypatch.setattr(DeviceAlarmListener, "start", lambda self: started.append(self.id))
+    cam = {"id": 6, "name": "Depósito", "client_name": "Almacén Demo", "connection": CONN, "mode": "alarmas_equipo",
+           "alarm_cfg": {"event_types": ["VMD"]}, "analysis": {"zones": []}}
+    ag = Agent("http://127.0.0.1:9", "token", tmp_path, None)
+    try:
+        ag.apply_config({"cameras": [cam], "settings": {}, "process_imports": False})
+        lst = ag.listeners[6]
+        assert started == [6]
+        # la detección (y las zonas, el modelo o el nombre) son para analizar el clip: la escucha sigue conectada
+        ag.apply_config({"cameras": [{**cam, "name": "Depósito fondo", "filter_model": {"x": 1},
+                                      "analysis": {"zones": [], "detection": {"sensitivity": 8, "far": True}}}],
+                         "settings": {}, "process_imports": False})
+        assert ag.listeners[6] is lst and started == [6]
+        assert lst.name == "Almacén Demo · Depósito fondo"
+        # otros tipos de alarma sí: se vuelve a conectar con lo nuevo
+        ag.apply_config({"cameras": [{**cam, "alarm_cfg": {"event_types": ["VMD", "linedetection"]}}],
+                         "settings": {}, "process_imports": False})
+        assert ag.listeners[6] is not lst and started == [6, 6]
+    finally:
+        ag.clip_pool.shutdown(wait=False)
+        for lst in ag.listeners.values():
+            lst.stop()
+        if ag.alarms is not None:
+            ag.alarms.stop()
 
 
 def _ai_worker(det, analysis):
@@ -333,8 +366,17 @@ def test_los_avisos_sugieren_sensibilidad_o_lejos_si_las_personas_son_chicas(tmp
     t = Tuner(_tune_cfg(), Recorder(SMALL, 0.4), [video])
     t.run()
     hints = " ".join(t.hints())
-    assert "se ven chicas" in hints and "«Sensibilidad» (ahora 5)" in hints and "«Lejos»" in hints
+    assert "se ven chicas" in hints and "«Sensibilidad» (ahora 5)" in hints and "prender «Personas lejos»" in hints
     assert "1280x720" in hints and "El detector duda" in hints
+    assert t.stats()["frame_size"] == (W, H)
+    assert "Este clip es de" not in hints  # (un clip chico se ve como en la máquina)
+
+    # con la sensibilidad ya en 10, no sugiere subirla
+    t = Tuner(_tune_cfg(detection={"sensitivity": 10}), Recorder(SMALL, 0.4), [video])
+    t.run()
+    hints = " ".join(t.hints())
+    assert "La sensibilidad ya está en 10: probá prender «Personas lejos»" in hints
+    assert "Probá subir la «Sensibilidad»" not in hints and "(ahora 10)" not in hints
 
     # con más sensibilidad la confianza media baja sola: no dice «duda», dice qué mirar
     t = Tuner(_tune_cfg(detection={"sensitivity": 8}), Recorder(SMALL, 0.4), [video])
@@ -343,11 +385,11 @@ def test_los_avisos_sugieren_sensibilidad_o_lejos_si_las_personas_son_chicas(tmp
     assert "El detector duda" not in hints and "acepta personas desde 0.23" in hints
     assert "(ahora 8)" in hints
 
-    # con «Lejos» ya prendido, no lo vuelve a sugerir: subir la sensibilidad o mejor imagen
+    # con «Personas lejos» ya prendido, no lo vuelve a sugerir: subir la sensibilidad o mejor imagen
     t = Tuner(_tune_cfg(detection={"far": True}), Recorder(SMALL, 0.6), [video])
     t.run()
     hints = " ".join(t.hints())
-    assert "Ya está «Lejos»" in hints and "prender «Lejos»" not in hints
+    assert "Ya está «Personas lejos»" in hints and "prender «Personas lejos»" not in hints
 
     t = Tuner(_tune_cfg(detection={"sensitivity": 10, "far": True}), Recorder(SMALL, 0.6), [video])
     t.run()
@@ -365,9 +407,38 @@ def test_los_avisos_sugieren_sensibilidad_o_lejos_si_las_personas_son_chicas(tmp
     t.run()
     hints = t.hints()
     duda = next(h for h in hints if h.startswith("El detector duda"))
-    assert "confianza media 0.49" in duda and "«Lejos»" in duda
+    assert "confianza media 0.49" in duda and "«Personas lejos»" in duda
     assert "Si no ve a las personas del fondo, probá subir la «Sensibilidad» (ahora 5)" in duda
     assert not any("chicas" in h for h in hints)
+
+
+def test_un_clip_en_alta_con_lejos_avisa_que_la_maquina_mira_la_secundaria(tmp_path):
+    """Los clips de «🎞 Clips» suelen venir en 1920x1080 (bajados del grabador) y la máquina mira la calidad
+    secundaria (640x360): con «Personas lejos» acá se ve mucho mejor que lo que va a dar allá. Y en vivo, con una
+    imagen de 640x360, «Personas lejos» ayuda poco."""
+    from agent.ajuste import Tuner
+
+    big = str(synthetic.write_video([np.zeros((720, 1280, 3), np.uint8)] * 30, tmp_path / "alta.mp4", fps=5))
+    cfg = _tune_cfg(detection={"far": True})
+    cfg["connection"] = {"detect_stream": "sub"}
+    t = Tuner(cfg, Recorder(BIG, 0.9), [big])
+    t.run()
+    hints = " ".join(t.hints())
+    assert "Este clip es de 1280x720 y la máquina mira la calidad secundaria" in hints
+    assert "con «Personas lejos» puede no pasar allá" in hints and "Calidad del video" in hints
+    cfg["connection"] = {"detect_stream": "main"}  # la máquina mira la principal: es lo mismo
+    t = Tuner(cfg, Recorder(BIG, 0.9), [big])
+    t.run()
+    assert "Este clip es de" not in " ".join(t.hints())
+    t = Tuner(_tune_cfg(), Recorder(BIG, 0.9), [big])  # sin tocar la detección y con personas grandes: nada
+    t.run()
+    assert "Este clip es de" not in " ".join(t.hints())
+
+    # en vivo, con 640x360 y «Personas lejos»
+    t = Tuner(_tune_cfg(detection={"far": True}), Recorder(BIG, 0.9))
+    assert t.live
+    t._analyze(np.zeros((H, W, 3), np.uint8), 0.0, None, 0)
+    assert "La imagen llega en 640x360: «Personas lejos» ayuda poco" in t._resolution_hint(t.stats()["frame_size"])
 
 
 def test_with_detection_arma_lo_que_manda_el_servidor():
@@ -417,9 +488,9 @@ def test_sin_deteccion_todo_queda_como_antes(tmp_path, monkeypatch, analysis):
 def test_ver_con_la_ia_dice_que_lejos_hace_mas_trabajo_si_la_pc_no_da_abasto():
     w = _ai_worker(Recorder(), {"zones": [], "rules": {}, "detection": {"far": True}})
     w.state, w.target_fps, w.ai_fps, w.ai_ms = "en_linea", 2.0, 0.5, 900.0
-    assert "no da abasto" in w.text() and "con «Lejos» hace 5 veces el trabajo" in w.text()
+    assert "no da abasto" in w.text() and "con «Personas lejos» hace 5 veces el trabajo" in w.text()
     w.set_analysis({"zones": [], "rules": {}})
-    assert "Lejos" not in w.text()
+    assert "lejos" not in w.text()
 
 
 def test_con_el_yolo_de_verdad_lejos_corre_el_modelo_5_veces_por_cuadro(tmp_path):

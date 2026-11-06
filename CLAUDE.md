@@ -252,6 +252,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   un cliente creado por otro usuario apareció a los 2 s. Un push de verdad (Supabase Realtime) se descartó: pide claves
   en la app y reglas de acceso, para ganar como mucho 10 s. Lo que no hace: si dos editan a la vez la misma cámara, gana
   el último que guarda. Prueba: `tests/test_sincronizar_usuarios.py`.
+- **Sensibilidad por cámara y «Personas lejos» (6 nov, el dueño: «¿cómo aumento la tolerancia para detectar personas? si
+  están lejos no las cuenta»; app 1.42.0).** `cameras.detection` (JSON; NULL = 5 y apagado; `SCHEMA_VERSION`
+  2026-11-06.1). **Sensibilidad 1-10** → confianza `0,55 − 0,04·s` (5 = 0,35 como siempre, 8 = 0,23, 10 = 0,15): más alta ve
+  gente más chica y confunde más cosas. **«Personas lejos»**: además de la imagen entera, el detector mira 4 partes (2x2
+  con solapamiento) agrandadas y junta todo con NMS (una caja chica dentro de una grande cuenta como la misma solo si
+  son de tamaño parecido, `FAR_COVER_AREA`); cuesta ~5 veces el detector: en el reparto pesa ×4 (`pool.FAR_FACTOR`,
+  igual a `core.deteccion.FAR_WEIGHT`) y rinde más con la principal o la secundaria en 1280x720. `core/deteccion.py`
+  (Python puro: el servidor no carga OpenCV) con `DetectionConfig`, `conf_for`; `core.detectors.tuned(det, cfg)` envuelve
+  el detector **compartido** sin tocar su umbral (`TunedDetector`; `MotionDetector` queda igual). Viaja compacta en
+  `analysis["detection"]` (solo lo que difiere; un agente viejo la ignora) y rige en todos los caminos: máquinas (en
+  caliente, sin reconectar), «Ver con la IA», «● En vivo»/«🎞 Clips», alarmas e importados. App: recuadro «Detección de
+  personas» en el formulario de la cámara y, arriba de la ventana de la cámara, «Detectar personas: sensibilidad [5]
+  ☐ Personas lejos», que se aplica en el acto (en clips vuelve a analizar, primero el que se mira) y se guarda con
+  «Guardar»/«Aprobar»; el detalle avisa si la máquina todavía no la aplica (las máquinas la toman al reiniciarse, por el
+  `git pull` del arranque). Hecho con un workflow de 9 agentes (diseño, 4 en paralelo por capa, integración, 2 revisores,
+  corrección: 11 observaciones, todas aplicadas). Pruebas: `tests/test_sensibilidad_*.py` (la de punta a punta: con lo
+  de siempre ve 1 de 5 personas de un depósito simulado, con 8 ve 2, con «Personas lejos» 4 y con las dos, las 5).
+  **«En vivo» llena la pantalla (app 1.41.4):** el mosaico toma el tamaño del lugar (antes celdas fijas de 640x360).
 - **Foto del vivo para marcar zonas (6 nov, el dueño: «quiero marcar zonas y está totalmente en negro, pero en el en
   vivo funciona… una opción para tomar foto»; app 1.41.2).** «✎ Marcar zonas» de una cámara sin imagen guardada (no se
   analiza y nadie la abrió en «Nombres e imágenes») ya no muestra negro: `ZonesEditor.snapshot` saca sola una foto del

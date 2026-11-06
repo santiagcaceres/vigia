@@ -229,6 +229,8 @@ class Agent:
                 lst = DeviceAlarmListener(c, self.client)
                 self.listeners[cid] = lst
                 lst.start()
+            else:
+                self.listeners[cid].rename(c)  # (renombrar no corta la escucha)
         wanted = {c["id"]: c for c in cams if modes[c["id"]] == "vivo"}
         for cid in list(self.workers):
             w = self.workers[cid]

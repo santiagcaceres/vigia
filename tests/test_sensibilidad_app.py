@@ -32,6 +32,37 @@ def test_el_texto_del_detalle():
     assert of.detection_text({"detection": {"far": True}}) == "personas lejos"
     assert of.detection_text({"detection": {"sensitivity": "mucha"}}) == ""  # (tolerante, como los agentes)
     assert "1280x720" in of.DETECTION_HELP and "5 veces" in of.DETECTION_HELP
+    assert "como 4 cámaras" in of.DETECTION_HELP and "4 cámaras" in of.FAR_LOAD_WARN
+
+
+def test_el_peso_de_lejos_en_la_app_es_el_del_reparto():
+    from core.deteccion import FAR_WEIGHT
+    from server import pool
+    assert pool.FAR_FACTOR == FAR_WEIGHT  # (lo que dice la app es lo que cuenta el reparto)
+
+
+def test_el_detalle_avisa_si_la_maquina_todavia_no_aplica_la_deteccion():
+    cam = {"analyzed": True, "mode": "vivo", "detection": {"sensitivity": 8, "far": True},
+           "status": {"state": "en_linea"}}
+    assert "la toma al reiniciarse" in of.detection_pending(cam)  # máquina vieja: no manda «detection»
+    cam["status"]["detection"] = "normal"  # máquina nueva que todavía no pidió la configuración
+    assert "en menos de un minuto" in of.detection_pending(cam)
+    cam["status"]["detection"] = "sensibilidad 8 de 10 · personas lejos"
+    assert of.detection_pending(cam) == ""
+    for other in ({"analyzed": False}, {"mode": "alarmas_equipo"}, {"status": {"state": "sin_conexion"}},
+                  {"detection": None}):
+        assert of.detection_pending({**cam, "status": {"state": "en_linea"}, **other}) == "", other
+
+
+def test_lo_que_cambio_de_la_deteccion_en_palabras():
+    d = DetectionConfig
+    assert of.detection_change(d(), d(8)) == "sensibilidad 8 de 10 (acepta personas con confianza desde 0,23 de 1)"
+    assert of.detection_change(d(), d(far=True)) == ("«Personas lejos» (la IA mira la imagen entera y en 4 partes: "
+                                                     "unas 5 veces el trabajo)")
+    assert of.detection_change(d(far=True), d()) == "sin «Personas lejos» (solo la imagen entera)"
+    assert of.detection_change(d(8), d()) == ("sensibilidad 5 de 10 (acepta personas con confianza desde 0,35 de 1, "
+                                              "como siempre)")
+    assert " · " in of.detection_change(d(), d(9, True))
 
 
 # ------------------------------------------------------------------ con ventana
@@ -217,7 +248,19 @@ class FakeTuner:
         self.analysis = cfg.get("analysis") or {}
         self.detections: list = []
         self.state, self.started, self.stopped = "iniciando", False, False
+        self.error, self.seg_now, self.progress, self.speed, self.truncated = None, 0, 0.0, 1.0, False
+        self.seg_names = [os.path.basename(v) for v in self.videos]
+        self.alerts, self.seg_errors, self.samples = [], {}, []
         FakeTuner.made.append(self)
+
+    def bounds(self):
+        return 0, len(self.samples)
+
+    def sample_at(self, i):
+        return self.samples[i] if 0 <= i < len(self.samples) else None
+
+    def explain(self, i):
+        return []
 
     def start(self):
         self.started = True
@@ -276,7 +319,8 @@ def _info(detection=None, detector="yolo"):
             "raw": {"zones": [], "rules": {}, "gestures": None}, "analyzed": False, "tuning": "sin_ajustar"}
 
 
-def _window(tk, root, monkeypatch, tmp_path, info, mode="vivo", videos=(), msgs=None, put=None):
+def _window(tk, root, monkeypatch, tmp_path, info, mode="vivo", videos=(), msgs=None, put=None, kind="hurto",
+            bg=None, name="Depósito fondo"):
     from tkinter import ttk
 
     from agent import ajuste
@@ -284,11 +328,11 @@ def _window(tk, root, monkeypatch, tmp_path, info, mode="vivo", videos=(), msgs=
     monkeypatch.setattr(ajuste, "Tuner", FakeTuner)
     monkeypatch.setattr(of.TuneWindow, "tick", lambda self: None)  # (sin dibujar: el motor es falso)
     FakeTuner.made = []
-    lib = [TestVideo(str(p), kind="hurto") for p in videos]
+    lib = [TestVideo(str(p), kind=kind) for p in videos]
     sent = []
     app = types.SimpleNamespace(
         tk=tk, ttk=ttk, v=types.SimpleNamespace(root=root, log_handler=types.SimpleNamespace(q=queue.Queue())),
-        mb=msgs or Msgs(), bg=types.SimpleNamespace(run=_run), _tune_windows=[],
+        mb=msgs or Msgs(), bg=types.SimpleNamespace(run=bg or _run), _tune_windows=[],
         api=types.SimpleNamespace(put=put or (lambda path, body: sent.append((path, body)) or dict(body)),
                                   post=lambda path, body: sent.append((path, body)) or {}),
         config_saved=lambda: None, zones_changed=lambda *a, **k: None, _open_window=lambda cid: None,
@@ -296,7 +340,7 @@ def _window(tk, root, monkeypatch, tmp_path, info, mode="vivo", videos=(), msgs=
     agent = FakeAgent(info)
     app.agent_of = lambda: agent
     app._dialog = types.MethodType(of.Oficina._dialog, app)
-    w = of.TuneWindow(app, {"id": 9, "name": "Depósito fondo", "has_preview": False, "detector": "yolo"}, mode=mode)
+    w = of.TuneWindow(app, {"id": 9, "name": name, "has_preview": False, "detector": "yolo"}, mode=mode)
     root.update()
     return w, app, sent, agent
 
@@ -308,7 +352,7 @@ def test_en_vivo_la_sensibilidad_rige_en_el_acto_y_se_guarda(monkeypatch, tmp_pa
         t = FakeTuner.made[-1]
         assert t.live and t.analysis["detection"] == {"sensitivity": 7}  # analiza con la guardada
         assert w.det_sens.get() == "7" and not w.det_far.get() and not w.dirty
-        assert str(_find(w.top, "TCheckbutton", "Lejos").cget("state")) == "normal"
+        assert str(_find(w.top, "TCheckbutton", "Personas lejos").cget("state")) == "normal"
         # se toca la sensibilidad: espera a que se termine de tocar (las flechitas no rehacen nada a cada paso)
         w.det_sens.set("9")
         root.update()
@@ -317,8 +361,12 @@ def test_en_vivo_la_sensibilidad_rige_en_el_acto_y_se_guarda(monkeypatch, tmp_pa
         root.update()
         assert t.detections == [DetectionConfig(9, False)] and len(FakeTuner.made) == 1  # el vivo sigue, no se rehace
         assert w.analysis["detection"] == {"sensitivity": 9}
-        assert w._note == "sensibilidad 9: rige desde ahora (acepta personas desde 0.19)"
-        # «Lejos» y «Guardar» enseguida (sin esperar): se aplica antes de guardar, y va completa
+        assert w._note == ("desde ahora, sin guardar: sensibilidad 9 de 10 (acepta personas con confianza desde 0,19 "
+                           "de 1)")
+        w._show_state(t)  # la nota va en el renglón de avisos, no pegada al estado en negrita
+        assert "sensibilidad" not in str(w.state_lbl.cget("text"))
+        assert str(w.live_warn.cget("text")).startswith("Desde ahora, sin guardar: sensibilidad 9 de 10")
+        # «Personas lejos» y «Guardar» enseguida (sin esperar): se aplica antes de guardar, y va completa
         w.det_far.set(True)
         w.save_times()
         assert t.detections[-1] == DetectionConfig(9, True)
@@ -348,8 +396,8 @@ def test_con_clips_se_vuelve_a_analizar(monkeypatch, tmp_path):
         w._flush_detection()
         again = FakeTuner.made[-1]
         assert again is not first and first.stopped and again.started  # el clip se vuelve a analizar…
-        assert again.analysis["detection"] == {"far": True} and again.videos == [str(clip)]  # …con «Lejos»
-        assert w._note == "se vuelve a analizar con sensibilidad 5 y lejos"
+        assert again.analysis["detection"] == {"far": True} and again.videos == [str(clip)]  # …con «Personas lejos»
+        assert w._note == "se vuelve a analizar con personas lejos (5 veces el trabajo)"
         # el mismo valor otra vez no rehace nada
         w.det_far.set(True)
         w._flush_detection()
@@ -369,18 +417,174 @@ def test_con_clips_se_vuelve_a_analizar(monkeypatch, tmp_path):
 
 
 def test_la_ventana_entra_en_la_pantalla(monkeypatch, tmp_path):
+    """En 1366x768 (menos la barra de tareas), en vivo y con clips, con una cámara que ya se analiza (el aviso ⚠) y con
+    la nota más larga de la detección; la barra para recorrer el video no queda chica (con ella se vuelve al momento
+    de un hurto) y la detección va en su renglón, sin ensanchar la imagen."""
     tk, root = _tk()
     try:
-        sizes = []
-        for det in (None, {"sensitivity": 10, "far": True}):
-            w, *_ = _window(tk, root, monkeypatch, tmp_path, _info(det))
-            w.top.update_idletasks()
-            nav = w.scale.master
-            assert nav.winfo_reqwidth() <= w.W, nav.winfo_reqwidth()  # la barra no ensancha la imagen
-            sizes.append((w.top.winfo_reqwidth(), w.top.winfo_reqheight()))
-            w.close(force=True)
-        assert all(wd <= 1366 and ht <= 768 - 70 for wd, ht in sizes), sizes
-        assert sizes[0] == sizes[1]  # la detección no agrega renglones (la ventana ya va justa de alto)
+        clip = tmp_path / "Minas - Pasillo bebidas - 2026-10-28 08.00-08.30.mp4"
+        clip.write_bytes(b"x")
+        # (las más largas que arma la ventana)
+        notes = ("desde ahora, sin guardar: " + of.detection_change(DetectionConfig(), DetectionConfig(10, True)),
+                 "desde ahora, sin guardar: " + of.detection_change(DetectionConfig(), DetectionConfig(far=True)),
+                 "se vuelve a analizar con sensibilidad 10 de 10 · personas lejos (5 veces el trabajo), primero el "
+                 "clip que mirabas · se pierden 3 etiquetas puestas a mano",
+                 "se vuelve a analizar con sensibilidad 10 de 10 · personas lejos (5 veces el trabajo) (cambió la "
+                 "guardada) · se pierden 3 etiquetas puestas a mano",
+                 "los gestos se ven desde ahora (lo de antes se analizó sin mirar la postura)")
+        for mode, videos in (("vivo", ()), ("clips", (clip,))):  # («🎞 Clips» tiene la lista de clips: más alta)
+            sizes = []
+            for det in (None, {"sensitivity": 10, "far": True}):
+                for analyzed in (False, True):
+                    info = _info(det)
+                    info["analyzed"] = analyzed
+                    w, *_ = _window(tk, root, monkeypatch, tmp_path, info, mode=mode, videos=videos,
+                                    name="Depósito estanterías del fondo (galpón 2)")  # (un nombre largo, arriba)
+                    w.pos.configure(text="14:37:05 · cuadro 1234 de 3000 · mostrando el último")
+                    w.top.update()
+                    assert w.scale.master.winfo_reqwidth() <= w.W, w.scale.master.winfo_reqwidth()
+                    assert w.scale.winfo_width() >= 280, w.scale.winfo_width()  # (era 287 antes de la detección)
+                    sizes.append((w.top.winfo_reqwidth(), w.top.winfo_reqheight()))
+                    for note in notes:
+                        w._note = note
+                        w._show_warn()
+                        w.top.update_idletasks()
+                        sizes.append((w.top.winfo_reqwidth(), w.top.winfo_reqheight()))
+                    w._note = ""
+                    w.close(force=True)
+            assert all(wd <= 1366 and ht <= 768 - 70 for wd, ht in sizes), (mode, sizes)
+    finally:
+        root.destroy()
+
+
+def test_la_deteccion_no_se_toca_hasta_saber_la_guardada(monkeypatch, tmp_path):
+    """Mientras dice «Preparando el detector…» la sensibilidad y «Personas lejos» están apagadas: lo tocado ahí lo
+    pisaría lo guardado al terminar de preparar."""
+    tk, root = _tk()
+    try:
+        pending = []
+        w, *_ = _window(tk, root, monkeypatch, tmp_path, _info({"sensitivity": 7}),
+                        bg=lambda fn, done=None, fail=None: pending.append((fn, done, fail)))
+        assert all("disabled" in x.state() for x in w.det_widgets) and w.info is None
+        while pending:
+            fn, done, fail = pending.pop(0)
+            _run(fn, done, fail)
+        assert w.info is not None and not any("disabled" in x.state() for x in w.det_widgets)
+        assert w.det_sens.get() == "7"
+    finally:
+        root.destroy()
+
+
+def test_con_clips_se_vuelve_a_analizar_primero_el_que_se_mira(monkeypatch, tmp_path):
+    tk, root = _tk()
+    try:
+        a, b = tmp_path / "Depósito fondo - a.mp4", tmp_path / "Depósito fondo - b.mp4"
+        for p in (a, b):
+            p.write_bytes(b"x")
+        w, app, *_ = _window(tk, root, monkeypatch, tmp_path, _info(), mode="clips", videos=[a, b])
+        t = FakeTuner.made[-1]
+        assert t.videos == [str(a), str(b)]
+        smp = lambda seg, ts: types.SimpleNamespace(seg=seg, ts=ts)  # noqa: E731
+        t.samples = [smp(0, 1.0), smp(1, 1.0), smp(1, 2.0), smp(1, 2.2)]
+        w.index = 2  # mirando «b» a los 2 s (con la persona del fondo)
+        w.labels = {(1, "mano_bolsa", 3, 2.0): "hurto", (0, "mano_ropa", 1, 1.0): None}
+        w.det_sens.set("8")
+        w._flush_detection()
+        again = FakeTuner.made[-1]
+        assert again is not t and again.videos == [str(b), str(a)]  # primero el que se miraba; los demás después
+        assert [v.path for v in w.run_videos] == [str(b), str(a)]
+        assert w._note.startswith("se vuelve a analizar con sensibilidad 8 de 10, primero el clip que mirabas")
+        assert w._note.endswith("se pierde 1 etiqueta puesta a mano")
+        assert w._goto == (0, 2.0) and w.index is None
+        # mientras se analiza muestra lo que va llegando; al llegar a ese momento, vuelve ahí
+        again.samples = [smp(0, 1.0)]
+        w._goto_moment(again, *again.bounds())
+        assert w._goto == (0, 2.0) and w.index is None
+        again.samples += [smp(0, 1.8), smp(0, 2.0), smp(0, 2.4)]
+        w._goto_moment(again, *again.bounds())
+        assert w._goto is None and w.index == 2
+    finally:
+        root.destroy()
+
+
+def test_el_resultado_del_clip_dice_con_que_se_analizo_y_pregunta_una_vez(monkeypatch, tmp_path):
+    tk, root = _tk()
+    try:
+        clip = tmp_path / "Depósito fondo - normal.mp4"
+        clip.write_bytes(b"x")
+        msgs = Msgs(answer=False)
+        w, app, *_ = _window(tk, root, monkeypatch, tmp_path, _info(), mode="clips", videos=[clip], msgs=msgs,
+                             kind="normal")
+        w.clips = list(w.run_videos)  # (como recién subido)
+        alert = types.SimpleNamespace(seg=0, type="mano_bolsa", track_id=1, ts=3.0, score=None, kept=True,
+                                      description="", wall=None)
+        t = FakeTuner.made[-1]
+        t.state, t.alerts = "listo", [alert]
+        w._clip_verdict(t)
+        kind, text = msgs.seen[-1]
+        assert kind == "ask" and text.startswith("Resultado con la configuración guardada de «Depósito fondo»")
+        assert "¿Mandar esta alerta al entrenamiento" in text
+        # se prueba otra sensibilidad: el clip se vuelve a analizar y el resultado lo dice; no vuelve a preguntar
+        w.det_sens.set("9")
+        w._flush_detection()
+        t2 = FakeTuner.made[-1]
+        t2.state, t2.alerts = "listo", [alert]
+        w._clip_verdict(t2)
+        kind, text = msgs.seen[-1]
+        assert kind == "info"
+        assert text.startswith("Resultado con la sensibilidad 9 que estás probando (sin guardar) de «Depósito fondo»")
+        assert "«Mandar a entrenar»" in text
+        assert of.TuneWindow._verdict_config(w) == "la sensibilidad 9 que estás probando (sin guardar)"
+        w.det_far.set(True)
+        w._flush_detection()
+        assert w._verdict_config() == "la sensibilidad 9 y «Personas lejos» que estás probando (sin guardar)"
+    finally:
+        root.destroy()
+
+
+def test_la_deteccion_guardada_por_fuera_vuelve_a_analizar_los_clips(monkeypatch, tmp_path):
+    """Con «🎞 Clips» abierto, la detección guardada cambia desde afuera («Editar», otro usuario) y después se guardan
+    zonas en el editor de la barra: lo analizado se detectó con la anterior, así que se vuelve a analizar."""
+    tk, root = _tk()
+    try:
+        clip = tmp_path / "Depósito fondo - hurto.mp4"
+        clip.write_bytes(b"x")
+        w, app, sent, agent = _window(tk, root, monkeypatch, tmp_path, _info(), mode="clips", videos=[clip])
+        t = FakeTuner.made[-1]
+        agent.info = _info({"sensitivity": 8, "far": True})
+        w.zones_saved({}, external=True)
+        again = FakeTuner.made[-1]
+        assert again is not t and again.analysis["detection"] == {"sensitivity": 8, "far": True}
+        assert w.det_sens.get() == "8" and w.det_far.get() and not w.dirty
+        assert "cambió la guardada" in w._note
+        # sin cambios en la detección, zonas guardadas no vuelven a analizar (las recalcula el motor)
+        n = len(FakeTuner.made)
+        w.zones_saved({}, external=True)
+        assert len(FakeTuner.made) == n
+    finally:
+        root.destroy()
+
+
+def test_guardar_o_aprobar_con_lejos_avisa_cuanto_ocupa_en_la_maquina(monkeypatch, tmp_path):
+    tk, root = _tk()
+    try:
+        msgs = Msgs(answer=False)
+        info = _info()
+        info["analyzed"] = True
+        w, *_ = _window(tk, root, monkeypatch, tmp_path, info, msgs=msgs)
+        assert "4 cámaras" not in w._confirm_live()
+        w.det_far.set(True)
+        w._flush_detection()
+        assert of.FAR_LOAD_WARN in w._confirm_live()
+        w.approve()
+        assert of.FAR_LOAD_WARN in msgs.seen[-1][1]
+        w._saved_det = DetectionConfig(far=True)  # ya guardada en una cámara que ya se analiza: no se repite
+        assert of.FAR_LOAD_WARN not in w._confirm_live()
+        w.approve()
+        assert of.FAR_LOAD_WARN not in msgs.seen[-1][1]
+        w.det_far.set(False)
+        w._flush_detection()
+        assert of.FAR_LOAD_WARN not in w._confirm_live()
     finally:
         root.destroy()
 

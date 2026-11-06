@@ -305,7 +305,7 @@ class AIViewWorker(ViewWorker):
                             " · lejos" if det.far else ""))
         if self.ai_fps and self.ai_fps < 0.7 * self.target_fps and self.ai_ms > 1000.0 / self.target_fps:
             return (f"IA · {who} · la PC no da abasto ({self.ai_ms:.0f} ms por cuadro"
-                    + (f", con «Lejos» hace {FAR_PASSES} veces el trabajo)" if det.far else ")"))
+                    + (f", con «Personas lejos» hace {FAR_PASSES} veces el trabajo)" if det.far else ")"))
         return f"IA · {who} · {min(self.ai_fps, self.target_fps):.1f} de {self.target_fps:.0f} cuadros/s"
 
     def _ready(self) -> bool:

@@ -43,7 +43,8 @@ import cv2
 import httpx
 import numpy as np
 
-from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, MAX_SENSITIVITY, MIN_SENSITIVITY, DetectionConfig
+from core.deteccion import (DEFAULT_SENSITIVITY, FAR_PASSES, FAR_WEIGHT, MAX_SENSITIVITY, MIN_SENSITIVITY,
+                            DetectionConfig)
 from core.gestos import GESTURE_NAMES, GestureConfig
 from core.metrics import WAIT_MIN_SECONDS, post_stats, wait_stats
 from core.rules import NO_WAIT_TYPES, snap_edge
@@ -476,8 +477,11 @@ def plans_names(plans: list[str]) -> str:
 # las cuenta». Cada cámara tiene una «Sensibilidad» (1 a 10; 5 = como siempre) y «Personas lejos» (la imagen se mira
 # también en 4 partes agrandadas). Lo aplica el detector de cada PC o máquina (core/deteccion.py, core/detectors.tuned).
 DETECTION_HELP = (f"{DEFAULT_SENSITIVITY} = normal. Más alta ve gente más chica o lejana, pero confunde más cosas con "
-                  "personas. «Personas lejos» mira la imagen por partes: usa unas "
-                  f"{FAR_PASSES} veces más la máquina (sirve con 1280x720 o la calidad principal).")
+                  "personas. «Personas lejos» mira la imagen por partes: el detector trabaja unas "
+                  f"{FAR_PASSES} veces más (en las máquinas cuenta como {FAR_WEIGHT} cámaras); rinde más con la "
+                  "principal o la secundaria en 1280x720.")
+FAR_LOAD_WARN = (f"Con «Personas lejos» esta cámara ocupa en la máquina de análisis lo de {FAR_WEIGHT} cámaras: fijate "
+                 "en «Máquinas» que no quede apretada (o avisale a un administrador).")
 
 
 def detection_from_form(sens_text, far) -> DetectionConfig:
@@ -502,6 +506,43 @@ def detection_text(cam: dict | None) -> str:
     """«» si la cámara detecta como siempre; si no, «sensibilidad 8 de 10 · personas lejos» (para el detalle)."""
     det = camera_detection(cam)
     return "" if det.is_default else det.describe()
+
+
+def detection_pending(cam: dict | None) -> str:
+    """Si la máquina que analiza la cámara todavía no usa la detección guardada (las máquinas toman el código nuevo
+    recién al reiniciarse): el aviso para el detalle, o «». Lo dice el estado que manda la máquina (`detection`, lo que
+    está aplicando): si no viene, es una máquina vieja; si difiere, todavía no pidió la configuración (≤ 60 s)."""
+    cam = cam or {}
+    st = cam.get("status") or {}
+    if (not detection_text(cam) or not cam.get("analyzed") or (cam.get("mode") or "vivo") != "vivo"
+            or st.get("state") != "en_linea"):
+        return ""
+    if "detection" not in st:
+        return " (la máquina todavía no la aplica: la toma al reiniciarse)"
+    if st.get("detection") != camera_detection(cam).describe():
+        return " (la máquina la toma en menos de un minuto)"
+    return ""
+
+
+def detection_change(old: DetectionConfig, new: DetectionConfig) -> str:
+    """Qué cambió de la detección de personas, en palabras (para la nota de la ventana de la cámara)."""
+    both = new.far != old.far and new.sensitivity != old.sensitivity  # (las dos, más corto: entra en 2 renglones)
+    parts = []
+    if new.far != old.far:
+        if not new.far:
+            parts.append("sin «Personas lejos» (solo la imagen entera)")
+        elif both:
+            parts.append(f"«Personas lejos» (imagen entera y 4 partes: {FAR_PASSES} veces el trabajo)")
+        else:
+            parts.append(f"«Personas lejos» (la IA mira la imagen entera y en 4 partes: unas {FAR_PASSES} veces el "
+                         "trabajo)")
+    if new.sensitivity != old.sensitivity or not parts:
+        conf = fmt_dec(new.conf, 2)
+        parts.append(f"sensibilidad {new.sensitivity} de {MAX_SENSITIVITY} " + (
+            f"(personas desde {conf} de confianza)" if both else
+            f"(acepta personas con confianza desde {conf} de 1"
+            f"{', como siempre' if new.sensitivity == DEFAULT_SENSITIVITY else ''})"))
+    return " · ".join(parts)
 
 
 # ------------------------------------------------------------------ API
@@ -1228,7 +1269,8 @@ class Oficina:
         for cam in cams:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
                 cam["name"], self._cam_state(cam),
-                ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")) if cam.get("analyzed") else "No",
+                ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")
+                 + (" · lejos" if camera_detection(cam).far else "")) if cam.get("analyzed") else "No",
                 measures_text(cam, c),
                 TUNING_NAMES.get(cam.get("tuning") or "sin_ajustar", "—"),
                 (counts.get(str(cam["id"])) or {}).get("today", 0) or ""))
@@ -1271,7 +1313,7 @@ class Oficina:
             f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
             f"{int(cam.get('process_fps') or 5)} cuadros por segundo · "
             f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}"
-            f"{(' · detección: ' + detection_text(cam)) if detection_text(cam) else ''}\n"
+            f"{(' · detección: ' + detection_text(cam) + detection_pending(cam)) if detection_text(cam) else ''}\n"
             f"Zonas: {zones}\n"
             f"Conexión: {conn}")
 
@@ -1848,7 +1890,7 @@ class Oficina:
                         state="disabled" if motion else "normal").pack(side="left")
         ttk.Label(df, text=DETECTION_HELP if not motion else
                   "Esta cámara usa el detector de movimiento (solo para pruebas): no tiene sensibilidad.",
-                  foreground="#666", wraplength=440, justify="left").pack(anchor="w", pady=(2, 0))
+                  foreground="#666", wraplength=500, justify="left").pack(anchor="w", pady=(2, 0))  # (4 renglones)
 
         filled: dict = {"line": None}
 
@@ -3866,14 +3908,20 @@ class TuneWindow:
         self._filling = False  # se están llenando las casillas desde lo guardado (no es un cambio del usuario)
         self._gestures_unreadable = False  # los gestos guardados no se entendieron: no se tocan al guardar
         self._eff_gestures: dict | None = None  # los gestos que rigen (guardados), no los que se están probando
-        self._note = ""  # se agrega al estado (p. ej. «se vuelve a analizar mirando la postura»)
+        self._note = ""  # lo que se acaba de cambiar (p. ej. «se vuelve a analizar mirando la postura»): `_show_warn`
         self._note_until = 0.0  # en vivo, hasta cuándo se muestra la nota
+        self._warn_text = ""  # el aviso fijo («⚠ ya se analiza en las máquinas…»)
+        self._warn_shown: str | None = None
         self._type_gestures: list | None = None  # los gestos del tipo de cámara (si no se eligieron a mano)
         # detección de personas (sensibilidad y «Personas lejos»): la guardada, la que se está analizando acá y el
         # aviso pendiente para aplicarla cuando se termine de tocar
         self._saved_det = DetectionConfig()
         self._det_applied = DetectionConfig()
         self._det_after = None
+        self._det_run = DetectionConfig()  # con la que se analizó lo que se está mirando
+        self._goto: tuple[int, float] | None = None  # volver a (video, segundo) cuando se vuelva a analizar
+        self._goto_from = 0
+        self._training_asked = None  # los clips por los que ya se preguntó si mandarlos al entrenamiento
         self.closed = False
         self.preview_sent = False
         self.lib = app.library()  # videos de prueba guardados de cada cámara (en esta PC)
@@ -3899,13 +3947,33 @@ class TuneWindow:
         # clips») y «✎ Marcar zonas» siempre a la vista
         head = ttk.Frame(frm)
         head.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(head, text=cam["name"], style="Titulo.TLabel").pack(side="left", padx=(0, 16))
+        # (un nombre muy largo se corta: el renglón también lleva la detección; entero está en el título de la ventana)
+        name = cam["name"] if len(cam["name"]) <= 30 else cam["name"][:29].rstrip() + "…"
+        ttk.Label(head, text=name, style="Titulo.TLabel").pack(side="left", padx=(0, 16))
         self.mode_btns = {}
         for key, text in (("vivo", "● En vivo"), ("clips", "🎞 Clips")):
             b = ttk.Button(head, text=text, width=12, command=lambda k=key: self.set_mode(k))
             b.pack(side="left", padx=(0, 4))
             self.mode_btns[key] = b
         ttk.Button(head, text="✎ Marcar zonas", style="Primario.TButton", command=self.edit_zones).pack(side="right")
+        # la detección de personas, para probarla en el acto (pedido del dueño, 6 nov: «si están lejos no las cuenta»):
+        # en vivo rige para los cuadros nuevos y los clips se vuelven a analizar; se guarda con «Guardar» o «Aprobar».
+        # Arriba, junto a «✎ Marcar zonas» (lo que decide qué ve la IA): al lado de la barra la dejaba en menos de la
+        # mitad (con ella se vuelve al momento de un hurto) y en un renglón propio la ventana ya no entraba en 768 de
+        # alto. Apagada hasta que se sepa qué tiene guardado la cámara (`load`): lo tocado antes lo pisaría lo guardado.
+        dr = ttk.Frame(head)
+        dr.pack(side="right", padx=(0, 16))
+        self.det_sens = tk.StringVar(value=str(DEFAULT_SENSITIVITY))
+        self.det_far = tk.BooleanVar(value=False)
+        ttk.Label(dr, text="Detectar personas: sensibilidad").pack(side="left", padx=(0, 4))
+        sens_sb = ttk.Spinbox(dr, from_=MIN_SENSITIVITY, to=MAX_SENSITIVITY, width=3, textvariable=self.det_sens,
+                              state="disabled")
+        sens_sb.pack(side="left")
+        far_cb = ttk.Checkbutton(dr, text="Personas lejos", variable=self.det_far, state="disabled")
+        far_cb.pack(side="left", padx=(10, 0))
+        self.det_widgets = [sens_sb, far_cb]
+        for var in (self.det_sens, self.det_far):
+            var.trace_add("write", lambda *_a: (self._show_dirty(), self._detection_changed()))
         self.mode_help = ttk.Label(frm, text="", style="Suave.TLabel", wraplength=1240, justify="left")
         self.mode_help.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 6))
 
@@ -3916,30 +3984,16 @@ class TuneWindow:
         self.photo = None
         nav = ttk.Frame(left)
         nav.pack(fill="x", pady=(4, 0))
-        # (botones chicos y la barra corta, que se estira sola: con la sensibilidad, la fila medía más que la imagen y
-        # ensanchaba la ventana)
-        self.play_btn = ttk.Button(nav, text="▶", width=2, style="Chico.TButton", command=self.toggle_play)
+        self.play_btn = ttk.Button(nav, text="▶", width=3, command=self.toggle_play)
         self.play_btn.pack(side="left")
-        self.scale = ttk.Scale(nav, from_=0, to=1, orient="horizontal", command=self.on_scale, length=60)
+        self.scale = ttk.Scale(nav, from_=0, to=1, orient="horizontal", command=self.on_scale)
         self.scale.pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(nav, text="Último ▸▸", width=0, style="Chico.TButton", command=self.follow).pack(side="left")
+        ttk.Button(nav, text="Último ▸▸", command=self.follow).pack(side="left")
         self.show_objects = tk.BooleanVar(value=True)
         ttk.Checkbutton(nav, text="Objetos", variable=self.show_objects, command=self._redraw).pack(side="left", padx=(6, 0))
         # mapa de pisadas encima (celeste: caminan, rojo: se paran): para ver dónde van de verdad las zonas
         self.show_feet = tk.BooleanVar(value=False)
         ttk.Checkbutton(nav, text="Pisadas", variable=self.show_feet, command=self._redraw).pack(side="left", padx=(4, 0))
-        # detección de personas, para probarla en el acto (pedido del dueño, 6 nov: «si están lejos no las cuenta»): en
-        # vivo rige para los cuadros nuevos y los clips se vuelven a analizar; se guarda con «Guardar» o «Aprobar»
-        self.det_sens = tk.StringVar(value=str(DEFAULT_SENSITIVITY))
-        self.det_far = tk.BooleanVar(value=False)
-        ttk.Label(nav, text="Sensibilidad").pack(side="left", padx=(8, 2))
-        sens_sb = ttk.Spinbox(nav, from_=MIN_SENSITIVITY, to=MAX_SENSITIVITY, width=3, textvariable=self.det_sens)
-        sens_sb.pack(side="left")
-        far_cb = ttk.Checkbutton(nav, text="Lejos", variable=self.det_far)
-        far_cb.pack(side="left", padx=(4, 0))
-        self.det_widgets = [sens_sb, far_cb]
-        for var in (self.det_sens, self.det_far):
-            var.trace_add("write", lambda *_a: (self._show_dirty(), self._detection_changed()))
         self.pos = ttk.Label(left, text="", style="Suave.TLabel", wraplength=self.W, justify="left")
         self.pos.pack(anchor="w")
         # (con corte de renglón: un estado largo ensanchaba la ventana más allá de 1366)
@@ -4112,10 +4166,8 @@ class TuneWindow:
             motion = (self.info["camera"].get("detector") or self.cam.get("detector") or "yolo") == "motion"
             for w in self.det_widgets:  # (el detector de movimiento no tiene sensibilidad)
                 w.configure(state="disabled" if motion else "normal")
-            if self.info.get("analyzed"):
-                self.live_warn.configure(text="⚠ Esta cámara ya se analiza en las máquinas: las zonas y tiempos que "
-                                              "guardes empiezan a regir ahí enseguida (alertas reales). Probar tiempos "
-                                              "sin guardar no cambia nada.")
+            self._warn_text = self.WARN_ANALYZED if self.info.get("analyzed") else ""
+            self._show_warn()
             self._fill_times()
             if self.tuner is None:
                 self.set_mode(self.mode)  # arranca lo del modo elegido (en vivo, o los clips)
@@ -4196,8 +4248,8 @@ class TuneWindow:
     DET_WAIT_MS = 600  # se aplica cuando se deja de tocar (cada flechita del número no vuelve a analizar los clips)
 
     def _fill_detection(self) -> None:
-        """La sensibilidad y «Lejos» que rigen (las manda el servidor en `analysis["detection"]`; sin la clave, las de
-        siempre). Se llama con `_filling` (no es un cambio del usuario)."""
+        """La sensibilidad y «Personas lejos» que rigen (las manda el servidor en `analysis["detection"]`; sin la clave,
+        las de siempre). Se llama con `_filling` (no es un cambio del usuario)."""
         det = DetectionConfig.from_dict(self.analysis.get("detection"))
         self.det_sens.set(str(det.sensitivity))
         self.det_far.set(det.far)
@@ -4213,7 +4265,7 @@ class TuneWindow:
             return None
 
     def _detection_changed(self) -> None:
-        """Se tocó «Sensibilidad» o «Lejos»: se aplica cuando se termine de tocar (`_apply_detection`)."""
+        """Se tocó «Sensibilidad» o «Personas lejos»: se aplica cuando se termine de tocar (`_apply_detection`)."""
         if self._filling or self.closed:
             return
         if self._det_after is not None:
@@ -4233,9 +4285,9 @@ class TuneWindow:
             self._apply_detection()
 
     def _apply_detection(self) -> None:
-        """La sensibilidad y «Lejos» de las casillas, al análisis de esta ventana (sin guardarlas), para ver en el acto
-        si aparecen las personas del fondo: en vivo rigen para los cuadros nuevos (`Tuner.set_detection`); los clips se
-        vuelven a analizar, porque lo que cambia es justamente qué se detecta."""
+        """La sensibilidad y «Personas lejos» de las casillas, al análisis de esta ventana (sin guardarlas), para ver en
+        el acto si aparecen las personas del fondo: en vivo rigen para los cuadros nuevos (`Tuner.set_detection`); los
+        clips se vuelven a analizar, porque lo que cambia es justamente qué se detecta."""
         from .ajuste import with_detection
         self._det_after = None
         if self.closed:
@@ -4243,25 +4295,60 @@ class TuneWindow:
         det = self._detection_form()
         if det is None or det == self._det_applied:
             return  # (un número a medio escribir no hace nada)
-        self._det_applied = det
+        old, self._det_applied = self._det_applied, det
         self.analysis = with_detection(self.analysis, det)
         t = self.tuner
         if t is None:
             return  # todavía se prepara o no hay clips: lo próximo que se analice ya la usa (`_start` lee `analysis`)
-        # (nota corta: con un renglón más de estado la ventana no entra en 768 de alto; el porqué lo dice «Cómo anda la
-        # cámara»: personas chicas, confianza, falsas)
-        what = f"sensibilidad {det.sensitivity}" + (" y lejos" if det.far else "")
+        # (la nota va en el renglón de avisos, `_show_warn`; el porqué lo dice «Cómo anda la cámara»: personas chicas,
+        # confianza, falsas)
         if t.live:
             self.app.bg.run(lambda: t.set_detection(det), None,
                             lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
-            self._note = f"{what}: rige desde ahora (acepta personas desde {det.conf:.2f})"
+            self._note = f"desde ahora, sin guardar: {detection_change(old, det)}"
             self._note_until = time.monotonic() + 15.0
         else:
-            if self.run_videos:
-                self._start(library=self.run_videos)
+            self._reanalyze_clips(old, det)
+
+    def _reanalyze_clips(self, old: DetectionConfig, new: DetectionConfig, external: bool = False) -> None:
+        """Cambió qué se detecta con los clips ya analizados (la sensibilidad, «Personas lejos»): hay que volver a
+        detectar. Primero el clip que se está mirando (los demás después, en el mismo análisis) y al terminarlo se
+        vuelve al mismo momento (`_goto`), para ver enseguida si ahora aparecen las personas del fondo. Las etiquetas
+        puestas a mano no sobreviven (las personas pueden cambiar de número): la nota lo dice."""
+        t = self.tuner
+        lost = sum(1 for v in self.labels.values() if v)
+        first, end = t.bounds()
+        smp = None
+        if end > first:
+            smp = t.sample_at(end - 1 if self.index is None else min(max(self.index, first), end - 1))
+        videos = list(self.run_videos) if self.run_videos else None
+        loose = list(t.videos)
+        here = smp.seg if smp is not None and smp.seg < len(videos or loose) else None
+        if here is not None:  # el que se mira, primero
+            if videos:
+                videos = [videos[here]] + videos[:here] + videos[here + 1:]
             else:
-                self._start(videos=list(t.videos))
-            self._note = f"se vuelve a analizar con {what}"
+                loose = [loose[here]] + loose[:here] + loose[here + 1:]
+        many = len(videos or loose) > 1
+        if videos:
+            self._start(library=videos)
+        else:
+            self._start(videos=loose)
+        if here is not None and smp is not None:
+            self._goto, self._goto_from = (0, smp.ts), 0
+        # (corta: entra en los 2 renglones del aviso; el detalle de la confianza lo da la nota del vivo)
+        what = "la detección de siempre" if new.is_default else new.describe()
+        if new.far and not old.far:
+            what += f" ({FAR_PASSES} veces el trabajo)"
+        note = f"se vuelve a analizar con {what}"
+        if external:
+            note += " (cambió la guardada)"
+        elif many and here is not None:
+            note += ", primero el clip que mirabas"
+        if lost:
+            note += (f" · se pierde{'n' if lost > 1 else ''} {lost} etiqueta{'s' if lost > 1 else ''} puesta"
+                     f"{'s' if lost > 1 else ''} a mano")
+        self._note = note
 
     def _rules_text(self) -> None:
         """Qué reglas y gestos usa la cámara y con qué detector corre (sin tocar los tiempos que se están probando)."""
@@ -4329,10 +4416,11 @@ class TuneWindow:
         if self.info is None or self.detector is None:
             return  # todavía se está preparando: arranca solo al terminar (`load`)
         from .ajuste import Tuner
-        self._note = ""
+        self._note, self._goto = "", None
         if self.tuner is not None:
             self.tuner.stop()
         self.run_videos = library
+        self._det_run = DetectionConfig.from_dict(self.analysis.get("detection"))  # con la que se detecta lo que sigue
         # las marcas «⚑» son del vivo en que se hicieron (cada vivo cuenta los segundos de cero)
         self.labels, self._results, self._results_key, self.live_marks = {}, {}, None, []
         if library is not None:
@@ -4406,6 +4494,8 @@ class TuneWindow:
                                 justify="center", width=self.W - 80)
         self.state_lbl.configure(text="")
         self._state_text = ""
+        self._note, self._goto = "", None  # (sin motor no se vuelve a dibujar el estado: que no quede una nota vieja)
+        self._show_warn()
         self.pos.configure(text="")
         self.alist.delete(0, "end")
         self._alert_rows = []
@@ -4626,7 +4716,7 @@ class TuneWindow:
             lines = [f"{v.name} ({KINDS.get(v.kind, v.kind).lower()}): {res['text']}"]
             lines += [f"  · {x}" for x in t.explain(i)]
             parts.append("\n".join(lines))
-        msg = f"Resultado con la configuración guardada de «{self.cam['name']}»:\n\n" + "\n\n".join(parts)
+        msg = f"Resultado con {self._verdict_config()} de «{self.cam['name']}»:\n\n" + "\n\n".join(parts)
         if missed_theft:
             from .ajuste import gestures_blocked
             if (self.analysis.get("gestures") or {}).get("enabled"):
@@ -4647,17 +4737,37 @@ class TuneWindow:
             msg += "\n\nSi está bien: «✔ Aprobar y analizar» la pasa a una máquina de análisis."
         # entrenar en un clic: las alertas que se etiquetan solas por lo que se dijo del clip (hurto en su momento →
         # hurto; clip normal → falsa alarma)
+        # (se pregunta una vez por clips subidos: si se vuelven a analizar, por ejemplo con otra sensibilidad, el
+        # resultado se muestra de nuevo pero no se vuelve a preguntar)
         labeled = [a for a in list(t.alerts) if self.label_of(a)[0]]
-        if labeled and self.app.mb.askyesno(
-                NOMBRE, msg + f"\n\n¿Mandar {'esta alerta' if len(labeled) == 1 else f'estas {len(labeled)} alertas'} "
-                              "al entrenamiento del modelo del cliente, con lo que dijiste del clip? No le llega a nadie.",
-                parent=self.top):
-            return self.send_training(ask=False)
-        if not labeled:
-            if any(v.kind == "hurto" and not v.marks for v in self.run_videos) and t.alerts:
-                msg += ("\n\nPara mandarlo al entrenamiento falta decir en qué momento del clip pasa el hurto: «Clip "
-                        "elegido» → «Hurto en el momento que se ve» (con la imagen parada en ese momento).")
-            self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
+        if labeled and self._training_asked is not self.clips:
+            self._training_asked = self.clips
+            which = "esta alerta" if len(labeled) == 1 else f"estas {len(labeled)} alertas"
+            if self.app.mb.askyesno(
+                    NOMBRE, msg + f"\n\n¿Mandar {which} al entrenamiento del modelo del cliente, con lo que dijiste "
+                                  "del clip? No le llega a nadie.", parent=self.top):
+                self.send_training(ask=False)
+            return
+        if labeled:
+            msg += "\n\nPara mandar las alertas al entrenamiento: «Mandar a entrenar», en «Alertas de prueba»."
+        elif any(v.kind == "hurto" and not v.marks for v in self.run_videos) and t.alerts:
+            msg += ("\n\nPara mandarlo al entrenamiento falta decir en qué momento del clip pasa el hurto: «Clip "
+                    "elegido» → «Hurto en el momento que se ve» (con la imagen parada en ese momento).")
+        self.app.mb.showinfo(NOMBRE, msg, parent=self.top)
+
+    def _verdict_config(self) -> str:
+        """Con qué se analizaron los clips, para el resultado: lo guardado o lo que se está probando sin guardar."""
+        det, saved = self._det_applied, self._saved_det
+        testing = []
+        if det != saved:
+            testing.append(f"la sensibilidad {det.sensitivity}" + (" y «Personas lejos»" if det.far else
+                                                                   " sin «Personas lejos»" if saved.far else ""))
+        view = self._view()
+        if self._tested or (self._saved_view is not None and view[:-1] != self._saved_view[:-1]):
+            testing.append("los tiempos y gestos")
+        if not testing:
+            return "la configuración guardada"
+        return " y ".join(testing) + " que estás probando (sin guardar)"
 
     def _library_results(self, t) -> None:
         """Cruza las alertas de prueba de cada video con lo marcado (hurto/normal) y lo guarda como «última prueba»."""
@@ -4834,7 +4944,14 @@ class TuneWindow:
         if not (self.info or {}).get("analyzed"):
             return None
         return (f"«{self.cam['name']}» ya se analiza en las máquinas de análisis: lo que guardes empieza a regir ahí "
-                "enseguida y puede dar alertas reales a los empleados.\n\n¿Guardar igual?")
+                "enseguida y puede dar alertas reales a los empleados."
+                + (f"\n\n{FAR_LOAD_WARN}" if self._far_new() else "") + "\n\n¿Guardar igual?")
+
+    def _far_new(self, analyzed: bool = True) -> bool:
+        """«Personas lejos» está tildada y las máquinas todavía no la tienen (no estaba guardada o, con
+        `analyzed=False`, la cámara todavía no se analiza): pesa por 4 cámaras en el reparto."""
+        det = self._detection_form()
+        return bool(det and det.far and (not self._saved_det.far or not analyzed))
 
     def save_times(self, then: Callable[[], None] | None = None) -> None:
         """«Guardar»: los tiempos van a `rules`, los gestos aparte, a `gestures` (nunca mezclados: un agente viejo
@@ -4935,6 +5052,11 @@ class TuneWindow:
             if tested is not None:
                 self._restore_times(*tested)  # (cambia `self.analysis`: abajo se aplica junto con las zonas)
             if self.tuner is not None:
+                det = DetectionConfig.from_dict(self.analysis.get("detection"))
+                if not self.tuner.live and det != self._det_run:
+                    # la detección guardada cambió por fuera (en «Editar» u otro usuario): lo analizado se detectó con
+                    # la anterior y el motor no vuelve a detectar solo (`Tuner.set_analysis`)
+                    return self._reanalyze_clips(self._det_run, det, external=True)
                 if self.tuner.live:
                     self._note = "zonas guardadas: ya cuenta con ellas"
                     self._note_until = time.monotonic() + 15.0
@@ -4990,6 +5112,8 @@ class TuneWindow:
                "de verdad (les llegan a los empleados) y métricas.")
         if self.dirty:
             msg += "\n\nLos tiempos, gestos y la detección que estás probando se guardan."
+        if self._far_new(analyzed=bool(self.info.get("analyzed"))):
+            msg += f"\n\n{FAR_LOAD_WARN}"
         if not self.app.mb.askyesno(NOMBRE, msg, parent=self.top):
             return
         cid, notes = self.cam["id"], self.notes.get().strip()
@@ -5096,6 +5220,8 @@ class TuneWindow:
         if t is None:
             return
         first, end = t.bounds()
+        if self._goto is not None and not t.live:
+            self._goto_moment(t, first, end)
         if end > first:
             if self.playing:
                 self._play_f = min(max(self._play_f, first) + dt * t.process_fps, end - 1)
@@ -5145,6 +5271,24 @@ class TuneWindow:
             self._det_device = getattr(self.detector, "device", None)
             self._set_detector_text()
             self._rules_text()
+
+    def _goto_moment(self, t, first: int, end: int) -> None:
+        """Se volvió a analizar el clip que se estaba mirando (`_reanalyze_clips`): apenas el análisis llega a ese
+        momento, la imagen vuelve ahí (mientras tanto muestra lo que se va analizando)."""
+        seg, ts = self._goto
+        for i in range(max(first, self._goto_from), end):
+            smp = t.sample_at(i)
+            if smp is None:
+                continue
+            if smp.seg == seg and smp.ts >= ts - 1e-3:
+                self.index, self._goto = i, None
+                return
+            if smp.seg > seg:  # (el momento quedó después del final del clip: su último cuadro)
+                self.index, self._goto = max(first, i - 1), None
+                return
+        self._goto_from = end
+        if t.state in ("listo", "detenido", "error"):
+            self._goto = None
 
     def _show_counts(self, t, idx: int | None) -> None:
         """La tabla «Personas por zona»: cuántas entraron a cada zona hasta el cuadro que se ve y cuántas hay en ese
@@ -5213,11 +5357,34 @@ class TuneWindow:
             self._note = ""  # ya se volvió a analizar
         elif self._note and t.live and time.monotonic() > self._note_until:
             self._note = ""
-        if self._note:
-            txt += f" · {self._note}"
         if txt != self._state_text:
             self._state_text = txt
             self.state_lbl.configure(text=txt)
+        self._show_warn()
+
+    WARN_ANALYZED = ("⚠ Esta cámara ya se analiza en las máquinas: las zonas y tiempos que guardes empiezan a regir "
+                     "ahí enseguida (alertas reales). Probar tiempos sin guardar no cambia nada.")
+    WARN_SHORT = "⚠ Ya se analiza en las máquinas"
+
+    NOTE_MAX = 150  # letras que entran en los 2 renglones del aviso (medido en Linux, con la letra más ancha)
+
+    def _show_warn(self) -> None:
+        """El renglón de avisos, debajo del estado: «⚠ ya se analiza en las máquinas…» y la nota de lo que se acaba de
+        cambiar (la detección, las zonas, los gestos). No va pegada al estado en negrita: ahí lo pasaba a 2 renglones y
+        la ventana dejaba de entrar en 768 de alto. Mientras hay nota, ocupa el lugar del aviso fijo (los 2 renglones
+        del aviso largo; con el aviso corto adelante si entra). Al guardar se vuelve a preguntar igual
+        (`_confirm_live`)."""
+        note = self._note
+        if note:
+            note = note[0].upper() + note[1:]
+            text = note
+            if self._warn_text and len(self.WARN_SHORT) + 3 + len(note) <= self.NOTE_MAX:
+                text = f"{self.WARN_SHORT} · {note}"
+        else:
+            text = self._warn_text
+        if text != self._warn_shown:
+            self._warn_shown = text
+            self.live_warn.configure(text=text, style="Aviso.TLabel" if self._warn_text or not note else "TLabel")
 
     def _show_alerts(self, t) -> None:
         alerts = t.alerts
@@ -5241,8 +5408,9 @@ class TuneWindow:
         st = t.stats()
         lines = []
         if st["frames"]:  # corto: el recuadro tiene 4 renglones (con barra para ver el resto)
-            lines.append(f"Analizado: {fmt_dur(st['seconds'])} · personas distintas: {st['persons']} · con gente en el "
-                         f"{st['people_pct']:.0f} % de los cuadros")
+            size = st.get("frame_size")  # (el tamaño importa para la detección: la máquina mira el del grabador)
+            lines.append(f"Analizado: {fmt_dur(st['seconds'])}{f' en {size[0]}x{size[1]}' if size else ''} · personas "
+                         f"distintas: {st['persons']} · con gente en el {st['people_pct']:.0f} % de los cuadros")
             per_hour = f" (≈ {st['per_hour']:.1f} por hora)" if st.get("per_hour") is not None else ""
             dropped = f" · el modelo entrenado descartaría {st['dropped']}" if st.get("dropped") else ""
             sens = (f" · sensibilidad {st['sensitivity']}" + (" · lejos" if st.get("far") else "")

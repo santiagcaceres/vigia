@@ -22,6 +22,7 @@ from dataclasses import dataclass
 DEFAULT_SENSITIVITY = 5
 MIN_SENSITIVITY, MAX_SENSITIVITY = 1, 10
 FAR_PASSES = 5  # con «Personas lejos»: la imagen entera + 4 partes (para los textos y para medir)
+FAR_WEIGHT = 4  # cuántas cámaras «pesa» una con «Personas lejos» en el reparto de las máquinas (server/pool.FAR_FACTOR)
 KEYS = ("sensitivity", "far")
 
 _MSG_OBJ = "detection: va un objeto con «sensitivity» (1 a 10) y «far» (true o false)"

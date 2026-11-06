@@ -33,8 +33,7 @@ EventSource = Callable[[BaseCamera], Iterator[DeviceEvent]]
 class DeviceAlarmListener:
     def __init__(self, cam_cfg: dict, client: ServerClient, source: EventSource = device_events):
         self.id: int = cam_cfg["id"]
-        self.name: str = (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
-                          else cam_cfg["name"])
+        self.name: str = self.name_of(cam_cfg)
         self.fingerprint = self.fingerprint_of(cam_cfg)
         self.cam = build_camera(cam_cfg["connection"])
         self.event_types = set(cam_cfg.get("alarm_cfg", {}).get("event_types") or ())
@@ -49,9 +48,22 @@ class DeviceAlarmListener:
         self.last_event_at: float | None = None
 
     @staticmethod
+    def name_of(cam_cfg: dict) -> str:
+        return (f"{cam_cfg['client_name']} · {cam_cfg['name']}" if cam_cfg.get("client_name")
+                else cam_cfg["name"])
+
+    @staticmethod
     def fingerprint_of(cam_cfg: dict) -> str:
+        """Lo que obliga a volver a conectarse al grabador: solo lo que usa la escucha (conexión, tipos de alarma y
+        modo). Las zonas, la detección o el modelo del cliente (`analysis`, `filter_model`) son para analizar el clip
+        de la alarma y el nombre es para el registro (`rename`): cambiarlos no corta la escucha (una alarma que
+        llegara mientras se reconecta se perdería)."""
         import json
-        return json.dumps(cam_cfg, sort_keys=True, default=str)
+        return json.dumps({"connection": cam_cfg.get("connection"), "alarm_cfg": cam_cfg.get("alarm_cfg"),
+                           "mode": cam_cfg.get("mode")}, sort_keys=True, default=str)
+
+    def rename(self, cam_cfg: dict) -> None:
+        self.name = self.name_of(cam_cfg)
 
     def start(self) -> None:
         self.thread.start()
