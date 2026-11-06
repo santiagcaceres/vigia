@@ -119,7 +119,7 @@ def channel_of(cam: dict) -> int | None:
               cam.get("chanNo")):
         if isinstance(v, (int, str)) and not isinstance(v, bool) and str(v).strip().isdigit() and int(v) > 0:
             return int(v)
-    m = re.match(r"\s*camera\s*0*(\d+)\s*@", str(cam.get("name") or ""), re.I)
+    m = re.match(r"\s*camera\s*0*(\d+)\s*@", str(cam.get("name") or ""), re.IGNORECASE)
     return int(m.group(1)) if m and int(m.group(1)) > 0 else None
 
 
