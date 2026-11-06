@@ -252,6 +252,14 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   un cliente creado por otro usuario apareció a los 2 s. Un push de verdad (Supabase Realtime) se descartó: pide claves
   en la app y reglas de acceso, para ganar como mucho 10 s. Lo que no hace: si dos editan a la vez la misma cámara, gana
   el último que guarda. Prueba: `tests/test_sincronizar_usuarios.py`.
+- **Foto del vivo para marcar zonas (6 nov, el dueño: «quiero marcar zonas y está totalmente en negro, pero en el en
+  vivo funciona… una opción para tomar foto»; app 1.41.2).** «✎ Marcar zonas» de una cámara sin imagen guardada (no se
+  analiza y nadie la abrió en «Nombres e imágenes») ya no muestra negro: `ZonesEditor.snapshot` saca sola una foto del
+  vivo (el último cuadro sin dibujos de «En vivo» si se la está mirando, `ViewWorker.raw` / `Agent.live_frame`, sin
+  pedir otra transmisión; si no, abre el video unos segundos con `nombres.grab_frame`), la sube como imagen de la cámara
+  (la próxima vez ya está, y en la lista y la web) y, si el vivo no abre, usa un cuadro de un clip suyo o dice por qué.
+  Botón «Tomar foto del vivo» debajo de la imagen para cambiarla por una de ahora (la guardada puede ser vieja o de
+  noche). Prueba: `tests/test_zonas_foto.py`.
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router

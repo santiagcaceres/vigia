@@ -108,6 +108,7 @@ class ViewWorker:
         self._t0 = time.monotonic()
         self._last_ts = -1.0  # el reloj de la vista no vuelve atrás al reconectar (el seguimiento lo necesita)
         self._shown: list[float] = []
+        self.raw: np.ndarray | None = None  # el último cuadro tal cual, sin dibujos (foto para marcar zonas)
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name=f"ver-{self.id}", daemon=True)
 
@@ -184,6 +185,7 @@ class ViewWorker:
             self._last_ts = ts
             if self._sar:
                 frame = square_pixels(frame, self._sar, shrink=True)
+            self.raw = frame
             now = time.monotonic()
             self._frame(frame, ts, self.pacer.due(ts, now))
             self._shown = [t for t in self._shown if now - t < 5] + [now]

@@ -2222,7 +2222,8 @@ class Oficina:
 
     def zones_dialog(self, cam: dict | None) -> None:
         """«✎ Marcar zonas»: el editor sobre la última imagen de la cámara o, si todavía no tiene (nadie la abrió), sobre
-        un cuadro de un clip suyo subido en esta PC."""
+        una foto del vivo que saca solo (`ZonesEditor.snapshot`; si el vivo no abre, un cuadro de un clip suyo subido en
+        esta PC). «Tomar foto del vivo» la cambia por una de ahora."""
         if not self._one_camera(cam, "Marcar zonas"):
             return
         w = self._open_window(cam["id"])
@@ -2231,11 +2232,7 @@ class Oficina:
             return w.edit_zones()
         confirm = ("Esta cámara ya se analiza en las máquinas: las zonas nuevas rigen enseguida (alertas reales). "
                    "¿Guardar?") if cam.get("analyzed") else None
-        if cam.get("has_preview"):
-            return ZonesEditor(self, cam, confirm=confirm)
-        frame = self._clip_frame(cam)
-        if frame is not None:
-            return ZonesEditor(self, cam, image=frame, confirm=confirm, note="Imagen de un clip de esta cámara")
+        # sin imagen guardada, el editor saca una foto del vivo (o, si no abre, usa un cuadro de un clip suyo)
         ZonesEditor(self, cam, confirm=confirm)
 
     def _clip_frame(self, cam: dict):
@@ -3316,9 +3313,15 @@ class ZonesEditor:
         self.canvas.pack()
         # (con el ancho de la imagen: un aviso largo, como «Todavía no hay imagen…», ensanchaba la ventana más que una
         # pantalla de 1366 y los botones de la derecha quedaban afuera)
-        self.info = ttk.Label(left, text="Cargando la imagen de la cámara…", foreground="#666", wraplength=self.W,
-                              justify="left")
-        self.info.pack(anchor="w", pady=(4, 0))
+        shot = ttk.Frame(left)
+        shot.pack(anchor="w", fill="x", pady=(4, 0))
+        # (sin emoji: en Windows, Tk muestra un cuadradito en vez de los que no son del plano básico, como 🎞)
+        self.snap_btn = ttk.Button(shot, text="Tomar foto del vivo", command=self.snapshot)
+        self.snap_btn.pack(side="left", anchor="n")
+        self.info = ttk.Label(shot, text="Cargando la imagen de la cámara…", foreground="#666",
+                              wraplength=self.W - 170, justify="left")
+        self.info.pack(side="left", anchor="w", padx=(8, 0))
+        self._snapping = False
         ttk.Label(left, text="Zona nueva: «＋ Zona nueva» y clics en el piso, doble clic para cerrarla. Corregir: clic en "
                              "una zona, arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",
                   foreground="#666", wraplength=self.W, justify="left").pack(anchor="w")
@@ -3405,10 +3408,8 @@ class ZonesEditor:
 
     # ---------- imagen ----------
     def load_image(self) -> None:
-        if not self.cam.get("has_preview"):
-            self.info.configure(text="Todavía no hay imagen de esta cámara: abrila en «● En vivo» o subí un clip suyo "
-                                     "(«🎞 Clips»), y volvé a «✎ Marcar zonas». Podés dibujar igual sobre el negro.")
-            return
+        if not self.cam.get("has_preview"):  # nadie la abrió todavía: una foto del vivo, sola
+            return self.snapshot(auto=True)
 
         def done(data):
             img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
@@ -3419,6 +3420,76 @@ class ZonesEditor:
             self.draw()
         self.app.bg.run(lambda: self.app.api.download(f"/api/cameras/{self.cam['id']}/preview"), done,
                         lambda e: self.info.configure(text=f"No se pudo bajar la imagen: {e}"))
+
+    def _alive(self) -> bool:
+        try:
+            return bool(self.top.winfo_exists())
+        except self.app.tk.TclError:
+            return False
+
+    def snapshot(self, auto: bool = False) -> None:
+        """«Tomar foto del vivo»: una imagen de ahora para dibujar encima (la guardada puede ser vieja, de noche, o no
+        haber ninguna). Si la cámara se está mirando en «En vivo», el cuadro de ahí (sin pedirle otra transmisión al
+        grabador); si no, se abre su video unos segundos desde esta PC, como «Nombres e imágenes». Queda como la imagen
+        de la cámara: la próxima vez ya está, y se ve en la lista y en la web. `auto`: al abrir, sin imagen guardada (si
+        no se puede, sirve un cuadro de un clip suyo subido en esta PC)."""
+        if self._snapping:
+            return
+        agent = self.app.agent_of() if self.app.agent_of else None
+        if agent is None:
+            self.info.configure(text="La app todavía está arrancando: probá «Tomar foto del vivo» en unos segundos. "
+                                     "Podés dibujar igual sobre el negro.")
+            return
+        self._snapping = True
+        self.snap_btn.configure(state="disabled")
+        self.info.configure(text="Tomando una foto del vivo de la cámara (puede tardar unos segundos)…")
+        cid = self.cam["id"]
+
+        def take():
+            from .nombres import grab_frame
+            frame = agent.live_frame(cid)
+            if frame is None:
+                views = agent.client.view([cid])
+                if not views:
+                    raise RuntimeError("la cámara no está disponible (¿está deshabilitada?)")
+                frame = grab_frame(views[0]["connection"])
+            ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            saved = False
+            if ok:
+                try:
+                    agent.client.preview(cid, jpg.tobytes())
+                    saved = True
+                except Exception as exc:  # noqa: BLE001 - la foto sirve igual para dibujar
+                    log.warning("Zonas: no se pudo guardar la foto como imagen de la cámara %s (%s)", cid, exc)
+            return frame, saved
+
+        def done(res):
+            self._snapping = False
+            if not self._alive():
+                return
+            frame, saved = res
+            self.snap_btn.configure(state="normal")
+            if saved:  # (la lista de cámaras y la próxima vez que se abra el editor)
+                self.cam["has_preview"] = True
+            self.base = cv2.resize(frame, (self.W, self.H), interpolation=cv2.INTER_AREA)
+            self.info.configure(text=f"Foto del vivo de las {datetime.now():%H:%M}"
+                                     + ("" if saved else " (no se pudo guardar como imagen de la cámara)"))
+            self.draw()
+
+        def fail(exc):
+            self._snapping = False
+            if not self._alive():
+                return
+            self.snap_btn.configure(state="normal")
+            why = str(exc)[:220]
+            frame = self.app._clip_frame(self.cam) if auto and self.base is None else None
+            if frame is not None:
+                self.base = cv2.resize(frame, (self.W, self.H), interpolation=cv2.INTER_AREA)
+                self.info.configure(text=f"Imagen de un clip de esta cámara (el vivo no abrió: {why})")
+                return self.draw()
+            self.info.configure(text=f"No se pudo tomar la foto: {why}. Probá de nuevo o abrila en «● En vivo»; "
+                                     "podés dibujar igual sobre el negro.")
+        self.app.bg.run(take, done, fail)
 
     # ---------- mouse ----------
     def _pos(self, ev) -> tuple[float, float]:

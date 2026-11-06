@@ -551,6 +551,13 @@ class Agent:
             return "Se analiza" + (f" · {c['elsewhere']}" if c.get("elsewhere") else "")
         return ""
 
+    def live_frame(self, cam_id: int):
+        """El último cuadro, sin dibujos, de la cámara si se está mirando ahora en «En vivo» (para marcar zonas sin
+        pedirle otra transmisión al grabador). None si no se está mirando o todavía no llegó imagen."""
+        v = self.viewers.get(cam_id)
+        raw = getattr(v, "raw", None) if v is not None and v.state == "en_linea" else None
+        return None if raw is None else raw.copy()
+
     def tune_setup(self, cam_id: int) -> tuple[dict, Detector]:
         """«Ajustar» en la app: lo que hace falta para analizar una cámara en esta PC (configuración y detector).
         Corre en otro hilo: armar el detector la primera vez tarda unos segundos."""
