@@ -54,6 +54,10 @@ def test_mosaico_de_la_ventana():
     assert mosaic([("A", frame, "")]).shape == (TILE_H, TILE_W, 3)
     assert mosaic([("A", frame, ""), ("B", None, "Escuchando")]).shape == (TILE_H, 2 * TILE_W, 3)
     assert mosaic([("A", None, "x")] * 5).shape == (2 * TILE_H, 3 * TILE_W, 3)
+    # con el tamaño del lugar, las celdas lo llenan (antes una sola cámara se veía de 640x360 en el medio)
+    assert mosaic([("A", frame, "")], (1511, 871)).shape == (871, 1511, 3)
+    assert mosaic([("A", frame, ""), ("B", None, "x")], (1511, 871)).shape == (871, 1510, 3)
+    assert mosaic([("A", frame, "")] * 5, (100, 50)).shape == (2 * TILE_H, 3 * TILE_W, 3)  # lugar ínfimo: como antes
 
 
 def test_vincular_pc_con_usuario_y_clave(tmp_path, db_url):

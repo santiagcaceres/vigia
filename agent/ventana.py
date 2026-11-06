@@ -42,34 +42,44 @@ ESTADOS = {"en_linea": "En línea", "sin_conexion": "Sin conexión", "reconectan
            "error": "Error", "iniciando": "Conectando", "detenida": "Detenida", "escuchando": "Escuchando alarmas"}
 
 
-def tile(frame: np.ndarray | None, name: str, state: str) -> np.ndarray:
-    """Una celda del mosaico: el cuadro (o un fondo oscuro con el estado) y el nombre arriba."""
+def tile(frame: np.ndarray | None, name: str, state: str, tw: int = TILE_W, th: int = TILE_H) -> np.ndarray:
+    """Una celda del mosaico de `tw`x`th`: el cuadro (o un fondo oscuro con el estado) y el nombre arriba."""
+    k = max(1.0, th / TILE_H)  # letras y franja más grandes en celdas grandes
     if frame is None:
-        img = np.full((TILE_H, TILE_W, 3), (30, 30, 30), np.uint8)
-        cv2.putText(img, state, (16, TILE_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (170, 170, 170), 1, cv2.LINE_AA)
+        img = np.full((th, tw, 3), (30, 30, 30), np.uint8)
+        cv2.putText(img, state, (int(16 * k), th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * k, (170, 170, 170),
+                    max(1, int(k)), cv2.LINE_AA)
     else:
         h, w = frame.shape[:2]
-        scale = min(TILE_W / w, TILE_H / h)
+        scale = min(tw / w, th / h)
         nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        img = np.zeros((TILE_H, TILE_W, 3), np.uint8)
-        y, x = (TILE_H - nh) // 2, (TILE_W - nw) // 2
-        img[y:y + nh, x:x + nw] = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
-    cv2.rectangle(img, (0, 0), (TILE_W, 22), (0, 0, 0), -1)
-    cv2.putText(img, name, (8, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        img = np.zeros((th, tw, 3), np.uint8)
+        y, x = (th - nh) // 2, (tw - nw) // 2
+        img[y:y + nh, x:x + nw] = cv2.resize(frame, (nw, nh),
+                                             interpolation=cv2.INTER_LINEAR if scale > 1 else cv2.INTER_AREA)
+    bar = int(22 * k)
+    cv2.rectangle(img, (0, 0), (tw, bar), (0, 0, 0), -1)
+    cv2.putText(img, name, (int(8 * k), int(16 * k)), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * k, (255, 255, 255),
+                max(1, int(k)), cv2.LINE_AA)
     return img
 
 
-def mosaic(tiles: list[tuple[str, np.ndarray | None, str]]) -> np.ndarray:
-    """Arma la grilla: 1 cámara = 1 celda grande; 2 = lado a lado; 3-4 = 2x2; 5-9 = 3x3..."""
-    if not tiles:
-        return tile(None, "Analitica Critica", "Elegi a la izquierda las camaras para ver")
-    n = len(tiles)
+def mosaic(tiles: list[tuple[str, np.ndarray | None, str]], size: tuple[int, int] | None = None) -> np.ndarray:
+    """Arma la grilla: 1 cámara = 1 celda grande; 2 = lado a lado; 3-4 = 2x2; 5-9 = 3x3...
+    Con `size` (ancho, alto del lugar en la ventana) las celdas lo llenan: antes medían siempre 640x360 y una sola
+    cámara se veía chica en el medio de la pantalla (6 nov, pedido del dueño)."""
+    n = max(1, len(tiles))
     cols = math.ceil(math.sqrt(n))
     rows = math.ceil(n / cols)
-    grid = np.zeros((rows * TILE_H, cols * TILE_W, 3), np.uint8)
+    tw, th = TILE_W, TILE_H
+    if size and size[0] >= cols * 160 and size[1] >= rows * 90:
+        tw, th = size[0] // cols, size[1] // rows
+    if not tiles:
+        return tile(None, "Analitica Critica", "Elegi a la izquierda las camaras para ver", tw, th)
+    grid = np.zeros((rows * th, cols * tw, 3), np.uint8)
     for i, (name, frame, state) in enumerate(tiles):
         r, c = divmod(i, cols)
-        grid[r * TILE_H:(r + 1) * TILE_H, c * TILE_W:(c + 1) * TILE_W] = tile(frame, name, state)
+        grid[r * th:(r + 1) * th, c * tw:(c + 1) * tw] = tile(frame, name, state, tw, th)
     return grid
 
 
@@ -447,8 +457,8 @@ class Ventana:
         if self.notebook.select() != str(self.live_tab):
             return  # no se dibuja el mosaico si no se está mirando esa pestaña
         try:
-            img = mosaic(tiles)
             w, h = max(self.canvas.winfo_width(), 1), max(self.canvas.winfo_height(), 1)
+            img = mosaic(tiles, (w - 4, h - 4) if w > 1 and h > 1 else None)  # (el borde del lugar)
             if w > 1 and h > 1:
                 img = fit(img, w, h)
             ok, ppm = cv2.imencode(".ppm", img)
