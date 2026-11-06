@@ -2664,14 +2664,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             api.close()
         # cada cámara de la lista dice si ya está cargada (y como cuál), y las cargadas con el canal mal (hasta el 6 nov
         # la lista no leía el canal de las cámaras con nombre propio y quedaban todas en el 1) se corrigen solas: el
-        # canal sirve para las alarmas del grabador y para reconocerlas
+        # canal sirve para las alarmas del grabador y para reconocerlas. No las que se están analizando: una máquina sin
+        # actualizar reiniciaría la cámara por el cambio y perdería lo medido en esa hora (se corrigen al editarlas)
         mine = {c.hc_resource_id: c for c in s.query(Camera).filter(Camera.client_id == cid, Camera.brand == "hikconnect",
                                                                    Camera.hc_resource_id.isnot(None))}
         fixed = False
         for x in cams:
             c = mine.get(x["id"])
             x["loaded"] = c.name if c is not None else None
-            if c is not None and x.get("channel") and c.channel != x["channel"]:
+            if c is not None and x.get("channel") and c.channel != x["channel"] and c.agent_id is None:
                 log.info("Hik-Connect: cámara %s («%s») del canal %s al %s (lo dice la lista)", c.id, c.name, c.channel,
                          x["channel"])
                 c.channel, fixed = x["channel"], True

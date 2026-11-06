@@ -1519,8 +1519,9 @@ class Oficina:
         ttk.Button(bb, text="Exportar", style="Primario.TButton", command=go).pack(side="right", padx=6)
 
     def hikconnect_cameras(self, client: dict, pick: Callable[[list[dict]], None] | None, parent=None,
-                           multi: bool = False) -> None:
-        """Lista las cámaras que ve la API de Hik-Connect del cliente. Con `pick`, se eligen (una o varias)."""
+                           multi: bool = False, listed: Callable[[list[dict]], None] | None = None) -> None:
+        """Lista las cámaras que ve la API de Hik-Connect del cliente. Con `pick`, se eligen (una o varias);
+        `listed` recibe la lista apenas llega (aunque no se elija nada)."""
         tk, ttk = self.tk, self.ttk
         if not client or not client.get("hc_app_key"):
             return self.mb.showwarning(NOMBRE, "Primero cargá la clave de Hik-Connect en el cliente "
@@ -1528,6 +1529,8 @@ class Oficina:
 
         def done(res):
             cams = sorted(res.get("cameras") or [], key=lambda x: (x["serial"], x["channel"] or 0, x["name"]))
+            if listed is not None:
+                listed(cams)
             top, frm = self._dialog(f"Hik-Connect · {client['name']}", width=620)
             ttk.Label(frm, text=f"{len(cams)} cámaras · servidor {res.get('server') or '—'}"
                                + ("\nElegí una o varias (Ctrl o Shift) y tocá «Usar»." if pick and multi else
@@ -1652,10 +1655,19 @@ class Oficina:
                 v["name"].set(hc_sel[0]["name"])
             show_sel()
 
+        def listed(cams: list[dict]) -> None:
+            """La lista llegó: la cámara que se está editando toma el canal que dice Hik-Connect aunque no se toque
+            «Usar» (si no, guardar mandaba el canal viejo, mal guardado hasta el 6 nov, y deshacía la corrección)."""
+            for x in hc_sel:
+                same = next((y for y in cams if x.get("id") and y.get("id") == x.get("id")), None)
+                if same is not None and same.get("channel"):
+                    x["channel"] = same["channel"]
+            show_sel()
+
         def choose_hc() -> None:
             if not own.get("hc_app_key"):  # sin clave no se puede listar: primero la clave, después la lista
                 return self.hc_key_dialog(own, top, lambda: (show_sel(), choose_hc()))
-            self.hikconnect_cameras(owner, picked, parent=top, multi=not cam.get("id"))
+            self.hikconnect_cameras(owner, picked, parent=top, multi=not cam.get("id"), listed=listed)
 
         rows: dict[str, list] = {"hc": [], "ip": [], "adv": []}
 

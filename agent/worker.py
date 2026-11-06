@@ -201,6 +201,11 @@ class CameraWorker:
         El nombre tampoco (`rename`)."""
         base = {k: v for k, v in cam_cfg.items() if k not in ("analysis", "name", "client_name")}
         base["vehicles"] = bool((cam_cfg.get("analysis") or {}).get("vehicles"))
+        conn = base.get("connection")
+        if isinstance(conn, dict) and conn.get("brand") == "hikconnect":
+            # por Hik-Connect el video sale del link que da el servidor (por el id de la cámara): el canal no lo cambia.
+            # Si no, corregir un canal mal guardado (6 nov) reiniciaba la cámara y se perdía lo medido en esa hora
+            base["connection"] = {k: v for k, v in conn.items() if k != "channel"}
         return json.dumps(base, sort_keys=True, default=str)
 
     @staticmethod

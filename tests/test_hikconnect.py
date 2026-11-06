@@ -572,3 +572,72 @@ def test_otra_camara_del_mismo_grabador_no_choca_con_una_cargada_con_el_canal_ma
         otro = c.post("/api/clients", json={"name": "Otro", "hc_app_key": "clave", "hc_secret": "secreto"}).json()["id"]
         assert c.post("/api/cameras", json={**base, "client_id": otro, "name": "Camera 01", "channel": 1,
                                             "hc_resource_id": "res-1"}).status_code == 201
+
+
+def test_corregir_el_canal_no_reinicia_una_camara_que_se_analiza(app, fake_sanfer):
+    """Revisión (6 nov): corregir el canal desde la lista cambiaba la conexión de la cámara; una máquina que la
+    analizaba la reconectaba y perdía lo medido en esa hora. Ahora no se corrigen las que se están analizando, y en la
+    máquina el canal de una cámara por Hik-Connect no cuenta para reconectar (el video sale del id)."""
+    from agent.worker import CameraWorker
+
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Sanfer", "hc_app_key": "clave", "hc_secret": "secreto"}).json()["id"]
+        ag = c.post("/api/agents", json={"name": "central", "client_id": None}).json()
+        base = {"client_id": cid, "brand": "hikconnect", "hpp_serial": "FZ4798527"}
+        analizada = c.post("/api/cameras", json={**base, "name": "Camera 03", "channel": 1, "hc_resource_id": "res-3",
+                                                 "agent_id": ag["id"]}).json()
+        libre = c.post("/api/cameras", json={**base, "name": "Camera 02", "channel": 1, "hc_resource_id": "res-2"}).json()
+        assert analizada["agent_id"] == ag["id"]
+        c.get(f"/api/clients/{cid}/hikconnect/cameras")
+        canales = {x["id"]: x["channel"] for x in c.get("/api/cameras").json()}
+        assert canales == {analizada["id"]: 1, libre["id"]: 2}
+
+    cfg = {"id": 9, "name": "x", "mode": "vivo", "process_fps": 5,
+           "connection": {"brand": "hikconnect", "camera_id": 9, "serial": "FZ4798527", "channel": 1}}
+    otro_canal = {**cfg, "connection": {**cfg["connection"], "channel": 3}}
+    assert CameraWorker.fingerprint_of(cfg) == CameraWorker.fingerprint_of(otro_canal)
+    otra_serie = {**cfg, "connection": {**cfg["connection"], "serial": "OTRA1234"}}
+    assert CameraWorker.fingerprint_of(cfg) != CameraWorker.fingerprint_of(otra_serie)
+    rtsp = {**cfg, "connection": {"brand": "hikvision", "host": "dvr", "channel": 1}}
+    assert CameraWorker.fingerprint_of(rtsp) != CameraWorker.fingerprint_of(
+        {**rtsp, "connection": {**rtsp["connection"], "channel": 3}})  # por puertos el canal sí cambia el video
+
+
+def test_la_lista_de_la_app_marca_las_cargadas_y_avisa_el_canal():
+    tk = pytest.importorskip("tkinter")
+    import os
+    if os.name != "nt" and not os.environ.get("DISPLAY"):
+        pytest.skip("sin pantalla (correr con xvfb-run)")
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"sin Tk: {exc}")
+    from tkinter import ttk
+
+    import agent.oficina as of
+    try:
+        cams = [{"id": "res-1", "name": "Camera 01", "serial": "FZ4798527", "channel": 1, "loaded": None},
+                {"id": "res-3", "name": "Camera 03", "serial": "FZ4798527", "channel": 3, "loaded": "Depósito"}]
+        app = types.SimpleNamespace(tk=tk, ttk=ttk, v=types.SimpleNamespace(root=root),
+                                    mb=types.SimpleNamespace(showwarning=lambda *a, **k: None,
+                                                             showerror=lambda *a, **k: pytest.fail(str(a))),
+                                    api=types.SimpleNamespace(get=lambda path: {"server": "x", "cameras": cams}),
+                                    bg=types.SimpleNamespace(run=lambda fn, done=None, fail=None: done(fn())))
+        app._dialog = types.MethodType(of.Oficina._dialog, app)
+        got: list = []
+        of.Oficina.hikconnect_cameras(app, {"id": 1, "name": "Sanfer", "hc_app_key": "k"}, lambda sel: None,
+                                      parent=root, listed=got.append)
+        root.update()
+        assert got and [x["channel"] for x in got[0]] == [1, 3]
+        top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+        lb = next(w for w in _walk(top) if isinstance(w, tk.Listbox))
+        assert "ya cargada como «Depósito»" in lb.get(1) and "ya cargada" not in lb.get(0)
+    finally:
+        root.destroy()
+
+
+def _walk(w):
+    for ch in w.winfo_children():
+        yield ch
+        yield from _walk(ch)
