@@ -41,6 +41,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
+from itertools import pairwise
 
 import numpy as np
 
@@ -320,7 +321,7 @@ def _features(frames: list[_Frame], n_frames: int, has_zones: bool) -> list[floa
     elbows = [a.elbow for a in arms if a.elbow is not None]
     shoulders = [a.shoulder for a in arms if a.shoulder is not None]
     wrist_v, hip_v, drop = [], [], 0.0
-    for a, b in zip(frames, frames[1:]):
+    for a, b in pairwise(frames):
         dt = b.t - a.t
         if not 0 < dt <= _PAIR_GAP:
             continue
@@ -660,7 +661,7 @@ def _mark_score(seq: list[tuple[float, float]], consecutive: int) -> float:
     best_run = None
     for i in range(len(seq) - consecutive + 1):
         part = seq[i:i + consecutive]
-        if all(b[0] - a[0] <= _STREAK_GAP for a, b in zip(part, part[1:])):
+        if all(b[0] - a[0] <= _STREAK_GAP for a, b in pairwise(part)):
             v = min(s for _, s in part)
             best_run = v if best_run is None else max(best_run, v)
     if best_run is not None:
@@ -899,7 +900,7 @@ class TheftModel:
         self.ok = True
 
     @classmethod
-    def maybe(cls, spec) -> "TheftModel | None":
+    def maybe(cls, spec) -> TheftModel | None:
         m = cls(spec)
         return m if m.ok else None
 

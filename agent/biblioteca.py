@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.gestos import GESTURE_TYPES
+from core.rules import HURTO_IA
 
 log = logging.getLogger("vigia.biblioteca")
 
@@ -32,8 +33,9 @@ MATCH_AFTER = 90.0
 # los gestos de ocultamiento (mano al bolsillo, a la ropa o a la bolsa) saltan cuando se guarda algo: si se marcó el
 # momento en que lo toma del estante, el gesto llega unos segundos después (la toma vale hasta 10 s y la mano tiene que
 # quedarse de 0,6 a 2 s). Ventana de 5 s antes a 15 s después: más estrecha que la de las reglas, para que un gesto de
-# otro momento del video no cuente como «vio el hurto»
-MATCH_WINDOWS = {g: (5.0, 15.0) for g in GESTURE_TYPES}
+# otro momento del video no cuente como «vio el hurto». La IA de movimientos de hurto (core/hurto_ia.py) también avisa
+# por el movimiento mismo (dos ventanas de 3 s seguidas): la misma ventana que los gestos
+MATCH_WINDOWS = {g: (5.0, 15.0) for g in (*GESTURE_TYPES, HURTO_IA)}
 VIDEO_TYPES = ("Videos", "*.mp4 *.avi *.mkv *.mov *.ts *.dav *.264 *.h264")
 
 

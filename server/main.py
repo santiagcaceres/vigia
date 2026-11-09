@@ -45,13 +45,14 @@ from .storage import LocalStorage, Storage, StorageError, SupabaseStorage
 
 log = logging.getLogger("vigia.server")
 
-# la política de contenido de la web (la misma que vercel.json): scripts solo propios (y onnxruntime de jsdelivr para
-# «Prueba»), imágenes y videos propios o de los archivos firmados de Supabase, y nadie puede meter la web en un marco
-CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ 'wasm-unsafe-eval'; "
-       "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; "
-       "media-src 'self' blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/; "
-       "worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; "
-       "frame-ancestors 'none'")
+# la política de contenido de la web (la misma que vercel.json; una prueba las compara): scripts, estilos y fuentes
+# solo propios, imágenes y videos propios o de los archivos firmados de Supabase, y nadie puede meter la web en un
+# marco. Desde el 9 nov la web es solo para los clientes: sin la pestaña «Prueba» ya no hacen falta onnxruntime-web de
+# jsdelivr, el WebAssembly ni los workers, ni «blob:» (lo usaba el editor de zonas del personal, ahora en la app)
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data: https://*.supabase.co; media-src 'self' https://*.supabase.co; "
+       "connect-src 'self' https://*.supabase.co; font-src 'self' data:; object-src 'none'; base-uri 'self'; "
+       "form-action 'self'; frame-ancestors 'none'")
 MAX_CREDENTIAL_CAMERAS = 300  # cámaras distintas por hora que una PC puede abrir (con la clave del grabador)
 MAX_IMAGE = 2 * 1024 * 1024  # foto de una alerta o imagen de una cámara (una de 640 px pesa ~50 KB)
 MAX_LIVE_FRAME = 512 * 1024  # cuadro en vivo (~30 KB)
@@ -760,7 +761,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("No se pudo verificar el bucket de Supabase: %s", exc)
     else:
         storage = LocalStorage(st.data_dir / "files", box.secret + ":files")
-    operator_alerts = OperatorAlerts(st.telegram_token, st.operator_chat_id, st.operator_webhook, st.public_url)
+    operator_alerts = OperatorAlerts(st.telegram_token, st.operator_chat_id, st.operator_webhook)
     notifier = ClientNotifier(st.telegram_token, st.twilio_sid, st.twilio_token, st.twilio_whatsapp_from,
                               st.resend_api_key, st.email_from)
     secure_cookie = bool(st.public_url and st.public_url.startswith("https")) or st.on_vercel
@@ -4075,7 +4076,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 3 s (core/hurto_ia.py); el video no sale de la PC. Con los clips marcados (hurto: cuándo y quién; o normal) se
     # entrena la IA, que viaja a las cámaras que miden hurtos en `analysis["ia_hurto"]` (camera_analysis).
     def mmss(x: float) -> str:
-        x = max(0, int(round(x)))
+        x = max(0, round(x))
         return f"{x // 60}:{x % 60:02d}"
 
     def bad(msg: str):
@@ -4190,7 +4191,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """El cuerpo del pedido: JSON, o JSON comprimido con gzip (`Content-Encoding: gzip`): un clip largo pasa los
         4,5 MB de Vercel en JSON y comprimido pesa la cuarta parte."""
         raw = await request.body()
-        if request.headers.get("content-encoding", "").strip().lower() == "gzip":
+        # (si algo en el medio ya lo descomprimió y dejó el encabezado, llega el JSON tal cual: se usa así)
+        if request.headers.get("content-encoding", "").strip().lower() == "gzip" and raw[:64].lstrip()[:1] != b"{":
             d = zlib.decompressobj(16 + zlib.MAX_WBITS)
             try:
                 raw = d.decompress(raw, MAX_IA_BODY)
@@ -4409,7 +4411,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             q = q.filter(TrainingClip.client_id == body.client_id)
         total = q.with_entities(func.sum(TrainingClip.n_windows)).scalar() or 0
         if total > MAX_IA_TRAIN_WINDOWS:
-            n = lambda x: f"{x:,}".replace(",", ".")  # noqa: E731
+            def n(x: int) -> str:
+                return f"{x:,}".replace(",", ".")
             bad(f"Hay {n(total)} ventanas para entrenar y el servidor entrena hasta {n(MAX_IA_TRAIN_WINDOWS)} de una "
                 f"vez: entrená por cliente o borrá clips normales que sobren (los más largos)")
         # (con la persona, el momento y la marca de cada ventana: los hurtos vistos y las falsas alarmas se cuentan

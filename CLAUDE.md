@@ -71,13 +71,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
 - **core/**: detector YOLO (ONNX, CPU), tracker, zonas/reglas, scorer, clips. El servidor solo
   importa `core.rules`, `core.scorer` (y sus deps `geometry`, `tracker`): **no** mete OpenCV ni
   onnxruntime en el build de Vercel. No romper eso.
-- **public/**: panel (SPA sin framework) + `aviso.html` (página pública del clip) + `guia.html` +
-  `prueba.js`. Menú (pedido del dueño, 22 oct): **Resumen, Clientes, Alertas** y Administración
-  (solo admin) — **desde el 22 oct el staff usa la app de escritorio; ver más abajo**. "Cámaras" y "Prueba" salieron del menú (siguen por URL: `#/camaras`, `#/prueba`). Las demás vistas siguen existiendo por URL y se llega desde botones:
-  `#/revisar` (desde Alertas y Resumen), `#/alarmas` (alarmas del grabador), `#/avisos`, `#/videos`,
-  `#/entrenamiento` (links "Más" al pie del Resumen). `#/eventos` fue renombrado `#/alertas`.
-  Clientes y cámaras se cachean 20 s en el navegador (`loadClients`/`loadCameras`) para que
-  cambiar de pestaña no vuelva a pedir todo.
+- **public/** (desde el 9 nov, decisión del dueño: «en la web, solo info para los clientes»): SPA sin framework para el
+  **rol cliente** (Resumen = sus métricas con PDF, Alertas con la foto y el clip, Incidentes = los avisos que le mandamos,
+  Cámaras con la última imagen) y para los **administradores** (solo Métricas de todos los clientes, con el PDF). Los
+  operadores ven «Usá la app de escritorio». `aviso.html` + `aviso.js` (página pública del clip) sigue. Se borraron
+  `prueba.js`, `guia.html`, `guia.js` y `public/models/personas.onnx`; las vistas del personal (`#/revisar`, `#/alarmas`,
+  `#/videos`, `#/entrenamiento`, `#/clientes`, administración…) ya no existen: todo eso se hace en la app. **Quedaron sin
+  pantalla** (siguen en la API): lista y revocación de avisos para el personal, reintentar alarmas, panel de HPP, el
+  CSV de métricas e importar videos por la web. El aviso de Telegram al operador ya no lleva link a la web («Revisalo
+  en la app de escritorio, pestaña «Alertas»»). Lo de abajo sobre vistas web del personal es historia.
 - **Cámaras por cliente (21 oct, pedido del dueño):** "Cámaras" salió del menú. Desde Clientes se entra a
   `#/cliente/:id` ("Cámaras de <cliente>": miniaturas con la última imagen y estado, botón Agregar cámara)
   y un clic abre la ficha `#/camara/:id` (imagen grande que se refresca cada 30 s, datos de conexión,
@@ -199,8 +201,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     de las cámaras de esa PC y con datos simples (`clean_status`), y la web escapa todo (también las estadísticas de las
     alarmas, `AlarmDoneIn.stats` solo números). Un estado sin `camera_id` ya no tira abajo la lista de cámaras (500).
   - **Política de contenido (CSP)** y cabeceras en `vercel.json` (Vercel sirve `public/`) y en un middleware (local):
-    scripts solo propios y onnxruntime-web 1.19.2 de jsdelivr (camino exacto), sin scripts en línea (`aviso.js` y
-    `guia.js` aparte), `frame-ancestors 'none'`, nosniff, Referrer-Policy no-referrer, HSTS; `/api/*` con
+    scripts solo propios (desde el 9 nov ni onnxruntime-web: se fue la pestaña Prueba), sin scripts en línea
+    (`aviso.js` aparte), `frame-ancestors 'none'`, nosniff, Referrer-Policy no-referrer, HSTS; `/api/*` con
     `Cache-Control: no-store`. Sin `/docs` ni `/openapi.json` en Vercel. Si se agrega algo externo a la web, sumarlo a
     `CSP` en server/main.py **y** en vercel.json (una prueba compara las dos).
   - **Bajas que cortan de verdad:** la PC de un usuario dado de baja, con clave nueva o con otro rol deja de servir (antes
@@ -278,6 +280,43 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   (la próxima vez ya está, y en la lista y la web) y, si el vivo no abre, usa un cuadro de un clip suyo o dice por qué.
   Botón «Tomar foto del vivo» debajo de la imagen para cambiarla por una de ahora (la guardada puede ser vieja o de
   noche). Prueba: `tests/test_zonas_foto.py`.
+- **Pestaña «Entrenar IA hurtos» y la IA de movimientos (9 nov, pedido del dueño: «en la App todo lo de entrenamiento…
+  una nueva pestaña… donde subiremos clips y pondremos si hubo hurto y dónde; aplicale la IA de YOLO y la postura a estos
+  videos y ahí entrenaremos a la IA»; app 1.43.0).** Elegido con el dueño: las dos cosas (el filtro de alertas de
+  siempre y un detector nuevo por esqueletos), el video queda en la PC y el entrenamiento en la nube, marcar = momento +
+  clic en la persona. Hecho con un workflow (contrato en común, 4 agentes por capa, integración).
+  - **App** (`agent/entrenar_ia.py`, admin y operadores): izquierda los clips de la nube (cliente, cámara, duración,
+    estado, quién, si el video está en esta PC); «⬆ Subir clips…» elige videos, cliente y cámara y los analiza **en la
+    PC**, de a uno y en otro hilo (`agent/ia_clips.py`: YOLO con la sensibilidad de la cámara, seguimiento, postura de
+    todos y bolsos, 5 cuadros/s, tope 30 min) → `POST /api/training/clips` (acepta gzip, `json_or_gzip`) con las ventanas
+    y el .json.gz de los cuadros directo al Storage (`training/clips/<uuid>.json.gz`, `data_upload`). **El video no sale
+    de la PC** (lista local en `<datos>/entrenamiento/videos.json`; uuid = sha1 del tamaño y del primer y último MB).
+    Derecha: el clip con recuadros, número y esqueleto (sin el video en esta PC, los datos sobre fondo gris); marcar =
+    «Inicio del hurto» / «Fin del hurto» en la barra + clic en la persona + «Cómo» (bolsillo, ropa, bolsa, otro); «Este
+    clip es normal»; «Guardar marcas» (`PUT`); «Probar con las reglas y mandar al filtro…» abre la cámara en «🎞 Clips».
+    Abajo, con el alcance elegido (todos los clientes o uno): **IA de movimientos** y **Filtro de alertas**: entrenar,
+    qué tan bien anduvo en palabras, activar/apagar.
+  - **IA** (`core/hurto_ia.py`, numpy, sin OpenCV: lo importa el servidor): por persona, ventanas de 3 s cada 1 s con 28
+    rasgos `ia_*` en largos de torso (muñecas contra el cuerpo, codos, velocidades, alcances, bolsos; postura vista en
+    ≥ 50 % de los cuadros); etiqueta 1 la ventana de la persona marcada que pisa la marca ≥ 1 s, 0 lo demás, se ignora
+    el borde de 2 s; regresión logística L2 balanceada validada **separando por clip**, umbral para ver el 80 % de los
+    hurtos marcados. Pide al menos 5 hurtos marcados, 3 clips normales y 10 min de negativos (`MIN_*`). En vivo
+    (`OnlineTheftDetector`): 2 ventanas seguidas sobre el umbral → evento **`hurto_ia`** («Posible hurto (IA de
+    movimientos)», al final de `EVENT_TYPES`; fuera de `scorer.LEGACY_NAMES`), enfriamiento 30 s por persona. El mismo
+    código mide en los clips y en vivo.
+  - **Servidor:** tablas `training_clips` (cliente, cámara, marcas, ventanas, `data_path`) y `theft_models`
+    (`SCHEMA_VERSION` 2026-11-09.1). Endpoints (staff): `GET/POST /api/training/clips`, `PUT/DELETE
+    /api/training/clips/{id}`, `GET /api/training/clips/{id}/data` (link firmado de los cuadros), `GET
+    /api/training/ia/summary`, `POST /api/training/ia/run`, `GET /api/training/ia/models`, `POST
+    /api/training/ia/models/{id}/activate|deactivate`. Modelo por cliente o general (`client_id` NULL); la cámara usa el
+    activo de su cliente, si no el general. Viaja en `analysis["ia_hurto"]` (aparte, un agente viejo lo ignora) **solo a
+    cámaras que miden hurto** (no «solo métricas») y solo si hay modelo activo; mira la postura de todos (pesa como con
+    gestos en `server/pool.py`). Rige en máquinas, «Ver con la IA», la ventana de la cámara (alertas de prueba
+    `hurto_ia`, `TheftWatch`) y alarmas. Sin interruptor por cámara todavía. Borrar un cliente borra sus clips.
+  - **Límites honestos:** probado solo con datos sintéticos (`tests/test_hurto_ia_*.py`, `tests/test_entrenar_ia_app.py`;
+    la de punta a punta entrena con clips sintéticos y la máquina avisa); sirve recién con 30-50 hurtos marcados más
+    clips normales de la misma clase de cámara, y aprende lo que se le muestra. Las máquinas lo usan al reiniciarse
+    (`git pull`). La guía de operadores (`docs/guia-operadores*`) quedó vieja: no tiene esta pestaña.
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
@@ -1028,7 +1067,7 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   alarmas no se mira continuo); no reconoce caras ni distingue empleados; una persona que se pierde y
   reaparece cuenta dos veces; gestos (mano al bolsillo, botella al cuerpo, lavar vidrios) **no** se detectan:
   requieren modelo propio entrenado con clips etiquetados (pendiente, punto 6 de Próximos pasos).
-- **Pestaña Prueba** (`public/prueba.js`): comparte la pantalla (`getDisplayMedia`) de la ventana de
+- **Pestaña Prueba** (`public/prueba.js`; **borrada el 9 nov** con la web del personal, queda como historia): comparte la pantalla (`getDisplayMedia`) de la ventana de
   HPP / iVMS / SmartPSS con la cámara en vivo y corre el detector de personas **en el navegador**
   con ONNX Runtime Web (jsdelivr 1.19.2, wasm 1 hilo) sobre `public/models/personas.onnx` (copia
   del de `models/`, 10 MB; si se reexporta el modelo, copiar a los dos lados). El usuario marca el
@@ -1040,8 +1079,8 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
 
 `server/probe.py` + `POST /api/cameras/{id}/probe`: prueba desde Vercel que el DVR responda por HTTP
 (ISAPI deviceInfo / CGI magicBox) con el usuario y la clave cargados, lista los canales y avisa si
-está expuesto con puertos estándar. Botón "Probar conexión" en Cámaras. `public/guia.html` es la
-guía paso a paso (datos a pedir, usuario en el DVR, puertos en el router de Antel, DDNS, prueba en
+está expuesto con puertos estándar. Botón "Probar conexión" en Cámaras. `public/guia.html` (borrada el 9 nov:
+la reemplaza `docs/manual-tecnico-conexion`) era la guía paso a paso (datos a pedir, usuario en el DVR, puertos en el router de Antel, DDNS, prueba en
 VLC, carga en el panel, seguridad, fallas comunes); link "Guía" en el menú.
 
 Archivos clave del modo alarmas: `server/hpp.py` (firma del webhook, parseo de alarmas, cliente

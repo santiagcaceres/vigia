@@ -288,6 +288,24 @@ def test_con_la_ia_activada_despues_pide_volver_a_analizar(tmp_path):
     assert t.ia_on and t.needs_pose()  # lo analizado no tiene la postura: la ventana lo vuelve a analizar
     assert t.alerts == []
     assert any("sin mirar la postura: para ver la IA de movimientos de hurto" in x for x in t.explain(0))
+    # la ventana de la cámara dice que ahora mira la postura para la IA (no solo «los gestos»)
+    from types import SimpleNamespace
+
+    from agent.oficina import TuneWindow
+    started = []
+    for live, gestures, note in ((True, False, "desde ahora se mira la postura, para la IA de hurtos"),
+                                 (True, True, "para los gestos y la IA de hurtos"),
+                                 (False, False, "se vuelve a analizar mirando la postura, para la IA de hurtos")):
+        fake = SimpleNamespace(live=live, ia_on=True, gestures_on=gestures, videos=["clip.mp4"])
+        w = SimpleNamespace(tuner=fake, closed=False, _note="", _note_until=0.0, run_videos=None,
+                            _redraw=lambda: None, _start=lambda **kw: started.append(kw))
+        TuneWindow._after_apply(w, fake, True)
+        assert note in w._note, w._note
+    assert started == [{"videos": ["clip.mp4"]}]
+    fake = SimpleNamespace(live=True, ia_on=False, gestures_on=True, videos=[])
+    w = SimpleNamespace(tuner=fake, closed=False, _note="", _note_until=0.0, run_videos=None, _redraw=lambda: None)
+    TuneWindow._after_apply(w, fake, True)
+    assert w._note.startswith("desde ahora se mira la postura, para los gestos (")
 
 
 def test_sin_modelo_o_en_solo_metricas_la_ventana_sigue_igual(tmp_path):

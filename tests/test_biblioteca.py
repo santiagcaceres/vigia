@@ -69,6 +69,21 @@ def test_cruzar_alertas_con_lo_marcado():
     assert live_uuid(7, alert(70.0)).isalnum() and len(live_uuid(7, alert(70.0))) == 32
 
 
+def test_la_ia_de_hurtos_ve_el_hurto_con_la_ventana_de_los_gestos():
+    """Una alerta de la IA de movimientos «ve» el hurto marcado de 5 s antes a 15 s después (como los gestos): la de
+    las reglas, hasta 90 s después (salida sin pago salta cuando la persona se va)."""
+    from agent.biblioteca import MATCH_WINDOWS, TestVideo, matches
+
+    assert MATCH_WINDOWS["hurto_ia"] == MATCH_WINDOWS["mano_bolsa"] == (5.0, 15.0)
+    assert matches(60.0, 56.0, "hurto_ia") and matches(60.0, 74.0, "hurto_ia")
+    assert not matches(60.0, 54.0, "hurto_ia") and not matches(60.0, 76.0, "hurto_ia")
+    assert matches(60.0, 120.0, "salida_sin_pago")
+    hurto = TestVideo("/v/h.mp4", kind="hurto", marks=[60.0])
+    assert evaluate(hurto, [alert(70.0, "hurto_ia")])["ok"] is True
+    r = evaluate(hurto, [alert(100.0, "hurto_ia")])  # 40 s después: es de otro momento
+    assert r["ok"] is False and len(r["extra"]) == 1
+
+
 def test_analizar_la_biblioteca_mide_si_la_camara_ve_el_hurto(tmp_path):
     from agent.ajuste import Tuner
 

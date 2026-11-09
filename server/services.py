@@ -41,33 +41,36 @@ def _telegram(token: str, chat_id: str, text: str, snapshot: bytes | None, timeo
     r.raise_for_status()
 
 
+# dónde se revisa: desde el 9 nov la web es solo para los clientes (el personal revisa y etiqueta en la app)
+REVIEW_WHERE = "Revisalo en la app de escritorio, pestaña «Alertas»."
+
+
 class OperatorAlerts:
-    """Avisa a TU equipo que hay un clip nuevo para revisar. No le escribe al cliente."""
+    """Avisa a TU equipo que hay un clip nuevo para revisar (en la app de escritorio: la web es de los clientes). No le
+    escribe al cliente."""
 
     def __init__(self, telegram_token: str | None, operator_chat_id: str | None,
-                 operator_webhook: str | None, public_url: str | None, timeout: float = 6.0):
+                 operator_webhook: str | None, timeout: float = 6.0):
         self.token = telegram_token
         self.chat_id = operator_chat_id
         self.webhook = operator_webhook
-        self.public_url = (public_url or "").rstrip("/")
         self.timeout = timeout
 
     def new_clip(self, client_name: str, camera_name: str, ev: Event, snapshot: bytes | None) -> None:
         if not (self.webhook or (self.token and self.chat_id)):
             return
-        url = f"{self.public_url}/#/revisar" if self.public_url else None
         if self.webhook:
-            try:
+            try:  # («review_url» queda en null: ya no hay una página de la web para revisar)
                 httpx.post(self.webhook, json={
                     "event_id": ev.id, "client": client_name, "camera": camera_name, "type": ev.type,
                     "severity": ev.severity, "description": ev.description, "score": ev.score,
-                    "occurred_at": ev.occurred_at.isoformat() + "Z", "review_url": url,
+                    "occurred_at": ev.occurred_at.isoformat() + "Z", "review_url": None, "review": REVIEW_WHERE,
                 }, timeout=self.timeout).raise_for_status()
             except Exception as exc:
                 log.warning("Falló el webhook del operador: %s", exc)
         if self.token and self.chat_id:
             text = (f"🔎 Clip para revisar\n{client_name} · {camera_name}\n"
-                    f"{LABELS.get(ev.type, ev.type)}\n{ev.description}" + (f"\n{url}" if url else ""))
+                    f"{LABELS.get(ev.type, ev.type)}\n{ev.description}\n{REVIEW_WHERE}")
             try:
                 _telegram(self.token, self.chat_id, text, snapshot, self.timeout)
             except Exception as exc:

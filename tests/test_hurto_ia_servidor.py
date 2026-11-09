@@ -239,6 +239,11 @@ def test_limites_de_tamano(app, admin, ia):
     r = admin.post("/api/training/clips", content=b"esto no es gzip",
                    headers={"Content-Type": "application/json", "Content-Encoding": "gzip"})
     assert r.status_code == 422 and "gzip" in r.json()["detail"]
+    # con el encabezado pero ya descomprimido (por algo en el medio): el JSON se usa tal cual
+    chico = clip_body(ia, "yadescomprimido", camera_id=cam["id"])
+    r = admin.post("/api/training/clips", content=json.dumps(chico).encode(),
+                   headers={"Content-Type": "application/json", "Content-Encoding": "gzip"})
+    assert r.status_code == 201, r.text[:300]
     bomba = gzip.compress(b'{"uuid": "' + b"0" * (41 * 1024 * 1024) + b'"}')  # 40 KB que se inflan a 41 MB
     r = admin.post("/api/training/clips", content=bomba,
                    headers={"Content-Type": "application/json", "Content-Encoding": "gzip"})
@@ -570,3 +575,29 @@ def test_tablas_nuevas_y_el_servidor_sigue_sin_opencv():
             "sys.exit(1 if bad else 0)\n")
     r = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_el_filtro_de_alertas_aprende_las_alertas_de_la_ia_de_hurtos():
+    """Con alertas `hurto_ia` etiquetadas, el filtro entrena con todas las variables (si no, no conocería el tipo y esas
+    alertas pasarían siempre); sin gestos ni IA, las de antes (las máquinas sin actualizar las siguen usando)."""
+    import numpy as np
+
+    from core.rules import HURTO_IA
+    from core.scorer import LEGACY_NAMES, VECTOR_NAMES, Scorer
+    from server.training import train, vector_names
+
+    assert vector_names([{"type": "salida_sin_pago"}, {"type": "zona_restringida"}]) == LEGACY_NAMES
+    assert vector_names([{"type": "salida_sin_pago"}, {"type": HURTO_IA}]) == VECTOR_NAMES
+    assert "regla=hurto_ia" not in LEGACY_NAMES and "regla=hurto_ia" in VECTOR_NAMES
+    rng = np.random.default_rng(0)
+    events = []
+    for i in range(40):
+        real = i % 2 == 0
+        events.append({"type": HURTO_IA if i % 4 < 3 else "salida_sin_pago",
+                       "label": "hurto" if real else "falso_positivo", "camera_id": i % 5,
+                       "features": {"track_age_s": (40.0 if real else 4.0) + rng.normal(), "ia_score": 0.9}})
+    spec, metrics = train(events)
+    assert spec["vector_names"] == list(VECTOR_NAMES)
+    sc = Scorer(spec)
+    assert HURTO_IA in sc.known_types
+    assert sc.score(HURTO_IA, {"track_age_s": 4.0}) < sc.threshold <= sc.score(HURTO_IA, {"track_age_s": 40.0})

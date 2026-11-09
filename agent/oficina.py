@@ -29,6 +29,8 @@ repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
 
 from __future__ import annotations
 
+import gzip
+import json
 import logging
 import os
 import queue
@@ -565,6 +567,12 @@ def slug_user(name: str) -> str:
     return "".join(ch for ch in s if ch.isalnum())[:20]
 
 
+def gzip_json(body: Any) -> bytes:
+    """El cuerpo de un pedido como JSON comprimido con gzip (para `Api.post_gzip`): un clip de entrenamiento largo
+    pasa en JSON los 4,5 MB que acepta Vercel y comprimido pesa la cuarta parte."""
+    return gzip.compress(json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8"), 6)
+
+
 class ApiError(Exception):
     def __init__(self, msg: str, status: int = 0):
         super().__init__(msg)
@@ -613,6 +621,12 @@ class Api:
 
     def post(self, path: str, body: Any = None) -> Any:
         return self.call("POST", path, json=body if body is not None else {})
+
+    def post_gzip(self, path: str, data: bytes) -> Any:
+        """POST de un JSON ya comprimido con gzip (`gzip_json`), con «Content-Encoding: gzip»: el servidor lo
+        descomprime (POST /api/training/clips acepta hasta 40 MB descomprimido)."""
+        return self.call("POST", path, content=data,
+                         headers={"Content-Type": "application/json", "Content-Encoding": "gzip"})
 
     def put(self, path: str, body: Any) -> Any:
         return self.call("PUT", path, json=body)
@@ -4892,8 +4906,8 @@ class TuneWindow:
         return with_gestures({**self.analysis, "rules": {**(self.analysis.get("rules") or {}), **times}}, gestures)
 
     def _after_apply(self, t, needs_pose: bool) -> None:
-        """Ya se recalculó. Con gestos nuevos sobre algo analizado sin mirar la postura: los videos se vuelven a
-        analizar (en vivo, los gestos se ven desde ahora)."""
+        """Ya se recalculó. Con gestos nuevos (o la IA de movimientos de hurto, que también mira la postura) sobre algo
+        analizado sin mirar la postura: los videos se vuelven a analizar (en vivo, la postura se mira desde ahora)."""
         self._redraw()
         if t is not self.tuner or self.closed:
             return
@@ -4901,15 +4915,17 @@ class TuneWindow:
             if t.live:
                 self._note = ""  # p. ej. se volvieron a apagar los gestos
             return
+        ia = bool(getattr(t, "ia_on", False))
+        what = ("los gestos y la IA de hurtos" if ia and t.gestures_on else "la IA de hurtos" if ia else "los gestos")
         if t.live:
-            self._note = "los gestos se ven desde ahora (lo de antes se analizó sin mirar la postura)"
+            self._note = f"desde ahora se mira la postura, para {what} (lo de antes se analizó sin mirarla)"
             self._note_until = time.monotonic() + 20.0
         else:
             if self.run_videos:
                 self._start(library=self.run_videos)
             else:
                 self._start(videos=list(t.videos))
-            self._note = "se vuelve a analizar mirando la postura, para los gestos"
+            self._note = f"se vuelve a analizar mirando la postura, para {what}"
 
     def _confirm_live(self) -> str | None:
         if not (self.info or {}).get("analyzed"):

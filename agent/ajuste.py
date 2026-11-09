@@ -1102,8 +1102,8 @@ class Tuner:
         la postura se puede ver bien, porque la IA aprende con los esqueletos."""
         pose, g = st["pose"], self.rule_cfg.gestures
         if self.pose_missing:
-            return ["En esta PC no está el modelo de postura (models/postura.onnx): la IA de movimientos de hurto no "
-                    "se puede probar acá. Actualizá la app."]
+            return [("En esta PC no está el modelo de postura (models/postura.onnx): la IA de movimientos de hurto no "
+                     "se puede probar acá. Actualizá la app.")]
         out = []
         if pose["people"] >= 20 and pose["small_pct"] is not None and pose["small_pct"] > 50:
             out.append(f"El {pose['small_pct']:.0f} % de las veces las personas ocupan menos del "

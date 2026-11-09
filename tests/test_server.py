@@ -438,3 +438,30 @@ def test_falta_configuracion_en_vercel(monkeypatch):
     r = TestClient(create_app()).get("/api/health")
     assert r.status_code == 503
     assert "SECRET_KEY" in r.json()["detail"] and "DATABASE_URL" not in r.json()["detail"]
+
+
+def test_el_aviso_al_operador_manda_a_la_app_no_a_la_web(monkeypatch):
+    """Desde el 9 nov la web es solo para los clientes: el aviso de «hay un clip para revisar» (Telegram o webhook del
+    equipo) dice que se revisa en la app de escritorio, sin un link a «#/revisar» (en la web ya no lleva a nada)."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from server import services
+    sent = []
+
+    class Ok:
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(services.httpx, "post", lambda url, **kw: sent.append((url, kw)) or Ok())
+    ev = SimpleNamespace(id=7, type="hurto_ia", severity="alta", description="Persona #3: posible hurto", score=0.8,
+                         occurred_at=datetime.fromisoformat("2026-11-09T15:30:00"))
+    services.OperatorAlerts("tok", "123", "https://equipo.example/aviso").new_clip("Almacén Demo", "Pasillo", ev, None)
+    (hook_url, hook), (tg_url, tg) = sent
+    assert hook_url == "https://equipo.example/aviso" and hook["json"]["review_url"] is None
+    assert "app de escritorio" in hook["json"]["review"]
+    assert tg_url.endswith("/sendMessage")
+    text = tg["json"]["text"]
+    assert "Almacén Demo · Pasillo" in text and "Posible hurto (IA de movimientos)" in text
+    assert "app de escritorio" in text and "pestaña «Alertas»" in text
+    assert "#/revisar" not in text and "http" not in text

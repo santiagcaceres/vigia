@@ -246,6 +246,32 @@ def test_cabeceras_de_seguridad(tmp_path, db_url):
         assert "<script>" not in html and "javascript:" not in html, page.name
 
 
+def test_la_politica_de_contenido_es_la_misma_en_vercel_y_sin_nada_externo():
+    """Vercel sirve public/ con la cabecera de vercel.json y el servidor local con la de server/main.py: tienen que ser
+    la misma. Sin la pestaña «Prueba» (9 nov) no queda nada externo: ni onnxruntime-web de jsdelivr, ni WebAssembly,
+    ni workers, ni «blob:». Siguen las imágenes y los clips firmados de Supabase (lo que ve el cliente)."""
+    import json
+    from pathlib import Path
+
+    from server.main import CSP
+    root = Path(__file__).resolve().parents[1]
+    conf = json.loads((root / "vercel.json").read_text(encoding="utf-8"))
+    values = [h["value"] for block in conf["headers"] for h in block["headers"]
+              if h["key"] == "Content-Security-Policy"]
+    assert values == [CSP]
+    for gone in ("jsdelivr", "wasm-unsafe-eval", "worker-src", "blob:", "unsafe-eval"):
+        assert gone not in CSP, gone
+    rules = dict(part.strip().split(" ", 1) for part in CSP.split(";"))
+    assert rules["script-src"] == "'self'" and rules["frame-ancestors"] == "'none'"
+    assert "https://*.supabase.co" in rules["img-src"] and "https://*.supabase.co" in rules["media-src"]
+    # y la web ya no carga nada de afuera (si se suma algo externo, va en las dos políticas)
+    for page in (root / "public").glob("*.*"):
+        if page.suffix in (".js", ".html", ".css"):
+            text = page.read_text(encoding="utf-8")
+            assert "jsdelivr" not in text and "onnxruntime" not in text and "new Worker" not in text, page.name
+            assert "createObjectURL" not in text, page.name  # (sin «blob:» en la política no se vería)
+
+
 def test_webhook_de_hpp_sin_la_clave_no_firma(app):
     r = TestClient(app).get("/api/hpp/webhook", headers={"X-Hook-Batch-Id": "a", "X-Hook-Timestamp": "1"})
     assert r.status_code == 404 and "x-hook-signature" not in r.headers

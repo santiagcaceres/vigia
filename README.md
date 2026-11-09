@@ -1,14 +1,17 @@
 # Vigía: detección de hurtos en cámaras Hikvision y Dahua
 
 Sistema para varios clientes, con varias cámaras por cliente. Mira las cámaras en tiempo real y,
-cuando detecta un comportamiento sospechoso, guarda el clip y avisa. Incluye un panel donde una
-persona revisa y etiqueta los clips, y con esas etiquetas el sistema aprende a separar las
-alertas reales de las falsas.
+cuando detecta un comportamiento sospechoso, guarda el clip y avisa. El equipo trabaja en la **app de
+escritorio** (Windows): carga clientes y cámaras, marca zonas, revisa y etiqueta los clips y entrena
+(pestaña **Entrenar IA hurtos**: clips marcados para el filtro de alertas y la IA de movimientos de
+hurto). Con esas etiquetas el sistema aprende a separar las alertas reales de las falsas. La **web**
+(`public/`) es para los **clientes** (su resumen, alertas, incidentes y cámaras) y para que los
+administradores miren las métricas; los empleados que entran a la web ven «Usá la app de escritorio».
 
 ```
  LOCAL DEL CLIENTE                               VERCEL                        SUPABASE
  ┌───────────────────────────┐                   ┌────────────────────┐        ┌───────────────────┐
- │ NVR / cámaras Hikvision   │                   │ Panel web (public/)│        │ Base de datos     │
+ │ NVR / cámaras Hikvision   │                   │ Web (clientes)     │        │ Base de datos     │
  │   │ RTSP                  │  HTTPS saliente   │ API (FastAPI)      │◄──────►│ (Postgres)        │
  │   ▼                       │ ────────────────► │  clientes, cámaras │        │                   │
  │ Agente Vigía (una PC)     │  eventos, estado  │  eventos, etiquetas│        │ Storage (privado) │
@@ -23,8 +26,9 @@ alertas reales de las falsas.
   está iVMS-4200). Solo hace conexiones **salientes**: no hay que abrir puertos en el router.
 - **iVMS-4200 sigue funcionando igual.** Vigía no pasa por iVMS: se conecta al NVR con RTSP,
   igual que iVMS.
-- **Vercel** publica el panel y la API. Como Vercel no puede procesar video, los videos que se
-  suben para entrenar los analiza el agente de ese cliente.
+- **Vercel** publica la web de los clientes y la API (la que usa la app). Como Vercel no puede
+  procesar video, los clips para entrenar se analizan en la PC de quien los sube (la app) y los
+  videos importados, en el agente.
 - **Supabase** guarda la base de datos y los archivos. Las tablas quedan cerradas a la API
   pública de Supabase (RLS activado, sin políticas): solo el servidor puede leerlas.
 
@@ -68,19 +72,21 @@ PC central ◄──── "bajá 30 s de la cámara 2 del DVR E44…" ───
 **Puesta en marcha:**
 1. En Vercel, cargar `HPP_APP_KEY`, `HPP_SECRET_KEY` (de *API Integration* en HPP) y, opcional,
    `HPP_WEBHOOK_SECRET` (8 a 32 letras y números; si no, se usa la SecretKey). `PUBLIC_URL` tiene
-   que ser la dirección HTTPS del panel. Volver a desplegar.
-2. En el panel, **Alarmas HPP → Ver equipos de HPP**: lista los DVR y canales de la cuenta, con un
-   link "cargar" que crea la cámara con la serie y el canal ya puestos. Completar la IP de VPN del
-   DVR, usuario y clave, y el **agente = el central**.
-3. **Alarmas HPP → Conectar**: registra el webhook en HPP y suscribe los DVR cargados.
+   que ser la dirección HTTPS de la web. Volver a desplegar.
+2. **Ver equipos de HPP** (`GET /api/hpp/devices`): lista los DVR y canales de la cuenta. Cargar la
+   cámara (en la app) con la serie y el canal, la IP del DVR, usuario y clave.
+3. **Conectar** (`POST /api/hpp/setup`): registra el webhook en HPP y suscribe los DVR cargados.
+
+   > Estas pantallas eran de la web del equipo, que desde el 9 nov es solo para los clientes; en la
+   > app todavía no están (las claves de HPP tampoco están cargadas): por ahora, con la API.
 4. En el DVR (desde HPP, configuración remota): activar la detección de movimiento o, mejor,
    **intrusión / cruce de línea** en las cámaras que miran góndolas, con "Notificar al centro de
    vigilancia" activado. Si el DVR es AcuSense (filtra personas/vehículos), las alarmas de
    vehículos se descartan solas.
 5. Dibujar las zonas de cada cámara (Paso 6).
 
-En **Alarmas HPP** se ve cada alarma y qué pasó con ella (descartada, con persona, error, cámara no
-cargada) y cuántas se descartaron solas en la semana.
+Cada alarma queda con lo que pasó con ella (descartada, con persona, error, cámara no cargada); las que
+tienen persona llegan como alertas a la pestaña **Alertas** de la app.
 
 ## Puesta en marcha
 
@@ -96,7 +102,7 @@ cargada) y cuántas se descartaron solas en la semana.
    - **SUPABASE_URL:** *Project Settings → Data API*, la "Project URL" (`https://xxxx.supabase.co`).
    - **SUPABASE_SECRET_KEY:** *Project Settings → API Keys*, la **secret key** (`sb_secret_…`).
      Si tu proyecto muestra claves "legacy", usá **service_role**. **Nunca** la publiques ni la
-     pegues en el panel.
+     pegues en la app ni en la web.
 3. **No hace falta crear tablas ni buckets:** el servidor los crea solo la primera vez.
 4. **Límite de archivos:** en el plan gratis cada archivo puede pesar hasta 50 MB. En Pro se sube
    en *Storage → Settings → Global file size limit*.
@@ -121,7 +127,7 @@ cargada) y cuántas se descartaron solas en la semana.
    | `RESEND_API_KEY` / `EMAIL_FROM` | Opcional. Para avisar a clientes por email |
    | `HPP_APP_KEY` / `HPP_SECRET_KEY` | Opcional. API key de Hik-Partner Pro para recibir las alarmas de los DVR |
    | `HPP_WEBHOOK_SECRET` | Opcional. Clave para firmar el webhook de HPP (si no, se usa la SecretKey) |
-   | `PUBLIC_URL` | La dirección HTTPS del panel (para los links de aviso y el webhook de HPP) |
+   | `PUBLIC_URL` | La dirección HTTPS de la web (para los links de aviso y el webhook de HPP) |
 
    Para generar un texto al azar: en el navegador, F12 → Consola, pegar
    `crypto.randomUUID() + crypto.randomUUID()` y Enter.
@@ -134,9 +140,10 @@ cargada) y cuántas se descartaron solas en la semana.
 
 ### Paso 3. Preparar el grabador (en cada cliente)
 
-> La guía completa para conectar el grabador de un cliente **a través de su router** (qué pedirle,
-> usuario `vigia`, puertos en el router de Antel, DDNS, prueba en VLC, carga en el panel, seguridad y
-> fallas comunes) está en el panel: menú **Guía** (`/guia.html`). Lo que sigue es el resumen.
+> La guía completa para conectar el grabador de un cliente **a través de su router** es el **manual del
+> técnico**: `docs/manual-tecnico-conexion.html` (y su `.pdf`): usuario `vigia`, segunda calidad en
+> H.264, puertos altos en el router, DDNS, pruebas desde los datos del celular, carga en la app y qué
+> hacer con cada problema (por síntoma y por el mensaje exacto de la app). Lo que sigue es el resumen.
 
 
 Vigía funciona con **Hikvision** y **Dahua**. Lo más simple es entrar por el navegador a
@@ -161,13 +168,12 @@ python -m agent.dahua     --host IP --user vigia --password ****   # Dahua
 entregan el video a software de terceros: son visores. Vigía se conecta al grabador, en la red
 del local o por VPN. Esas apps sí sirven para *configurar* los equipos a distancia.
 
-### Paso 4. Cargar cliente, agente y cámaras en el panel
+### Paso 4. Cargar cliente y cámaras en la app
 
-1. En **Administración**:
-   - Crear el **cliente**.
-   - Crear un **agente** para ese cliente. Copiá el token: se muestra una sola vez.
-2. En **Cámaras > Agregar cámara**: **marca** (Hikvision o Dahua), IP del grabador, canal, usuario y clave
-   (los mismos datos que usás en iVMS-4200 o SmartPSS Lite).
+1. Entrar a la app de escritorio con un usuario administrador u operador.
+2. Pestaña **Clientes → ＋ Nuevo**: crear el **cliente** (planes, horario, acceso a la web).
+3. **＋ Agregar cámaras**: **marca** (Hikvision o Dahua), link RTSP o IP del grabador, canal, usuario y
+   clave (los mismos datos que usás en iVMS-4200 o SmartPSS Lite).
 
 ### Paso 5. Instalar el agente (en tu PC central)
 
@@ -196,7 +202,7 @@ agente-v1.0.0 && git push --tags`, que además lo publica en Releases).
 
 **Linux:** ver `agent/vigia-agent.service`.
 
-En menos de un minuto la cámara aparece **En línea** en el panel y llega una imagen para
+En menos de un minuto la cámara aparece **En línea** en la app y llega una imagen para
 dibujar las zonas.
 
 **Capacidad:** el detector de personas tardó unos 120 ms por cuadro en la CPU de prueba. Una PC
@@ -231,7 +237,7 @@ sesión.
 secundario H.264) desde tu oficina. También podés hacerlo por la web del equipo una vez
 montada la VPN.
 
-**5. Cargar la cámara** en el panel con el **agente = el central**, host = IP de VPN, canal, usuario
+**5. Cargar la cámara** en la app con el **agente = el central**, host = IP de VPN, canal, usuario
 `vigia`. En un minuto aparece En línea.
 
 **Ancho de banda:** cada cámara consume ~0,25–0,5 Mbps de **subida** del local (flujo secundario),
@@ -248,7 +254,7 @@ tengas el acceso.
 
 ### Paso 6. Zonas
 
-En **Cámaras > Zonas y reglas**, dibujá sobre la imagen las zonas:
+En la app, **Clientes → la cámara → ✎ Marcar zonas**, dibujá sobre la imagen las zonas:
 - **Góndola:** donde está la mercadería.
 - **Caja:** donde se paga.
 - **Salida:** la puerta.
@@ -263,11 +269,12 @@ salida sin pago necesita góndola, caja y salida vistas por la misma cámara.
 |---|---|
 | Salida sin pago | Estuvo en una góndola y salió sin pasar por la caja |
 | Zona restringida | Entró al depósito, detrás del mostrador, etc. |
-| Merodeo | Permanencia muy larga frente a una góndola |
 | Fuera de horario | Persona en el local con el negocio cerrado |
 
-**No detecta ocultamiento de mercadería** (guardar algo en la ropa o la mochila). Cada evento es
-un indicio para revisar, no una prueba. La precisión todavía **no se midió con video real**:
+Además, **gestos de ocultamiento** por postura (mano al bolsillo, dentro de la ropa, en la bolsa) y,
+con un modelo entrenado y activado en **Entrenar IA hurtos**, la **IA de movimientos de hurto**
+(«Posible hurto (IA de movimientos)»), que aprende de los clips marcados. Las dos están sin medir con
+video real: cada evento es un indicio para revisar, no una prueba. La precisión todavía **no se midió con video real**:
 es lo primero que hay que hacer en el piloto (ver "Cómo medir").
 
 ## Usuarios y roles
@@ -283,7 +290,9 @@ o se lo desactiva. Cada uno puede cambiar su propia clave con **Mi clave**.
 
 ## Guía para la persona que entrena
 
-**Revisar y etiquetar (todos los días):** mirar el clip y apretar una tecla:
+Todo esto se hace en la app de escritorio (la web es de los clientes).
+
+**Revisar y etiquetar (todos los días):** en la pestaña **Alertas**, mirar el clip y apretar una tecla:
 
 | Tecla | Etiqueta | Cuándo |
 |---|---|---|
@@ -292,47 +301,47 @@ o se lo desactiva. Cada uno puede cambiar su propia clave con **Mi clave**.
 | 3 | Normal | Persona real sin problema (repositor, cliente que salió sin comprar) |
 | 4 | Falso positivo | Error de detección: sombra, reflejo, no es una persona |
 
-`S` saltea, `R` repite el clip. Si dudás, saltealo.
+Si dudás, no la etiquetes.
 
-**Videos (grabaciones viejas):**
+**Clips (grabaciones viejas), pestaña Entrenar IA hurtos:**
 1. Exportá la grabación en **MP4** (iVMS-4200 en Hikvision, SmartPSS Lite en Dahua).
-2. Subila eligiendo la cámara y la hora de inicio. El agente de ese cliente la analiza; tiene
-   que estar encendido.
-3. Marcá los hurtos reales que viste: el sistema te dice cuántos detectó y cuántas falsas
-   alarmas dio por hora.
-4. Etiquetá los eventos que generó.
+2. **⬆ Subir clips…**: elegí el cliente y la cámara. La app los analiza **en tu PC** (YOLO y la
+   postura) y a la nube va solo lo que vio la IA (recuadros, esqueletos y rasgos): el video queda
+   en la PC.
+3. Marcá cada hurto: inicio, fin, clic en la persona que roba y cómo lo escondió; o «Este clip es
+   normal».
+4. «Probar con las reglas y mandar al filtro…» abre la ventana de la cámara con ese clip.
 
-**Entrenamiento:**
-- **Cuándo:** con 30 etiquetas o más (8 de alerta real y 8 sin importancia), hacé clic en
-  **Entrenar**.
+**Entrenamiento (la misma pestaña):**
+- **IA de movimientos:** con al menos 5 hurtos marcados y 3 clips normales entrena, pero empieza a
+  servir de verdad con 30 a 50 hurtos. Dice cuántos hurtos vio y cuántas falsas alarmas por hora de
+  video normal (probado con clips que el modelo no vio).
+- **Filtro de alertas:** con 30 etiquetas o más (8 de alerta real y 8 sin importancia).
 - **Activar:** solo si el resultado no pierde casos reales que te importen.
-- **Efecto:** con el modelo activo, los eventos poco probables se guardan igual pero no
+- **Efecto del filtro:** con el modelo activo, los eventos poco probables se guardan igual pero no
   generan alerta.
 
 ## Avisar al cliente ("nos robaron")
 
-El ciclo pensado es: el clip sospechoso llega a **tu** panel → tu equipo lo revisa y etiqueta
+El ciclo pensado es: el clip sospechoso llega a **tu** app → tu equipo lo revisa y etiqueta
 (eso entrena al agente) → si es un hurto, **una persona** decide avisarle al cliente. Nunca se
 le avisa al cliente de forma automática: así un falso positivo no termina en una acusación.
 
-**Cómo se avisa:** en el detalle de un evento con clip, botón **"Avisar al cliente"**. Se puede
+**Cómo se avisa:** en la app, pestaña **Alertas**, botón **«Avisar al cliente…»**. Se puede
 editar el texto (por defecto dice "posible hurto", no una acusación) y elegir los canales. Se
 genera un **link privado y temporal** (14 días por defecto) a una página donde el dueño ve el
 clip desde el celular, sin instalar nada ni iniciar sesión.
 
 **Canales** (se usan los que el cliente tenga cargados en Administración):
-- **Portal / link:** siempre disponible, gratis. El cliente también ve sus avisos entrando al
-  panel como usuario "cliente" (menú **Incidentes**).
+- **Portal / link:** siempre disponible, gratis. El cliente también ve sus avisos entrando a la
+  web con su usuario (menú **Incidentes**).
 - **Telegram:** gratis. Requiere `TELEGRAM_BOT_TOKEN` y el chat del cliente.
 - **WhatsApp:** lo mejor para un comercio. Requiere cuenta de WhatsApp Business API (Twilio) y
   las variables `TWILIO_*`.
 - **Email:** requiere una cuenta de Resend (`RESEND_API_KEY`, `EMAIL_FROM`).
 
-**Avisos a clientes** (menú del equipo): lista todo lo enviado, si el cliente ya lo abrió, y
-permite **revocar** un link.
-
 > El aviso interno "hay un clip para revisar" le llega a **tu equipo**, no al cliente, si cargás
-> `OPERATOR_TELEGRAM_CHAT_ID` (o `OPERATOR_WEBHOOK_URL`).
+> `OPERATOR_TELEGRAM_CHAT_ID` (o `OPERATOR_WEBHOOK_URL`); dice que se revisa en la app de escritorio.
 
 ## Cómo medir antes de prometer
 
@@ -343,7 +352,7 @@ permite **revocar** un link.
 
 ## Seguridad, privacidad y costos
 
-- **Claves de cámaras:** cifradas con `SECRET_KEY`. Nunca vuelven al panel; solo las recibe el
+- **Claves de cámaras:** cifradas con `SECRET_KEY`. Nunca vuelven a la web; solo las recibe el
   agente de ese cliente, por HTTPS.
 - **Aislamiento entre clientes:** cada agente solo ve las cámaras de su cliente. El rol "cliente"
   solo ve sus eventos y no ve datos de conexión.
@@ -385,7 +394,7 @@ el piloto es la hora de las grabaciones del NVR (opción "Hora de grabación" en
 ```
 index.py           punto de entrada de Vercel
 server/            API (FastAPI): base de datos, almacenamiento, entrenamiento, alertas
-public/            panel web
+public/            web de los clientes (y las métricas de los administradores)
 core/              detección, seguimiento, reglas, modelo de filtro (compartido)
 agent/             agente (cámaras en vivo, alarmas de HPP, videos importados)
 models/            detector de personas (ONNX) para el agente

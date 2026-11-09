@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.gestos import GESTURE_TYPES
+from core.rules import HURTO_IA
 from core.scorer import LEGACY_NAMES, NEGATIVE_LABELS, POSITIVE_LABELS, VECTOR_NAMES, vectorize
 
 MIN_TOTAL = 30
@@ -21,10 +22,16 @@ class NotEnoughData(ValueError):
     pass
 
 
+# los tipos de alerta que no conoce LEGACY_NAMES: los gestos (29 oct) y la IA de movimientos de hurto (9 nov)
+NEW_TYPES = (*GESTURE_TYPES, HURTO_IA)
+
+
 def vector_names(events: list[dict]) -> tuple[str, ...]:
-    """Con qué variables entrenar: sin ejemplos de gestos, las de antes de los gestos (un agente sin actualizar exige
-    esa lista exacta y si no, ignora el modelo entero y no filtra nada)."""
-    if any(e.get("type") in GESTURE_TYPES for e in events):
+    """Con qué variables entrenar: sin ejemplos de gestos ni de la IA de movimientos de hurto, las de antes de los
+    gestos (un agente sin actualizar exige esa lista exacta y si no, ignora el modelo entero y no filtra nada). Con
+    alguno, todas: si no, el modelo no conocería ese tipo y nunca filtraría esas alertas (core/scorer.Scorer deja pasar
+    siempre los tipos que no conoce)."""
+    if any(e.get("type") in NEW_TYPES for e in events):
         return VECTOR_NAMES
     return LEGACY_NAMES
 

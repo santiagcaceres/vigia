@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import bisect
 import copy
-import json
 import logging
 import queue
 import threading
@@ -59,7 +58,9 @@ IA_MIN_MARKS, IA_MIN_NORMAL_CLIPS, IA_MIN_NORMAL_MIN = 5, 3, 10
 IA_GOOD_MARKS = 30  # «empieza a servir con 30 a 50 hurtos marcados»
 TARGET_RECALL = 0.8
 POLL_MS = 50
-MAX_BODY = 4_200_000  # Vercel no acepta pedidos de más de 4,5 MB
+# Vercel no acepta pedidos de más de 4,5 MB: el clip va comprimido con gzip (la cuarta parte; el servidor acepta hasta
+# 40 MB descomprimido) y solo si comprimido pasa esto hay que cortarlo
+MAX_BODY = 4_000_000
 IDLE_HINT = "El video queda en esta PC: a la nube va solo lo que vio la IA (recuadros y esqueletos)."
 GREEN, ORANGE, RED, VIOLET = (0, 200, 0), (0, 140, 255), (0, 0, 255), (230, 80, 230)
 
@@ -702,8 +703,8 @@ class EntrenarIA:
         try:
             if self.app.notebook.select() != str(self.frame):
                 return self.app.notebook.select(self.frame)  # (al cambiar de pestaña se carga sola)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 - (la ventana se está cerrando): se carga igual
+            log.debug("No se pudo cambiar a la pestaña: %s", exc)
         self.load()
 
     def load(self) -> None:
@@ -1028,10 +1029,12 @@ class EntrenarIA:
                         "duration_s": res["duration_s"], "fps": res["fps"], "width": res["width"],
                         "height": res["height"], "verdict": verdict, "marks": [], "windows": windows,
                         "feature_version": version, "people": res["people"]}
-                if len(json.dumps(body, separators=(",", ":"))) > MAX_BODY:
+                from .oficina import gzip_json
+                packed = gzip_json(body)
+                if len(packed) > MAX_BODY:
                     raise ClipError(f"es muy largo para tanta gente ({len(windows)} ventanas de personas): cortalo en "
                                     "partes más cortas")
-                row = self.app.api.post("/api/training/clips", body) or {}
+                row = self.app.api.post_gzip("/api/training/clips", packed) or {}
                 clip = row["clip"] if isinstance(row.get("clip"), dict) else row
                 clip = {**body, **{k: v for k, v in clip.items() if k != "windows"}}
                 clip.pop("windows", None)
@@ -1122,8 +1125,8 @@ class EntrenarIA:
         self.uploading = False
         self.stop_btn.pack_forget()
         self.up_bar.pack_forget()
-        ok = [n for n, what in self.upload_log if what.startswith("subido") or what.startswith("ya estaba")]
-        bad = [(n, what) for n, what in self.upload_log if not (what.startswith("subido") or what.startswith("ya "))]
+        ok = [n for n, what in self.upload_log if what.startswith(("subido", "ya estaba"))]
+        bad = [(n, what) for n, what in self.upload_log if not what.startswith(("subido", "ya "))]
         notes = [(n, what) for n, what in self.upload_log if what.startswith("subido (")]
         if not self.upload_log:
             if problem == "Frenado.":
@@ -1157,10 +1160,9 @@ class EntrenarIA:
         clip = self._sel()
         if clip is None or (self.clip is not None and clip.get("id") == self.clip.get("id")):
             return
-        if self.dirty and self.clip is not None:
-            if self.app.mb.askyesno(NOMBRE, f"Las marcas de «{self.clip.get('name')}» no se guardaron. ¿Guardarlas "
-                                            "antes de cambiar de clip?"):
-                self.save_marks()
+        if self.dirty and self.clip is not None and self.app.mb.askyesno(
+                NOMBRE, f"Las marcas de «{self.clip.get('name')}» no se guardaron. ¿Guardarlas antes de cambiar de clip?"):
+            self.save_marks()
         self._open(clip)
 
     def _open(self, clip: dict) -> None:

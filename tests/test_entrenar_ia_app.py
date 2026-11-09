@@ -327,6 +327,70 @@ def test_de_punta_a_punta_con_el_servidor_de_verdad(tmp_path, db_url):
         assert c.get("/api/training/clips").json()[0]["marks"][0]["track_id"] == 7
 
 
+def test_un_clip_largo_viaja_comprimido(tmp_path, db_url):
+    """Un clip de 28 min con 12 personas a la vez: en JSON pasa los 4,5 MB que acepta Vercel; la app lo manda
+    comprimido con gzip («Content-Encoding: gzip») y el servidor lo guarda entero. «Cortalo en partes» solo si
+    comprimido pasa el tope."""
+    from fastapi.testclient import TestClient
+
+    from agent.oficina import Api, gzip_json
+    from core import hurto_ia
+    from server.main import Settings, create_app
+    app = create_app(Settings(data_dir=tmp_path / "data", database_url=db_url, admin_password="clave-admin-123",
+                              serve_public=False))
+    rng = np.random.default_rng(3)
+    n_f, people, n = len(hurto_ia.FEATURE_NAMES), 12, 19_800
+    windows = [{"track_id": i % people, "t0": float(i // people), "t1": float(i // people) + 3.0,
+                "f": [float(x) for x in np.round(rng.uniform(10, 99, n_f), 3)]} for i in range(n)]
+    duration = n // people + 4.0
+    with TestClient(app) as c:
+        assert c.post("/api/login", json={"username": "admin", "password": "clave-admin-123"}).status_code == 200
+        cid = c.post("/api/clients", json={"name": "Almacén Demo", "plans": ["hurto"]}).json()["id"]
+        api = Api("http://testserver")
+        api.http = c
+        api.user = {"username": "admin", "role": "admin"}
+        sent = []
+        real_call = api.call
+
+        def call(method, path, **kw):
+            if path == "/api/training/clips" and method == "POST":
+                sent.append(kw)
+            return real_call(method, path, **kw)
+        api.call = call
+        tab = ei.EntrenarIA.__new__(ei.EntrenarIA)
+        tab.app = types.SimpleNamespace(api=api, agent_of=None)
+        tab.analyze_fn = lambda path, *a, **k: {"frames": [], "duration_s": duration, "fps": 5.0, "width": 640,
+                                                "height": 360, "people": people, "video_fps": 25.0}
+        tab.windows_fn = lambda frames, zones: windows
+        tab.ai_setup = lambda: (object(), object())
+        tab.data_dir, tab._local_obj, tab._q = tmp_path / "pc", None, queue.Queue()
+        video = tmp_path / "largo.mp4"
+        video.write_bytes(b"un video largo" * 1000)
+        tab._upload_work([str(video)], cid, None, "normal", {}, threading.Event())
+        msgs = [tab._q.get() for _ in range(tab._q.qsize())]
+        assert [m[0] for m in msgs if m[0] in ("done", "error")] == ["done"], msgs
+        # comprimido, con el encabezado, y mucho más chico que en JSON (que no entraría en Vercel)
+        (kw,) = sent
+        assert kw["headers"]["Content-Encoding"] == "gzip" and kw["headers"]["Content-Type"] == "application/json"
+        plain = len(json.dumps(json.loads(gzip.decompress(kw["content"])), separators=(",", ":")))
+        assert plain > 4_500_000 and len(kw["content"]) < ei.MAX_BODY < plain
+        listed = c.get("/api/training/clips", params={"client_id": cid}).json()
+        assert len(listed) == 1 and listed[0]["n_windows"] == n and listed[0]["verdict"] == "normal"
+        # un cuerpo que ni comprimido entra: lo dice antes de mandarlo
+        before = len(sent)
+        old = ei.MAX_BODY
+        ei.MAX_BODY = len(gzip_json({"windows": windows})) // 2
+        try:
+            other = tmp_path / "otro.mp4"
+            other.write_bytes(b"otro video" * 1000)
+            tab._upload_work([str(other)], cid, None, "normal", {}, threading.Event())
+        finally:
+            ei.MAX_BODY = old
+        msgs = [tab._q.get() for _ in range(tab._q.qsize())]
+        err = [m for m in msgs if m[0] == "error"]
+        assert len(sent) == before and err and "cortalo en partes" in err[0][2]
+
+
 # ------------------------------------------------------------------ con ventana
 class Msgs:
     def __init__(self, answer=True):
@@ -445,6 +509,11 @@ class FakeServer:
         if path == "/api/agent/session":
             return {"token": "t"}
         raise AssertionError(f"POST inesperado {path}")
+
+    def post_gzip(self, path, data):
+        """El clip viaja comprimido (como lo manda Api.post_gzip): se descomprime y sigue como un POST común."""
+        assert isinstance(data, bytes) and data[:2] == b"\x1f\x8b", "el clip tiene que ir comprimido con gzip"
+        return self.post(path, json.loads(gzip.decompress(data)))
 
     def put(self, path, body):
         self.calls.append(("PUT", path, body))
@@ -765,7 +834,7 @@ def test_frenar_y_un_video_que_no_abre(tmp_path):
         # un clip demasiado largo para un solo pedido: lo dice antes de mandarlo
         tab.analyze_fn = ia_clips.analyze
         monkey = ei.MAX_BODY
-        ei.MAX_BODY = 300
+        ei.MAX_BODY = 20  # (comprimido, un clip de 4 s pesa unos cientos de bytes)
         try:
             n = len(server.sent("POST", "/api/training/clips"))
             other2 = make_video(tmp_path / "largo.mp4", seconds=4.0)

@@ -431,7 +431,8 @@ def test_la_ventana_entra_en_la_pantalla(monkeypatch, tmp_path):
                  "clip que mirabas · se pierden 3 etiquetas puestas a mano",
                  "se vuelve a analizar con sensibilidad 10 de 10 · personas lejos (5 veces el trabajo) (cambió la "
                  "guardada) · se pierden 3 etiquetas puestas a mano",
-                 "los gestos se ven desde ahora (lo de antes se analizó sin mirar la postura)")
+                 ("desde ahora se mira la postura, para los gestos y la IA de hurtos (lo de antes se analizó sin "
+                  "mirarla)"))
         for mode, videos in (("vivo", ()), ("clips", (clip,))):  # («🎞 Clips» tiene la lista de clips: más alta)
             sizes = []
             for det in (None, {"sensitivity": 10, "far": True}):
