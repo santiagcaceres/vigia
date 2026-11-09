@@ -19,7 +19,7 @@ from datetime import datetime, time
 
 from .gestos import GESTURE_TYPES, MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA, GestureConfig, GestureEngine
 from .geometry import BBox, Point, bbox_foot, point_in_polygon
-from .schedule import is_open, parse_hours
+from .schedule import DEFAULT_MARGIN_MIN, is_open, parse_hours
 from .tracker import Track
 
 # shelf/checkout/exit/restricted: reglas de hurto. entrance: conteo de ingresos (comercios); con `direction`,
@@ -307,7 +307,9 @@ class RuleEngine:
                 self._gestures(t, st, now, ts, has_shelves, bags, events, visible, (w, h), wall_time)
 
             if self.cfg.schedule and wall_time is not None:
-                if not is_open(self.cfg.schedule, wall_time, 0):
+                # no en los 15 min antes de abrir y después de cerrar: ahí están los empleados abriendo o cerrando
+                # (Minas, 9 nov: todas las alertas «fuera de horario» de las cámaras de adentro eran de ese rato)
+                if not is_open(self.cfg.schedule, wall_time, DEFAULT_MARGIN_MIN):
                     emit(FUERA_DE_HORARIO, None, f"Persona #{t.id} detectada con el local cerrado")
             elif self.cfg.opening_hours and wall_time is not None:
                 start, end = self.cfg.opening_hours

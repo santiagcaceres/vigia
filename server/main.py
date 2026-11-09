@@ -31,7 +31,8 @@ from sqlalchemy.orm import defer
 from core.deteccion import DetectionConfig
 from core.gestos import GESTURE_TYPES, GestureConfig
 from core.metrics import empty_bucket, merge_bucket, post_stats, restrict_bucket, wait_stats
-from core.rules import EVENT_TYPES, NEW_ZONE_TYPES, NO_WAIT_TYPES, RETIRED_RULES, RULE_TYPES, SEVERITY, clean_rules, parse_config
+from core.rules import (EVENT_TYPES, FUERA_DE_HORARIO, NEW_ZONE_TYPES, NO_WAIT_TYPES, RETIRED_RULES, RULE_TYPES,
+                        SEVERITY, clean_rules, parse_config)
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
@@ -431,6 +432,13 @@ class CameraNamesIn(BaseModel):
 class CamerasDeleteIn(BaseModel):
     camera_ids: list[int] = Field(min_length=1, max_length=2000)
     con_alertas: bool = False  # borrar también sus alertas, clips y videos subidos
+
+
+class CamerasAlertsIn(BaseModel):
+    """«Qué alertas da…» de la app: las reglas y los gestos de varias cámaras a la vez. None = no cambia."""
+    camera_ids: list[int] = Field(min_length=1, max_length=500)
+    rules: list[str] | None = Field(None, max_length=10)
+    gestures: list[str] | None = Field(None, max_length=10)
 
 
 class CamerasPlansIn(BaseModel):
@@ -2369,6 +2377,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_analyzed(s, cams, body.analyze)
         return {"changed": len(cams), "analyze": body.analyze}
 
+    @app.post("/api/cameras/alerts")
+    def cameras_alerts(body: CamerasAlertsIn, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """«Qué alertas da…» (pedido del dueño, 9 nov: «hay muchas alertas de gente fuera de horario en Minas, ¿cómo
+        las desactivo?»): qué reglas y qué gestos usan las cámaras elegidas. Igual a lo de su tipo = vuelve a seguir el
+        tipo (si después se le cambia el tipo, toma lo del tipo nuevo). Sin reglas ni gestos la cámara queda en «solo
+        métricas» (cuenta, no da alertas)."""
+        for what, got, valid in (("rules", body.rules, RULE_TYPES), ("gestures", body.gestures, GESTURE_TYPES)):
+            if got is not None:
+                bad_ones = [x for x in got if x not in valid]
+                if bad_ones or len(set(got)) != len(got):
+                    raise HTTPException(422, f"{what}: van nombres de {', '.join(valid)}, sin repetir"
+                                             + (f" (no se entiende: {', '.join(map(str, bad_ones))})" if bad_ones else ""))
+        cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids))).order_by(Camera.id).all()
+        if not cams:
+            raise HTTPException(404, "No se encontraron esas cámaras")
+        for c in cams:
+            before = list(camera_gestures(c).enabled)  # los que mira hoy
+            if body.rules is not None:
+                prof_rules = camera_profile(c)["rules"]
+                default = list(RULE_TYPES if prof_rules is None else prof_rules)
+                r = clean_rules(c.rules)
+                if set(body.rules) == set(default):
+                    r.pop("enabled_rules", None)
+                else:
+                    r["enabled_rules"] = [x for x in RULE_TYPES if x in body.rules]
+                c.rules = r
+            if body.gestures is not None:
+                g = {**(c.gestures or {}), "enabled": [x for x in GESTURE_TYPES if x in body.gestures]}
+                c.gestures = None if g == {"enabled": type_gestures(c)} else g
+            elif c.gestures is None and type_gestures(c) != before:
+                # con las reglas apagadas a mano el tipo ya no prende gestos: los que miraba se quedan
+                c.gestures = {"enabled": before}
+        bump_rev(s)
+        s.commit()
+        rebalance(s, force=True)  # sin alertas pesa menos (solo métricas), con gestos más
+        log.info("Qué alertas dan %d cámaras (%s): reglas %s, gestos %s", len(cams), user.username,
+                 body.rules, body.gestures)
+        ops = operator_map(s)
+        return {"updated": len(cams), "cameras": [camera_dict(c, user, ops=ops) for c in cams]}
+
     @app.post("/api/cameras/plans")
     def cameras_plans(body: CamerasPlansIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         """Qué mide cada cámara de lo que contrató su cliente (varias a la vez; `plans` None = todo lo del cliente).
@@ -2558,6 +2606,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rules["enabled_rules"] = list(prof["rules"])
         elif "enabled_rules" not in rules:  # siempre explícitas: un agente viejo, sin la lista, también miraría merodeo
             rules["enabled_rules"] = list(RULE_TYPES)
+        # «persona con el local cerrado» en una cámara que no mira con el local cerrado (lo de siempre): solo podría
+        # saltar en los 15 min antes de abrir y después de cerrar, cuando están los empleados (Minas, 9 nov: todas
+        # falsas). Las máquinas nuevas ya no avisan en ese rato; esto también frena a las que no se reiniciaron.
+        if client is not None and client.hours and (c.off_hours or "apagada") == "apagada":
+            rules["enabled_rules"] = [r for r in rules["enabled_rules"] if r != FUERA_DE_HORARIO]
         whole = prof.get("whole_zone")
         if whole and not any((z or {}).get("type") == whole for z in zones):  # ej. depósito: toda la imagen
             zones.append({"name": prof["name"], "type": whole, "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]})

@@ -317,6 +317,21 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     la de punta a punta entrena con clips sintéticos y la máquina avisa); sirve recién con 30-50 hurtos marcados más
     clips normales de la misma clase de cámara, y aprende lo que se le muestra. Las máquinas lo usan al reiniciarse
     (`git pull`). La guía de operadores (`docs/guia-operadores*`) quedó vieja: no tiene esta pestaña.
+- **«Qué alertas da…» por cámara y «⬇ PDF de métricas» en el cliente (9 nov, el dueño: «hay muchas alertas de gente
+  fuera de horario en Minas, ¿cómo las desactivo?» y «dentro de un cliente, descargar su PDF con las métricas y listo»;
+  app 1.43.1).** En Minas (7 días): 73 de «Portón calle» (tipo exterior, «Con el local cerrado: vivo», mira la calle de
+  noche) y 32 de las cámaras de adentro, **todas entre las 19 y las 20:14**: el video se abre 15 min antes de abrir y se
+  cierra 15 min después de cerrar (`DEFAULT_MARGIN_MIN`) y la regla avisaba con margen 0 (los empleados cerrando).
+  Ahora: (1) la regla no avisa en esos 15 min (`core/rules.py`, `is_open(..., DEFAULT_MARGIN_MIN)`; las máquinas al
+  reiniciarse); (2) el servidor no manda «fuera de horario» a una cámara con horario del cliente y «Con el local
+  cerrado: apagada» (`camera_analysis`; rige en menos de un minuto, sin reiniciar), porque solo podía saltar en ese
+  rato; (3) «Más» → **«Qué alertas da…»** (varias cámaras de un cliente): las 3 reglas y los 3 gestos con casillas →
+  `POST /api/cameras/alerts` {camera_ids, rules?, gestures?} (staff; None = no cambia; igual a lo del tipo = vuelve a
+  seguir el tipo; sin reglas, los gestos que miraba quedan fijos para que no se apaguen de rebote; sin nada = «solo
+  métricas»). La app solo manda lo que se tocó (si las cámaras daban distinto, lo no tocado queda como estaba). En la
+  cabecera del cliente, **«⬇ PDF de métricas»** (Hoy / 7 / 30 días → `report.pdf` → Descargas). Ojo con fechas en SQL:
+  `events.occurred_at` es `timestamp without time zone` en UTC (`(occurred_at at time zone 'UTC') at time zone
+  'America/Montevideo'`). Prueba: `tests/test_alertas_camara.py`.
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router

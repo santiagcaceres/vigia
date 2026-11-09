@@ -91,6 +91,33 @@ OFF_HOURS_NAMES = {"apagada": "No mirar (ahorra todo: video, internet y análisi
 # marca de la cámara (la elige el usuario: ya no se adivina). Hikvision y Dahua se cargan con el link RTSP
 BRAND_SEL = {"hikvision": "Hikvision", "dahua": "Dahua", "hikconnect": "Hikvision por Hik-Connect (sin abrir puertos)"}
 STREAM_NAMES = {"sub": "Secundaria (recomendada: menos internet)", "main": "Principal (más resolución y más internet)"}
+# «⬇ PDF de métricas» del cliente: qué período (días hasta hoy, incluido)
+PDF_PERIODS = (("Hoy", 1), ("Últimos 7 días", 7), ("Últimos 30 días", 30))
+# «Qué alertas da…»: las reglas, con lo que hacen (los gestos van con GESTURE_NAMES)
+ALERT_RULES = (("salida_sin_pago", "Salida sin pagar", "tomó algo frente a una góndola y salió sin pasar por la caja"),
+               ("zona_restringida", "Zona restringida", "alguien entra a una zona marcada «Restringida»"),
+               ("fuera_de_horario", "Persona con el local cerrado",
+                "solo si la cámara sigue mirando con el local cerrado («Con el local cerrado», en Editar); "
+                "no avisa en los 15 min de abrir y cerrar"))
+
+
+def safe_name(name: str) -> str:
+    """Para un nombre de archivo: sin barras ni caracteres que Windows no acepta."""
+    import re
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", name).strip("_") or "cliente"
+
+
+def camera_alerts(cam: dict) -> tuple[list[str], list[str]]:
+    """Las reglas y los gestos que usa hoy la cámara: lo elegido a mano o lo de su tipo."""
+    rules = (cam.get("rules") or {}).get("enabled_rules")
+    if rules is None:
+        rules = cam.get("rules_default") or [r for r, _, _ in ALERT_RULES]
+    gestures = (cam.get("gestures") or {}).get("enabled") if cam.get("gestures") else None
+    if gestures is None:
+        gestures = cam.get("gestures_default") or []
+    return [r for r in rules if r != "merodeo"], list(gestures)
+
+
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador",
               "hurto_ia": "Posible hurto (IA de movimientos)",  # core.rules.HURTO_IA (la IA de «Entrenar IA hurtos»)
@@ -1137,6 +1164,14 @@ class Oficina:
         more["menu"] = self.cl_menu
         more.pack(side="right", padx=(6, 0))
         ttk.Button(ch, text="Métricas", command=self.metrics_dialog).pack(side="right")
+        # el reporte del cliente en PDF, sin pasar por «Métricas» (pedido del dueño, 9 nov: «dentro de un cliente,
+        # descargar su PDF con las métricas y listo»)
+        pdf = ttk.Menubutton(ch, text="⬇ PDF de métricas")
+        pdf_menu = tk.Menu(pdf, tearoff=False)
+        for label, days in PDF_PERIODS:
+            pdf_menu.add_command(label=label, command=lambda d=days: self.client_pdf(d))
+        pdf["menu"] = pdf_menu
+        pdf.pack(side="right", padx=(0, 6))
         ttk.Button(ch, text="Editar cliente", command=lambda: self.client_dialog(self._sel_client())).pack(side="right",
                                                                                                          padx=6)
         self.cl_sub = ttk.Label(right, text="", style="Suave.TLabel")
@@ -1212,6 +1247,7 @@ class Oficina:
             menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
             menu.add_separator()
         menu.add_command(label="Qué mide…", command=self.plans_dialog)
+        menu.add_command(label="Qué alertas da…", command=self.alerts_dialog)
         menu.add_command(label="Probar conexión", command=lambda: self.probe(sel()))
         menu.add_command(label="Bajar grabación…", command=self.recording_dialog)
         menu.add_command(label="Nombres e imágenes de todas…", command=self.names_dialog)
@@ -2199,6 +2235,104 @@ class Oficina:
             return
         self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}),
                     lambda _: self.config_saved(), self.err)
+
+    def client_pdf(self, days: int) -> None:
+        """«⬇ PDF de métricas»: el reporte del cliente elegido (el mismo que baja la web) de los últimos `days` días."""
+        cl = self._sel_client()
+        if not cl:
+            return self.mb.showinfo(NOMBRE, "Elegí un cliente.")
+        from tkinter import filedialog
+        b = datetime.now().date()
+        a = b - timedelta(days=days - 1)
+        period = f"{a:%Y-%m-%d}" if days == 1 else f"{a:%Y-%m-%d}_a_{b:%Y-%m-%d}"
+        downloads = Path.home() / "Downloads"
+        path = filedialog.asksaveasfilename(
+            parent=self.v.root, defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
+            initialdir=str(downloads) if downloads.is_dir() else None,
+            initialfile=f"metricas_{safe_name(cl['name'])}_{period}.pdf")
+        if not path:
+            return
+
+        def done(data) -> None:
+            Path(path).write_bytes(data if isinstance(data, bytes) else str(data).encode("utf-8"))
+            if self.mb.askyesno(NOMBRE, f"Listo: {path}\n\n¿Abrirlo ahora?"):
+                open_file(path)
+        self.bg.run(lambda: self.api.get("/api/metrics/report.pdf", client_id=cl["id"], desde=a.isoformat(),
+                                         hasta=b.isoformat()), done,
+                    lambda e: self.mb.showerror(NOMBRE, f"No se pudo bajar el PDF: {e}"))
+
+    def alerts_dialog(self) -> None:
+        """«Qué alertas da…» de las cámaras elegidas (pedido del dueño, 9 nov: «hay muchas alertas de gente fuera de
+        horario en Minas, ¿cómo las desactivo?»): las reglas y los gestos, prendidos o apagados. Solo se cambia lo que
+        se toca: si las cámaras dan distinto y no se toca una casilla, cada una sigue como estaba."""
+        tk, ttk = self.tk, self.ttk
+        cams = self._sel_cameras()
+        if not cams:
+            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
+        if len({c["client_id"] for c in cams}) > 1:
+            return self.mb.showinfo(NOMBRE, "Elegí cámaras de un solo cliente.")
+        owner = self._client_of(cams[0])
+        no_theft = [c["name"] for c in cams if "hurto" not in camera_measures(c, owner)]
+        if no_theft:
+            return self.mb.showinfo(NOMBRE, ", ".join(no_theft[:6]) + (" no mide" if len(no_theft) == 1 else " no miden")
+                                             + " hurtos: no da alertas, solo cuenta. Se cambia en «Más» → «Qué mide…».")
+        now = [camera_alerts(c) for c in cams]
+        what = f"«{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras"
+        top, frm = self._dialog(f"Qué alertas da · {cams[0]['name'] if len(cams) == 1 else (owner or {}).get('name', '')}",
+                                width=520)
+        ttk.Label(frm, text=f"Qué {'avisa' if len(cams) == 1 else 'avisan'} {what}:", wraplength=490,
+                  justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
+        rv = {r: tk.BooleanVar(value=all(r in n[0] for n in now)) for r, _, _ in ALERT_RULES}
+        gv = {g: tk.BooleanVar(value=all(g in n[1] for n in now)) for g in GESTURE_NAMES}
+        start_r = {k: v.get() for k, v in rv.items()}
+        start_g = {k: v.get() for k, v in gv.items()}
+        row = 1
+        ttk.Label(frm, text="Reglas", style="Subtitulo.TLabel").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        for r, name, help_ in ALERT_RULES:
+            row += 1
+            ttk.Checkbutton(frm, text=name, variable=rv[r]).grid(row=row, column=0, columnspan=2, sticky="w", padx=(8, 0))
+            row += 1
+            ttk.Label(frm, text=help_, style="Suave.TLabel", wraplength=470, justify="left").grid(
+                row=row, column=0, columnspan=2, sticky="w", padx=(30, 0))
+        row += 1
+        ttk.Label(frm, text="Gestos de ocultamiento (postura)", style="Subtitulo.TLabel").grid(row=row, column=0,
+                                                                                              sticky="w", pady=(8, 0))
+        for g, name in GESTURE_NAMES.items():
+            row += 1
+            ttk.Checkbutton(frm, text=name, variable=gv[g]).grid(row=row, column=0, columnspan=2, sticky="w", padx=(8, 0))
+        if len({(tuple(r), tuple(g)) for r, g in now}) > 1:  # hoy avisan distinto
+            row += 1
+            ttk.Label(frm, text="Hoy avisan distinto: quedó marcado lo que dan todas. Lo que no toques sigue como está "
+                                "en cada una.", style="Suave.TLabel", wraplength=490, justify="left").grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        row += 1
+        ttk.Label(frm, text="Sin ninguna, la cámara queda en «solo métricas»: cuenta, pero no da alertas ni guarda "
+                            "clips. La IA de movimientos (si hay una activa) sigue mirando las cámaras que miden hurtos.",
+                  style="Suave.TLabel", wraplength=490, justify="left").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        def save() -> None:
+            rules = gestures = None
+            if any(rv[k].get() != start_r[k] for k in rv):
+                rules = [k for k, v in rv.items() if v.get()]
+            if any(gv[k].get() != start_g[k] for k in gv):
+                gestures = [k for k, v in gv.items() if v.get()]
+            if rules is None and gestures is None:
+                return top.destroy()
+            ids = [c["id"] for c in cams]
+
+            def done(res) -> None:
+                top.destroy()
+                self.config_saved()
+                n = res.get("updated", len(ids)) if isinstance(res, dict) else len(ids)
+                self.mb.showinfo(NOMBRE, f"Listo: {n} cámara{'s' if n != 1 else ''}. Las máquinas lo toman en menos "
+                                         "de un minuto.")
+            self.bg.run(lambda: self.api.post("/api/cameras/alerts", {"camera_ids": ids, "rules": rules,
+                                                                     "gestures": gestures}), done,
+                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
+        bb = ttk.Frame(frm)
+        bb.grid(row=row + 1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
+        ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
     def plans_dialog(self) -> None:
         """«Qué mide…» de las cámaras elegidas (pedido del dueño, 2 nov): de los planes que contrató el cliente, cuáles
