@@ -300,7 +300,7 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     rasgos `ia_*` en largos de torso (muñecas contra el cuerpo, codos, velocidades, alcances, bolsos; postura vista en
     ≥ 50 % de los cuadros); etiqueta 1 la ventana de la persona marcada que pisa la marca ≥ 1 s, 0 lo demás, se ignora
     el borde de 2 s; regresión logística L2 balanceada validada **separando por clip**, umbral para ver el 80 % de los
-    hurtos marcados. Pide al menos 5 hurtos marcados, 3 clips normales y 10 min de negativos (`MIN_*`). En vivo
+    hurtos marcados. Pide al menos 5 hurtos marcados en 2 clips o más, y 3 clips normales o 10 min de gente sin hurto (`MIN_*`). En vivo
     (`OnlineTheftDetector`): 2 ventanas seguidas sobre el umbral → evento **`hurto_ia`** («Posible hurto (IA de
     movimientos)», al final de `EVENT_TYPES`; fuera de `scorer.LEGACY_NAMES`), enfriamiento 30 s por persona. El mismo
     código mide en los clips y en vivo.
