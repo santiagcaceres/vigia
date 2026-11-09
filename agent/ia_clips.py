@@ -157,9 +157,11 @@ def pack(meta: dict, frames: list[dict]) -> bytes:
 
 
 def unpack(data: bytes) -> dict:
-    """Lee un .json.gz de cuadros (también una lista sola de cuadros). ValueError si no se entiende."""
+    """Lee un .json.gz de cuadros (también una lista sola de cuadros, o ya descomprimido: un almacenamiento que lo
+    sirve con «Content-Encoding: gzip» llega descomprimido). ValueError si no se entiende."""
     try:
-        body = json.loads(gzip.decompress(data).decode("utf-8"))
+        raw = gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
+        body = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError, EOFError) as exc:
         raise ValueError(f"los datos del clip no se pueden leer ({exc})") from exc
     if isinstance(body, list):

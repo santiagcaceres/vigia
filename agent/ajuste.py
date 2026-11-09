@@ -230,10 +230,9 @@ class TheftWatch:
     """La IA de movimientos de hurto (core/hurto_ia.py) sobre lo que analiza esta PC (la ventana de la cámara y «Ver
     con la IA»), con el mismo camino que las máquinas (core/analyzer.theft_events): ventanas de 3 s cada 1 s, el aviso
     cuando el puntaje pasa el umbral en ventanas seguidas, el enfriamiento por persona y cada aviso como un evento
-    `hurto_ia` con las mismas medidas, descripción y zona que en la máquina. Además: `shown` da el último puntaje de
-    cada persona, aunque no llegue al umbral, para escribirlo sobre su recuadro («IA 0,72»), y `best` el más alto de
-    cada una (para explicar por qué un clip dio o no la alerta). No guarda video ni manda nada. ValueError si el modelo
-    no sirve para esta versión."""
+    `hurto_ia` con las mismas medidas, descripción y zona que en la máquina. Además, `shown` da el último puntaje de
+    cada persona, aunque no llegue al umbral, para escribirlo sobre su recuadro («IA 0,72») y explicar por qué un clip
+    dio o no la alerta. No guarda video ni manda nada. ValueError si el modelo no sirve para esta versión."""
 
     def __init__(self, spec: dict, zones: list[Zone] | None = None):
         from core.analyzer import theft_detector
@@ -243,8 +242,6 @@ class TheftWatch:
         if self.detector is None:
             raise ValueError("el modelo de la IA de hurtos es de otra versión o está mal armado")
         self.threshold = float(self.detector.threshold)
-        self.consecutive = int(self.detector.model.consecutive)
-        self.best: dict[int, float] = {}  # persona -> el puntaje más alto que tuvo
 
     def step(self, ts: float, tracks: list[Track], bags: list, size: tuple[int, int],
              base: dict[int, dict] | None = None) -> list:
@@ -254,10 +251,7 @@ class TheftWatch:
         from core.analyzer import theft_events
 
         size = (int(size[0]), int(size[1]))
-        events = theft_events(self.detector, ts, size, tracks, bags, self.zones, base or {})
-        for tid, score in self.detector.scores.items():
-            self.best[tid] = max(float(score), self.best.get(tid, 0.0))
-        return events
+        return theft_events(self.detector, ts, size, tracks, bags, self.zones, base or {})
 
     def shown(self) -> dict[int, tuple[float, bool]]:
         """Persona -> (puntaje de su última ventana, ¿pasa el umbral?): lo que se escribe sobre cada recuadro."""
@@ -484,9 +478,8 @@ class Tuner:
                                          engine.current_features(s.tracks, s.ts, s.size, s.wall))
             for tid, shown in theft.shown().items():  # el puntaje de cada persona, para escribirlo sobre ella
                 prog.setdefault(tid, {"zones": [], "took": False, "gesture": None})["ia"] = shown
-            if ia_best is not None:
-                for tid, best in theft.best.items():
-                    ia_best[(s.seg, tid)] = best
+                if ia_best is not None:  # (y el más alto de cada una, para explicar)
+                    ia_best[(s.seg, tid)] = max(shown[0], ia_best.get((s.seg, tid), 0.0))
         if gest is not None:
             for t in s.tracks:
                 if t.label == VEHICLE_LABEL:
@@ -951,26 +944,26 @@ class Tuner:
                 else:
                     out.append("«Tomó algo» da alerta si después pisa la Salida sin pasar por Caja: no llegó a la Salida "
                                "en este video.")
-        if ia is not None and not any(a.type == HURTO_IA for a in alerts):
-            if self.pose_missing:
-                out.append("En esta PC no está el modelo de postura: la IA de movimientos de hurto no se probó "
-                           "(actualizá la app).")
-            elif any(not s.posed for s, _m in rows):
-                out.append("Este video se analizó sin mirar la postura: para ver la IA de movimientos de hurto, volvé "
-                           "a analizarlo («▶ Analizar todos de nuevo»).")
-            elif not ia_best:
+        # lo que mira la postura y no dio alerta en este video: si la postura no se pudo mirar, se dice una sola vez
+        quiet = [who for who, on in (("los gestos", g.enabled and not any(a.type in g.enabled for a in alerts)),
+                                     ("la IA de movimientos de hurto",
+                                      ia is not None and not any(a.type == HURTO_IA for a in alerts))) if on]
+        if quiet and self.pose_missing:
+            what = ("ni los gestos ni la IA de movimientos de hurto se probaron" if len(quiet) == 2 else
+                    f"{quiet[0]} no se {'probaron' if quiet[0] == 'los gestos' else 'probó'}")
+            out.append(f"En esta PC no está el modelo de postura: {what} (actualizá la app).")
+        elif quiet and any(not s.posed for s, _m in rows):
+            out.append(f"Este video se analizó sin mirar la postura: para ver {' y '.join(quiet)}, volvé a analizarlo "
+                       "(«▶ Analizar todos de nuevo»).")
+        elif quiet:
+            if "la IA de movimientos de hurto" in quiet and not ia_best:
                 out.append("A nadie se le vio la postura en suficientes cuadros (chicas, tapadas, de espaldas o "
                            "cortadas por el borde): la IA de movimientos de hurto no pudo mirar este video.")
-        if g.enabled and not any(a.type in g.enabled for a in alerts):
-            if self.pose_missing:
-                out.append("En esta PC no está el modelo de postura: los gestos no se probaron (actualizá la app).")
-            elif any(not s.posed for s, _m in rows):
-                out.append("Este video se analizó sin mirar la postura: para ver los gestos, volvé a analizarlo "
-                           "(«▶ Analizar todos de nuevo»).")
-            elif not any((gsum.get(tid) or {}).get("frames") for tid in people):
+            if "los gestos" in quiet and not any((gsum.get(tid) or {}).get("frames") for tid in people):
                 out.append("No se le vio la postura a nadie (chicas, tapadas, de espaldas o cortadas por el borde): los "
                            "gestos no pueden ver nada en este video. Mirá «Cómo anda la cámara».")
-            elif g.require_take and not any((gsum.get(tid) or {}).get("takes") for tid in people):
+            elif "los gestos" in quiet and g.require_take and not any((gsum.get(tid) or {}).get("takes")
+                                                                        for tid in people):
                 out.append("Los gestos piden ver antes que tome algo (parado, estira el brazo hacia el estante y lo trae "
                            "al cuerpo) y no se vio ninguna toma. Si la cámara ve la góndola de costado o muy de arriba, "
                            "probá sin «Pedir que tome algo antes» (da más falsas alarmas).")

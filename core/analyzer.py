@@ -31,7 +31,8 @@ ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 15
 ASCII_LABELS = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO",
                 "zona_restringida": "ZONA RESTRINGIDA", "fuera_de_horario": "FUERA DE HORARIO",
                 MANO_BOLSILLO: "POSIBLE OCULTAMIENTO: MANO AL BOLSILLO", MANO_ROPA: "POSIBLE OCULTAMIENTO: MANO EN LA ROPA",
-                MANO_BOLSA: "POSIBLE OCULTAMIENTO: MANO EN LA BOLSA", HURTO_IA: "POSIBLE HURTO (IA DE MOVIMIENTOS)"}
+                MANO_BOLSA: "POSIBLE OCULTAMIENTO: MANO EN LA BOLSA",
+                HURTO_IA: "POSIBLE HURTO (IA DE MOVIMIENTOS)"}
 
 
 @dataclass
@@ -247,7 +248,7 @@ class Analyzer:
         if not self.clips:  # solo métricas: no hay alertas ni clips
             self.frames += 1
             return []
-        if posture:  # (la IA de hurtos mira a todas las personas del mínimo de alto de los gestos, aunque no haya gestos)
+        if posture:  # (la IA de hurtos mira a las personas del alto mínimo de los gestos, aunque no haya gestos)
             look(self.pose, frame, tracks, self.engine.cfg.gestures.min_height(h))
         else:  # sin gestos (o recién apagados) no queda un esqueleto viejo dibujado
             for t in tracks:

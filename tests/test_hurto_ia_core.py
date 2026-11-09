@@ -118,7 +118,7 @@ def test_rasgos_de_bolsillo_alcance_y_brazos_colgando():
 
 def test_toma_y_velocidad_de_la_muneca():
     fps = 5.0
-    script = [{}] * 5 + [REACH] * 4 + [BACK] * 2 + [POCKET] * 4  # 3 s: parada, estira, vuelve y al bolsillo
+    script = [{}] * 5 + [REACH] * 4 + [BACK] * 2 + [POCKET] * 5  # 3 s: parada, estira, vuelve y al bolsillo
     frames = [rec(i / fps, [{"id": 1, "box": box(), "kp": pose(**arms)}]) for i, arms in enumerate(script)]
     f = last_window(frames)
     assert f["ia_toma"] == 1.0 and f["ia_alcance"] > 0 and f["ia_mano_cintura"] > 0
@@ -173,7 +173,7 @@ def test_una_ventana_por_persona_cada_paso():
     assert all(w["t0"] == pytest.approx(w["t1"] - hi.WINDOW_S) for w in ws)
     assert seven and min(w["t1"] for w in seven) >= 11.0
     # el reloj vuelve atrás (otro video seguido): se empieza de cero
-    again = frames + [rec(i / fps, [{"id": 1, "box": box(), "kp": pose()}]) for i in range(20)]
+    again = frames + [rec(i / fps, [{"id": 1, "box": box(), "kp": pose()}]) for i in range(25)]  # 0 a 4,8 s
     assert len(hi.person_windows(again)) == len(ws) + 2
     # MAX_CLIP_S: lo que pasa de 30 min no se mira
     long = [rec(t, [{"id": 1, "box": box(), "kp": pose()}]) for t in (0, 1, 2, 3, 1801, 1802, 1803, 1804, 1805)]
@@ -524,7 +524,8 @@ def test_analyzer_con_la_ia_de_hurtos():
     assert est.calls > 0 and [f.type for f in found] == [HURTO_IA]
     f = found[0]
     assert f.severity == "alta" and f.alert is True and f.score is None and f.track_id >= 1
-    assert f.snapshot_jpg[:2] == b"\xff\xd8" and "IA de movimientos" in f.description and "0," in f.description
+    assert f.snapshot_jpg[:2] == b"\xff\xd8"
+    assert "IA de movimientos" in f.description and "puntaje 1,00" in f.description
     assert f.features["ia_score"] > 0.5 and f.features["ia_mano_cintura"] > 0.5
     assert f.features["track_age_s"] > 3  # y las medidas de siempre (para el filtro de alertas)
     clips = an.flush()

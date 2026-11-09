@@ -257,6 +257,10 @@ def test_la_ventana_de_la_camara_da_alertas_de_prueba_de_la_ia(tmp_path):
     calls = (det.calls, est.calls)
     assert t.set_times({"checkout_min_seconds": 2.0}) is False
     assert [x.type for x in t.alerts] == [HURTO_IA] and (det.calls, est.calls) == calls
+    # probar gestos (la postura ya está mirada): la IA sigue, junto con ellos
+    assert t.set_gestures({"enabled": [MANO_BOLSILLO]}) is False and t.ia_on
+    assert HURTO_IA in [x.type for x in t.alerts] and t.analysis["ia_hurto"] == spec()
+    t.set_gestures(None)
     # zonas nuevas: también (la alerta dice en qué zona estaba la persona)
     assert t.alerts[0].features["ia_gondola"] > 0.9
     t.set_analysis({"zones": [], "rules": {}, "ia_hurto": spec()})
@@ -293,6 +297,24 @@ def test_sin_modelo_o_en_solo_metricas_la_ventana_sigue_igual(tmp_path):
                                              "ia_hurto": spec(version=FEATURE_VERSION + 1)})
     assert not t2.ia_on and est2.calls == 0 and t2.alerts == []
     assert all("ia" not in v for m in t2.marks for v in m.values())
+
+
+def test_sin_modelo_de_postura_en_esta_pc_lo_dice_una_sola_vez(tmp_path, monkeypatch):
+    import agent.ajuste as aj
+
+    monkeypatch.setattr(aj, "build_pose", lambda *a, **k: None)
+    both = {"zones": [], "rules": {}, "gestures": {"enabled": [MANO_BOLSILLO]}, "ia_hurto": spec()}
+    t = aj.Tuner({"id": 44, "name": "Pasillo", "process_fps": 5, "connection": {}, "analysis": both}, _Det(),
+                 [_video(tmp_path)])
+    t.run()
+    assert t.pose_missing and t.alerts == [] and not t.needs_pose()
+    why = [x for x in t.explain(0) if "modelo de postura" in x]
+    assert why == ["En esta PC no está el modelo de postura: ni los gestos ni la IA de movimientos de hurto se "
+                   "probaron (actualizá la app)."]
+    t.set_analysis({k: v for k, v in both.items() if k != "gestures"})
+    assert [x for x in t.explain(0) if "modelo de postura" in x] == [
+        "En esta PC no está el modelo de postura: la IA de movimientos de hurto no se probó (actualizá la app)."]
+    assert any("la IA de movimientos de hurto no se puede probar acá" in h for h in t.hints())
 
 
 def test_el_puntaje_se_escribe_sobre_el_recuadro():

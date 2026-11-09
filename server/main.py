@@ -679,7 +679,7 @@ class TheftTrainIn(BaseModel):
 
 # «Entrenar IA hurtos» (app, 9 nov): clips analizados en la PC (el video no sale de ahí) con sus rasgos por ventana.
 # Veredictos y tipos de marca: core/hurto_ia.py (VERDICTS, MARK_KINDS); lo mínimo para entrenar, también (MIN_MARKS…)
-MAX_IA_WINDOWS = 20_000  # ≈ 30 min con 11 personas a la vez; con más, el pedido pasa los 4,5 MB de Vercel
+MAX_IA_WINDOWS = 20_000  # ventanas por clip: ≈ 30 min con 11 personas a la vez (con gzip, ~1,5 MB por pedido)
 MAX_IA_MARKS = 50
 IA_SLACK_S = 1.0  # tolerancia al final del clip (la duración que da el video y la del último cuadro no coinciden)
 IA_UUID = re.compile(r"^[A-Za-z0-9]{1,40}$")
@@ -4108,7 +4108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if kind is not None and kind not in ia_mod().MARK_KINDS:
                 bad(f"Marca {i}: «Cómo» va bolsillo, ropa, bolsa u otro (o null)")
             out.append({"start": round(start, 2), "end": round(min(end, duration), 2), "track_id": tid, "kind": kind})
-        return sorted(out, key=lambda m: (m["start"], m["end"]))
+        return out  # en el orden en que vinieron (`marks_without_windows` da posiciones de esta lista)
 
     def clean_windows(v, duration: float, n_feats: int) -> list[dict]:
         """Los rasgos por persona y ventana que armó la PC (core/hurto_ia.py `person_windows`). Se guardan con 5

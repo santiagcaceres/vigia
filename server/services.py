@@ -26,7 +26,9 @@ LABELS = {"salida_sin_pago": "Posible hurto: salió sin pasar por caja", "merode
           # gestos (core/gestos.py): un indicio para revisar el clip, nunca una prueba
           "mano_bolsillo": "Posible ocultamiento: mano al bolsillo",
           "mano_ropa": "Posible ocultamiento: mano dentro de la ropa",
-          "mano_bolsa": "Posible ocultamiento: mano en la bolsa"}
+          "mano_bolsa": "Posible ocultamiento: mano en la bolsa",
+          # la IA de movimientos de hurto (core/hurto_ia.py), entrenada con los clips marcados en la app
+          "hurto_ia": "Posible hurto (IA de movimientos)"}
 
 
 def _telegram(token: str, chat_id: str, text: str, snapshot: bytes | None, timeout: float) -> None:

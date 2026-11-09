@@ -269,9 +269,10 @@ def test_marcas_y_veredicto(app, admin, ia):
     r = admin.put(url, json={"verdict": "hurto", "marks": marcas, "name": "Hurto en góndola"})
     assert r.status_code == 200, r.text
     d = r.json()
-    assert [m["start"] for m in d["marks"]] == [10, 30, 40]  # ordenadas
+    assert [m["start"] for m in d["marks"]] == [40, 10, 30]  # en el orden en que vinieron
     assert d["name"] == "Hurto en góndola" and d["n_marks"] == 3
-    assert d["marks_without_windows"] == [1]  # la de la persona 77: avisarle al que marca que no enseña nada
+    # la de la persona 77 (posición 2 de lo mandado): avisarle al que marca que esa no enseña nada
+    assert d["marks_without_windows"] == [2]
     assert d["positive_windows"] > 0 and d["negative_windows"] > 0
     # solo el nombre: no toca las marcas
     r = admin.put(url, json={"name": "Otro nombre"})
@@ -387,7 +388,7 @@ def test_entrenar_activar_y_mandar_a_las_camaras_que_miden_hurtos(app, admin, ia
 def test_con_demasiadas_ventanas_pide_entrenar_por_partes(app, admin, ia, monkeypatch):
     import server.main as server_main
 
-    cid, cam, _, _ = setup(admin)
+    _, cam, _, _ = setup(admin)
     cargar_datos(admin, ia, cam["id"])
     monkeypatch.setattr(server_main, "MAX_IA_TRAIN_WINDOWS", 1000)  # (en producción, 300.000: ~15 s y ~1 GB)
     r = admin.post("/api/training/ia/run", json={"client_id": None})
@@ -397,7 +398,7 @@ def test_con_demasiadas_ventanas_pide_entrenar_por_partes(app, admin, ia, monkey
 
 
 def test_un_modelo_de_otra_version_no_se_activa(app, admin, ia):
-    cid, cam, h, _ = setup(admin)
+    _, cam, h, _ = setup(admin)
     with app.state.Session() as s:
         viejo = server_db.TheftModel(client_id=None, spec={"kind": "ia_hurto", "version": -1, "names": ["x"]},
                                      metrics={}, n_clips=3)
@@ -435,6 +436,65 @@ def test_la_ia_pesa_como_los_gestos_en_el_reparto(app, admin, ia):
     assert units() == pytest.approx(2 * pool.POSE_FACTOR, abs=0.01)
     admin.post(f"/api/training/ia/models/{m['id']}/deactivate")
     assert units() == pytest.approx(1.0 + pool.POSE_FACTOR, abs=0.01)
+
+
+def esqueletos(kind: str, seed: int, seconds: float = 30.0, fps: float = 5.0) -> tuple[list[dict], list[dict]]:
+    """Registros de cuadro sintéticos (como los que arma la PC al analizar un clip): una persona de frente que en el
+    «hurto» estira el brazo al estante, lo trae y se lleva la mano al bolsillo; en el «normal», brazos colgando."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    t_hurto = float(rng.uniform(6, seconds - 10))
+    base = {0: (100, 70), 1: (95, 65), 2: (105, 65), 5: (120, 100), 6: (80, 100), 11: (115, 200), 12: (85, 200),
+            13: (115, 280), 14: (85, 280), 15: (115, 360), 16: (85, 360), 7: (128, 150), 8: (72, 150),
+            9: (130, 205), 10: (70, 205)}
+    frames = []
+    for i in range(int(seconds * fps)):
+        t, pts = i / fps, dict(base)
+        rel = t - t_hurto
+        if kind == "hurto" and 0 <= rel < 1:
+            pts.update({10: (-10, 120), 8: (30, 112)})  # alcanza el estante
+        elif kind == "hurto" and 1 <= rel < 1.4:
+            pts.update({10: (95, 150), 8: (70, 140)})  # la mano vuelve
+        elif kind == "hurto" and 1.4 <= rel < 4:
+            pts.update({10: (83, 205), 8: (70, 160)})  # al bolsillo
+        kp = [[0.0, 0.0, 0.0] for _ in range(17)]
+        for j, (x, y) in pts.items():
+            kp[j] = [x + float(rng.normal(0, 2)), y + float(rng.normal(0, 2)), 0.9]
+        frames.append({"t": round(t, 3), "w": 500, "h": 420, "bags": [],
+                       "people": [{"id": 1, "box": [40.0, 50.0, 160.0, 400.0], "kp": kp}]})
+    marks = ([{"start": round(t_hurto, 2), "end": round(t_hurto + 4, 2), "track_id": 1, "kind": "bolsillo"}]
+             if kind == "hurto" else [])
+    return frames, marks
+
+
+def test_de_punta_a_punta_con_esqueletos_de_verdad(app, admin, ia):
+    """Lo que hace la app (ventanas de core.hurto_ia con los registros de cuadro) → el servidor (subir, marcar,
+    entrenar, activar) → lo que recibe una máquina (`ia_hurto`) → el detector en vivo avisa en un hurto nuevo."""
+    cid, cam, h, _ = setup(admin)
+    for i, kind in enumerate(["hurto"] * 8 + ["normal"] * 5):
+        frames, marks = esqueletos(kind, i)
+        body = {"uuid": f"clip{i}", "name": f"{kind} {i}.mp4", "camera_id": cam["id"], "duration_s": 30.0, "fps": 5,
+                "width": 500, "height": 420, "feature_version": ia.FEATURE_VERSION, "people": 1,
+                "verdict": "normal" if kind == "normal" else "sin_marcar", "windows": ia.person_windows(frames)}
+        r = admin.post("/api/training/clips", json=body)
+        assert r.status_code == 201, r.text
+        if marks:
+            r = admin.put(f"/api/training/clips/{r.json()['id']}", json={"verdict": "hurto", "marks": marks})
+            assert r.status_code == 200 and r.json()["positive_windows"] > 0, r.text
+    r = admin.post("/api/training/ia/run", json={"client_id": cid})
+    assert r.status_code == 201, r.text
+    m = r.json()
+    assert m["metrics"]["marks"] == 8 and m["metrics"]["marks_seen"] >= 6 and m["metrics"]["auc"] > 0.9
+    assert m["metrics"]["false_per_hour"] <= 2 and m["metrics"]["clips"] == 13 and m["usable"] is True
+    admin.post(f"/api/training/ia/models/{m['id']}/activate")
+    spec = config_of(app, h)[cam["id"]]["analysis"]["ia_hurto"]
+    assert ia.TheftModel(spec).ok and ia.TheftModel(spec).id == m["id"]
+    for kind, seed, avisa in (("hurto", 991, True), ("normal", 993, False)):
+        frames, _ = esqueletos(kind, seed)
+        det = ia.OnlineTheftDetector(spec)
+        hits = [x for fr in frames for x in det.update(fr["t"], fr["people"], fr["bags"], (fr["w"], fr["h"]))]
+        assert bool(hits) is avisa, (kind, hits)
 
 
 # ------------------------------------------------------------------ alertas de la IA

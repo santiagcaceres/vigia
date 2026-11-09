@@ -8,11 +8,12 @@ Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «E
 sin analizarla, la arma `Ventana`). Cada cosa se hace en UN solo lugar (pedido del dueño, 29 oct: «sin cosas que se
 repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
 - Clientes: a la izquierda los clientes; a la derecha el cliente elegido (Editar cliente, Métricas → Exportar a Excel,
-  Más: entrenar su IA, en la pestaña «Entrenar IA hurtos», y eliminar) y sus cámaras, con una sola barra: «✎ Marcar zonas» (`ZonesEditor`), «● En vivo» y
-  «🎞 Clips» (`TuneWindow`: la cámara con la IA de esta PC, en vivo o con clips; cuenta las personas por zona, alertas
-  de prueba, tiempos, gestos y aprobar; motor en agent/ajuste.py), «Analizar» / «Dejar de analizar» (cambia según lo
-  elegido), «Editar» (conexión, nombre, tipo, qué mide) y «Más» (qué mide de varias a la vez, probar conexión, bajar
-  grabación, nombres e imágenes, eliminar), también con clic derecho. Abajo, la imagen y los datos de la cámara elegida.
+  Más: entrenar su IA, en la pestaña «Entrenar IA hurtos», y eliminar) y sus cámaras, con una sola barra: «✎ Marcar
+  zonas» (`ZonesEditor`), «● En vivo» y «🎞 Clips» (`TuneWindow`: la cámara con la IA de esta PC, en vivo o con
+  clips; cuenta las personas por zona, alertas de prueba, tiempos, gestos y aprobar; motor en agent/ajuste.py),
+  «Analizar» / «Dejar de analizar» (cambia según lo elegido), «Editar» (conexión, nombre, tipo, qué mide) y «Más»
+  (qué mide de varias a la vez, probar conexión, bajar grabación, nombres e imágenes, eliminar), también con clic
+  derecho. Abajo, la imagen y los datos de la cámara elegida.
   Qué mide cada cámara: de los planes que contrató el cliente, los que se le elijan (`plans`; None = todo lo del
   cliente); los números se suman por cliente.
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y

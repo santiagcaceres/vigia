@@ -686,6 +686,11 @@ def _folds(y: np.ndarray, groups: list, k_max: int = 5) -> list[np.ndarray]:
     return [np.array(sorted(i for g in b for i in g_idx[g]), dtype=int) for b in bins if b]
 
 
+def _key(v):
+    """Algo que sirva de clave (lo que vino de un JSON llega como lista)."""
+    return tuple(_key(x) for x in v) if isinstance(v, list) else v
+
+
 def _union_seconds(spans: list[tuple[float, float]]) -> float:
     total, end = 0.0, None
     for a, b in sorted(spans):
@@ -708,7 +713,7 @@ def train(samples, groups, target_recall: float = 0.8, durations: dict | None = 
     Devuelve `(spec, metrics)`; NotEnoughData (con el mensaje en castellano) si faltan hurtos marcados o clips
     normales, o si los hurtos están todos en un mismo clip."""
     target = min(0.99, max(0.3, float(target_recall)))
-    groups = list(groups)
+    samples, groups = list(samples), list(groups)
     if len(groups) != len(samples):
         raise ValueError("samples y groups tienen que tener el mismo largo")
     n_f = len(FEATURE_NAMES)
@@ -746,7 +751,7 @@ def train(samples, groups, target_recall: float = 0.8, durations: dict | None = 
     # ---- qué hay
     pos_groups = sorted({g for g, lab in zip(gs, y) if lab == 1}, key=str)
     # cada hurto marcado: (clip, cuál marca); sin datos de la marca, el clip entero cuenta como una
-    mark_of = [None if lab != 1 else (g, m.get("mark") if with_meta and m.get("mark") is not None else "clip")
+    mark_of = [None if lab != 1 else (g, _key(m.get("mark")) if with_meta and m.get("mark") is not None else "clip")
                for g, m, lab in zip(gs, metas, y)]
     marks = sorted({mk for mk in mark_of if mk is not None}, key=str)
     neg_groups = sorted({g for g in gs} - set(pos_groups), key=str)
@@ -782,7 +787,7 @@ def train(samples, groups, target_recall: float = 0.8, durations: dict | None = 
         order: dict = {}
         for i in sel:
             if with_meta:
-                key = (gs[i], metas[i].get("track_id"))
+                key = (gs[i], _key(metas[i].get("track_id")))
                 t1 = metas[i].get("t1")
                 t1 = float(t1) if _finite(t1) else None
             else:
