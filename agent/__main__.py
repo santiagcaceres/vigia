@@ -602,6 +602,7 @@ class Agent:
         fresh, self._fresh = self._fresh, False
         return {"capacity": self.machine.get("capacity"), "instance_id": self.machine.get("instance_id"),
                 "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2),
+                **({"fixed": True} if self.machine.get("fixed") else {}),  # siempre prendida: no se vacía ni se apaga
                 **({"fresh": True} if fresh else {})}
 
     def leave(self, reason: str, drain_s: float = 60.0) -> None:
@@ -908,6 +909,10 @@ def main() -> None:
                    help="Máquina de análisis: cuántas cámaras de hurto a 5 fps aguanta")
     p.add_argument("--proceso", default=env.get("VIGIA_PROCESO"),
                    help="Máquina de análisis: número de proceso si corren varios en la misma máquina")
+    p.add_argument("--fija", action="store_true",
+                   default=(env.get("VIGIA_FIJA") or "").strip().lower() in ("1", "si", "sí", "true", "yes"),
+                   help="Máquina de análisis siempre prendida (la de la reserva): el servidor no la vacía y el "
+                        "encendedor no la apaga")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
     if a.ventana is None:
@@ -972,7 +977,7 @@ def run_machine(a, data_dir: Path, verify: bool | str) -> None:
     token = a.token or maquina.saved_token(data_dir, instance) or enroll()
     agent = Agent(a.server, token, data_dir, a.model, verify=verify, process_imports=not a.no_imports,
                   alarm_workers=max(1, a.alarm_workers), window=False, relogin=enroll, pc_name=name,
-                  machine={"capacity": a.capacidad, "instance_id": instance})
+                  machine={"capacity": a.capacidad, "instance_id": instance, "fixed": a.fija})
     bye = threading.Event()
 
     def on_signal(*_) -> None:
@@ -981,7 +986,8 @@ def run_machine(a, data_dir: Path, verify: bool | str) -> None:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    log.info("Máquina de análisis %s (instancia %s, capacidad %s)", name, instance or "—", a.capacidad or "por defecto")
+    log.info("Máquina de análisis %s (instancia %s, capacidad %s%s)", name, instance or "—",
+             a.capacidad or "por defecto", ", fija: siempre prendida" if a.fija else "")
     threading.Thread(target=watch_interruptions, args=(agent, maquina.Interruptions()), daemon=True,
                      name="aviso-nube").start()
     agent.run()

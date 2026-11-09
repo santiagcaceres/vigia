@@ -1,0 +1,10 @@
+[Unit]
+Description=Vigía: actualizar el programa cada noche
+
+[Timer]
+# hora UTC (07:30 = 04:30 en Uruguay, con los locales cerrados). La cambia ACTUALIZAR_HORA al instalar.
+OnCalendar=*-*-* 07:30:00 UTC
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

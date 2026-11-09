@@ -1,0 +1,9 @@
+[Unit]
+Description=Vigía: bajar la última versión y volver a arrancar el análisis (máquinas que no se apagan nunca)
+
+[Service]
+Type=oneshot
+# lo mismo que pasa cuando la máquina prende: git pull + dependencias, y después arrancan de nuevo el análisis y,
+# si está en esta máquina, el encendedor. Tarda menos de un minuto; las cámaras se reconectan solas.
+ExecStart=/usr/bin/systemctl restart vigia-actualizar.service
+ExecStart=/usr/bin/systemctl try-restart 'vigia-maquina@*.service' 'vigia-escalado*.service'

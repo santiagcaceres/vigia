@@ -1,0 +1,435 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Analítica Crítica en la cuenta de AWS de Tigo (N. Virginia): dos máquinas de análisis con placa de video (g4dn),
+  cada una con su IP pública fija, en una subred pública sin puertos de entrada. La primera queda siempre prendida
+  (la de la reserva o Savings Plan) y prende y apaga la segunda según el horario de los locales. Sin VPN, sin
+  balanceador, sin NAT y sin S3. Ver deploy/aws/TIGO.md.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W1030  # VpcId y SubredId van vacíos cuando la red la crea la plantilla (la regla «RedCompleta» los revisa)
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Analítica Crítica"}
+        Parameters: [ClaveMaquinasParametro, ServidorVigia, Repositorio]
+      - Label: {default: "Máquinas de análisis"}
+        Parameters: [TipoFija, SegundaMaquina, TipoSegunda, TopeCamaras, HoraActualizar, Imagen, DiscoGB]
+      - Label: {default: "Red (vacío = la crea esta plantilla)"}
+        Parameters: [VpcId, SubredId, Zona, RedCidr]
+    ParameterLabels:
+      ClaveMaquinasParametro: {default: "Parámetro (SecureString) con la clave de máquinas"}
+      TipoFija: {default: "Máquina fija (siempre prendida)"}
+      SegundaMaquina: {default: "¿Crear la segunda máquina?"}
+      TipoSegunda: {default: "Segunda máquina (se prende según el horario)"}
+      TopeCamaras: {default: "Tope de cámaras por máquina (hasta comprobarlo)"}
+      HoraActualizar: {default: "Hora (UTC) de la actualización de cada noche"}
+      DiscoGB: {default: "Disco en GB (0 = el de la imagen)"}
+      VpcId: {default: "VPC que ya existe"}
+      SubredId: {default: "Subred pública que ya existe"}
+      Zona: {default: "Zona (solo si la red la crea la plantilla)"}
+
+Parameters:
+  ClaveMaquinasParametro:
+    Type: String
+    Default: /vigia/clave-maquinas
+    AllowedPattern: "^/[A-Za-z0-9_.\\-/]+$"
+    Description: >-
+      Nombre del parámetro de Systems Manager (Parameter Store, tipo SecureString) donde se guardó la clave de
+      máquinas que da la app (Máquinas → Más → Clave para máquinas nuevas). Se crea a mano antes de la pila.
+  ServidorVigia:
+    Type: String
+    Default: https://analitica-critica.vercel.app
+  Repositorio:
+    Type: String
+    Default: https://github.com/santiagcaceres/vigia.git
+  TipoFija:
+    Type: String
+    Default: g4dn.xlarge
+    AllowedValues: [g4dn.xlarge, g4dn.2xlarge, g4dn.4xlarge]
+    Description: >-
+      Todas traen la misma placa (NVIDIA T4). xlarge = 4 vCPU y 16 GB; 2xlarge = 8 vCPU y 32 GB (el doble de
+      procesador para recibir y decodificar el video). Se puede cambiar después acá mismo (la máquina se apaga unos
+      minutos); la IP no cambia.
+  SegundaMaquina:
+    Type: String
+    Default: "si"
+    AllowedValues: ["si", "no"]
+    Description: >-
+      «no» para la primera prueba (una sola máquina). Después se pasa a «si» y la plantilla la agrega sin tocar la
+      primera.
+  TipoSegunda:
+    Type: String
+    Default: g4dn.xlarge
+    AllowedValues: [g4dn.xlarge, g4dn.2xlarge, g4dn.4xlarge]
+  TopeCamaras:
+    Type: Number
+    Default: 60
+    MinValue: 5
+    MaxValue: 300
+    Description: >-
+      Cada máquina mide al instalarse cuántas cámaras aguanta, pero no anota más que esto hasta comprobarlo con
+      cámaras de verdad. Vale solo al crear la máquina (después se cambia en /etc/vigia/maquina.env).
+  HoraActualizar:
+    Type: String
+    Default: "07:30"
+    AllowedPattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+    Description: >-
+      La máquina fija no se apaga nunca: cada noche a esta hora (UTC; 07:30 = 04:30 en Uruguay) baja la última
+      versión del programa y vuelve a arrancar el análisis (menos de un minuto).
+  Imagen:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id
+    Description: >-
+      Ubuntu 24.04 con el driver de NVIDIA ya instalado («Deep Learning Base OSS Nvidia Driver GPU AMI», la publica
+      AWS; se resuelve sola a la última).
+  DiscoGB:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 500
+    Description: 0 = el tamaño que trae la imagen (no puede ser menor). El programa ocupa unos 10 GB.
+  VpcId:
+    Type: String
+    Default: ""
+    Description: >-
+      Vacío: la plantilla crea una red chica con una subred pública y su Internet Gateway (sin NAT). Si Tigo ya
+      armó la red, acá va el id de la VPC (vpc-…) y abajo el de la subred pública.
+  SubredId:
+    Type: String
+    Default: ""
+    Description: Subred pública (con ruta al Internet Gateway) de esa VPC (subnet-…). Vacío si la red la crea la plantilla.
+  Zona:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+    Description: >-
+      Si AWS dice que no hay máquinas g4dn en esta zona, probar otra (us-east-1b, c, d o f). No se usa si la red ya
+      existe.
+  RedCidr:
+    Type: String
+    Default: 10.77.0.0/24
+    AllowedPattern: "^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/(1[6-9]|2[0-8])$"
+    Description: Direcciones internas de la red nueva (no se usa si la red ya existe).
+
+Rules:
+  RedCompleta:
+    RuleCondition: !Not [!Equals [!Ref VpcId, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SubredId, ""]]
+        AssertDescription: Con una VPC que ya existe hay que indicar también su subred pública (SubredId).
+
+Conditions:
+  CrearRed: !Equals [!Ref VpcId, ""]
+  HaySegunda: !Equals [!Ref SegundaMaquina, "si"]
+  DiscoPropio: !Not [!Equals [!Ref DiscoGB, 0]]
+
+Resources:
+  # ------------------------------------------------------------------ red (solo si no existe)
+  Red:
+    Type: AWS::EC2::VPC
+    Condition: CrearRed
+    Properties:
+      CidrBlock: !Ref RedCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - {Key: Name, Value: analitica-critica}
+
+  Salida:
+    Type: AWS::EC2::InternetGateway
+    Condition: CrearRed
+    Properties:
+      Tags:
+        - {Key: Name, Value: analitica-critica}
+
+  SalidaEnLaRed:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CrearRed
+    Properties:
+      VpcId: !Ref Red
+      InternetGatewayId: !Ref Salida
+
+  SubredPublica:
+    Type: AWS::EC2::Subnet
+    Condition: CrearRed
+    Properties:
+      VpcId: !Ref Red
+      CidrBlock: !Ref RedCidr
+      AvailabilityZone: !Ref Zona
+      MapPublicIpOnLaunch: false  # cada máquina lleva su IP fija (Elastic IP)
+      Tags:
+        - {Key: Name, Value: analitica-critica-publica}
+
+  Rutas:
+    Type: AWS::EC2::RouteTable
+    Condition: CrearRed
+    Properties:
+      VpcId: !Ref Red
+      Tags:
+        - {Key: Name, Value: analitica-critica-publica}
+
+  RutaAInternet:
+    Type: AWS::EC2::Route
+    Condition: CrearRed
+    DependsOn: SalidaEnLaRed
+    Properties:
+      RouteTableId: !Ref Rutas
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Salida
+
+  RutasDeLaSubred:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CrearRed
+    Properties:
+      SubnetId: !Ref SubredPublica
+      RouteTableId: !Ref Rutas
+
+  # Las IP fijas y las máquinas tienen que esperar a que la red tenga salida a internet, pero solo cuando la red la
+  # crea esta plantilla (un «DependsOn» no puede apuntar a algo que a veces no existe): esta pieza no crea nada y
+  # nombra la salida y las rutas solo en ese caso; lo demás espera por ella.
+  RedLista:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Metadata:
+      Espera: !If
+        - CrearRed
+        - [!Ref SalidaEnLaRed, !Ref RutaAInternet, !Ref RutasDeLaSubred]
+        - []
+
+  SinEntrada:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Analitica Critica - sin puertos de entrada (las maquinas solo salen a los grabadores y al servidor)
+      VpcId: !If [CrearRed, !Ref Red, !Ref VpcId]
+      SecurityGroupEgress:
+        - {IpProtocol: "-1", CidrIp: 0.0.0.0/0, Description: "Salida a internet"}
+      Tags:
+        - {Key: Name, Value: vigia-sin-entrada}
+
+  # ------------------------------------------------------------------ permisos (roles, sin claves en ningún archivo)
+  RolFija:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: sts:AssumeRole}
+      ManagedPolicyArns:
+        # para entrar sin SSH ni puertos abiertos: Systems Manager → Session Manager
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: leer-clave-de-maquinas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ClaveMaquinasParametro}
+        - PolicyName: prender-y-apagar-la-segunda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+              # solo las máquinas con la etiqueta vigia-grupo=analisis (la segunda): ni la fija ni nada más de la cuenta
+              - Effect: Allow
+                Action: [ec2:StartInstances, ec2:StopInstances]
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals: {"aws:ResourceTag/vigia-grupo": analisis}
+              # prender una máquina con el disco cifrado: hace falta solo si la cuenta cifra con una clave propia
+              # (con la clave de AWS que viene, «aws/ebs», no se usa)
+              - Effect: Allow
+                Action: kms:CreateGrant
+                Resource: "*"
+                Condition:
+                  Bool: {"kms:GrantIsForAWSResource": true}
+                  StringEquals: {"kms:ViaService": !Sub "ec2.${AWS::Region}.amazonaws.com"}
+
+  PerfilFija:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref RolFija]
+
+  RolSegunda:
+    Type: AWS::IAM::Role
+    Condition: HaySegunda
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: sts:AssumeRole}
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: leer-clave-de-maquinas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ClaveMaquinasParametro}
+
+  PerfilSegunda:
+    Type: AWS::IAM::InstanceProfile
+    Condition: HaySegunda
+    Properties:
+      Roles: [!Ref RolSegunda]
+
+  # ------------------------------------------------------------------ máquina fija (siempre prendida)
+  # La IP fija se pega a una interfaz de red que se crea antes que la máquina: así la máquina ya prende con su IP
+  # (si se la pusiera después, la instalación se cortaría al cambiarle la IP por la mitad).
+  InterfazFija:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Analitica Critica - maquina fija
+      SubnetId: !If [CrearRed, !Ref SubredPublica, !Ref SubredId]
+      GroupSet: [!Ref SinEntrada]
+      Tags:
+        - {Key: Name, Value: vigia-fija}
+
+  IpFija:
+    Type: AWS::EC2::EIP
+    DependsOn: RedLista
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: vigia-fija}
+
+  IpEnLaFija:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn: RedLista
+    Properties:
+      AllocationId: !GetAtt IpFija.AllocationId
+      NetworkInterfaceId: !Ref InterfazFija
+
+  MaquinaFija:
+    Type: AWS::EC2::Instance
+    DependsOn: IpEnLaFija
+    Properties:
+      ImageId: !Ref Imagen
+      InstanceType: !Ref TipoFija
+      IamInstanceProfile: !Ref PerfilFija
+      NetworkInterfaces:
+        - {NetworkInterfaceId: !Ref InterfazFija, DeviceIndex: "0"}
+      MetadataOptions: {HttpTokens: required, HttpEndpoint: enabled, HttpPutResponseHopLimit: 1}
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !If [DiscoPropio, !Ref DiscoGB, !Ref "AWS::NoValue"]
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - {Key: Name, Value: vigia-fija}
+        # (otra etiqueta que la segunda: el encendedor no la puede apagar)
+        - {Key: vigia-grupo, Value: fija}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Primera vez que prende: instala Analítica Crítica, mide cuántas cámaras aguanta, se da de alta sola como
+          # máquina fija y deja andando el encendedor de la segunda. Todo queda escrito en /var/log/vigia-instalar.log
+          exec > /var/log/vigia-instalar.log 2>&1
+          echo "Instalación de Analítica Crítica (máquina fija): $(date -u)"
+          URL=https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh
+          for i in $(seq 1 60); do curl -fsSL "$URL" -o /root/instalar.sh && break; sleep 10; done
+          if VIGIA_POOL_KEY_SSM='${ClaveMaquinasParametro}' VIGIA_SERVER='${ServidorVigia}' VIGIA_REPO='${Repositorio}' \
+             AWS_REGION='${AWS::Region}' VIGIA_GPU=si VIGIA_FIJA=si CAPACIDAD_TOPE='${TopeCamaras}' \
+             ACTUALIZAR_DIARIO=si ACTUALIZAR_HORA='${HoraActualizar}' \
+             ENCENDEDOR=si VIGIA_NUBE=aws VIGIA_GRUPO=analisis VIGIA_MAX_MAQUINAS=1 VIGIA_RESPALDO=no \
+             bash /root/instalar.sh; then
+            echo "INSTALACIÓN TERMINADA BIEN: $(date -u)"
+          else
+            echo "LA INSTALACIÓN FALLÓ (ver el motivo arriba): $(date -u)"
+          fi
+
+  # ------------------------------------------------------------------ segunda máquina (la prende y apaga la fija)
+  InterfazSegunda:
+    Type: AWS::EC2::NetworkInterface
+    Condition: HaySegunda
+    Properties:
+      Description: Analitica Critica - segunda maquina
+      SubnetId: !If [CrearRed, !Ref SubredPublica, !Ref SubredId]
+      GroupSet: [!Ref SinEntrada]
+      Tags:
+        - {Key: Name, Value: vigia-segunda}
+
+  IpSegunda:
+    Type: AWS::EC2::EIP
+    Condition: HaySegunda
+    DependsOn: RedLista
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: vigia-segunda}
+
+  IpEnLaSegunda:
+    Type: AWS::EC2::EIPAssociation
+    Condition: HaySegunda
+    DependsOn: RedLista
+    Properties:
+      AllocationId: !GetAtt IpSegunda.AllocationId
+      NetworkInterfaceId: !Ref InterfazSegunda
+
+  MaquinaSegunda:
+    Type: AWS::EC2::Instance
+    Condition: HaySegunda
+    DependsOn: IpEnLaSegunda
+    Properties:
+      ImageId: !Ref Imagen
+      InstanceType: !Ref TipoSegunda
+      IamInstanceProfile: !Ref PerfilSegunda
+      NetworkInterfaces:
+        - {NetworkInterfaceId: !Ref InterfazSegunda, DeviceIndex: "0"}
+      MetadataOptions: {HttpTokens: required, HttpEndpoint: enabled, HttpPutResponseHopLimit: 1}
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !If [DiscoPropio, !Ref DiscoGB, !Ref "AWS::NoValue"]
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - {Key: Name, Value: vigia-segunda}
+        # el encendedor (en la máquina fija) prende y detiene las máquinas con esta etiqueta
+        - {Key: vigia-grupo, Value: analisis}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Primera vez que prende: instala Analítica Crítica, mide y se da de alta sola. Si no hace falta, a los
+          # pocos minutos la máquina fija la detiene (y la vuelve a prender cuando abran los locales).
+          exec > /var/log/vigia-instalar.log 2>&1
+          echo "Instalación de Analítica Crítica (segunda máquina): $(date -u)"
+          URL=https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh
+          for i in $(seq 1 60); do curl -fsSL "$URL" -o /root/instalar.sh && break; sleep 10; done
+          if VIGIA_POOL_KEY_SSM='${ClaveMaquinasParametro}' VIGIA_SERVER='${ServidorVigia}' VIGIA_REPO='${Repositorio}' \
+             AWS_REGION='${AWS::Region}' VIGIA_GPU=si CAPACIDAD_TOPE='${TopeCamaras}' \
+             ACTUALIZAR_DIARIO=si ACTUALIZAR_HORA='${HoraActualizar}' \
+             bash /root/instalar.sh; then
+            echo "INSTALACIÓN TERMINADA BIEN: $(date -u)"
+          else
+            echo "LA INSTALACIÓN FALLÓ (ver el motivo arriba): $(date -u)"
+          fi
+
+Outputs:
+  IpDeLaMaquinaFija:
+    Description: IP pública fija de la máquina fija (para permitirla en los routers de los clientes)
+    Value: !Ref IpFija
+  IpDeLaSegundaMaquina:
+    Condition: HaySegunda
+    Description: IP pública fija de la segunda máquina (también va en los routers de los clientes)
+    Value: !Ref IpSegunda
+  MaquinaFija:
+    Description: Instancia de la máquina fija (siempre prendida; ahí corre también el encendedor)
+    Value: !Ref MaquinaFija
+  SegundaMaquina:
+    Condition: HaySegunda
+    Description: Instancia de la segunda máquina (la prende y la detiene la fija según el horario de los locales)
+    Value: !Ref MaquinaSegunda
+  Registro:
+    Description: Dónde mirar si algo no anda
+    Value: >-
+      EC2 → la instancia → Connect → Session Manager. La instalación - sudo tail -50 /var/log/vigia-instalar.log ·
+      el análisis - sudo journalctl -u 'vigia-maquina@*' -n 100 --no-pager · el encendedor (en la fija) -
+      sudo journalctl -u vigia-escalador -n 100 --no-pager

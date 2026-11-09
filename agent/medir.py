@@ -163,6 +163,8 @@ def main() -> None:
     p.add_argument("--nucleos", type=int, default=None, help="usar solo estos núcleos (para comparar tamaños)")
     p.add_argument("--numero", action="store_true",
                    help="solo el número de cámaras (lo usa deploy/maquina-analisis/instalar.sh)")
+    p.add_argument("--json", action="store_true",
+                   help="todo lo medido en una línea JSON (cámaras y dónde corre el detector: lo usa instalar.sh)")
     p.add_argument("--gestos", action="store_true",
                    help="sumar la postura de ~2 personas por cuadro (gestos de ocultamiento); con --numero, el "
                         "número con gestos")
@@ -170,6 +172,11 @@ def main() -> None:
                    help="modelo de postura (por defecto models/postura.onnx)")
     a = p.parse_args()
     r = measure(a.modelo, a.segundos, a.nucleos, gestures=a.gestos, pose_model=a.postura)
+    if a.json:
+        import json
+
+        print(json.dumps(r))
+        return
     if a.numero:
         print(max(1, int(r["cameras_gestures"] if a.gestos else r["cameras"])))
         return

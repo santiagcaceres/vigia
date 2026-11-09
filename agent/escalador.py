@@ -22,6 +22,9 @@ Nubes:
   demanda con `VIGIA_RESPALDO=si`). Para bajar, detiene las de a demanda y termina las Spot (una Spot común no
   se puede detener). Permisos: ec2:DescribeInstances, ec2:StartInstances, ec2:StopInstances,
   ec2:TerminateInstances (y ec2:RunInstances + ec2:CreateTags si se usa plantilla).
+  Con una **máquina fija** (siempre prendida, la de la reserva de AWS; se instala con `VIGIA_FIJA=si` y otra
+  etiqueta, ver deploy/aws/TIGO.md) el encendedor maneja solo las demás: prende la segunda cuando la fija no alcanza
+  y la detiene cuando el servidor la vació. Puede correr en la misma máquina fija.
 - `ninguna`: no prende ni apaga nada, solo registra cuántas máquinas harían falta (una nube que no se maneja por
   programa: se prenden a mano).
 """
@@ -84,6 +87,13 @@ def _excess_to_stop(plan: dict, running: list[Instance], excess: int, now: datet
     return (drained + broken)[:excess]
 
 
+def _fixed(plan: dict) -> set[str]:
+    """Las máquinas fijas en línea (siempre prendidas, la de la reserva): cuentan para el plan, pero el encendedor
+    no las prende ni las apaga. Las descuenta de las que le toca tener prendidas y, si alguna está en su grupo por
+    error, no la toca."""
+    return set(plan.get("fixed_instances") or [])
+
+
 def _active(plan: dict, instances: list[Instance]) -> list[Instance]:
     """Prendidas (o prendiéndose) que van a seguir: las que la nube ya reclamó (Spot) no cuentan."""
     leaving = set(plan.get("leaving_instances") or [])
@@ -94,7 +104,9 @@ def decide(plan: dict, instances: list[Instance], max_machines: int, can_launch:
            now: datetime | None = None) -> Decision:
     """Qué prender y qué apagar con máquinas EC2 sueltas (sin tocar nada: solo decide)."""
     now = now or datetime.now(timezone.utc)
-    desired = max(0, min(int(plan.get("desired") or 0), max_machines))
+    fixed = _fixed(plan)
+    instances = [i for i in instances if i.id not in fixed]
+    desired = max(0, min(int(plan.get("desired") or 0) - len(fixed), max_machines))
     running = _active(plan, instances)
     stopped = sorted((i for i in instances if i.state == "stopped"), key=lambda i: i.id)
     start: list[str] = []
@@ -114,7 +126,9 @@ def decide_asg(plan: dict, group_desired: int, group_max: int, instances: list[I
     """Con un grupo de Auto Scaling: subir la cantidad deseada si faltan máquinas; si sobran, terminar las que el
     servidor ya vació (una por una, bajando la cantidad deseada). Las que la nube reclamó las repone el grupo."""
     now = now or datetime.now(timezone.utc)
-    want = max(0, min(int(plan.get("desired") or 0), max_machines, group_max))
+    fixed = _fixed(plan)
+    instances = [i for i in instances if i.id not in fixed]
+    want = max(0, min(int(plan.get("desired") or 0) - len(fixed), max_machines, group_max))
     if want > group_desired:
         return AsgDecision(want)
     running = _active(plan, instances)
@@ -144,6 +158,7 @@ class AwsPool:
         self.spot = spot
         self.types = [t for t in (types or []) if t]
         self.fallback = fallback
+        self._wanted: set[str] = set()  # las detenidas que hizo falta prender en la revisión anterior
 
     def instances(self) -> list[Instance]:
         out = []
@@ -206,9 +221,14 @@ class AwsPool:
     def apply(self, plan: dict, max_machines: int, now: datetime | None = None) -> Decision:
         instances = self.instances()
         d = decide(plan, instances, max_machines, bool(self.template), now)
-        if d.start:
-            log.info("Prendiendo %d máquina(s): %s", len(d.start), ", ".join(d.start))
-            self.start(d.start)
+        # Una máquina detenida se prende recién cuando hizo falta en dos revisiones seguidas (un minuto): si otra deja
+        # de contestar un momento (la fija se actualiza cada noche), no se prende por nada. No atrasa nada: el plan
+        # mira 20 minutos adelante.
+        start = [i for i in d.start if i in self._wanted]
+        self._wanted = set(d.start)
+        if start:
+            log.info("Prendiendo %d máquina(s): %s", len(start), ", ".join(start))
+            self.start(start)
         if d.launch:
             log.info("Creando %d máquina(s) nueva(s) con la plantilla", d.launch)
             self.launch(d.launch)
@@ -279,7 +299,7 @@ def tick(server: str, key: str, cloud, max_machines: int, http: httpx.Client):
     r.raise_for_status()
     plan = r.json()
     p = {**(plan.get("plan") or plan), "online_instances": plan.get("online_instances"),
-         "leaving_instances": plan.get("leaving_instances")}
+         "leaving_instances": plan.get("leaving_instances"), "fixed_instances": plan.get("fixed_instances")}
     return cloud.apply(p, max_machines)
 
 

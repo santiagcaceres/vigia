@@ -1132,6 +1132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             m.online = m.online or is_online(a, now)
             m.draining = m.draining and bool(a.draining)
             m.leaving = m.leaving or is_leaving(a)
+            m.fixed = m.fixed or is_fixed(a)
             m.capacity += capacity_of(a, cap)
             m.load += load.get(a.id, 0.0)
         for m in groups.values():
@@ -1140,6 +1141,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def is_leaving(a: Agent) -> bool:
         return bool((a.last_status or {}).get("leaving"))
+
+    def is_fixed(a: Agent) -> bool:
+        """Máquina fija (siempre prendida, no la maneja el encendedor): lo dice ella en cada estado (`VIGIA_FIJA`)."""
+        return bool((a.last_status or {}).get("fixed"))
 
     def try_lock(s) -> bool:
         """Un solo reparto a la vez (Vercel puede atender dos pedidos juntos)."""
@@ -1163,11 +1168,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return False
         set_setting(s, "balance_at", now.isoformat())
         cap = pool_capacity(s)
-        servers = {a.id: capacity_of(a, cap) for a in server_agents(s) if is_online(a, now) and not a.draining}
+        agents = server_agents(s)
+        cams, (w_now, w_soon) = camera_weights(s, [now, pool.soon(now)])
+        if any(a.draining for a in agents):
+            # Una máquina marcada para vaciar que vuelve a hacer falta (la otra se cayó o la apagaron) recibe cámaras
+            # de nuevo acá, sin esperar al encendedor. Marcar para vaciar lo hace solo el encendedor
+            # (/api/agent/scale); pero si el encendedor vive en la máquina que se cayó, nadie la desmarcaba y las
+            # cámaras quedaban sin analizar
+            spare = int(setting(s, "pool_spare", "0") or 0)
+            ms = machines_of(s, now, w_now)
+            p = pool.plan(sum(w_now.values()), sum(w_soon.values()), ms, cap, spare if cams else 0)
+            needed = {aid for m in ms if m.online and p.draining.get(m.key) is False for aid in m.agent_ids}
+            for a in agents:
+                if a.draining and a.id in needed:
+                    a.draining = False
+                    log.info("Máquina %r vuelve a recibir cámaras (hace falta de nuevo)", a.name)
+        servers = {a.id: capacity_of(a, cap) for a in agents if is_online(a, now) and not a.draining}
         if not servers:
             s.commit()
             return False
-        cams, (w_now,) = camera_weights(s, [now])
         result = pool.assign([(c.id, w_now.get(c.id, 0.0), c.agent_id) for c in cams], servers)
         moved = 0
         for c in cams:
@@ -1228,8 +1247,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "cameras": len(cams), "cameras_active": open_now,
                 "online_instances": [m.instance_id for m in ms if m.online and m.instance_id],
                 "leaving_instances": [m.instance_id for m in ms if m.leaving and m.instance_id],
+                # las fijas en línea: el encendedor las descuenta de las que tiene que prender y nunca las toca
+                "fixed_instances": [m.instance_id for m in ms if m.fixed and m.online and m.instance_id],
                 "machines": [{"key": m.key, "instance_id": m.instance_id, "names": m.names, "agent_ids": m.agent_ids,
-                              "online": m.online, "draining": m.draining, "leaving": m.leaving,
+                              "online": m.online, "draining": m.draining, "leaving": m.leaving, "fixed": m.fixed,
                               "capacity": m.capacity, "last_seen": seen.get(m.key),
                               "load": round(m.load, 2), "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
                              for m in ms]}
@@ -2924,6 +2945,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for k in ("batch_avg", "frames_per_s"):
                 if isinstance(payload.get(k), (int, float)):
                     a.last_status = {**a.last_status, k: payload[k]}
+            if payload.get("fixed") is True:  # máquina fija: siempre prendida, no se vacía ni se apaga (pool.py)
+                a.last_status = {**a.last_status, "fixed": True}
+                a.draining = False
         s.commit()
         if (a.kind or "pc") == "servidor":
             rebalance(s)

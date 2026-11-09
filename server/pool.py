@@ -8,6 +8,8 @@ máquinas hacen falta prendidas. Solo funciones puras: la base de datos la manej
   van a la menos cargada. Si una máquina se cae (90 s sin noticias), sus cámaras pasan a las otras.
 - **Plan**: cuántas máquinas tienen que estar prendidas (mirando también los próximos 20 min, para
   prenderlas antes de que abran los locales) y cuáles se pueden apagar (ya sin cámaras).
+- **Máquina fija** (`Machine.fixed`, la avisa la máquina con `VIGIA_FIJA=si`): siempre prendida (la de la reserva
+  de AWS). Cuenta para el plan como cualquiera, pero no se vacía ni se apaga: lo que sobra es siempre de las otras.
 """
 
 from __future__ import annotations
@@ -93,6 +95,9 @@ class Machine:
     load: float  # peso de las cámaras que tiene ahora
     names: list[str] = field(default_factory=list)
     leaving: bool = False  # la nube avisó que se la lleva (Spot): no cuenta como prendida
+    # máquina fija: está siempre prendida (la de la reserva o «Savings Plan») y no la maneja el encendedor. Es la
+    # última en vaciarse: si alcanza con una máquina, se queda ella y se apaga la otra (que se paga por hora)
+    fixed: bool = False
 
 
 @dataclass
@@ -116,9 +121,10 @@ def plan(units_now: float, units_soon: float, machines: list[Machine], default_c
     cap = caps[len(caps) // 2] if caps else default_capacity
     desired = 0 if units <= 1e-9 else math.ceil(units / (cap * HEADROOM)) + max(0, spare)
     online = [m for m in machines if m.online]
-    # se quedan las que ya estaban trabajando (las más cargadas); el resto se vacía para apagarla
-    ordered = sorted(online, key=lambda m: (m.draining, -m.load, m.key))
-    extra = ordered[desired:]
+    # se quedan las fijas (ya están pagas y nadie las apaga) y, después, las que ya estaban trabajando (las más
+    # cargadas); el resto se vacía para apagarla. Una fija nunca se vacía
+    ordered = sorted(online, key=lambda m: (not m.fixed, m.draining, -m.load, m.key))
+    extra = [m for m in ordered[desired:] if not m.fixed]
     draining = {m.key: m in extra for m in online}
     stop = [m.instance_id for m in extra if m.instance_id and m.load <= 1e-9]
     return Plan(units, cap, desired, len(online), draining, stop)

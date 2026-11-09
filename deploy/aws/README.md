@@ -1,4 +1,8 @@
-# Analítica Crítica en AWS (pensado para Tigo)
+# Analítica Crítica en AWS
+
+> **Lo acordado con Tigo (noviembre 2026)** —N. Virginia, dos máquinas con placa de video (g4dn) con IP fija, una
+> siempre prendida y otra que se prende según el horario— está en **[TIGO.md](TIGO.md)**, con su plantilla
+> `tigo-virginia.yaml`. Lo de abajo es la otra variante: máquinas Spot sin placa en São Paulo, de cero a N.
 
 Una plantilla de CloudFormation (`vigia-analisis.yaml`) arma todo lo que hace falta en una cuenta de AWS para
 analizar las cámaras en la nube. El panel, la base y la app no cambian: siguen en Vercel y Supabase.
@@ -105,8 +109,8 @@ estaban en la nube (si no, quedan esperando una máquina).
   Intel y AMD de AWS (c6a, c7i, c5a) cada vCPU es medio núcleo, en Graviton es uno entero. `c7a` (AMD sin
   hyperthreading) no existe en São Paulo.
 - **Máquinas con placa de video** (g4dn, g6: estimado 40-80 cámaras por máquina) necesitan otra imagen (Deep
-  Learning AMI con el driver de NVIDIA) y x86: hoy se arman a mano con `deploy/maquina-analisis/README.md`.
-  **Sin probar.**
+  Learning AMI con el driver de NVIDIA) y x86: las arma `tigo-virginia.yaml` (ver [TIGO.md](TIGO.md)) o se hacen a
+  mano con `deploy/maquina-analisis/README.md`. **Sin probar en una placa de verdad.**
 - **Sin el grupo de Auto Scaling:** el encendedor también maneja máquinas EC2 sueltas (`VIGIA_NUBE=aws`, con
   `VIGIA_SPOT=si`, `VIGIA_TIPOS=c7g.xlarge,c6g.xlarge` y `VIGIA_RESPALDO=si` para crear a demanda si no hay Spot).
 - **Las máquinas viejas** (terminadas, que no se ven hace 3 días) se borran solas de la lista de la app.

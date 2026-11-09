@@ -24,7 +24,7 @@ Máquinas → «Más» → **Clave para máquinas nuevas** → copiala (no se vu
 ## 1. La primera máquina (AWS, región São Paulo `sa-east-1`)
 
 1. EC2 → **Lanzar instancia**:
-   - Imagen: **Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)** (ya trae el driver de NVIDIA).
+   - Imagen: **Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)** (ya trae el driver de NVIDIA).
    - Tipo: **g6.xlarge** para probar (1 NVIDIA L4, 4 vCPU). Para producción, g6.2xlarge o g6.4xlarge (más
      procesador para decodificar más cámaras).
    - Disco: 60 GB gp3. Grupo de seguridad: **sin puertos de entrada** (solo SSH desde tu IP para instalar).
@@ -36,11 +36,14 @@ Máquinas → «Más» → **Clave para máquinas nuevas** → copiala (no se vu
    sudo VIGIA_POOL_KEY=vgm_LA_CLAVE bash instalar.sh
    ```
 
-   Corre 2 procesos de 15 cámaras cada uno (`PROCESOS=3 CAPACIDAD=12` para cambiarlo).
+   Corre 2 procesos (4 si la máquina tiene 8 vCPU o más), **mide** cuántas cámaras aguanta y anota como mucho 60
+   por máquina hasta comprobarlo (`CAPACIDAD_TOPE=120`, o `PROCESOS=3 CAPACIDAD=12` para fijarlo a mano). Con
+   `VIGIA_GPU=si` la instalación falla si el detector no queda usando la placa, en vez de analizar con el
+   procesador. Con todo armado por plantilla (red, IP fija, máquina fija y encendedor): `deploy/aws/TIGO.md`.
 3. Mirá el registro: `journalctl -u 'vigia-maquina@*' -f`. Tiene que decir **«Detector de personas en GPU
    (CUDA) (lotes de hasta 16 cuadros)»** y «Máquina … dada de alta». Si dice «en procesador», la placa no se
-   está usando: revisá `nvidia-smi` (el driver tiene que ser 580 o más nuevo; si es más viejo, instalá
-   `onnxruntime-gpu[cuda,cudnn]==1.22.*` en `/opt/vigia/.venv`).
+   está usando: revisá `nvidia-smi` (el driver tiene que ser 580 o más nuevo; si es más viejo hace falta
+   `onnxruntime-gpu[cuda,cudnn]==1.22.*` en `/opt/vigia/.venv`: el instalador lo prueba solo).
 4. En la app, Máquinas → «Se analizan» → **Todas las cámaras** (o marcá cada cámara con «Analizar» en Clientes) → Guardar.
    Mientras no haya ninguna máquina en línea, las cámaras siguen en la PC de cada usuario.
 

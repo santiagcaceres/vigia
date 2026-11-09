@@ -1053,6 +1053,40 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     clave de SSM con `VIGIA_POOL_KEY_SSM` (boto3 + región por IMDS), espera el candado de apt (`DPkg::Lock::Timeout`)
     y sirve en ARM. El cron diario borra las máquinas que no se ven hace 3 días (`MACHINE_FORGET`).
   - Tipos en sa-east-1 (datos de cfn-lint): sí c6g/c7g/**c8g**/m7g/c6a/c5a/c7i/g4dn/g6/t4g; **no** c7a, t2d, g5g.
+- **Mudanza a AWS con Tigo: máquina fija + segunda por horario (9 nov, el dueño: «prepará todo para migrar con ellos a
+  AWS en estos días»).** Tigo confirmó por mail: todo en **N. Virginia (`us-east-1`)**, sin VPN Site-to-Site, sin NLB y
+  sin S3 (agregan un Internet Gateway), subred pública sin puertos de entrada y sin NAT, **una Elastic IP por máquina**
+  (para que los clientes por puertos permitan solo esas IP), permisos para que nuestro sistema prenda y apague la
+  segunda, ellos piden el cupo de instancias G (16 vCPU), la reserva es un **EC2 Instance Savings Plan de 12 meses** de
+  la familia g4dn (sirve para cualquier tamaño; cambiar de xlarge a 2xlarge tarda < 10 min, sin penalidad), nosotros
+  administradores y ellos cogestión solo de la infraestructura, sin depósito, y no es reventa. Los precios de su
+  cotización no van en este repo público.
+  - **`deploy/aws/tigo-virginia.yaml`** (pasa `cfn-lint`; **sin crear en una cuenta real**) + guía **`deploy/aws/TIGO.md`**:
+    red propia opcional (VPC + subred pública + IGW; o la VPC y subred de Tigo), grupo de seguridad sin entrada, dos
+    g4dn (parámetros `TipoFija`/`TipoSegunda`; `SegundaMaquina=no` para probar con una) sobre la «Deep Learning Base OSS
+    Nvidia Driver GPU AMI (Ubuntu 24.04)» (parámetro público de SSM), disco cifrado, IMDSv2, cada una con su Elastic IP
+    pegada a una interfaz creada antes que la máquina (prende ya con su IP). Roles: la fija puede
+    `ec2:StartInstances/StopInstances` solo sobre instancias con `vigia-grupo=analisis` (la segunda).
+  - **Máquina fija** (`VIGIA_FIJA=si` → `--fija` → el estado manda `fixed` → `last_status.fixed` → `pool.Machine.fixed`):
+    la de la reserva, siempre prendida. En el plan va primera y **nunca se vacía ni figura para apagar**; si alcanza con
+    una, se vacía la otra aunque esté más cargada. `/api/agent/scale` trae `fixed_instances`; el encendedor
+    (`agent/escalador.py`, nube `aws`, **corre en la misma fija**: `ENCENDEDOR=si`) las descuenta de las que le toca
+    prender y maneja solo la segunda (etiqueta `vigia-grupo=analisis`; la fija lleva `fija`). Una detenida se prende
+    recién si hizo falta en dos revisiones seguidas (la fija se reinicia cada noche y puede figurar caída un momento).
+  - **`rebalance` desmarca sola una máquina «para vaciar» que vuelve a hacer falta** (antes solo lo hacía el encendedor
+    con `/api/agent/scale`: con el encendedor caído las cámaras quedaban sin analizar).
+  - **`instalar.sh`:** `VIGIA_GPU=si` (espera el driver; si el detector no queda en la placa prueba
+    `onnxruntime-gpu==1.22.*` y, si tampoco, **falla en vez de analizar con el procesador**), mide también con placa
+    (`agent.medir --json`) con tope `CAPACIDAD_TOPE` (60 por máquina), 2 procesos (4 con 8 vCPU o más), `placa.conf`
+    (`ExecStartPre=nvidia-smi -L`: sin driver el análisis no arranca y la máquina figura sin conexión),
+    `ACTUALIZAR_DIARIO=si` (`vigia-actualizar-diario.timer`, 07:30 UTC: `git pull` y reinicio del análisis cada noche,
+    porque una máquina que no se apaga no se actualiza sola).
+  - **La mudanza:** al darse de alta la fija, su encendedor marca la máquina de Google para vaciar y todas las cámaras
+    pasan a AWS solas; la de Google queda prendida y vacía de respaldo (si se detiene la fija, vuelven solas en ~2 min).
+  - **Sin probar:** el análisis en una placa de video real (nunca corrió), cuántas cámaras aguanta una g4dn (la placa
+    es la misma en xlarge y 2xlarge: la 2xlarge solo suma procesador para decodificar), la plantilla en una cuenta real.
+    **Falta:** la pestaña «Máquinas» de la app no ve ni maneja AWS (solo Google); si la fija se cae no hay encendedor
+    (prender la segunda a mano). Pruebas: `tests/test_maquina_fija.py` (el instalador, con programas de mentira).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
