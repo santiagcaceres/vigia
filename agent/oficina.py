@@ -8,7 +8,7 @@ Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «E
 sin analizarla, la arma `Ventana`). Cada cosa se hace en UN solo lugar (pedido del dueño, 29 oct: «sin cosas que se
 repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
 - Clientes: a la izquierda los clientes; a la derecha el cliente elegido (Editar cliente, Métricas → Exportar a Excel,
-  Más: entrenamiento y eliminar) y sus cámaras, con una sola barra: «✎ Marcar zonas» (`ZonesEditor`), «● En vivo» y
+  Más: entrenar su IA, en la pestaña «Entrenar IA hurtos», y eliminar) y sus cámaras, con una sola barra: «✎ Marcar zonas» (`ZonesEditor`), «● En vivo» y
   «🎞 Clips» (`TuneWindow`: la cámara con la IA de esta PC, en vivo o con clips; cuenta las personas por zona, alertas
   de prueba, tiempos, gestos y aprobar; motor en agent/ajuste.py), «Analizar» / «Dejar de analizar» (cambia según lo
   elegido), «Editar» (conexión, nombre, tipo, qué mide) y «Más» (qué mide de varias a la vez, probar conexión, bajar
@@ -17,6 +17,9 @@ repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
   cliente); los números se suman por cliente.
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
   "Avisar al cliente".
+- Entrenar IA hurtos (admin y operador; agent/entrenar_ia.py): clips analizados en esta PC con YOLO y la postura (el
+  video no sale de la PC), marcar quién roba y cuándo, y entrenar las dos IA: la de movimientos de hurto
+  (core/hurto_ia.py) y el filtro de alertas (server/training.py). Todo lo de entrenar está ahí.
 - Máquinas (solo admin): cada máquina de análisis, si está prendida en Google Cloud (`/api/cloud`, server/nube.py) y si
   el sistema la ve en línea, con qué analiza (máquina → cliente → cámara); «Prender», «Apagar» y «Reiniciar»; el
   reparto (qué se analiza y cuántas cámaras por máquina). Google Cloud se conecta con la clave de una cuenta de servicio.
@@ -87,6 +90,7 @@ BRAND_SEL = {"hikvision": "Hikvision", "dahua": "Dahua", "hikconnect": "Hikvisio
 STREAM_NAMES = {"sub": "Secundaria (recomendada: menos internet)", "main": "Principal (más resolución y más internet)"}
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador",
+              "hurto_ia": "Posible hurto (IA de movimientos)",  # core.rules.HURTO_IA (la IA de «Entrenar IA hurtos»)
               **GESTURE_NAMES}  # gestos de ocultamiento (postura): «Mano al bolsillo», «Mano dentro de la ropa»…
 LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falso positivo"}
 LABEL_KEYS = {"1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo"}
@@ -572,6 +576,7 @@ class Api:
     def __init__(self, server: str, token: str | None = None, verify: bool | str = True):
         self.server = server.rstrip("/")
         self.http = httpx.Client(base_url=self.server, timeout=40.0, verify=verify, follow_redirects=True)
+        self.verify = verify
         self.token = token
         self.user: dict | None = None
 
@@ -620,6 +625,31 @@ class Api:
     def download(self, path: str) -> bytes:
         """Baja un archivo de la API (sigue la redirección a la URL firmada del almacenamiento)."""
         r = self.http.get(path)
+        if r.status_code >= 400:
+            raise ApiError(f"No se pudo bajar el archivo ({r.status_code})", r.status_code)
+        return r.content
+
+    def upload(self, url: str, data: bytes, content_type: str) -> None:
+        """Sube un archivo a una URL firmada del almacenamiento (directo, sin pasar por Vercel: no acepta más de 4,5
+        MB). Una dirección «/…» es el almacenamiento local del servidor (desarrollo)."""
+        headers = {"Content-Type": content_type, "x-upsert": "true"}
+        try:
+            if url.startswith("/"):
+                r = self.http.put(url, content=data, headers=headers)
+            else:  # (sin la sesión: la URL firmada ya trae el permiso)
+                r = httpx.put(url, content=data, headers=headers, timeout=120.0, verify=self.verify)
+        except httpx.HTTPError as exc:
+            raise ApiError(f"No se pudo subir el archivo ({type(exc).__name__})") from exc
+        if r.status_code >= 400:
+            raise ApiError(f"No se pudo subir el archivo ({r.status_code})", r.status_code)
+
+    def fetch(self, url: str) -> bytes:
+        """Baja un archivo de una URL firmada del almacenamiento (o «/…» del servidor)."""
+        try:
+            r = (self.http.get(url) if url.startswith("/") else
+                 httpx.get(url, timeout=120.0, verify=self.verify, follow_redirects=True))
+        except httpx.HTTPError as exc:
+            raise ApiError(f"No se pudo bajar el archivo ({type(exc).__name__})") from exc
         if r.status_code >= 400:
             raise ApiError(f"No se pudo bajar el archivo ({r.status_code})", r.status_code)
         return r.content
@@ -810,8 +840,13 @@ class Oficina:
         self.tab_alerts = ttk.Frame(notebook, padding=8)
         notebook.add(self.tab_clients, text="  Clientes  ")
         notebook.add(self.tab_alerts, text="  Alertas  ")
+        # todo lo de entrenar (pedido del dueño, 9 nov: «en la app todo lo de entrenamiento»), admin y operador
+        self.tab_train = ttk.Frame(notebook, padding=8)
+        notebook.add(self.tab_train, text="  Entrenar IA hurtos  ")
         self._build_clients()
         self._build_alerts()
+        from .entrenar_ia import EntrenarIA
+        self.trainer = EntrenarIA(self, self.tab_train)
         if self.is_admin:
             self.tab_mq = ttk.Frame(notebook, padding=8)
             notebook.add(self.tab_mq, text="  Máquinas  ")
@@ -1007,6 +1042,8 @@ class Oficina:
                 self.clients, self.cameras, self.agents, self.alert_counts = res
                 self._fill_clients(keep_info=True)
                 self._fill_alert_filters()
+                if getattr(self, "trainer", None) is not None:
+                    self.trainer.clients_changed()
             self.bg.run(lambda: (self.api.get("/api/clients"), self.api.get("/api/cameras"),
                                  self.api.get("/api/agents"), self.api.get("/api/stats/alerts")),
                         done, lambda e: log.debug("No se pudo poner al día la lista de clientes: %s", e))
@@ -1027,6 +1064,8 @@ class Oficina:
                 on_done()
             self._fill_clients()
             self._fill_alert_filters()
+            if getattr(self, "trainer", None) is not None:
+                self.trainer.clients_changed()
             if self.is_admin:  # después de los clientes: muestran sus nombres (antes salía «—» si llegaban primero)
                 self.load_users()
                 try:
@@ -1073,13 +1112,15 @@ class Oficina:
         ch.pack(fill="x")
         self.cl_title = ttk.Label(ch, text="Elegí un cliente", style="Titulo.TLabel")
         self.cl_title.pack(side="left")
+        more = ttk.Menubutton(ch, text="Más", width=6)
+        self.cl_menu = tk.Menu(more, tearoff=False)
+        # (entrenar está todo en su pestaña: esto la abre con el cliente elegido)
+        self.cl_menu.add_command(label="Entrenar su IA de hurtos…", command=self.training_dialog)
         if self.is_admin:
-            more = ttk.Menubutton(ch, text="Más", width=6)
-            self.cl_menu = tk.Menu(more, tearoff=False)
+            self.cl_menu.add_separator()
             self.cl_menu.add_command(label="Eliminar cliente…", command=self.delete_client)
-            more["menu"] = self.cl_menu
-            more.pack(side="right")
-        ttk.Button(ch, text="Entrenar modelo…", command=self.training_dialog).pack(side="right", padx=6)
+        more["menu"] = self.cl_menu
+        more.pack(side="right", padx=(6, 0))
         ttk.Button(ch, text="Métricas", command=self.metrics_dialog).pack(side="right")
         ttk.Button(ch, text="Editar cliente", command=lambda: self.client_dialog(self._sel_client())).pack(side="right",
                                                                                                          padx=6)
@@ -1195,6 +1236,8 @@ class Oficina:
             self.refresh_all()
         elif tab == str(self.tab_alerts):
             self.load_alerts()
+        elif tab == str(getattr(self, "tab_train", "")):
+            self.trainer.on_show()
         elif self.is_admin and tab == str(getattr(self, "tab_admin", "")):
             self.load_users()
         elif self.is_admin and tab == str(getattr(self, "tab_mq", "")):
@@ -2294,9 +2337,12 @@ class Oficina:
         self._tune_windows = [w for w in self._tune_windows if not w.closed]
         return next((w for w in self._tune_windows if w.cam["id"] == cam_id), None)
 
-    def tune_dialog(self, cam: dict | None, clips: list | None = None, mode: str = "vivo") -> None:
-        """«● En vivo» (y «🎞 Clips» con `mode="clips"`): la cámara con la IA de esta PC (`TuneWindow`)."""
-        if not self._one_camera(cam, "En vivo" if mode == "vivo" else "Clips"):
+    def tune_dialog(self, cam: dict | None, clips: list | None = None, mode: str = "vivo", pick: bool = True) -> None:
+        """«● En vivo» (y «🎞 Clips» con `mode="clips"`): la cámara con la IA de esta PC (`TuneWindow`). `pick=False`:
+        la cámara no sale de la lista de «Clientes» (la abre «Entrenar IA hurtos» con un clip)."""
+        if pick and not self._one_camera(cam, "En vivo" if mode == "vivo" else "Clips"):
+            return
+        if cam is None:
             return
         if self.agent_of is None or self.agent_of() is None:
             return self.mb.showinfo(NOMBRE, "La app todavía está arrancando el analizador. Probá en unos segundos.")
@@ -2454,88 +2500,12 @@ class Oficina:
         return out[0]
 
     def training_dialog(self) -> None:
-        """Entrenar el modelo de un cliente: cuántos ejemplos etiquetados tiene (alertas revisadas y los que se mandaron
-        desde «● En vivo» y «🎞 Clips»), entrenar y activar. El modelo aprende qué alertas de ese cliente suelen ser hurto y cuáles
-        no; las máquinas lo usan para no molestar a los empleados con las que descartaría."""
+        """«Más» → «Entrenar su IA de hurtos…» del cliente: la pestaña «Entrenar IA hurtos» con ese cliente elegido
+        (todo lo de entrenar, la IA de movimientos y el filtro de alertas, está ahí)."""
         c = self._sel_client()
         if not c:
             return self.mb.showinfo(NOMBRE, "Elegí un cliente.")
-        tk, ttk = self.tk, self.ttk
-        top, frm = self._dialog(f"Entrenamiento · {c['name']}", width=620)
-        frm.columnconfigure(0, weight=1)
-        info = tk.Text(frm, height=9, width=74, wrap="word", relief="flat", bg="#f6f7f9", font=("Segoe UI", 10))
-        info.grid(row=0, column=0, columnspan=3, sticky="ew")
-        ttk.Label(frm, text="Modelos de este cliente", font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w",
-                                                                                          pady=(10, 2))
-        models = ttk.Treeview(frm, columns=("fecha", "ejemplos", "ve", "saca", "activo"), show="headings", height=4,
-                              selectmode="browse")
-        for col, txt, w in (("fecha", "Fecha", 120), ("ejemplos", "Ejemplos", 80), ("ve", "Hurtos que deja pasar", 150),
-                            ("saca", "Falsas alarmas que saca", 160), ("activo", "En uso", 70)):
-            models.heading(col, text=txt)
-            models.column(col, width=w)
-        models.grid(row=2, column=0, columnspan=3, sticky="ew")
-        state: dict = {"models": []}
-
-        def show(res) -> None:
-            summary, all_models = res
-            row = next((x for x in summary["clients"] if x["client_id"] == c["id"]), None)
-            labels = (row or {}).get("labels", {})
-            pos = labels.get("hurto", 0) + labels.get("sospechoso", 0)
-            neg = labels.get("normal", 0) + labels.get("falso_positivo", 0)
-            need_t, need_c = summary["min_total"], summary["min_per_class"]
-            lines = [f"Ejemplos etiquetados: {pos + neg} (hurto o sospechoso: {pos} · normal o falsa alarma: {neg}).",
-                     f"De «● En vivo» y «🎞 Clips»: {(row or {}).get('from_tuning', 0)}. Sin revisar: "
-                     f"{labels.get('sin_etiqueta', 0)}.", ""]
-            if pos + neg >= need_t and pos >= need_c and neg >= need_c:
-                lines.append("Alcanza para entrenar. Después de entrenar, mirá cuántos hurtos deja pasar antes de "
-                             "activarlo: tienen que ser casi todos.")
-            else:
-                lines.append(f"Todavía no alcanza: hacen falta al menos {need_t} en total y {need_c} de cada lado. Se "
-                             "suman revisando alertas (teclas 1-4 en «Alertas») o mandando alertas de prueba "
-                             "etiquetadas desde «● En vivo» o «🎞 Clips».")
-            info.configure(state="normal")
-            info.delete("1.0", "end")
-            info.insert("1.0", "\n".join(lines))
-            info.configure(state="disabled")
-            state["models"] = [m for m in all_models if m["client_id"] == c["id"]]
-            models.delete(*models.get_children())
-            for m in state["models"]:
-                met = m.get("metrics") or {}
-                models.insert("", "end", iid=str(m["id"]), values=(
-                    (m.get("created_at") or "")[:16].replace("T", " "), m.get("n_samples"),
-                    f"{met.get('recall', 0) * 100:.0f} %", f"{met.get('falsas_alarmas_eliminadas', 0) * 100:.0f} %",
-                    "sí" if m.get("active") else ""))
-
-        def load() -> None:
-            self.bg.run(lambda: (self.api.get("/api/training/summary"), self.api.get("/api/models")), show,
-                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
-
-        def train() -> None:
-            def done(m):
-                met = m.get("metrics") or {}
-                self.mb.showinfo(NOMBRE, f"Modelo entrenado con {m.get('n_samples')} ejemplos: deja pasar el "
-                                         f"{met.get('recall', 0) * 100:.0f} % de los hurtos y saca el "
-                                         f"{met.get('falsas_alarmas_eliminadas', 0) * 100:.0f} % de las falsas alarmas. "
-                                         "Todavía no está en uso: elegilo y «Activar».", parent=top)
-                load()
-            self.bg.run(lambda: self.api.post("/api/training/run", {"client_id": c["id"]}), done,
-                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
-
-        def toggle() -> None:
-            sel = models.selection()
-            if not sel:
-                return self.mb.showinfo(NOMBRE, "Elegí un modelo de la lista.", parent=top)
-            m = next(x for x in state["models"] if str(x["id"]) == sel[0])
-            action = "deactivate" if m.get("active") else "activate"
-            self.bg.run(lambda: self.api.post(f"/api/models/{m['id']}/{action}"), lambda _: load(),
-                        lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
-
-        bb = ttk.Frame(frm)
-        bb.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Button(bb, text="Entrenar ahora", command=train).pack(side="left")
-        ttk.Button(bb, text="Activar / desactivar", command=toggle).pack(side="left", padx=4)
-        ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="right")
-        load()
+        self.trainer.focus_client(c["id"])
 
     def names_dialog(self) -> None:
         c = self._sel_client()
@@ -4878,8 +4848,8 @@ class TuneWindow:
 
         def done(sent):
             self.app.mb.showinfo(NOMBRE, f"Listo: {sent} ejemplo(s) para entrenar. Cuando haya suficientes (al menos 30, "
-                                         "con 8 hurtos o sospechosos y 8 normales o falsas alarmas), entrená el modelo "
-                                         "con «Entrenar modelo…» (arriba, en el cliente).", parent=self.top)
+                                         "con 8 hurtos o sospechosos y 8 normales o falsas alarmas), entrená el filtro "
+                                         "de alertas en la pestaña «Entrenar IA hurtos».", parent=self.top)
         self.train_btn.configure(text="Mandando…")
         self.app.bg.run(work, lambda n: (self.train_btn.configure(text="Mandar a entrenar"), done(n)),
                         lambda e: (self.train_btn.configure(text="Mandar a entrenar"),

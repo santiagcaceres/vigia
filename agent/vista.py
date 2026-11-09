@@ -5,8 +5,9 @@
 - `AIViewWorker` («Ver con la IA de esta PC», pedido del dueño 30 oct: «que se le aplique el YOLO y la postura y
   todo lo que tengamos, pero que no mida»): abre el video del grabador (aunque la analice una máquina: es otra
   transmisión) y le aplica EN ESTA PC lo mismo que el análisis (YOLO con objetos y bolsos, seguimiento, postura,
-  zonas, segundos en cada zona, la marcha de los gestos), solo para mostrar cómo la capta. No guarda ni manda nada:
-  ni alertas, ni métricas, ni imágenes. Si una regla o un gesto salta, se ve un cartel de prueba en la imagen.
+  zonas, segundos en cada zona, la marcha de los gestos y, si el personal activó un modelo, la IA de movimientos de
+  hurto con el puntaje de cada persona), solo para mostrar cómo la capta. No guarda ni manda nada: ni alertas, ni
+  métricas, ni imágenes. Si una regla, un gesto o la IA de hurtos salta, se ve un cartel de prueba en la imagen.
 - `RemoteView`: la cámara la analiza una máquina de análisis. No se le pide otra transmisión al grabador (por
   Hik-Connect da pocas a la vez): se muestra la imagen que sube la máquina, 1 por segundo y con los recuadros de
   la IA, con el mismo latido que usa el panel web (`POST /api/cameras/{id}/live`).
@@ -31,7 +32,7 @@ from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, DetectionConfig
 from core.imagen import pixel_aspect, square_pixels
 
 from .cameras import build_camera
-from .worker import MediaClock, bursty, without_detection
+from .worker import MediaClock, bursty, theft_spec, without_detection, without_keys
 
 log = logging.getLogger("vigia.vista")
 SHOW_INTERVAL = 0.1  # la ventana no necesita más de 10 cuadros por segundo
@@ -223,6 +224,7 @@ class AIViewWorker(ViewWorker):
         self._cfg_lock = threading.Lock()  # zonas y reglas nuevas llegan desde otro hilo (`set_analysis`)
         self.engine = None
         self.metrics = None
+        self.theft = None  # la IA de movimientos de hurto (`analysis["ia_hurto"]`), si la cámara tiene un modelo activo
         self.detection = DetectionConfig()  # sensibilidad y «Personas lejos» de la cámara (`analysis["detection"]`)
         self._tuned_key: tuple | None = None
         self._tuned = None  # el detector compartido de la app con la detección de esta cámara (`_detector_for`)
@@ -254,13 +256,22 @@ class AIViewWorker(ViewWorker):
         if analysis.get("metrics_only"):  # como en la máquina: solo métricas no mira gestos ni reglas
             from core.gestos import GestureConfig
             rule_cfg.gestures = GestureConfig()
+        theft = self._theft_for(analysis, zones)
         with self._cfg_lock:
             self.analysis, self.zones, self.rule_cfg = analysis, zones, rule_cfg
             self.detection = DetectionConfig.from_dict(analysis.get("detection"))  # (lo raro: lo de siempre)
             # quién cuenta las personas que entran a cada zona (las mismas reglas que las métricas de las máquinas)
             self.metrics = MetricsCollector(zones, rule_cfg.schedule)
+            self.theft = theft  # (mira «frente a la góndola», «en la caja»: con las zonas nuevas, de cero)
             if self.engine is not None:  # (si la IA todavía no arrancó, el motor lo arma ella)
                 self.engine = RuleEngine(zones, rule_cfg)
+
+    @staticmethod
+    def _theft_for(analysis: dict, zones: list):
+        """La IA de movimientos de hurto de la cámara, como en la máquina (nunca en solo métricas), o None."""
+        from .ajuste import new_theft_watch
+
+        return new_theft_watch(theft_spec(analysis), zones)
 
     def set_analysis(self, analysis: dict, process_fps: float | None = None) -> None:
         """Se guardaron zonas o reglas (en la app): se aplican enseguida, sin volver a abrir el video. El conteo por
@@ -276,6 +287,16 @@ class AIViewWorker(ViewWorker):
                 self.analysis = analysis
                 self.detection = DetectionConfig.from_dict(analysis.get("detection"))
                 same = True
+            ia_only = (not same and without_keys(analysis, "detection", "ia_hurto")
+                       == without_keys(self.analysis, "detection", "ia_hurto"))
+            zones = self.zones
+        if ia_only:
+            # se activó otro modelo de la IA de hurtos (o se apagó): solo cambia ella, sin perder lo contado
+            theft = self._theft_for(analysis, zones)
+            with self._cfg_lock:
+                self.analysis, self.theft = analysis, theft
+                self.detection = DetectionConfig.from_dict(analysis.get("detection"))
+            return
         if same:
             return
         try:
@@ -299,6 +320,8 @@ class AIViewWorker(ViewWorker):
         if self.detector is None:
             return "Viendo · cargando la IA..."
         who = f"{self.people} persona{'s' if self.people != 1 else ''}"
+        if self.theft is not None:
+            who += " · IA de hurtos"
         det = self.detection
         if not det.is_default:  # «sensibilidad 8», «lejos»: para saber con qué se está mirando
             who += "".join((f" · sensibilidad {det.sensitivity}" if det.sensitivity != DEFAULT_SENSITIVITY else "",
@@ -393,9 +416,10 @@ class AIViewWorker(ViewWorker):
         h, w = frame.shape[:2]
         with self._cfg_lock:  # las zonas pueden cambiar mientras tanto (`set_analysis`): se usan las de este cuadro
             zones, rule_cfg, engine, metrics = self.zones, self.rule_cfg, self.engine, self.metrics
-            detection = self.detection
+            detection, theft = self.detection, self.theft
         gest = bool(rule_cfg.gestures.enabled)
-        dets, objs = view_detect(self._detector_for(detection), frame, gest)
+        # (con la IA de hurtos también hacen falta los bolsos, como en la máquina)
+        dets, objs = view_detect(self._detector_for(detection), frame, gest or theft is not None)
         tracks = self.tracker.update(dets, ts, frame)
         posed = self.pose is not None
         if posed:  # la postura de cada persona, aunque la cámara no tenga gestos: para ver cómo la capta
@@ -406,6 +430,12 @@ class AIViewWorker(ViewWorker):
         bags = [Detection(o.bbox, o.label) for o in objs if o.label in ("mochila", "cartera", "valija")]
         events = engine.update(tracks, ts, (w, h), wall, bags)
         metrics.update(tracks, ts, (w, h), wall)  # cuántas personas entran a cada zona (solo se muestra)
+        progress = engine.progress(ts)
+        if theft is not None and posed:  # la IA de movimientos de hurto, sobre las personas con su postura
+            events = list(events) + theft.step(ts, tracks, bags, (w, h),
+                                               engine.current_features(tracks, ts, (w, h), wall))
+            for tid, shown in theft.shown().items():  # el puntaje de cada persona, sobre su recuadro
+                progress.setdefault(tid, {"zones": [], "took": False, "gesture": None})["ia"] = shown
         for e in events:  # no se guardan ni se mandan: solo el cartel en la imagen
             self._hot.append(TestAlert(0, 0, ts, wall, e.type, e.description, e.track_id))
         self._hot = [a for a in self._hot if ts - a.ts <= 3.0]
@@ -414,7 +444,7 @@ class AIViewWorker(ViewWorker):
         sample = Sample(0, ts, wall, b"", (w, h), [replace(t, hist=None) for t in tracks],
                         [(o.label, o.conf, o.bbox) for o in objs], posed)
         small = frame if w <= WIDTH else cv2.resize(frame, (WIDTH, int(h * WIDTH / w)), interpolation=cv2.INTER_AREA)
-        return draw(small, sample, engine.progress(ts), zones, rule_cfg, self._hot,
+        return draw(small, sample, progress, zones, rule_cfg, self._hot,
                     f"{wall:%H:%M:%S}  IA en esta PC (no guarda nada)", counts=metrics.live_counts())
 
 

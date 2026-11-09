@@ -13,19 +13,22 @@ insectos, mascotas...).
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
 
-from .analyzer import annotate
+from .analyzer import annotate, theft_detector, theft_events
 from .imagen import pixel_aspect, square_pixels
 from .pose import detect_with_bags, look
 from .detectors import Detector, DetectionConfig, tuned
 from .rules import ALARMA_DVR, RULE_PRIORITY, SEVERITY, RuleEngine, RuleEvent, parse_config
 from .scorer import Scorer
 from .tracker import CentroidTracker, Track
+
+log = logging.getLogger("vigia.clip_analysis")
 
 # Cuántos cuadros con persona hacen falta para no descartar la alarma (evita un falso positivo suelto).
 MIN_PERSON_FRAMES = 2
@@ -89,13 +92,17 @@ def _interest(f: dict[str, float]) -> float:
 
 def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | None = None,
                  process_fps: float = 5.0, start_wall: datetime | None = None, pose=None) -> ClipResult:
-    """`pose`: core/pose.PoseEstimator para los gestos de ocultamiento (si la cámara los tiene activados).
-    `config["detection"]`: la sensibilidad y «Personas lejos» de la cámara (core/deteccion.py), sobre el detector
-    compartido que llega en `detector` (sin cambiarlo para las demás cámaras)."""
+    """`pose`: core/pose.PoseEstimator para los gestos de ocultamiento (si la cámara los tiene activados) y la IA de
+    movimientos de hurto (`config["ia_hurto"]`, core/hurto_ia.py: con un modelo que sirve, mira la postura de todas
+    las personas y un aviso suyo es un resultado `hurto_ia` como el de una regla). `config["detection"]`: la
+    sensibilidad y «Personas lejos» de la cámara (core/deteccion.py), sobre el detector compartido que llega en
+    `detector` (sin cambiarlo para las demás cámaras)."""
     zones, rule_cfg = parse_config(config)
     detector = tuned(detector, DetectionConfig.from_dict((config or {}).get("detection")))
     engine = RuleEngine(zones, rule_cfg)
     gestures = pose is not None and engine.gestures is not None
+    theft = theft_detector((config or {}).get("ia_hurto"), zones) if pose is not None else None
+    posture = gestures or theft is not None
     tracker = CentroidTracker()
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -123,16 +130,22 @@ def analyze_clip(video: str, config: dict, detector: Detector, scorer: Scorer | 
             h, w = frame.shape[:2]
             res.frame_size = (w, h)
             wall = start_wall + timedelta(seconds=ts) if start_wall else None
-            dets, objects = detect_with_bags(detector, frame, gestures)
+            dets, objects = detect_with_bags(detector, frame, posture)
             res.frames += 1
             if dets:
                 res.person_frames += 1
                 res.max_people = max(res.max_people, len(dets))
             tracks = tracker.update(dets, ts, frame)
-            if gestures:
+            if posture:
                 look(pose, frame, tracks, rule_cfg.gestures.min_height(h))
             events = engine.update(tracks, ts, (w, h), wall, objects)
             feats = engine.current_features(tracks, ts, (w, h), wall)
+            if theft is not None:
+                try:
+                    events += theft_events(theft, ts, (w, h), tracks, objects, zones, feats)
+                except Exception:  # noqa: BLE001 - la IA de hurtos no puede frenar el análisis de la alarma
+                    log.exception("La IA de movimientos de hurto falló en este cuadro; sigue lo demás")
+                    theft = None
             snap = [dataclasses.replace(t) for t in tracks]
             for ev in events:
                 if ev.type not in res.rules:

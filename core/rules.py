@@ -54,12 +54,18 @@ ALARMA_DVR = "alarma_dvr"
 # Los gestos (core/gestos.py) son tipos de evento pero NO reglas de `rules`: un agente viejo rechaza nombres que no
 # conoce en enabled_rules o cooldown_seconds. Se configuran aparte, en analysis["gestures"]. El orden es el de
 # siempre (con «merodeo» en su lugar): de él salen las variables de los modelos entrenados (core/scorer.py).
-EVENT_TYPES = (SALIDA_SIN_PAGO, MERODEO, ZONA_RESTRINGIDA, FUERA_DE_HORARIO, ALARMA_DVR) + GESTURE_TYPES
+# La IA de movimientos de hurto (core/hurto_ia.py): aprende con los esqueletos de los clips marcados en la app y da
+# alertas propias aunque no salte ninguna regla. Tampoco es una regla de `rules` (se configura en analysis["ia_hurto"]).
+HURTO_IA = "hurto_ia"
+HURTO_IA_NAME = "Posible hurto (IA de movimientos)"
+# El orden importa: de él salen las variables de los modelos de filtro entrenados (core/scorer.py). Lo nuevo va siempre
+# AL FINAL (y core/scorer.LEGACY_NAMES no cambia: un agente sin actualizar exige esa lista exacta).
+EVENT_TYPES = (SALIDA_SIN_PAGO, MERODEO, ZONA_RESTRINGIDA, FUERA_DE_HORARIO, ALARMA_DVR) + GESTURE_TYPES + (HURTO_IA,)
 # De más a menos grave: para elegir el tipo de un clip de alarma donde se disparan varias reglas.
-RULE_PRIORITY = (SALIDA_SIN_PAGO, MANO_ROPA, MANO_BOLSILLO, MANO_BOLSA, ZONA_RESTRINGIDA, FUERA_DE_HORARIO)
+RULE_PRIORITY = (SALIDA_SIN_PAGO, MANO_ROPA, MANO_BOLSILLO, MANO_BOLSA, HURTO_IA, ZONA_RESTRINGIDA, FUERA_DE_HORARIO)
 
 SEVERITY = {SALIDA_SIN_PAGO: "alta", ZONA_RESTRINGIDA: "alta", MERODEO: "media", FUERA_DE_HORARIO: "media",
-            ALARMA_DVR: "baja", MANO_BOLSILLO: "alta", MANO_ROPA: "alta", MANO_BOLSA: "media"}
+            ALARMA_DVR: "baja", MANO_BOLSILLO: "alta", MANO_ROPA: "alta", MANO_BOLSA: "media", HURTO_IA: "alta"}
 BAG_LABELS = ("mochila", "cartera", "valija")  # objetos del detector (core/escena.py) que cuentan como bolsa
 DEFAULT_COOLDOWNS = {SALIDA_SIN_PAGO: 8.0, ZONA_RESTRINGIDA: 15.0, FUERA_DE_HORARIO: 300.0}
 _NUMERIC_KEYS = ("shelf_dwell_seconds", "checkout_min_seconds", "restricted_min_seconds")

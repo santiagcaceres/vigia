@@ -309,6 +309,52 @@ class FilterModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class TrainingClip(Base):
+    """Un clip subido desde la pestaña «Entrenar IA hurtos» de la app (9 nov). **El video queda en la PC** de quien lo
+    subió: acá va solo el análisis. `windows` son los rasgos por persona y ventana de 3 s (core/hurto_ia.py,
+    `person_windows`: `[{"track_id", "t0", "t1", "f": [...]}]`) con los que se entrena la IA de movimientos de hurto;
+    `marks` = dónde hubo hurto (`[{"start", "end", "track_id", "kind"}]`); `data_path` = el .json.gz con los cuadros
+    (recuadros, esqueletos y bolsos) en el Storage, para dibujar el esqueleto en otra PC o recalcular los rasgos si
+    cambia su versión. `n_windows` se guarda aparte para listar sin leer `windows` (puede pesar megas)."""
+    __tablename__ = "training_clips"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(40), unique=True, index=True)  # sale del archivo (la app)
+    name: Mapped[str] = mapped_column(String(200))
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"), nullable=True,
+                                                  index=True)
+    camera_id: Mapped[int | None] = mapped_column(ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True,
+                                                  index=True)
+    duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    fps: Mapped[float] = mapped_column(Float, default=0.0)  # cuadros por segundo analizados
+    width: Mapped[int] = mapped_column(Integer, default=0)  # del cuadro analizado (píxeles cuadrados)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    verdict: Mapped[str] = mapped_column(String(12), default="sin_marcar")  # hurto | normal | sin_marcar
+    marks: Mapped[list] = mapped_column(JSON, default=list)
+    windows: Mapped[list] = mapped_column(JSON, default=list)
+    n_windows: Mapped[int] = mapped_column(Integer, default=0)
+    feature_version: Mapped[int] = mapped_column(Integer, default=1)
+    people: Mapped[int] = mapped_column(Integer, default=0)  # personas distintas que siguió el análisis
+    data_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TheftModel(Base):
+    """IA de movimientos de hurto entrenada con los clips marcados (core/hurto_ia.py `train`). `client_id` NULL = para
+    todos los clientes; uno activo por alcance. Viaja a las cámaras que miden hurtos en `analysis["ia_hurto"]`: el
+    del cliente si tiene uno activo, si no el de todos."""
+    __tablename__ = "theft_models"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True, index=True)
+    spec: Mapped[dict] = mapped_column(JSON)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    n_clips: Mapped[int] = mapped_column(Integer, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 def add_missing_columns(engine) -> list[str]:
     """create_all no agrega columnas nuevas a tablas que ya existen: las agrega acá (solo columnas
     que admiten NULL o tienen valor por defecto simple). Así no hace falta migrar a mano."""
@@ -368,7 +414,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-06.1"
+SCHEMA_VERSION = "2026-11-09.1"
 
 
 class CameraMetric(Base):

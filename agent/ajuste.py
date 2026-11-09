@@ -17,6 +17,11 @@ a las máquinas de análisis. Sirve en vivo o con videos grabados (por ejemplo, 
   recalcula todo sin volver a mirar la postura (lo caro); se dibuja el esqueleto y, bajo cada persona, la mano en el
   bolsillo, la ropa o la bolsa contra lo que pide («BOLSILLO 0.4/0.6s»). Es un indicio de posible ocultamiento para
   revisar, nunca una prueba.
+- IA de movimientos de hurto (core/hurto_ia.py, `analysis["ia_hurto"]`: el modelo que el personal entrenó y activó en
+  «Entrenar IA hurtos»): si la cámara lo tiene, se mira la postura de todos (aunque no tenga gestos), sobre cada persona
+  se escribe su puntaje («IA 0,72», en rojo si pasa el umbral) y, cuando avisa, sale una alerta de prueba de tipo
+  `hurto_ia` como las de las reglas (se puede mandar al filtro igual). Cambiar zonas o tiempos la recalcula con la
+  postura ya guardada en cada cuadro (`TheftWatch`). Como todo, es un indicio para revisar.
 - Detección de personas (core/deteccion.py): la «Sensibilidad» y «Personas lejos» de la cámara (`analysis["detection"]`)
   se aplican sobre el detector compartido de la app (`tuned`). `set_detection` prueba otras sin guardarlas: en vivo
   rigen para los cuadros nuevos; con clips hay que volver a analizar (detectar es justamente lo que cambia).
@@ -47,12 +52,13 @@ from core.metrics import MetricsCollector, door_counts
 from core.pisadas import FootMap
 from core.pose import BAG_CLASSES, build_pose, look
 from core.pose import draw as draw_pose
-from core.rules import BAG_LABELS, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone, parse_config
+from core.rules import (BAG_LABELS, HURTO_IA, SALIDA_SIN_PAGO, VEHICLE_LABEL, RuleConfig, RuleEngine, Zone,
+                        parse_config)
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
 
 from .cameras import build_camera
-from .worker import MediaClock, bursty
+from .worker import MediaClock, bursty, theft_spec
 
 log = logging.getLogger("vigia.ajuste")
 
@@ -73,7 +79,8 @@ ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restrict
              "aisle": "pasillo"}
 ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "zona_restringida": "ZONA RESTRINGIDA",
               "fuera_de_horario": "FUERA DE HORARIO", MANO_BOLSILLO: "POSIBLE OCULTAMIENTO (BOLSILLO)",
-              MANO_ROPA: "POSIBLE OCULTAMIENTO (ROPA)", MANO_BOLSA: "POSIBLE OCULTAMIENTO (BOLSA)"}
+              MANO_ROPA: "POSIBLE OCULTAMIENTO (ROPA)", MANO_BOLSA: "POSIBLE OCULTAMIENTO (BOLSA)",
+              HURTO_IA: "POSIBLE HURTO (IA DE MOVIMIENTOS)"}
 REGION_TEXT = {"bolsillo": "BOLSILLO", "ropa": "ROPA", "bolsa": "BOLSA"}
 REGION_PLACE = {"bolsillo": "al bolsillo", "ropa": "a la ropa", "bolsa": "a la bolsa"}
 BAG_CONF = 0.3  # bolsos para «mano en la bolsa» con la misma confianza que las máquinas (core/pose.detect_with_bags)
@@ -214,6 +221,60 @@ class TestAlert:
     bbox: tuple | None = None
 
 
+def ia_score_text(score: float) -> str:
+    """«IA 0,72» (con coma, como se escriben los decimales acá)."""
+    return f"IA {score:.2f}".replace(".", ",")
+
+
+class TheftWatch:
+    """La IA de movimientos de hurto (core/hurto_ia.py) sobre lo que analiza esta PC (la ventana de la cámara y «Ver
+    con la IA»), con el mismo camino que las máquinas (core/analyzer.theft_events): ventanas de 3 s cada 1 s, el aviso
+    cuando el puntaje pasa el umbral en ventanas seguidas, el enfriamiento por persona y cada aviso como un evento
+    `hurto_ia` con las mismas medidas, descripción y zona que en la máquina. Además: `shown` da el último puntaje de
+    cada persona, aunque no llegue al umbral, para escribirlo sobre su recuadro («IA 0,72»), y `best` el más alto de
+    cada una (para explicar por qué un clip dio o no la alerta). No guarda video ni manda nada. ValueError si el modelo
+    no sirve para esta versión."""
+
+    def __init__(self, spec: dict, zones: list[Zone] | None = None):
+        from core.analyzer import theft_detector
+
+        self.zones = list(zones or [])
+        self.detector = theft_detector(spec, self.zones)
+        if self.detector is None:
+            raise ValueError("el modelo de la IA de hurtos es de otra versión o está mal armado")
+        self.threshold = float(self.detector.threshold)
+        self.consecutive = int(self.detector.model.consecutive)
+        self.best: dict[int, float] = {}  # persona -> el puntaje más alto que tuvo
+
+    def step(self, ts: float, tracks: list[Track], bags: list, size: tuple[int, int],
+             base: dict[int, dict] | None = None) -> list:
+        """Un cuadro ya analizado: las personas del seguimiento con su postura (`kpts`), los bolsos (recuadros o
+        Detection) y `base`, las medidas de cada persona (RuleEngine.current_features, para el filtro). Devuelve los
+        avisos como RuleEvent de tipo `hurto_ia`."""
+        from core.analyzer import theft_events
+
+        size = (int(size[0]), int(size[1]))
+        events = theft_events(self.detector, ts, size, tracks, bags, self.zones, base or {})
+        for tid, score in self.detector.scores.items():
+            self.best[tid] = max(float(score), self.best.get(tid, 0.0))
+        return events
+
+    def shown(self) -> dict[int, tuple[float, bool]]:
+        """Persona -> (puntaje de su última ventana, ¿pasa el umbral?): lo que se escribe sobre cada recuadro."""
+        return {tid: (float(score), score >= self.threshold) for tid, score in self.detector.scores.items()}
+
+
+def new_theft_watch(spec: dict | None, zones: list[Zone]) -> TheftWatch | None:
+    """Un `TheftWatch` con el modelo de la cámara, o None (sin modelo, o uno que esta versión no puede usar)."""
+    if spec is None:
+        return None
+    try:
+        return TheftWatch(spec, zones)
+    except Exception as exc:  # noqa: BLE001 - un modelo raro no puede cortar la ventana: sigue sin la IA de hurtos
+        log.warning("La IA de movimientos de hurto no se pudo armar (%s): se sigue sin ella", exc)
+        return None
+
+
 class Tuner:
     """Analiza una cámara en esta PC (en vivo, o los `videos` dados uno tras otro) con las zonas y reglas de la
     cámara, sin mandar nada al servidor."""
@@ -246,6 +307,11 @@ class Tuner:
         self.alerts: list[TestAlert] = []
         # lo medido de los gestos de cada persona ((video, número) → GestureEngine.summary), para explicar
         self.gsum: dict[tuple[int, int], dict] = {}
+        # la IA de movimientos de hurto (`analysis["ia_hurto"]`, si el personal activó un modelo): el detector en línea
+        # del video que se analiza y el puntaje más alto de cada persona ((video, número) → puntaje), para explicar
+        self.ia_spec: dict | None = None
+        self.theft: TheftWatch | None = None
+        self.ia_best: dict[tuple[int, int], float] = {}
         self.engine: RuleEngine | None = None
         self._engine_seg = -1
         self.pose = pose
@@ -291,6 +357,8 @@ class Tuner:
         metrics_only = bool(analysis.get("metrics_only"))
         if metrics_only:  # como en las máquinas (Analyzer sin clips): solo métricas no mira gestos
             rule_cfg.gestures = GestureConfig()
+        # la IA de movimientos de hurto: la de las máquinas (nunca en solo métricas; un modelo de otra versión, no)
+        ia_spec = theft_spec(analysis, metrics_only)
         # la detección no vuelve a detectar lo ya analizado: rige para lo que se analice desde ahora
         detection = DetectionConfig.from_dict(analysis.get("detection"))
         self.detection, self.detector = detection, tuned(self.base_detector, detection)
@@ -306,8 +374,10 @@ class Tuner:
             self.analysis = analysis
             self.zones, self.rule_cfg = zones, rule_cfg
             self.metrics_only = metrics_only
-            if rule_cfg.gestures.enabled and not metrics_only:
-                # con gestos la máquina analiza a 5 cuadros por segundo o más (camera_fps del servidor): probar igual
+            self.ia_spec = ia_spec
+            if (rule_cfg.gestures.enabled or ia_spec is not None) and not metrics_only:
+                # con gestos (o la IA de hurtos, que mira la postura en ventanas de 3 s) la máquina analiza a 5 cuadros
+                # por segundo o más (camera_fps del servidor): probar igual
                 self.process_fps = max(MIN_GESTURE_FPS, self.process_fps)
             self._reevaluate(recount=not keep)
 
@@ -344,33 +414,47 @@ class Tuner:
     def gestures_on(self) -> bool:
         return bool(self.rule_cfg.gestures.enabled)
 
+    @property
+    def ia_on(self) -> bool:
+        """La cámara tiene la IA de movimientos de hurto (un modelo activo que esta versión puede usar)."""
+        return self.ia_spec is not None
+
     def needs_pose(self) -> bool:
-        """Hay gestos pero lo ya analizado se hizo sin mirar la postura: para verlos hay que volver a analizar (en vivo,
-        se ven desde ahora)."""
+        """Hay gestos (o la IA de hurtos) pero lo ya analizado se hizo sin mirar la postura: para verlos hay que volver
+        a analizar (en vivo, se ven desde ahora)."""
         with self._lock:
-            return self.gestures_on and not self.pose_missing and any(not s.posed for s in self.samples)
+            return ((self.gestures_on or self.ia_on) and not self.pose_missing
+                    and any(not s.posed for s in self.samples))
+
+    def _new_theft(self) -> TheftWatch | None:
+        """El detector de la IA de hurtos para un video que empieza (cada video, de cero, como el motor de reglas)."""
+        return new_theft_watch(self.ia_spec, self.zones)
 
     def _reevaluate(self, recount: bool = True) -> None:
         """Vuelve a pasar las reglas por todo lo guardado (sin detectar de nuevo). Con `recount`, también el conteo por
         zona (cambiaron las zonas); si no, el conteo queda como estaba."""
-        engine, seg, mc = None, None, None
+        engine, seg, mc, theft = None, None, None, None
         alerts: list[TestAlert] = []
         marks: list[dict] = []
         counts: list[dict] = []
         gsum: dict[tuple[int, int], dict] = {}
+        ia_best: dict[tuple[int, int], float] = {}
         for i, s in enumerate(self.samples):
             if s.seg != seg:  # cada video empieza de cero
                 engine, seg = RuleEngine(self.zones, self.rule_cfg), s.seg
                 mc = self._collector() if recount else None
-            alerts += self._feed(engine, s, self.base + i, marks, gsum)
+                # la IA de hurtos también: con la postura guardada en cada cuadro, sin volver a mirarla
+                theft = self._new_theft()
+            alerts += self._feed(engine, s, self.base + i, marks, gsum, theft, ia_best)
             if recount:
                 counts.append(self._count(mc, s))
         self.engine = engine or RuleEngine(self.zones, self.rule_cfg)
+        self.theft = theft if engine is not None else self._new_theft()
         if recount:
             self._mc = mc or self._collector()
             self.counts = counts
         self._engine_seg = seg if seg is not None else -1
-        self.alerts, self.marks, self.gsum = alerts, marks, gsum
+        self.alerts, self.marks, self.gsum, self.ia_best = alerts, marks, gsum, ia_best
 
     def _collector(self) -> MetricsCollector:
         """Quién cuenta las personas que entran a cada zona (en vivo, con el horario del local para descontar al
@@ -387,11 +471,22 @@ class Tuner:
         return out
 
     def _feed(self, engine: RuleEngine, s: Sample, index: int, marks: list[dict],
-              gsum: dict[tuple[int, int], dict]) -> list[TestAlert]:
+              gsum: dict[tuple[int, int], dict], theft: TheftWatch | None = None,
+              ia_best: dict[tuple[int, int], float] | None = None) -> list[TestAlert]:
         gest = engine.gestures
-        bags = [(label, box) for label, _conf, box in s.objects if label in BAG_LABELS] if gest is not None else []
-        evs = engine.update(s.tracks, s.ts, s.size, s.wall, [Detection(box, label) for label, box in bags])
+        bags = [(label, box) for label, _conf, box in s.objects if label in BAG_LABELS] \
+            if gest is not None or theft is not None else []
+        evs = engine.update(s.tracks, s.ts, s.size, s.wall,
+                            [Detection(box, label) for label, box in bags] if gest is not None else [])
         prog = engine.progress(s.ts)
+        if theft is not None:  # la IA de hurtos: sus avisos son alertas de prueba más, como las reglas y los gestos
+            evs = list(evs) + theft.step(s.ts, s.tracks, [box for _label, box in bags], s.size,
+                                         engine.current_features(s.tracks, s.ts, s.size, s.wall))
+            for tid, shown in theft.shown().items():  # el puntaje de cada persona, para escribirlo sobre ella
+                prog.setdefault(tid, {"zones": [], "took": False, "gesture": None})["ia"] = shown
+            if ia_best is not None:
+                for tid, best in theft.best.items():
+                    ia_best[(s.seg, tid)] = best
         if gest is not None:
             for t in s.tracks:
                 if t.label == VEHICLE_LABEL:
@@ -533,11 +628,12 @@ class Tuner:
 
     def _analyze(self, frame: np.ndarray, ts: float, wall: datetime | None, seg: int) -> None:
         gest = self.gestures_on
-        dets, objs = self._detect(frame, gest)
+        ia = self.ia_on  # la IA de hurtos también mira la postura y los bolsos, aunque la cámara no tenga gestos
+        dets, objs = self._detect(frame, gest or ia)
         tracks = self.tracker.update(dets, ts, frame)
         # el mínimo es relativo al alto del cuadro: lo mismo que en la máquina aunque se pruebe con el stream principal
         min_px = self.rule_cfg.gestures.min_height(frame.shape[0])
-        posed = gest and self._pose_for() is not None
+        posed = (gest or ia) and self._pose_for() is not None
         if posed:  # postura de cada persona (lo caro): se guarda con el cuadro y no se vuelve a mirar
             look(self.pose, frame, tracks, min_px)
         else:
@@ -565,8 +661,10 @@ class Tuner:
             if seg != self._engine_seg or self.engine is None:
                 self.engine, self._engine_seg = RuleEngine(self.zones, self.rule_cfg), seg
                 self._mc = self._collector()
+                self.theft = self._new_theft()
             self.samples.append(sample)
-            self.alerts += self._feed(self.engine, sample, self.base + len(self.samples) - 1, self.marks, self.gsum)
+            self.alerts += self._feed(self.engine, sample, self.base + len(self.samples) - 1, self.marks, self.gsum,
+                                      self.theft, self.ia_best)
             self.counts.append(self._count(self._mc, sample))
             if self.live:
                 self._trim()
@@ -581,9 +679,10 @@ class Tuner:
         del self.counts[:cut]
         self.base += cut
         self.alerts = [a for a in self.alerts if a.index >= self.base]
-        if self.gsum:
+        if self.gsum or self.ia_best:
             keep = {(s.seg, t.id) for s in self.samples for t in s.tracks}
             self.gsum = {k: v for k, v in self.gsum.items() if k in keep}
+            self.ia_best = {k: v for k, v in self.ia_best.items() if k in keep}
 
     def _measure(self, dets, sample: Sample, h: int) -> None:
         self._n += 1
@@ -740,7 +839,7 @@ class Tuner:
                 "fps": len(self._times) / 10.0 if self.live else None, "cuts": self.cuts, "alerts": alerts,
                 "dropped": dropped,
                 "per_hour": alerts / (span / 3600.0) if self.live and span >= 300 else None,
-                "door": self.door(), "gestures": self.gestures_on, "pose": pose,
+                "door": self.door(), "gestures": self.gestures_on, "ia": self.ia_on, "pose": pose,
                 "sensitivity": self.detection.sensitivity, "far": self.detection.far, "frame_size": size}
 
     def footmap(self) -> FootMap:
@@ -790,6 +889,8 @@ class Tuner:
             alerts = [a for a in self.alerts if a.seg == seg]
             zones, cfg = list(self.zones), self.rule_cfg
             gsum = {tid: v for (sg, tid), v in self.gsum.items() if sg == seg}
+            ia_best = {tid: v for (sg, tid), v in self.ia_best.items() if sg == seg}
+            ia = self.ia_spec
         seen: dict[int, list[float]] = {}  # id -> [primer, último] momento a la vista
         in_zone: dict[int, dict[str, float]] = {}  # id -> zona -> segundos seguidos (máximo)
         took: set[int] = set()
@@ -821,7 +922,8 @@ class Tuner:
             return ["No se vio a nadie más de 2 s: no hay nada que medir."]
         if not zones:
             out.append("La cámara no tiene zonas: ninguna regla puede saltar. Dibujalas con «✎ Marcar zonas»."
-                       + (" Los gestos sí miran sin zonas." if g.enabled else ""))
+                       + (" Los gestos sí miran sin zonas." if g.enabled else "")
+                       + (" La IA de movimientos de hurto también." if ia is not None else ""))
         for tid in people:
             secs = seen[tid][1] - seen[tid][0]
             text = f"Persona #{tid}: {secs:.0f} s a la vista"
@@ -838,6 +940,8 @@ class Tuner:
                     text += ". Tiene los pies cortados por el borde de abajo: la zona tiene que llegar hasta el borde"
             if g.enabled:
                 text += ". Gestos: " + gesture_text(gsum.get(tid), frames[tid], g)
+            if ia is not None:
+                text += ". IA de movimientos: " + ia_text(ia_best.get(tid), ia)
             out.append(text + ".")
         if not alerts and zones:
             if took and SALIDA_SIN_PAGO in rules:
@@ -847,6 +951,16 @@ class Tuner:
                 else:
                     out.append("«Tomó algo» da alerta si después pisa la Salida sin pasar por Caja: no llegó a la Salida "
                                "en este video.")
+        if ia is not None and not any(a.type == HURTO_IA for a in alerts):
+            if self.pose_missing:
+                out.append("En esta PC no está el modelo de postura: la IA de movimientos de hurto no se probó "
+                           "(actualizá la app).")
+            elif any(not s.posed for s, _m in rows):
+                out.append("Este video se analizó sin mirar la postura: para ver la IA de movimientos de hurto, volvé "
+                           "a analizarlo («▶ Analizar todos de nuevo»).")
+            elif not ia_best:
+                out.append("A nadie se le vio la postura en suficientes cuadros (chicas, tapadas, de espaldas o "
+                           "cortadas por el borde): la IA de movimientos de hurto no pudo mirar este video.")
         if g.enabled and not any(a.type in g.enabled for a in alerts):
             if self.pose_missing:
                 out.append("En esta PC no está el modelo de postura: los gestos no se probaron (actualizá la app).")
@@ -872,13 +986,14 @@ class Tuner:
         if any(z.type == "entrance" and not z.direction for z in self.zones):
             out.append("La zona Entrada no tiene sentido: cuenta igual a los que entran y a los que salen. Marcá hacia "
                        "dónde caminan los que entran en «✎ Marcar zonas» → «Sentido».")
-        if self.metrics_only or (not rules and not g.enabled):
+        if self.metrics_only or (not rules and not g.enabled and not self.ia_on):
             why = gestures_blocked(self.analysis) or "el tipo de cámara no usa reglas"
             out.append(f"Esta cámara no da alertas: es «solo métricas» ({why}).")
         elif not self.zones:
             out.append("No hay zonas: no se puede disparar ninguna regla. Dibujá góndolas, caja y salida con «✎ Marcar zonas»."
                        + (" Los gestos sí miran sin zonas (con las góndolas marcadas dan menos falsas alarmas)."
-                          if g.enabled else ""))
+                          if g.enabled else "")
+                       + (" La IA de movimientos de hurto también mira sin zonas." if self.ia_on else ""))
         else:
             if SALIDA_SIN_PAGO in rules and "shelf" not in types:
                 out.append("Sin zona «Góndola» no hay «tomó algo» (ni «salida sin pago»).")
@@ -913,6 +1028,8 @@ class Tuner:
             out.append(res)
         if g.enabled:
             out += self._gesture_hints(st, types)
+        elif self.ia_on:
+            out += self._ia_hints(st)
         if st["frames"] >= 20 and st["night_pct"] > 50:
             out.append("La imagen está en blanco y negro (infrarrojo, de noche): el detector ve bastante menos"
                        + (" y la postura peor (los gestos fallan más)" if g.enabled else "")
@@ -987,6 +1104,24 @@ class Tuner:
                     "video).")
         return ""
 
+    def _ia_hints(self, st: dict) -> list[str]:
+        """Avisos de la IA de movimientos de hurto en una cámara sin gestos (con gestos ya los dan `_gesture_hints`): si
+        la postura se puede ver bien, porque la IA aprende con los esqueletos."""
+        pose, g = st["pose"], self.rule_cfg.gestures
+        if self.pose_missing:
+            return ["En esta PC no está el modelo de postura (models/postura.onnx): la IA de movimientos de hurto no "
+                    "se puede probar acá. Actualizá la app."]
+        out = []
+        if pose["people"] >= 20 and pose["small_pct"] is not None and pose["small_pct"] > 50:
+            out.append(f"El {pose['small_pct']:.0f} % de las veces las personas ocupan menos del "
+                       f"{100.0 * g.min_person_px / REF_HEIGHT:.0f} % del alto de la imagen: a esas no se les mira la "
+                       "postura y la IA de movimientos de hurto no las ve. Mejor una cámara más cerca o con más zoom.")
+        if pose["tried"] >= 20 and pose["ok_pct"] is not None and pose["ok_pct"] < POSE_OK_MIN:
+            out.append(f"La postura (hombros y caderas) se ve bien solo en el {pose['ok_pct']:.0f} % de las veces: la "
+                       "IA de movimientos de hurto no va a andar bien en esta cámara (gente tapada, de espaldas, "
+                       "cortada por el borde o cámara muy de arriba).")
+        return out
+
     def _gesture_hints(self, st: dict, types: set[str]) -> list[str]:
         """Avisos de los gestos: si la postura se puede ver bien en esta cámara."""
         g, pose, out = self.rule_cfg.gestures, st["pose"], []
@@ -1046,6 +1181,16 @@ def gesture_text(sm: dict | None, frames: int, g: GestureConfig) -> str:
         why = {**SUPPRESS_TEXT, "la toma fue hace mucho": f"la toma fue hace más de {g.take_window:g} s"}
         parts.append("descartado: " + ", ".join(why.get(k, k) for k in sorted(sup, key=lambda k: -sup[k])))
     return "; ".join(parts)
+
+
+def ia_text(best: float | None, spec: dict) -> str:
+    """Lo que midió la IA de movimientos de hurto de una persona, contra lo que pide para avisar."""
+    if best is None:
+        return "no se le vio la postura en suficientes cuadros para mirarla"
+    need = float(spec.get("threshold", 0.5))
+    times = int(spec.get("consecutive", 2))
+    return (f"puntaje más alto {best:.2f} (avisa desde {need:.2f}"
+            + (f", {times} veces seguidas" if times > 1 else "") + ")").replace(".", ",")
 
 
 def ascii_text(text: str) -> str:
@@ -1113,10 +1258,35 @@ def draw_counts(out: np.ndarray, zones: list[Zone], counts: dict | None) -> None
             y += step
 
 
+IA_COLOR = (255, 255, 255)  # el puntaje de la IA de hurtos sobre el recuadro (en rojo si pasa el umbral)
+
+
+def draw_ia(out: np.ndarray, tracks: list[Track], mark: dict) -> None:
+    """Sobre el recuadro de cada persona, al lado de su número, el puntaje de la IA de movimientos de hurto («IA
+    0,72», en rojo si pasa el umbral). `mark[id]["ia"]` = (puntaje, ¿pasa?); `tracks` en la escala de `out`."""
+    w = out.shape[1]
+    thick = max(1, w // 640)
+    size = 0.5 * thick
+    for t in tracks:
+        ia = (mark.get(t.id) or {}).get("ia")
+        if ia is None or not t.visible or t.label == VEHICLE_LABEL:
+            continue
+        score, over = ia
+        text = ia_score_text(score)
+        x1, y1 = int(t.bbox[0]), int(t.bbox[1])
+        num = cv2.getTextSize(f"#{t.id}", cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0][0]  # (el número va a la izquierda)
+        tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0][0]
+        x, y = max(2, min(x1 + num + 8, w - tw - 4)), max(12, y1 - 6)
+        cv2.putText(out, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, (0, 0, 0), thick + 2, cv2.LINE_AA)
+        cv2.putText(out, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, (0, 0, 255) if over else IA_COLOR, thick,
+                    cv2.LINE_AA)
+
+
 def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleConfig, hot: list[TestAlert],
          clock: str, objects: bool = True, counts: dict | None = None) -> np.ndarray:
-    """El cuadro con zonas, personas (número, segundos en cada zona, gestos), lo demás que ve YOLO, el cartel de la
-    alerta de prueba y, con `counts` (`MetricsCollector.live_counts`), cuántas personas entraron a cada zona."""
+    """El cuadro con zonas, personas (número, puntaje de la IA de hurtos, segundos en cada zona, gestos), lo demás que
+    ve YOLO, el cartel de la alerta de prueba y, con `counts` (`MetricsCollector.live_counts`), cuántas personas
+    entraron a cada zona."""
     h, w = img.shape[:2]
     k = w / s.size[0] if s.size[0] else 1.0
     # el esqueleto se dibuja aparte, escalado como los recuadros (los puntos están en la escala del cuadro original)
@@ -1138,6 +1308,7 @@ def draw(img: np.ndarray, s: Sample, mark: dict, zones: list[Zone], cfg: RuleCon
         text = f"{ascii_text(label)} {conf * 100:.0f}%"
         cv2.putText(out, text, (x1 + 2, max(10, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(out, text, (x1 + 2, max(10, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, OBJECT_COLOR, 1, cv2.LINE_AA)
+    draw_ia(out, tracks, mark)
     limits = {"checkout": cfg.checkout_min_seconds, "restricted": cfg.restricted_min_seconds}
     bar = 22
     people = 0

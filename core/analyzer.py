@@ -5,6 +5,7 @@ Lo usan el agente (video en vivo) y el servidor (videos importados para entrenar
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -15,11 +16,14 @@ import numpy as np
 
 from .detectors import Detector
 from .gestos import MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA
+from .hurto_ia import OnlineTheftDetector, frame_record
 from .pose import detect_with_bags, look
 from .pose import draw as draw_pose
-from .rules import RuleEngine, RuleEvent, Zone, parse_config
+from .rules import HURTO_IA, SEVERITY, RuleEngine, RuleEvent, Zone, parse_config
 from .scorer import Scorer
 from .tracker import CentroidTracker, Track
+
+log = logging.getLogger("vigia.analyzer")
 
 ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 150, 0), "restricted": (0, 0, 255),
                "entrance": (255, 0, 200), "pump": (0, 120, 255), "shop": (200, 200, 0), "staff": (140, 140, 140),
@@ -27,7 +31,7 @@ ZONE_COLORS = {"shelf": (0, 200, 255), "checkout": (0, 200, 0), "exit": (255, 15
 ASCII_LABELS = {"salida_sin_pago": "SALIDA SIN PAGO", "merodeo": "MERODEO",
                 "zona_restringida": "ZONA RESTRINGIDA", "fuera_de_horario": "FUERA DE HORARIO",
                 MANO_BOLSILLO: "POSIBLE OCULTAMIENTO: MANO AL BOLSILLO", MANO_ROPA: "POSIBLE OCULTAMIENTO: MANO EN LA ROPA",
-                MANO_BOLSA: "POSIBLE OCULTAMIENTO: MANO EN LA BOLSA"}
+                MANO_BOLSA: "POSIBLE OCULTAMIENTO: MANO EN LA BOLSA", HURTO_IA: "POSIBLE HURTO (IA DE MOVIMIENTOS)"}
 
 
 @dataclass
@@ -118,6 +122,48 @@ def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: R
     return img
 
 
+def theft_detector(spec, zones) -> OnlineTheftDetector | None:
+    """La IA de movimientos de hurto de una cámara (`analysis["ia_hurto"]`, core/hurto_ia.py), o None si no hay modelo
+    o no sirve para esta versión (otra versión de los rasgos, algo roto): sin ella todo sigue como siempre."""
+    if not isinstance(spec, dict):
+        return None
+    try:
+        det = OnlineTheftDetector(spec, zones)
+    except Exception:  # noqa: BLE001 - un modelo raro no puede frenar el análisis de la cámara
+        return None
+    return det if det.ok else None
+
+
+def theft_events(detector: OnlineTheftDetector, ts: float, frame_size: tuple[int, int], tracks: list[Track],
+                 objects: list, zones: list[Zone], base: dict[int, dict]) -> list[RuleEvent]:
+    """Un cuadro ya analizado (seguimiento con la postura en `kpts` y los bolsos en `objects`) por la IA de movimientos
+    de hurto: cada aviso, un evento `hurto_ia` como los de las reglas (mismo camino de filtro, foto y clip). `base`: las
+    medidas de cada persona (RuleEngine.current_features), para el filtro de alertas; se suman los rasgos de la ventana
+    y `ia_score`."""
+    rec = frame_record(ts, frame_size, tracks, objects)
+    hits = detector.update(ts, rec["people"], rec["bags"], frame_size)
+    if not hits:
+        return []
+    w, h = frame_size
+    by_id = {t.id: t for t in tracks}
+    out = []
+    for hit in hits:
+        t = by_id.get(hit["track_id"])
+        if t is None:
+            continue
+        fx, fy = (t.bbox[0] + t.bbox[2]) / 2, t.bbox[3]
+        here = [z for z in zones if z.contains(fx / w, fy / h)] if w and h else []
+        here.sort(key=lambda z: z.type != "shelf")  # frente a una góndola, primero
+        score = float(hit["score"])
+        feats = {**base.get(t.id, {}), **{k: round(float(v), 4) for k, v in (hit.get("features") or {}).items()},
+                 "ia_score": round(score, 4)}
+        desc = (f"Persona #{t.id}: posible hurto según la IA de movimientos (se movió como en los hurtos marcados; "
+                f"puntaje {score:.2f})".replace(".", ","))
+        out.append(RuleEvent(HURTO_IA, SEVERITY[HURTO_IA], t.id, here[0].name if here else None, desc, ts, t.bbox,
+                             feats, t.first_ts))
+    return out
+
+
 class Analyzer:
     """Detecta, sigue, aplica reglas y arma los clips.
 
@@ -125,6 +171,10 @@ class Analyzer:
     que apareciera (`clip_pre` como mínimo) y sigue mientras se la vea, hasta `clip_post` después
     de que se fue, con tope `clip_max`. Para poder volver hasta 3 minutos atrás sin gastar memoria,
     el buffer guarda los cuadros ya comprimidos en JPEG (640 px, ~40 KB: 3 min a 5 fps ≈ 36 MB).
+
+    Con la IA de movimientos de hurto (`config["ia_hurto"]`, core/hurto_ia.py) y la postura cargada, mira la postura de
+    todas las personas (aunque la cámara no tenga gestos) y cada aviso de la IA es un hallazgo `hurto_ia`. Sin modelo,
+    con uno roto o de otra versión, o en «solo métricas», todo queda como siempre.
     """
 
     def __init__(self, config: dict, detector: Detector, scorer: Scorer | None = None,
@@ -147,21 +197,57 @@ class Analyzer:
         self._pending: list[_PendingClip] = []
         self._ready: list[ClipReady] = []
         self.last_tracks: list[Track] = []
+        self.theft: OnlineTheftDetector | None = None  # la IA de movimientos de hurto (None = apagada)
+        self._theft_spec = None
+        self._zones_seen = None
+        self.set_theft((config or {}).get("ia_hurto") if isinstance(config, dict) else None)
 
     @property
     def gestures(self) -> bool:
         """Se buscan gestos: hay modelo de postura y la cámara los tiene activados."""
         return self.pose is not None and self.engine.gestures is not None and self.clips
 
+    @property
+    def theft_ai(self) -> bool:
+        """La IA de movimientos de hurto está mirando: hay modelo que sirve, postura y no es «solo métricas»."""
+        return self.pose is not None and self.theft is not None and self.clips
+
+    @property
+    def wants_pose(self) -> bool:
+        """Hace falta la postura (gestos activados o IA de hurtos con modelo), esté cargada o no."""
+        return self.clips and (self.engine.gestures is not None or self.theft is not None)
+
+    def set_theft(self, spec) -> bool:
+        """Prende, cambia o apaga la IA de movimientos de hurto en caliente (sin reconectar). El mismo modelo de antes
+        sigue con lo que venía midiendo de cada persona (solo toma las zonas de ahora). Devuelve si quedó prendida
+        (con un modelo que sirve; mirar también necesita la postura)."""
+        if not isinstance(spec, dict):
+            spec = None
+        if spec is not None and self.theft is not None and spec == self._theft_spec:
+            self._theft_zones()
+            return True
+        self._theft_spec = spec
+        self.theft = theft_detector(spec, self.zones) if spec is not None else None
+        self._zones_seen = self.zones
+        return self.theft is not None
+
+    def _theft_zones(self) -> None:
+        """Las zonas de la IA de hurtos, si cambiaron (se cambian en caliente: `zones` se reemplaza entero)."""
+        if self.theft is not None and self._zones_seen is not self.zones:
+            self.theft.zones = self.zones
+            self._zones_seen = self.zones
+
     def process(self, frame: np.ndarray, ts: float, wall: datetime | None = None) -> list[Finding]:
         h, w = frame.shape[:2]
-        dets, objects = detect_with_bags(self.detector, frame, self.gestures)
+        theft = self.theft_ai
+        posture = self.gestures or theft
+        dets, objects = detect_with_bags(self.detector, frame, posture)
         tracks = self.tracker.update(dets, ts, frame)
         self.last_tracks = tracks
         if not self.clips:  # solo métricas: no hay alertas ni clips
             self.frames += 1
             return []
-        if self.gestures:
+        if posture:  # (la IA de hurtos mira a todas las personas del mínimo de alto de los gestos, aunque no haya gestos)
             look(self.pose, frame, tracks, self.engine.cfg.gestures.min_height(h))
         else:  # sin gestos (o recién apagados) no queda un esqueleto viejo dibujado
             for t in tracks:
@@ -181,8 +267,16 @@ class Analyzer:
                 self._ready.append(ClipReady(p.uuid, p.frames, p.start_ts, p.frames[-1][0] if p.frames else ts))
         self._pending = still
 
+        events = self.engine.update(tracks, ts, (w, h), wall, objects)
+        if theft:
+            self._theft_zones()
+            try:
+                events += theft_events(self.theft, ts, (w, h), tracks, objects, self.zones,
+                                       self.engine.current_features(tracks, ts, (w, h), wall))
+            except Exception:  # noqa: BLE001 - la IA de hurtos no puede frenar las reglas, los gestos ni los clips
+                log.exception("La IA de movimientos de hurto falló en este cuadro; sigue lo demás")
         findings = []
-        for ev in self.engine.update(tracks, ts, (w, h), wall, objects):
+        for ev in events:
             score = self.scorer.score(ev.type, ev.features) if self.scorer else None
             alert = self.scorer.is_alert(score) if self.scorer and score is not None else True
             ok, jpg = cv2.imencode(".jpg", annotate(frame, self.zones, tracks, ev), [cv2.IMWRITE_JPEG_QUALITY, 85])

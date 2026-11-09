@@ -1,9 +1,9 @@
 """Máquinas de análisis (servidores en la nube): cuánto pesa cada cámara, cómo se reparten y cuántas
 máquinas hacen falta prendidas. Solo funciones puras: la base de datos la maneja server/main.py.
 
-- **Peso** de una cámara = cuánto de una máquina ocupa ahora (1,0 = cámara de hurto a 5 fps; con gestos, un 30 %
-  más por la postura; con «Personas lejos», 4 veces: la imagen entera más 4 partes). Con el local cerrado y «No
-  mirar», pesa 0: no hace falta ninguna máquina para ella.
+- **Peso** de una cámara = cuánto de una máquina ocupa ahora (1,0 = cámara de hurto a 5 fps; con gestos o con la IA
+  de movimientos de hurto, un 30 % más por la postura; con «Personas lejos», 4 veces: la imagen entera más 4 partes).
+  Con el local cerrado y «No mirar», pesa 0: no hace falta ninguna máquina para ella.
 - **Reparto**: cada cámara se queda en su máquina mientras esa máquina esté en línea y le entre; las demás
   van a la menos cargada. Si una máquina se cae (90 s sin noticias), sus cámaras pasan a las otras.
 - **Plan**: cuántas máquinas tienen que estar prendidas (mirando también los próximos 20 min, para
@@ -23,19 +23,26 @@ HEADROOM = 0.85  # no llenar las máquinas más allá del 85 %
 LOOKAHEAD = timedelta(minutes=20)  # una máquina tarda 2-3 min en arrancar: prenderla antes de que abran
 ONLINE = timedelta(seconds=90)  # sin noticias en este tiempo = máquina caída
 DEFAULT_CAPACITY = 30.0  # cámaras de hurto a 5 fps por máquina (hasta medirlo)
-# cámara con gestos de ocultamiento: además del detector, la postura (core/pose.py, ~18 ms por persona) suma
-# un 20-40 % con gente a la vista; se cuenta un 30 % más (sin gente, el filtro de movimiento ahorra igual)
+# cámara con gestos de ocultamiento o con la IA de movimientos de hurto (core/hurto_ia.py): además del detector, la
+# postura (core/pose.py, ~18 ms por persona) suma un 20-40 % con gente a la vista; se cuenta un 30 % más (sin gente, el
+# filtro de movimiento ahorra igual). Con las dos, la postura se calcula una sola vez: el mismo 30 %
 POSE_FACTOR = 1.3
 # «Personas lejos» (core/deteccion.py): el detector mira la imagen entera + 4 partes agrandadas ≈ 5 veces el detector
 # por cuadro; decodificar el video, seguir a las personas y las reglas no se multiplican: se cuenta 4 veces la cámara
 FAR_FACTOR = 4
 
 
+def uses_pose(analysis: dict) -> bool:
+    """La cámara mira la postura de las personas: tiene gestos o la IA de movimientos de hurto (`analysis` es lo que
+    arma `camera_analysis` en server/main.py)."""
+    return bool(analysis.get("gestures") or analysis.get("ia_hurto"))
+
+
 def camera_weight(*, fps: float, mode: str, brand: str, hours: dict | None, tz: str, off_hours: str,
                   now: datetime, pose: bool = False, far: bool = False) -> float:
-    """Cuánto ocupa la cámara en este momento (`now` en UTC, con o sin zona). `pose`: mira gestos (postura).
-    `far`: «Personas lejos» (el detector pasa 5 veces por cuadro); solo cuenta mirando en vivo: en los modos de
-    alarmas el peso es por escuchar al grabador, y cada clip de alarma se analiza aparte."""
+    """Cuánto ocupa la cámara en este momento (`now` en UTC, con o sin zona). `pose`: mira la postura (gestos o IA de
+    hurtos, `uses_pose`). `far`: «Personas lejos» (el detector pasa 5 veces por cuadro); solo cuenta mirando en vivo:
+    en los modos de alarmas el peso es por escuchar al grabador, y cada clip de alarma se analiza aparte."""
     alarms = mode in ("alarmas", "alarmas_equipo")
     base = 0.1 if alarms else 0.2 + 0.8 * fps / 5.0  # 0,2 = decodificar el video
     if pose:

@@ -10,6 +10,7 @@ import re
 import secrets
 import time
 import unicodedata
+import zlib
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import defer
 
 # core.deteccion es Python puro: el servidor no puede importar core.detectors (trae OpenCV, que Vercel no tiene)
 from core.deteccion import DetectionConfig
@@ -35,7 +37,7 @@ from core.scorer import FEATURE_NAMES, LABELS
 
 from . import hikconnect, hpp, nube, pool, probe, training
 from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, CredentialAccess, Event,
-                 FilterModel, Incident, LoginFailure, SessionToken, User,
+                 FilterModel, Incident, LoginFailure, SessionToken, TheftModel, TrainingClip, User,
                  VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, needs_rehash, new_token, password_problem, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
@@ -670,6 +672,32 @@ class TrainIn(BaseModel):
     target_recall: float = Field(0.9, ge=0.5, le=1.0)
 
 
+class TheftTrainIn(BaseModel):
+    client_id: int | None = None  # None = con los clips de todos los clientes (el modelo queda para todos)
+    target_recall: float = Field(0.8, ge=0.5, le=1.0)
+
+
+# «Entrenar IA hurtos» (app, 9 nov): clips analizados en la PC (el video no sale de ahí) con sus rasgos por ventana.
+# Veredictos y tipos de marca: core/hurto_ia.py (VERDICTS, MARK_KINDS); lo mínimo para entrenar, también (MIN_MARKS…)
+MAX_IA_WINDOWS = 20_000  # ≈ 30 min con 11 personas a la vez; con más, el pedido pasa los 4,5 MB de Vercel
+MAX_IA_MARKS = 50
+IA_SLACK_S = 1.0  # tolerancia al final del clip (la duración que da el video y la del último cuadro no coinciden)
+IA_UUID = re.compile(r"^[A-Za-z0-9]{1,40}$")
+IA_RECOMMENDED_MARKS = 30  # con cuántos hurtos marcados empieza a servir de verdad (con 5 ya entrena, pero adivina)
+# 20.000 ventanas en JSON son unos 5 MB: más que los 4,5 MB que acepta Vercel. Por eso el clip se puede mandar comprimido
+# (`Content-Encoding: gzip`, ~1,5 MB); descomprimido, como mucho esto (un pedido no puede inflarse sin fin)
+MAX_IA_BODY = 40 * 1024 * 1024
+# entrenar lee todas las ventanas de la base: con 380.000 tarda ~20 s y usa ~1 GB (Vercel corta a los 60 s)
+MAX_IA_TRAIN_WINDOWS = 300_000
+
+
+def ia_mod():
+    """core.hurto_ia, la IA de movimientos de hurto (Python puro con numpy, sin OpenCV: entra en Vercel). Se carga al
+    usarla: si no se pudiera cargar, se cae solo lo de esa IA y no el servidor entero."""
+    from core import hurto_ia
+    return hurto_ia
+
+
 class DeviceAlarmIn(BaseModel):
     camera_id: int
     event_type: Literal[hpp.VIDEO_EVENT_TYPES]  # type: ignore[valid-type]
@@ -1064,12 +1092,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clients = ({c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))}
                    if cams else {})
         out: list[dict[int, float]] = [{} for _ in times]
+        theft = theft_specs(s) if cams else {}
         for c in cams:
             cl = clients.get(c.client_id)
             if cl is None:
                 continue
-            analysis = camera_analysis(c, cl)
-            fps, pose = camera_fps(c, analysis), bool(analysis.get("gestures"))  # con gestos mira posturas: pesa más
+            analysis = camera_analysis(c, cl, theft)
+            fps, pose = camera_fps(c, analysis), pool.uses_pose(analysis)  # mira posturas (gestos o IA): pesa más
             # «Personas lejos»: el detector pasa 5 veces por cuadro (el de movimiento no tiene partes: no cambia)
             far = c.detector != "motion" and bool((analysis.get("detection") or {}).get("far"))
             for i, t in enumerate(times):
@@ -1615,7 +1644,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.delete("/api/clients/{cid}", status_code=204)
     def delete_client(cid: int, _: User = Depends(admin_only), s=Depends(db)) -> None:
         """Borra el cliente con todo lo suyo: cámaras, alertas y clips, alarmas, métricas, videos, avisos,
-        modelos y los usuarios de rol cliente. No se puede deshacer (el panel pide escribir el nombre)."""
+        modelos, clips de «Entrenar IA hurtos» y los usuarios de rol cliente. No se puede deshacer."""
         c = get_or_404(s, Client, cid, "Cliente")
         files: list[str] = []
         cam_ids = [x.id for x in s.query(Camera).filter_by(client_id=cid)]
@@ -1631,6 +1660,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             files += [i.storage_path for i in imps if i.storage_path]
             s.query(VideoImport).filter_by(client_id=cid).delete(synchronize_session=False)
         s.query(FilterModel).filter_by(client_id=cid).delete(synchronize_session=False)
+        s.query(TheftModel).filter_by(client_id=cid).delete(synchronize_session=False)
+        files += [p for (p,) in s.query(TrainingClip.data_path).filter(TrainingClip.client_id == cid) if p]
+        s.query(TrainingClip).filter_by(client_id=cid).delete(synchronize_session=False)
         for cam in s.query(Camera).filter_by(client_id=cid):
             files += ([cam.preview_path] if cam.preview_path else []) + [live_path(cam)]
         s.query(Camera).filter_by(client_id=cid).delete(synchronize_session=False)
@@ -1713,6 +1745,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.query(ClientReport).filter(ClientReport.sent_by == uid).update({"sent_by": None}, synchronize_session=False)
         s.query(FilterModel).filter(FilterModel.created_by == uid).update({"created_by": None},
                                                                           synchronize_session=False)
+        s.query(TrainingClip).filter(TrainingClip.created_by == uid).update({"created_by": None},
+                                                                            synchronize_session=False)
+        s.query(TheftModel).filter(TheftModel.created_by == uid).update({"created_by": None},
+                                                                        synchronize_session=False)
         s.query(SessionToken).filter(SessionToken.user_id == uid).delete(synchronize_session=False)
         name = u.username
         s.delete(u)
@@ -2014,10 +2050,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out = [finite(x) for x in v]
         return None if any(x is None for x in out) else out
 
+    feature_names: list[frozenset] = []  # las medidas que se guardan de cada alerta (se arma al usarla)
+
+    def event_features() -> frozenset:
+        """Las del filtro (core/scorer.py) y, en las alertas de la IA de movimientos, sus rasgos y su puntaje."""
+        if not feature_names:
+            names = set(FEATURE_NAMES) | {"ia_score"}
+            try:
+                names |= set(ia_mod().FEATURE_NAMES)
+            except ImportError:  # (sin la IA de hurtos se guardan las de siempre)
+                log.exception("No se pudo cargar core.hurto_ia")
+            feature_names.append(frozenset(names))
+        return feature_names[0]
+
     def clean_features(v) -> dict[str, float]:
         if not isinstance(v, dict):
             return {}
-        return {k: f for k, x in v.items() if k in FEATURE_NAMES and (f := finite(x)) is not None}
+        allowed = event_features()
+        return {k: f for k, x in list(v.items())[:200] if k in allowed and (f := finite(x)) is not None}
 
     def clean_status(cs: dict) -> dict:
         """El estado de una cámara que manda una PC, con solo datos simples: números, sí/no, textos cortos y listas
@@ -2180,6 +2230,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             c.plans = clean_camera_plans(sent, client)
         elif body.client_id != c.client_id:  # pasó a otro cliente: lo elegido era para el otro, sigue al nuevo
             c.plans = None
+        if body.client_id != c.client_id:  # sus clips de «Entrenar IA hurtos» pasan con ella
+            s.query(TrainingClip).filter(TrainingClip.camera_id == c.id).update({"client_id": body.client_id},
+                                                                                synchronize_session=False)
         if body.detection is not None:  # None = no cambia (la web y las apps viejas no la mandan)
             c.detection = detection
         before = locations(s)
@@ -2276,6 +2329,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s.query(VideoImport).filter(VideoImport.id.in_(imp_ids)).delete(synchronize_session=False)
         s.query(CameraMetric).filter(CameraMetric.camera_id.in_(ids)).delete(synchronize_session=False)
         s.query(Alarm).filter(Alarm.camera_id.in_(ids)).delete(synchronize_session=False)
+        # los clips de «Entrenar IA hurtos» quedan, sin cámara (son datos para entrenar: el video está en la PC)
+        s.query(TrainingClip).filter(TrainingClip.camera_id.in_(ids)).update({"camera_id": None},
+                                                                             synchronize_session=False)
         for c in cams:
             files += ([c.preview_path] if c.preview_path else []) + [live_path(c)]
             s.delete(c)
@@ -2486,7 +2542,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Evento no encontrado")
         return ev
 
-    def camera_analysis(c: Camera, client: Client | None = None) -> dict:
+    def theft_specs(s) -> dict[int | None, dict]:
+        """Las IA de movimientos de hurto activas (una por alcance): cliente → spec; None = la de todos."""
+        return {m.client_id: dict(m.spec, id=m.id)
+                for m in s.query(TheftModel).filter(TheftModel.active.is_(True)).order_by(TheftModel.id)}
+
+    def camera_analysis(c: Camera, client: Client | None = None, theft: dict | None = None) -> dict:
+        """Lo que analiza la cámara. `theft` = `theft_specs(s)`: la IA de movimientos de hurto que le toca (la de su
+        cliente o, si no tiene, la de todos), solo si la cámara mide hurtos y no es de solo métricas."""
         plans = camera_plans(c, client)  # lo que mide esta cámara de lo que contrató el cliente
         prof = camera_profile(c)
         zones, rules = list(c.zones or []), clean_rules(c.rules)  # sin el merodeo (ya no existe)
@@ -2529,6 +2592,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 out["staff_zones"] = staff  # la 1.24 solo lee esta lista (y no conoce «pasillo»)
         if client is not None and client.hours:
             out["schedule"] = client.hours  # para la regla «fuera de horario»
+        # IA de movimientos de hurto (core/hurto_ia.py): aparte, como los gestos (un agente viejo no la conoce y la
+        # ignora); mira la postura de todos aunque la cámara no tenga gestos (pesa como con gestos, server/pool.py)
+        spec = (theft.get(c.client_id) or theft.get(None)) if theft and not metrics_only else None
+        if spec:
+            out["ia_hurto"] = spec
         return out
 
     def camera_fps(c: Camera, analysis: dict) -> float:
@@ -2597,9 +2665,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cams = s.query(Camera).filter(Camera.id.in_(set(body.camera_ids)), Camera.enabled.is_(True)).all()
         log_credentials(s, ag, u, [c.id for c in cams], "view", request)
         clients = {c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))} if cams else {}
+        theft = theft_specs(s) if cams else {}
         out = []
         for c in cams:
-            cfg = agent_camera_cfg(c, clients[c.client_id])
+            cfg = agent_camera_cfg(c, clients[c.client_id], theft)
             out.append({"id": c.id, "name": c.name, "client_id": c.client_id,
                         "client_name": clients[c.client_id].name,
                         "analyzed": locs.get(c.id) == "servidores",
@@ -2616,7 +2685,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         u = watcher(s, ag)
         c = get_or_404(s, Camera, body.camera_id, "Cámara")
         client = s.get(Client, c.client_id)
-        cfg = agent_camera_cfg(c, client)
+        cfg = agent_camera_cfg(c, client, theft_specs(s))
         if c.enabled:
             log_credentials(s, ag, u, [c.id], "tune", request)
         else:  # deshabilitada: se puede ajustar con clips, sin la clave del grabador
@@ -2650,6 +2719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cams = agent_cameras_q(s, ag).order_by(Camera.id).all()
         clients = {c.id: c for c in s.query(Client).filter(Client.id.in_({c.client_id for c in cams}))} if cams else {}
         models = {cid: model_spec(s, cid) for cid in clients}  # cada cliente puede tener su propio modelo
+        theft = theft_specs(s) if cams else {}
         return {
             "agent_id": ag.id, "client_id": ag.client_id, "central": ag.client_id is None,
             "process_imports": ag.process_imports, "kind": ag.kind or "pc", "analysis_mode": pc_mode(s, ag),
@@ -2658,7 +2728,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                          "clip_max_seconds": st.clip_max_seconds},
             "filter_model": model_spec(s, ag.client_id) if ag.client_id is not None else None,
             "cameras": [{
-                **agent_camera_cfg(c, clients[c.client_id]), "filter_model": models[c.client_id],
+                **agent_camera_cfg(c, clients[c.client_id], theft), "filter_model": models[c.client_id],
             } for c in cams],
         }
 
@@ -2669,8 +2739,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "timezone": client.timezone, "source_url": box.decrypt(c.source_url_enc) or None,
                 "camera_id": c.id, "serial": c.hpp_serial}
 
-    def agent_camera_cfg(c: Camera, client: Client) -> dict:
-        analysis = camera_analysis(c, client)
+    def agent_camera_cfg(c: Camera, client: Client, theft: dict | None = None) -> dict:
+        analysis = camera_analysis(c, client, theft)
         return {
             "id": c.id, "name": c.name, "client_id": c.client_id, "client_name": client.name,
             "enabled": c.enabled, "detector": c.detector, "process_fps": camera_fps(c, analysis),
@@ -2982,7 +3052,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "recorded_at": imp.recorded_at.isoformat() if imp.recorded_at else None,
                     "timezone": client.timezone,
                     "camera": {"id": cam.id, "name": cam.name, "detector": cam.detector,
-                               "process_fps": cam.process_fps, "analysis": camera_analysis(cam)},
+                               "process_fps": cam.process_fps, "analysis": camera_analysis(cam, theft=theft_specs(s))},
                     "filter_model": model_spec(s, imp.client_id)}
         return Response(status_code=204)
 
@@ -3271,7 +3341,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             end = (a.last_at + timedelta(seconds=cfg["post_seconds"])).replace(tzinfo=timezone.utc).astimezone(tz)
             return {"alarm_id": a.id, "event_type": a.event_type, "triggers": a.triggers,
                     "start": start.isoformat(), "end": end.isoformat(),
-                    "camera": agent_camera_cfg(cam, client), "filter_model": model_spec(s, cam.client_id)}
+                    "camera": agent_camera_cfg(cam, client, theft_specs(s)),
+                    "filter_model": model_spec(s, cam.client_id)}
         return Response(status_code=204)
 
     def claimed_alarm(s, ag: Agent, aid: int) -> Alarm:
@@ -3998,6 +4069,397 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         m.active = False
         s.commit()
         return model_dict(m, {c.id: c.name for c in s.query(Client).all()})
+
+    # ------------------------------------------------------------ IA de movimientos de hurto («Entrenar IA hurtos»)
+    # La app analiza cada clip en la PC (YOLO, seguimiento y postura) y manda solo los rasgos por persona y ventana de
+    # 3 s (core/hurto_ia.py); el video no sale de la PC. Con los clips marcados (hurto: cuándo y quién; o normal) se
+    # entrena la IA, que viaja a las cámaras que miden hurtos en `analysis["ia_hurto"]` (camera_analysis).
+    def mmss(x: float) -> str:
+        x = max(0, int(round(x)))
+        return f"{x // 60}:{x % 60:02d}"
+
+    def bad(msg: str):
+        raise HTTPException(422, msg)
+
+    def clean_marks(v, duration: float) -> list[dict]:
+        """Las marcas de hurto: inicio y fin (segundos del clip), la persona (su número de seguimiento, o null si no se
+        eligió) y «Cómo» (bolsillo, ropa, bolsa, otro o null). Lo que no sea eso, 422 en castellano."""
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            bad("marks: va una lista de marcas, cada una con start, end, track_id y kind")
+        if len(v) > MAX_IA_MARKS:
+            bad(f"Demasiadas marcas ({len(v)}): el máximo es {MAX_IA_MARKS} por clip")
+        out = []
+        for i, m in enumerate(v, 1):
+            if not isinstance(m, dict):
+                bad(f"Marca {i}: va un objeto con start, end, track_id y kind")
+            start, end = finite(m.get("start")), finite(m.get("end"))
+            if start is None or end is None:
+                bad(f"Marca {i}: faltan el inicio y el fin del hurto (en segundos)")
+            if not start < end:
+                bad(f"Marca {i}: el inicio ({mmss(start)}) tiene que ser antes del fin ({mmss(end)})")
+            if start < 0 or start >= duration or end > duration + IA_SLACK_S:
+                bad(f"Marca {i}: queda fuera del clip (el clip dura {mmss(duration)})")
+            tid = m.get("track_id")
+            if tid is not None and (type(tid) is not int or tid < 0):
+                bad(f"Marca {i}: la persona (track_id) va como un número entero, o null si no se eligió")
+            kind = m.get("kind")
+            if kind is not None and kind not in ia_mod().MARK_KINDS:
+                bad(f"Marca {i}: «Cómo» va bolsillo, ropa, bolsa u otro (o null)")
+            out.append({"start": round(start, 2), "end": round(min(end, duration), 2), "track_id": tid, "kind": kind})
+        return sorted(out, key=lambda m: (m["start"], m["end"]))
+
+    def clean_windows(v, duration: float, n_feats: int) -> list[dict]:
+        """Los rasgos por persona y ventana que armó la PC (core/hurto_ia.py `person_windows`). Se guardan con 5
+        cifras: alcanza para entrenar y la base pesa la mitad."""
+        if not isinstance(v, list):
+            bad("windows: va una lista de ventanas, cada una con track_id, t0, t1 y f")
+        if len(v) > MAX_IA_WINDOWS:
+            bad(f"El clip tiene demasiadas ventanas ({len(v)}; el máximo es {MAX_IA_WINDOWS}): cortalo en partes más "
+                f"cortas")
+        out = []
+        for i, w in enumerate(v, 1):
+            if not isinstance(w, dict):
+                bad(f"Ventana {i}: va un objeto con track_id, t0, t1 y f")
+            tid = w.get("track_id")
+            if type(tid) is not int or tid < 0:
+                bad(f"Ventana {i}: la persona (track_id) va como un número entero")
+            t0, t1 = finite(w.get("t0")), finite(w.get("t1"))
+            if t0 is None or t1 is None or not 0 <= t0 <= t1 <= duration + IA_SLACK_S:
+                bad(f"Ventana {i}: t0 y t1 van en segundos, dentro del clip (dura {mmss(duration)})")
+            f = w.get("f")
+            if not isinstance(f, list) or len(f) != n_feats:
+                bad(f"Ventana {i}: «f» va con {n_feats} rasgos (llegaron "
+                    f"{len(f) if isinstance(f, list) else 'otra cosa'}): ¿la app es de otra versión?")
+            vals = []
+            for x in f:
+                y = finite(x)
+                if y is None:
+                    bad(f"Ventana {i}: los rasgos van como números (sin NaN ni infinito)")
+                vals.append(float(f"{y:.5g}"))
+            out.append({"track_id": tid, "t0": round(t0, 2), "t1": round(t1, 2), "f": vals})
+        return out
+
+    def check_verdict(verdict, marks: list[dict]) -> None:
+        if verdict not in ia_mod().VERDICTS:
+            bad("verdict: va «hurto», «normal» o «sin_marcar»")
+        if verdict == "hurto" and not marks:
+            bad("Un clip con hurto necesita al menos una marca: el inicio, el fin y la persona que roba")
+        if verdict == "normal" and marks:
+            bad("Un clip normal no lleva marcas de hurto: quitalas o marcalo como hurto")
+
+    def clip_names(s) -> dict:
+        return {"clients": dict(s.query(Client.id, Client.name).all()),
+                "cameras": dict(s.query(Camera.id, Camera.name).all()),
+                "users": dict(s.query(User.id, User.username).all())}
+
+    def clip_dict(c: TrainingClip, names: dict) -> dict:
+        """Un clip para la lista (sin `windows`, que puede pesar megas: solo cuántas hay)."""
+        marks = list(c.marks or [])
+        return {"id": c.id, "uuid": c.uuid, "name": c.name,
+                "client_id": c.client_id, "client_name": names["clients"].get(c.client_id),
+                "camera_id": c.camera_id, "camera_name": names["cameras"].get(c.camera_id),
+                "duration_s": c.duration_s, "fps": c.fps, "width": c.width, "height": c.height,
+                "verdict": c.verdict, "marks": marks, "n_marks": len(marks), "n_windows": c.n_windows or 0,
+                "feature_version": c.feature_version,
+                # con los rasgos de otra versión no se entrena (hay que volver a analizar el clip)
+                "feature_ok": c.feature_version == ia_mod().FEATURE_VERSION,
+                "people": c.people, "has_data": bool(c.data_path),
+                "created_by": c.created_by, "created_by_name": names["users"].get(c.created_by),
+                "created_at": iso(c.created_at), "updated_at": iso(c.updated_at)}
+
+    def clip_detail(c: TrainingClip, names: dict) -> dict:
+        """El clip con lo que van a aprender sus ventanas: cuántas quedan como hurto y como normales, y qué marcas no
+        tienen ninguna ventana de esa persona (no se la vio con postura en ese rato: esa marca no enseña nada)."""
+        ia = ia_mod()
+        d = clip_dict(c, names)
+        windows, marks = c.windows or [], list(c.marks or [])
+        labels = ia.window_labels(c.verdict, marks, windows) if windows else []
+        empty = [i for i, m in enumerate(marks)
+                 if not any(x == 1 for x in ia.window_labels("hurto", [m], windows))] if windows else \
+            list(range(len(marks)))
+        d.update(positive_windows=sum(1 for x in labels if x == 1),
+                 negative_windows=sum(1 for x in labels if x == 0), marks_without_windows=empty)
+        return d
+
+    def clip_path(uid: str) -> str:
+        return f"training/clips/{uid}.json.gz"
+
+    async def json_or_gzip(request: Request) -> dict:
+        """El cuerpo del pedido: JSON, o JSON comprimido con gzip (`Content-Encoding: gzip`): un clip largo pasa los
+        4,5 MB de Vercel en JSON y comprimido pesa la cuarta parte."""
+        raw = await request.body()
+        if request.headers.get("content-encoding", "").strip().lower() == "gzip":
+            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            try:
+                raw = d.decompress(raw, MAX_IA_BODY)
+            except zlib.error as exc:
+                raise HTTPException(422, "El cuerpo dice venir comprimido (gzip) pero no se puede descomprimir") from exc
+            if d.unconsumed_tail:
+                raise HTTPException(413, "El clip es demasiado grande: cortalo en partes más cortas")
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(422, "El cuerpo no es un JSON válido") from exc
+        if not isinstance(data, dict):
+            raise HTTPException(422, "El cuerpo va como un objeto JSON con los datos del clip")
+        return data
+
+    @app.get("/api/training/clips")
+    def list_training_clips(client_id: int | None = None, _: User = Depends(staff), s=Depends(db)) -> list[dict]:
+        q = s.query(TrainingClip).options(defer(TrainingClip.windows))
+        if client_id is not None:
+            q = q.filter(TrainingClip.client_id == client_id)
+        names = clip_names(s)
+        return [clip_dict(c, names) for c in q.order_by(TrainingClip.id.desc())]
+
+    @app.post("/api/training/clips")
+    def save_training_clip(response: Response, user: User = Depends(staff), body: dict = Depends(json_or_gzip),
+                           s=Depends(db)) -> dict:
+        """Crea el clip o, si ya existe ese `uuid` (el mismo archivo analizado de nuevo), le actualiza el análisis.
+        `verdict` y `marks` (optativos; si no, «sin_marcar») son para el clip nuevo: lo que ya marcó una persona no se
+        pisa al volver a subirlo (se cambia con PUT); solo si estaba sin marcar y sin marcas toma lo que venga.
+        El cuerpo puede venir comprimido (`Content-Encoding: gzip`). Responde el clip y `data_upload`: la URL firmada
+        para subir el .json.gz con los cuadros directo al Storage (PUT, `data_content_type`)."""
+        ia = ia_mod()
+        uid = body.get("uuid")
+        if not isinstance(uid, str) or not IA_UUID.match(uid):
+            bad("uuid: van de 1 a 40 letras o números (la app lo saca del archivo)")
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            bad("name: va el nombre del clip")
+        cam_id, cl_id = body.get("camera_id"), body.get("client_id")
+        for what, v in (("camera_id", cam_id), ("client_id", cl_id)):
+            if v is not None and type(v) is not int:
+                bad(f"{what}: va un número (o null)")
+        if cam_id is not None:
+            cam = get_or_404(s, Camera, cam_id, "Cámara")
+            if cl_id is not None and cl_id != cam.client_id:
+                bad("La cámara elegida no es de ese cliente")
+            cl_id = cam.client_id
+        elif cl_id is not None:
+            get_or_404(s, Client, cl_id, "Cliente")
+        duration = finite(body.get("duration_s"))
+        if duration is None or duration <= 0:
+            bad("duration_s: va la duración del clip en segundos")
+        if duration > ia.MAX_CLIP_S + IA_SLACK_S:
+            bad(f"El clip dura {mmss(duration)}: el máximo es {int(ia.MAX_CLIP_S // 60)} minutos. Cortalo en partes "
+                f"más cortas")
+        fps = finite(body.get("fps"))
+        if fps is None or not 0 < fps <= 120:
+            bad("fps: van los cuadros por segundo analizados (más de 0 y hasta 120)")
+        size = []
+        for what in ("width", "height"):
+            v = body.get(what)
+            if type(v) is not int or not 1 <= v <= 20000:
+                bad(f"{what}: va el tamaño del cuadro analizado en píxeles (un número entero)")
+            size.append(v)
+        fv = body.get("feature_version")
+        if type(fv) is not int:
+            bad("feature_version: va la versión de los rasgos (un número entero)")
+        if fv != ia.FEATURE_VERSION:
+            bad(f"Los rasgos del clip son de la versión {fv} y el servidor usa la {ia.FEATURE_VERSION}: actualizá la app "
+                f"(o esperá a que se actualice el servidor) y volvé a subirlo")
+        windows = clean_windows(body.get("windows"), duration, len(ia.FEATURE_NAMES))
+        people = body.get("people")
+        if people is None:
+            people = len({w["track_id"] for w in windows})
+        elif type(people) is not int or not 0 <= people <= 1_000_000:
+            bad("people: va la cantidad de personas que se siguieron (un número entero)")
+        clip = s.query(TrainingClip).filter_by(uuid=uid).first()
+        kept = bool(clip and (clip.verdict != "sin_marcar" or clip.marks))
+        if kept:  # lo que marcó una persona no se pisa con lo que trae una subida
+            verdict, marks = clip.verdict, list(clip.marks or [])
+        else:
+            verdict = body.get("verdict") if body.get("verdict") is not None else "sin_marcar"
+            marks = clean_marks(body.get("marks"), duration)
+        check_verdict(verdict, marks)
+        created = clip is None
+        if created:
+            clip = TrainingClip(uuid=uid, created_by=user.id)
+            s.add(clip)
+        clip.name, clip.client_id, clip.camera_id = name.strip()[:200], cl_id, cam_id
+        clip.duration_s, clip.fps, (clip.width, clip.height) = round(duration, 2), round(fps, 2), size
+        clip.verdict, clip.marks, clip.windows, clip.n_windows = verdict, marks, windows, len(windows)
+        clip.feature_version, clip.people, clip.updated_at = fv, people, utcnow()
+        clip.data_path = clip_path(uid)  # (si todavía no llegó, «/data» lo dice)
+        try:
+            upload = storage.signed_upload_url(clip.data_path)
+        except StorageError as exc:
+            s.rollback()
+            raise HTTPException(502, str(exc)) from exc
+        s.commit()
+        response.status_code = 201 if created else 200
+        log.info("Clip de entrenamiento %s (%s) %s por %s: %d ventanas, %s", clip.id, uid,
+                 "subido" if created else "actualizado", user.username, len(windows), verdict)
+        return {**clip_detail(clip, clip_names(s)), "created": created, "labels_kept": kept, "data_upload": upload,
+                "data_content_type": "application/gzip"}
+
+    @app.put("/api/training/clips/{clip_id}")
+    def update_training_clip(clip_id: int, body: dict, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """Marcas, veredicto o nombre de un clip (`{verdict?, marks?, name?}`). Pasarlo a «normal» sin mandar marcas
+        borra las que tuviera; «hurto» exige al menos una marca."""
+        clip = get_or_404(s, TrainingClip, clip_id, "Clip")
+        if "name" in body:
+            name = body["name"]
+            if not isinstance(name, str) or not name.strip():
+                bad("name: va el nombre del clip")
+            clip.name = name.strip()[:200]
+        verdict = body.get("verdict") if body.get("verdict") is not None else clip.verdict
+        if body.get("marks") is not None:
+            marks = clean_marks(body["marks"], clip.duration_s)
+        elif body.get("verdict") == "normal":
+            marks = []
+        else:
+            marks = list(clip.marks or [])
+        check_verdict(verdict, marks)
+        clip.verdict, clip.marks, clip.updated_at = verdict, marks, utcnow()
+        s.commit()
+        log.info("Clip de entrenamiento %s: %s con %d marca(s), por %s", clip.id, verdict, len(marks), user.username)
+        return clip_detail(clip, clip_names(s))
+
+    @app.delete("/api/training/clips/{clip_id}", status_code=204)
+    def delete_training_clip(clip_id: int, user: User = Depends(staff), s=Depends(db)) -> None:
+        clip = get_or_404(s, TrainingClip, clip_id, "Clip")
+        path = clip.data_path
+        s.delete(clip)
+        s.commit()
+        if path:
+            try:
+                storage.remove([path])
+            except StorageError:
+                log.warning("No se pudo borrar %s", path)
+        log.info("Clip de entrenamiento %s borrado por %s", clip_id, user.username)
+
+    @app.get("/api/training/clips/{clip_id}/data")
+    def training_clip_data(clip_id: int, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """La URL firmada (1 hora) para bajar el .json.gz con los cuadros del clip: recuadros, esqueletos y bolsos."""
+        clip = s.query(TrainingClip).options(defer(TrainingClip.windows)).filter_by(id=clip_id).first()
+        if clip is None:
+            raise HTTPException(404, "Clip no encontrado")
+        try:
+            if not clip.data_path or not storage.exists(clip.data_path):
+                raise HTTPException(404, "Los cuadros de este clip todavía no llegaron a la nube: se suben desde la "
+                                         "PC que lo analizó")
+            return {"url": storage.signed_download_url(clip.data_path, 3600), "expires_in": 3600}
+        except StorageError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    def theft_model_dict(m: TheftModel, names: dict) -> dict:
+        spec = m.spec or {}
+        usable = ia_mod().spec_ok(spec)
+        return {"id": m.id, "client_id": m.client_id,
+                "client_name": names["clients"].get(m.client_id) if m.client_id else None,
+                "scope": "cliente" if m.client_id else "global", "metrics": m.metrics or {}, "n_clips": m.n_clips,
+                "active": m.active, "threshold": spec.get("threshold"), "version": spec.get("version"),
+                # entrenado con los rasgos de otra versión: las PCs y máquinas lo ignoran (hay que entrenar otro)
+                "usable": usable, "created_by": m.created_by, "created_by_name": names["users"].get(m.created_by),
+                "created_at": iso(m.created_at)}
+
+    def theft_models_of(s, client_id: int | None) -> list[TheftModel]:
+        """Los modelos que le tocan a un cliente (los suyos y los de todos), o todos si no se dice el cliente."""
+        q = s.query(TheftModel)
+        if client_id is not None:
+            q = q.filter(or_(TheftModel.client_id == client_id, TheftModel.client_id.is_(None)))
+        return q.order_by(TheftModel.id.desc()).all()
+
+    @app.get("/api/training/ia/summary")
+    def theft_summary(client_id: int | None = None, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """Con qué se entrenaría: clips con hurto y sus marcas, clips normales y sus minutos, y los modelos. Los clips
+        con rasgos de otra versión no cuentan (`old_version`)."""
+        ia = ia_mod()
+        q = s.query(TrainingClip.verdict, TrainingClip.marks, TrainingClip.duration_s, TrainingClip.feature_version,
+                    TrainingClip.n_windows)
+        if client_id is not None:
+            get_or_404(s, Client, client_id, "Cliente")
+            q = q.filter(TrainingClip.client_id == client_id)
+        out = {"client_id": client_id, "clips": 0, "theft_clips": 0, "marks": 0, "normal_clips": 0,
+               "normal_minutes": 0.0, "unmarked": 0, "old_version": 0, "windows": 0}
+        for verdict, marks, duration, fv, n_windows in q:
+            out["clips"] += 1
+            if fv != ia.FEATURE_VERSION:
+                out["old_version"] += 1
+                continue
+            out["windows"] += n_windows or 0
+            if verdict == "hurto":
+                out["theft_clips"] += 1
+                out["marks"] += len(marks or [])
+            elif verdict == "normal":
+                out["normal_clips"] += 1
+                out["normal_minutes"] += (duration or 0) / 60
+            else:
+                out["unmarked"] += 1
+        out["normal_minutes"] = round(out["normal_minutes"], 1)
+        names = clip_names(s)
+        out.update(feature_version=ia.FEATURE_VERSION, min_marks=ia.MIN_MARKS, min_normal_clips=ia.MIN_NORMAL_CLIPS,
+                   min_normal_minutes=ia.MIN_NEGATIVE_MINUTES, recommended_marks=IA_RECOMMENDED_MARKS,
+                   models=[theft_model_dict(m, names) for m in theft_models_of(s, client_id)])
+        return out
+
+    @app.post("/api/training/ia/run", status_code=201)
+    def run_theft_training(body: TheftTrainIn, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """Entrena la IA de movimientos de hurto con los clips marcados (de un cliente, o de todos con `client_id`
+        null). El modelo queda apagado: se prende con «Activar». Con pocos datos, 422 con lo que falta."""
+        ia = ia_mod()
+        q = s.query(TrainingClip).filter(TrainingClip.verdict.in_(("hurto", "normal")),
+                                         TrainingClip.feature_version == ia.FEATURE_VERSION)
+        if body.client_id is not None:
+            get_or_404(s, Client, body.client_id, "Cliente")
+            q = q.filter(TrainingClip.client_id == body.client_id)
+        total = q.with_entities(func.sum(TrainingClip.n_windows)).scalar() or 0
+        if total > MAX_IA_TRAIN_WINDOWS:
+            n = lambda x: f"{x:,}".replace(",", ".")  # noqa: E731
+            bad(f"Hay {n(total)} ventanas para entrenar y el servidor entrena hasta {n(MAX_IA_TRAIN_WINDOWS)} de una "
+                f"vez: entrená por cliente o borrá clips normales que sobren (los más largos)")
+        # (con la persona, el momento y la marca de cada ventana: los hurtos vistos y las falsas alarmas se cuentan
+        # por marca y por persona, como avisaría en vivo)
+        samples, groups, durations = ia.build_samples(q.order_by(TrainingClip.id).all())
+        started = time.monotonic()
+        try:
+            spec, metrics = ia.train(samples, groups, body.target_recall, durations)
+        except ia.NotEnoughData as exc:
+            raise HTTPException(422, str(exc)) from exc
+        used = len(set(groups))
+        log.info("IA de hurtos entrenada por %s en %.1f s: %d ventanas de %d clips", user.username,
+                 time.monotonic() - started, len(samples), used)
+        m = TheftModel(client_id=body.client_id, spec=spec, metrics=metrics, n_clips=used, active=False,
+                       created_by=user.id)
+        s.add(m)
+        s.commit()
+        return theft_model_dict(m, clip_names(s))
+
+    @app.get("/api/training/ia/models")
+    def list_theft_models(client_id: int | None = None, _: User = Depends(staff), s=Depends(db)) -> list[dict]:
+        names = clip_names(s)
+        return [theft_model_dict(m, names) for m in theft_models_of(s, client_id)]
+
+    @app.post("/api/training/ia/models/{mid}/activate")
+    def activate_theft_model(mid: int, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """Lo prende para su alcance (un cliente, o todos) y apaga el que estaba. Las PCs y máquinas lo toman en la
+        próxima configuración (se piden ya: sube `config_rev`)."""
+        m = get_or_404(s, TheftModel, mid, "Modelo")
+        names = clip_names(s)
+        if not theft_model_dict(m, names)["usable"]:
+            raise HTTPException(409, "Ese modelo se entrenó con otra versión de los rasgos: entrená uno nuevo")
+        s.query(TheftModel).filter(TheftModel.client_id.is_(None) if m.client_id is None
+                                   else TheftModel.client_id == m.client_id).update({"active": False})
+        m.active = True
+        bump_rev(s)
+        s.commit()
+        log.info("IA de hurtos %s activada por %s (%s)", m.id, user.username, m.client_id or "todos los clientes")
+        rebalance(s, force=True)  # con la IA, las cámaras miran posturas: pesan más
+        return theft_model_dict(m, names)
+
+    @app.post("/api/training/ia/models/{mid}/deactivate")
+    def deactivate_theft_model(mid: int, user: User = Depends(staff), s=Depends(db)) -> dict:
+        m = get_or_404(s, TheftModel, mid, "Modelo")
+        m.active = False
+        bump_rev(s)
+        s.commit()
+        log.info("IA de hurtos %s apagada por %s", m.id, user.username)
+        rebalance(s, force=True)
+        return theft_model_dict(m, clip_names(s))
 
     @app.get("/api/training/export.csv")
     def export_labels(_: User = Depends(staff), s=Depends(db)) -> Response:

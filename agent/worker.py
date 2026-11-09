@@ -46,10 +46,10 @@ _pose_state: dict = {}  # "est": el estimador de postura del proceso (o None), u
 
 
 def shared_pose():
-    """La postura de las personas (core/pose.py) para los gestos de ocultamiento: un solo estimador para todas las
-    cámaras del proceso (y las alarmas), armado la primera vez que una cámara con gestos lo pide. Sin el modelo
-    (models/postura.onnx) o si no arranca, None: esas cámaras siguen sin gestos, con todo lo demás igual, y queda
-    una sola línea en el registro (no una por cámara ni por cada vez que se pide)."""
+    """La postura de las personas (core/pose.py) para los gestos de ocultamiento y la IA de movimientos de hurto: un
+    solo estimador para todas las cámaras del proceso (y las alarmas), armado la primera vez que una cámara lo pide.
+    Sin el modelo (models/postura.onnx) o si no arranca, None: esas cámaras siguen sin gestos ni IA de hurtos, con
+    todo lo demás igual, y queda una sola línea en el registro (no una por cámara ni por cada vez que se pide)."""
     with _pose_lock:
         if "est" not in _pose_state:
             try:
@@ -63,7 +63,7 @@ def shared_pose():
 def without_detection(analysis: dict | None) -> dict:
     """El análisis sin la detección de personas (`analysis["detection"]`): para saber si lo único que cambió es la
     sensibilidad o «Personas lejos», que se aplican sin rehacer las reglas ni el conteo."""
-    return {k: v for k, v in (analysis or {}).items() if k != "detection"}
+    return without_keys(analysis, "detection")
 
 
 def wants_gestures(analysis: dict | None, metrics_only: bool = False) -> bool:
@@ -71,6 +71,46 @@ def wants_gestures(analysis: dict | None, metrics_only: bool = False) -> bool:
     una cámara de solo métricas: ahí no hay alertas ni clips."""
     g = (analysis or {}).get("gestures")
     return not metrics_only and isinstance(g, dict) and bool(g.get("enabled"))
+
+
+_bad_specs: set[str] = set()  # modelos de la IA de hurtos que esta versión no puede usar (ya dichos en el registro)
+
+
+def theft_spec(analysis: dict | None, metrics_only: bool = False) -> dict | None:
+    """El detector de movimientos de hurto entrenado en la app (`analysis["ia_hurto"]`, core/hurto_ia.py), si esta
+    versión lo puede usar; si no, None y la cámara sigue con todo lo demás igual: sin modelo, en una cámara de solo
+    métricas (ahí no hay alertas ni clips), o con un modelo de otra versión de los rasgos o roto (de un servidor más
+    nuevo: queda una línea en el registro, una sola vez por modelo)."""
+    a = analysis or {}
+    spec = a.get("ia_hurto")
+    if metrics_only or a.get("metrics_only") or not isinstance(spec, dict):
+        return None
+    try:
+        from core.hurto_ia import TheftModel
+
+        if TheftModel(spec).ok:
+            return spec
+        why = "es de otra versión de los rasgos o está mal armado"
+    except Exception as exc:  # noqa: BLE001 - un modelo raro no puede dejar la cámara sin analizar
+        why = f"no se pudo leer ({type(exc).__name__}: {exc})"
+    key = json.dumps(spec, sort_keys=True, default=str)[:4000]
+    if key not in _bad_specs:
+        _bad_specs.add(key)
+        log.warning("El modelo de la IA de hurtos %s: esta versión no lo usa (actualizá la app o la máquina); el "
+                    "resto del análisis sigue igual", why)
+    return None
+
+
+def wants_pose(analysis: dict | None, metrics_only: bool = False) -> bool:
+    """Hay que mirar la postura de las personas: por los gestos de ocultamiento o por la IA de movimientos de hurto
+    (que aprende con los esqueletos)."""
+    return wants_gestures(analysis, metrics_only) or theft_spec(analysis, metrics_only) is not None
+
+
+def without_keys(analysis: dict | None, *keys: str) -> dict:
+    """El análisis sin esas claves: para saber si lo único que cambió es algo que se aplica sin rehacer las reglas ni
+    el conteo (la detección de personas, el modelo de la IA de hurtos)."""
+    return {k: v for k, v in (analysis or {}).items() if k not in keys}
 
 
 class MetricsQueue:
@@ -160,9 +200,10 @@ class CameraWorker:
         self.clip_pre = float(settings.get("clip_pre_seconds", 6))
         self.clip_post = float(settings.get("clip_post_seconds", 6))
         self.clip_max = float(settings.get("clip_max_seconds", 180))
-        # la postura (gestos) se engancha en el hilo de la cámara (`_sync_pose`): cargar el modelo la primera vez
-        # tarda un momento y no tiene que trabar a quien arma la cámara (la ventana)
+        # la postura (gestos, IA de hurtos) se engancha en el hilo de la cámara (`_sync_pose`): cargar el modelo la
+        # primera vez tarda un momento y no tiene que trabar a quien arma la cámara (la ventana)
         self._analysis: dict = cam_cfg.get("analysis") or {}
+        self._pose_uses = (False, False)  # (gestos, IA de hurtos) que miran la postura ahora (para el registro)
         self._sar_logged: float | None = None
         # sensibilidad y «Personas lejos» de esta cámara (`analysis["detection"]`, core/deteccion.py): el detector es
         # el compartido de la PC; el envoltorio le pasa el umbral y el mosaico en cada llamada, sin cambiarlo para las
@@ -170,6 +211,9 @@ class CameraWorker:
         self.detection = DetectionConfig.from_dict(self._analysis.get("detection"))
         self.analyzer = Analyzer(self._analysis, tuned(detector, self.detection), scorer, self.clip_pre, self.clip_post,
                                  clip_max=self.clip_max, clips=not self.metrics_only)
+        # la IA de movimientos de hurto (`analysis["ia_hurto"]`): la arma el analizador con el análisis; acá solo se
+        # avisa en el registro si el modelo no sirve para esta versión (`theft_spec`)
+        self.analyzer.set_theft(theft_spec(self._analysis, self.metrics_only))
         # sin movimiento y sin nadie en escena no se usa el detector (ahorra placa de video)
         self.gate = MotionGate(min_fraction=self._motion_fraction())
         if not self.detection.is_default:
@@ -250,20 +294,26 @@ class CameraWorker:
         return True
 
     def _sync_pose(self) -> None:
-        """Con algún gesto activado el analizador mira la postura (el estimador compartido del proceso); sin gestos,
-        no la mira (no gasta). Corre en el hilo de la cámara, al conectar y al cambiar el análisis."""
-        want = wants_gestures(self._analysis, self.metrics_only)
-        if want and self.analyzer.pose is not None:
-            return  # ya la tiene (al reconectar no hace falta pedirla de nuevo)
-        pose = shared_pose() if want else None
-        if pose is self.analyzer.pose:
-            return
+        """Con algún gesto activado o con la IA de movimientos de hurto el analizador mira la postura (el estimador
+        compartido del proceso); sin ninguno de los dos, no la mira (no gasta). Corre en el hilo de la cámara, al
+        conectar y al cambiar el análisis."""
+        gestures = wants_gestures(self._analysis, self.metrics_only)
+        ia = theft_spec(self._analysis, self.metrics_only) is not None
+        pose = self.analyzer.pose if (gestures or ia) and self.analyzer.pose is not None else (
+            shared_pose() if gestures or ia else None)  # (al reconectar no hace falta pedirla de nuevo)
         self.analyzer.pose = pose
-        if pose is not None:
-            log.info("[%s] gestos de ocultamiento activados: %s", self.name,
-                     ", ".join(GESTURE_NAMES[g].lower() for g in self.analyzer.engine.cfg.gestures.enabled))
-        else:  # (sin el modelo de postura no se llega acá: `shared_pose` ya lo dejó en el registro, una vez)
-            log.info("[%s] gestos de ocultamiento apagados", self.name)
+        now = (gestures and pose is not None, ia and pose is not None)
+        before, self._pose_uses = self._pose_uses, now
+        if now == before:
+            return
+        if now[0] != before[0]:
+            if now[0]:
+                log.info("[%s] gestos de ocultamiento activados: %s", self.name,
+                         ", ".join(GESTURE_NAMES[g].lower() for g in self.analyzer.engine.cfg.gestures.enabled))
+            elif before[0]:  # (sin el modelo de postura no se llega acá: `shared_pose` ya lo dijo, una vez)
+                log.info("[%s] gestos de ocultamiento apagados", self.name)
+        if now[1] != before[1]:
+            log.info("[%s] IA de movimientos de hurto %s", self.name, "activada" if now[1] else "apagada")
 
     def start(self) -> None:
         self.thread.start()
@@ -277,6 +327,8 @@ class CameraWorker:
                 "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
                 **({"protocol": self.hik.protocol} if self.hik.brand == "hikconnect" else {}),
                 "metrics_only": self.metrics_only, "gestures": self.analyzer.gestures,
+                # la IA de movimientos de hurto está mirando (hay modelo activo, la postura cargada y mide hurtos)
+                "ia_hurto": self.analyzer.theft_ai,
                 # («normal», «sensibilidad 8 de 10 · personas lejos»): para saber si la máquina ya la aplica
                 "detection": self.detection.describe(), "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
@@ -448,12 +500,22 @@ class CameraWorker:
         """El motor de gestos, si la cámara los está mirando (para escribir el gesto en curso sobre la imagen)."""
         return self.analyzer.engine.gestures if self.analyzer.gestures else None
 
+    def _apply_theft(self) -> None:
+        """La IA de movimientos de hurto (`analysis["ia_hurto"]`): prenderla, cambiarle el modelo (se activó otro en la
+        app) o apagarla, en el hilo de la cámara y sin reconectar. Con el mismo modelo, el analizador sigue con lo que
+        venía midiendo de cada persona (y toma las zonas nuevas). Un modelo que esta versión no puede usar queda
+        apagado (y una línea en el registro, una vez)."""
+        self.analyzer.set_theft(theft_spec(self._analysis, self.metrics_only))
+
     def _apply_analysis(self, analysis: dict) -> None:
-        if without_detection(analysis) == without_detection(self._analysis):
-            # solo cambió la detección de personas (se probó otra sensibilidad): las reglas, el seguimiento y lo medido
-            # siguen como venían (no se empieza de cero a contar los segundos de cada persona en su zona)
+        if without_keys(analysis, "detection", "ia_hurto") == without_keys(self._analysis, "detection", "ia_hurto"):
+            # solo cambió la detección de personas (se probó otra sensibilidad) o el modelo de la IA de hurtos (se
+            # activó otro): las reglas, el seguimiento y lo medido siguen como venían (no se empieza de cero a contar
+            # los segundos de cada persona en su zona)
             self._analysis = analysis
             self._apply_detection(analysis)
+            self._apply_theft()
+            self._sync_pose()  # (la IA de hurtos mira la postura: engancharla o soltarla)
             return
         try:
             zones, rule_cfg = parse_config(analysis)
@@ -465,7 +527,8 @@ class CameraWorker:
         self.analyzer.engine = RuleEngine(zones, rule_cfg)
         self._analysis = analysis
         self._apply_detection(analysis)  # otra sensibilidad o «Personas lejos»: desde este cuadro
-        self._sync_pose()  # se prendieron o apagaron los gestos: enganchar o soltar la postura
+        self._apply_theft()  # la IA de hurtos, con las zonas nuevas (o con otro modelo, o apagada)
+        self._sync_pose()  # se prendieron o apagaron los gestos o la IA de hurtos: enganchar o soltar la postura
         # lo medido hasta ahora queda con las zonas viejas y la hora en curso sigue sumando (sin pisarla en el servidor)
         old = self.metrics
         self.metrics = old.with_zones(zones, rule_cfg.schedule)
