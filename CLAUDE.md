@@ -358,7 +358,9 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     clip con las reglas de su cámara…» pasó a «Más» (es la única entrada que queda a la ventana de prueba `TuneWindow`,
     donde siguen los tiempos de las reglas y de los gestos, «⚑ Marcar hurto» en vivo y «Aprobar»).
   - **Alertas:** la primera queda elegida sola, **barra espaciadora = reproducir el clip**, teclas 1 a 4 = qué fue (los
-    botones no toman el foco); «Falsa alarma» en vez de «Falso positivo»; sin alertas lo dice.
+    botones no toman el foco); «Falsa alarma» en vez de «Falso positivo»; sin alertas lo dice. **App 1.44.1:** la foto
+    de la primera alerta salía chica (320x240) si llegaba antes de abrir la pestaña: se vuelve a dibujar al tamaño del
+    lugar (`_alert_resized`).
   - **Formulario de la cámara:** «Ajustes finos (cuadros por segundo, sensibilidad)» plegado salvo que la cámara ya tenga
     algo distinto. «Bajar grabación» ya no suma los videos a «los clips de la cámara» (se suben en «Entrenar IA hurtos»).
   - Probado con servidor local y la app en Xvfb (capturas de antes y después de cada pantalla, y el camino completo:

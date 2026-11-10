@@ -331,3 +331,66 @@ def test_la_pestana_clientes_entra_y_muestra_los_pasos(tmp_path):
         assert "ninguna se analiza todavía" in o.cam_title.cget("text")
     finally:
         root.destroy()
+
+
+def test_alertas_se_revisan_con_el_teclado_y_la_foto_toma_el_lugar():
+    tk = _tk()
+    from tkinter import ttk
+
+    import numpy as np
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"sin Tk: {exc}")
+    try:
+        root.geometry("1366x698+0+0")
+        nb = ttk.Notebook(root)
+        nb.pack(fill="both", expand=True)
+        other = ttk.Frame(nb)
+        nb.add(other, text="Clientes")
+        o = of.Oficina.__new__(of.Oficina)
+        o.tk, o.ttk = tk, ttk
+        o.v = types.SimpleNamespace(root=root, notebook=nb)
+        o.clients = []
+        o.load_alerts = lambda *a, **k: None
+        o.tab_alerts = ttk.Frame(nb, padding=8)
+        nb.add(o.tab_alerts, text="Alertas")
+        o._build_alerts()
+        root.update()
+        # los botones no se quedan con el foco (la barra espaciadora no vuelve a apretar el último tocado)
+        btns = [w for w in _walk(o.tab_alerts) if w.winfo_class() == "TButton"]
+        texts = [str(b.cget("text")) for b in btns]
+        assert "▶ Reproducir clip (espacio)" in texts and "4 · Falsa alarma" in texts
+        assert all(str(b.cget("takefocus")) == "0" for b in btns)
+        # espacio = reproducir el clip; 1 a 4 = qué fue (solo con la pestaña «Alertas» a la vista)
+        did = []
+        o.play_clip = lambda: did.append("clip")
+        o.set_label = did.append
+        ev = lambda char, keysym: types.SimpleNamespace(char=char, keysym=keysym, widget=o.al_tree)  # noqa: E731
+        o._on_key(ev(" ", "space"))
+        o._on_key(ev("4", "4"))
+        assert did == []  # (se está en otra pestaña)
+        # la foto llegó antes de que la pestaña estuviera a la vista: sale chica…
+        o._show_frame(np.zeros((360, 640, 3), np.uint8))
+        assert o._play["size"] == (320, 240)
+        nb.select(o.tab_alerts)
+        root.update()
+        # …y al abrir la pestaña toma el tamaño del lugar
+        assert o._play["size"][0] > 500 and o._play["size"][1] > 300, o._play["size"]
+        o._on_key(ev(" ", "space"))
+        o._on_key(ev("4", "4"))
+        assert did == ["clip", "falso_positivo"]
+        # escribiendo en un campo no hace nada
+        entry = ttk.Entry(o.tab_alerts)
+        o._on_key(types.SimpleNamespace(char="1", keysym="1", widget=entry))
+        assert did == ["clip", "falso_positivo"]
+        # sin alertas lo dice (y saca la foto)
+        o.al_state.set("Sin revisar")
+        o.stop_clip = lambda: None
+        o._alerts_empty()
+        assert o.al_title.cget("text") == "No hay alertas sin revisar" and o._play["last"] is None
+        # entra en la pantalla: el último botón no queda cortado
+        last = max(btns, key=lambda b: b.winfo_rootx() + b.winfo_width())
+        assert last.winfo_rootx() + last.winfo_width() <= root.winfo_rootx() + 1366
+    finally:
+        root.destroy()

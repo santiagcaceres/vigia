@@ -1196,9 +1196,9 @@ class Oficina:
         self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "zonas", "mide", "alertas"),
                                      show="headings", height=6, selectmode="extended")
         # (los anchos suman lo de antes: con más, la pestaña pedía más ancho que una pantalla de 1366)
-        for col, txt, w, stretch in (("nombre", "Cámara", 170, True), ("estado", "Estado", 250, True),
-                                     ("zonas", "Zonas", 100, False), ("mide", "Mide", 150, True),
-                                     ("alertas", "Alertas hoy", 100, False)):
+        for col, txt, w, stretch in (("nombre", "Cámara", 160, True), ("estado", "Estado", 290, True),
+                                     ("zonas", "Zonas", 95, False), ("mide", "Mide", 130, True),
+                                     ("alertas", "Alertas hoy", 95, False)):
             self.cam_tree.heading(col, text=txt, anchor="w")
             self.cam_tree.column(col, width=w, stretch=stretch, anchor="center" if col == "alertas" else "w")
         self.cam_tree.pack(fill="x")
@@ -1411,7 +1411,7 @@ class Oficina:
         several = len(client_plans(c)) > 1
         self.cam_tree.configure(displaycolumns=("nombre", "estado", "zonas", "mide", "alertas") if several else
                                 ("nombre", "estado", "zonas", "alertas"))
-        self.cam_tree.column("estado", width=250 if several else 400)  # (sin «Mide», su lugar es del estado)
+        self.cam_tree.column("estado", width=290 if several else 420)  # (sin «Mide», su lugar es del estado)
         counts = (getattr(self, "alert_counts", None) or {}).get("cameras") or {}
         for cam in cams:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
@@ -2862,6 +2862,9 @@ class Oficina:
         self.al_desc.pack(anchor="w")
         self.al_img = tk.Label(right, bg="#111", height=20)
         self.al_img.pack(fill="both", expand=True, pady=6)
+        # (la primera alerta se elige sola, a veces antes de que la pestaña esté a la vista: cuando el lugar toma su
+        # tamaño, la foto se vuelve a dibujar a ese tamaño; antes quedaba chica en el medio)
+        self.al_img.bind("<Configure>", self._alert_resized)
         # (10 nov: revisar de corrido con el teclado: la primera alerta queda elegida sola, espacio = ver el clip,
         # 1 a 4 = qué fue, y pasa a la siguiente. Los botones no se quedan con el foco: si no, la barra espaciadora
         # volvería a apretar el último botón tocado)
@@ -2873,13 +2876,13 @@ class Oficina:
                    command=self.report_dialog).pack(side="right")
         lb = ttk.Frame(right)
         lb.pack(fill="x", pady=(6, 0))
-        ttk.Label(lb, text="¿Qué fue? (teclas 1 a 4)", style="Subtitulo.TLabel").pack(side="left", padx=(0, 4))
+        ttk.Label(lb, text="¿Qué fue? (1 a 4)", style="Subtitulo.TLabel").pack(side="left", padx=(0, 4))
         for key, lab in LABEL_KEYS.items():
             ttk.Button(lb, text=f"{key} · {LABEL_NAMES[lab]}", takefocus=False,
                        command=lambda l=lab: self.set_label(l)).pack(side="left", padx=3)
         self.v.root.bind("<Key>", self._on_key, add="+")
         self.alerts: list[dict] = []
-        self._play = {"cap": None, "job": None, "photo": None, "path": None}
+        self._play = {"cap": None, "job": None, "photo": None, "path": None, "last": None, "size": None}
 
     def _fill_alert_filters(self) -> None:
         self.al_client_cb.configure(values=["Todos"] + [c["name"] for c in self.clients])
@@ -2927,7 +2930,7 @@ class Oficina:
                                     "Probá con otro cliente o con «Todas» en «Mostrar».")
         img = getattr(self, "al_img", None)
         if img is not None:
-            self._play["photo"] = None
+            self._play.update(photo=None, last=None, size=None)
             img.configure(image="")
 
     def _sel_alert(self) -> dict | None:
@@ -2944,6 +2947,7 @@ class Oficina:
         self._al_shown = e["id"] if e else None
         if not e:
             return
+        self._play.update(last=None, size=None)  # (lo que se ve es de la alerta anterior, hasta que llegue su foto)
         self.al_title.configure(text=f"{TYPE_NAMES.get(e['type'], e['type'])} · {e.get('client_name')} · {e.get('camera_name')}")
         self.al_desc.configure(text=f"{fmt_date(e['occurred_at'])} · {e.get('description') or ''}"
                                + ("" if e.get("clip_url") else "  (el clip todavía no llegó)"))
@@ -2958,8 +2962,17 @@ class Oficina:
         w, h = max(self.al_img.winfo_width(), 320), max(self.al_img.winfo_height(), 240)
         photo = ppm_photo(self.tk, img, w, h)
         if photo:
-            self._play["photo"] = photo
+            self._play.update(photo=photo, last=img, size=(w, h))
             self.al_img.configure(image=photo)
+
+    def _alert_resized(self, ev) -> None:
+        """El lugar de la foto cambió de tamaño (se abrió la pestaña, se agrandó la ventana): la foto que se ve se
+        vuelve a dibujar a ese tamaño. Con el clip andando no hace falta: el próximo cuadro ya sale así."""
+        last, size = self._play.get("last"), self._play.get("size")
+        if last is None or self._play.get("cap") is not None or size is None:
+            return
+        if abs(ev.width - size[0]) > 8 or abs(ev.height - size[1]) > 8:
+            self._show_frame(last)
 
     def _clip_file(self, e: dict, then: Callable[[str], None]) -> None:
         if not e.get("clip_url"):
