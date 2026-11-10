@@ -7,13 +7,14 @@ corren en hilos aparte (`Bg`) y el resultado se aplica en el hilo de la ventana,
 Pestañas (las arma `Oficina.build` dentro del `ttk.Notebook` de la ventana; «En vivo», para mirar cualquier cámara
 sin analizarla, la arma `Ventana`). Cada cosa se hace en UN solo lugar (pedido del dueño, 29 oct: «sin cosas que se
 repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
-- Clientes: a la izquierda los clientes; a la derecha el cliente elegido (Editar cliente, Métricas → Exportar a Excel,
-  Más: entrenar su IA, en la pestaña «Entrenar IA hurtos», y eliminar) y sus cámaras, con una sola barra: «✎ Marcar
-  zonas» (`ZonesEditor`), «● En vivo» y «🎞 Clips» (`TuneWindow`: la cámara con la IA de esta PC, en vivo o con
-  clips; cuenta las personas por zona, alertas de prueba, tiempos, gestos y aprobar; motor en agent/ajuste.py),
-  «Analizar» / «Dejar de analizar» (cambia según lo elegido), «Editar» (conexión, nombre, tipo, qué mide) y «Más»
-  (qué mide de varias a la vez, probar conexión, bajar grabación, nombres e imágenes, eliminar), también con clic
-  derecho. Abajo, la imagen y los datos de la cámara elegida.
+- Clientes: a la izquierda los clientes; a la derecha el cliente elegido (Editar cliente, PDF de métricas, Métricas →
+  Exportar a Excel, Más: entrenar su IA, en la pestaña «Entrenar IA hurtos», y eliminar) y sus cámaras, con una sola
+  barra de tres pasos (10 nov, el dueño: «poco intuitiva… cómo poner a analizar; sacar el en vivo y clips de cada
+  cámara»): «✎ Marcar zonas» (`ZonesEditor`), «▶ Empezar a analizar» / «■ Dejar de analizar» (cambia según lo
+  elegido), «Editar» (conexión, nombre, tipo, qué mide) y «Más» (verla en «En vivo», las alertas que da, qué mide,
+  probar conexión, bajar grabación, nombres e imágenes, eliminar), también con clic derecho. Abajo, la imagen de la
+  cámara elegida, qué le falta (`_next_step`) y sus datos. Mirar una cámara es la pestaña «En vivo»; probarla con
+  clips, «Entrenar IA hurtos» (ahí queda, en «Más», la ventana de prueba `TuneWindow`; motor en agent/ajuste.py).
   Qué mide cada cámara: de los planes que contrató el cliente, los que se le elijan (`plans`; None = todo lo del
   cliente); los números se suman por cliente.
 - Alertas: lista con filtros, foto, reproducción del clip dentro de la app, etiquetas (teclas 1-4) y
@@ -72,8 +73,8 @@ ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cl
 ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
                   "servidores": "Todas las cámaras"}
 # por cliente: qué cámaras se analizan («general» sigue el ajuste de Administración). Lo que se marque en cada
-# cámara («✔ Analizar» / «✘ No analizar») manda sobre esto.
-LOCATION_NAMES = {"general": "Como el ajuste general", "pcs": "Solo las cámaras marcadas «Analizar»",
+# cámara («▶ Empezar a analizar» / «■ Dejar de analizar») manda sobre esto.
+LOCATION_NAMES = {"general": "Como el ajuste general", "pcs": "Solo las cámaras que se pusieron a analizar",
                   "servidores": "Todas sus cámaras"}
 SYNC_TEXT = "⟳ Actualizar clientes y cámaras"
 AUTO_REFRESH_MS = 30000  # estado de las cámaras en «Clientes» (solo con la pestaña a la vista)
@@ -93,7 +94,14 @@ BRAND_SEL = {"hikvision": "Hikvision", "dahua": "Dahua", "hikconnect": "Hikvisio
 STREAM_NAMES = {"sub": "Secundaria (recomendada: menos internet)", "main": "Principal (más resolución y más internet)"}
 # «⬇ PDF de métricas» del cliente: qué período (días hasta hoy, incluido)
 PDF_PERIODS = (("Hoy", 1), ("Últimos 7 días", 7), ("Últimos 30 días", 30))
-# «Qué alertas da…»: las reglas, con lo que hacen (los gestos van con GESTURE_NAMES)
+# el botón de la cámara que la manda (o la saca) de las máquinas de análisis: uno solo, que cambia según lo elegido
+ANALYZE_ON, ANALYZE_OFF = "▶ Empezar a analizar", "■ Dejar de analizar"
+# los tres pasos de una cámara, a la vista en «Clientes» (pedido del dueño, 10 nov: «poco intuitiva… cómo poner a
+# analizar»): nada más que esto hace falta para que una cámara dé alertas y métricas
+CAMERA_STEPS = ("Para que una cámara dé alertas y métricas:  1) ＋ Agregar cámaras   2) ✎ Marcar zonas (góndolas, caja, "
+                "salida, entrada)   3) ▶ Empezar a analizar.     Para verla: pestaña «En vivo».  Para enseñarle "
+                "hurtos: pestaña «Entrenar IA hurtos».")
+# «Alertas que da…»: las reglas, con lo que hacen (los gestos van con GESTURE_NAMES)
 ALERT_RULES = (("salida_sin_pago", "Salida sin pagar", "tomó algo frente a una góndola y salió sin pasar por la caja"),
                ("zona_restringida", "Zona restringida", "alguien entra a una zona marcada «Restringida»"),
                ("fuera_de_horario", "Persona con el local cerrado",
@@ -122,7 +130,7 @@ TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_
               "fuera_de_horario": "Fuera de horario", "alarma_dvr": "Alarma del grabador",
               "hurto_ia": "Posible hurto (IA de movimientos)",  # core.rules.HURTO_IA (la IA de «Entrenar IA hurtos»)
               **GESTURE_NAMES}  # gestos de ocultamiento (postura): «Mano al bolsillo», «Mano dentro de la ropa»…
-LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falso positivo"}
+LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falsa alarma"}
 LABEL_KEYS = {"1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo"}
 ZONE_NAMES = {"shelf": "Góndola", "aisle": "Pasillo", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
               "entrance": "Entrada (conteo)", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal (empleados)"}
@@ -489,9 +497,7 @@ def plans_to_save(checked, cplans: list[str]) -> list[str] | None:
 
 
 def measures_text(cam: dict, client: dict | None, short: bool = True) -> str:
-    """«(todo)» si la cámara sigue al cliente; si no, «Hurto · Comercio» (o los nombres largos)."""
-    if short and cam.get("plans") is None:
-        return "(todo)"
+    """Lo que mide la cámara, con nombres: «Hurto · Comercio» (o los nombres largos)."""
     m = camera_measures(cam, client)
     names = PLAN_SHORT if short else PLAN_NAMES
     txt = (" · " if short else ", ").join(names[p] for p in m)
@@ -898,6 +904,7 @@ class Oficina:
             self._build_admin()
         self.refresh_all()
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
+        self.v.on_zones = self.zones_from_live  # «✎ Marcar zonas» de la pestaña «En vivo»
         header = getattr(self.v, "header", None)
         if header is not None:
             # el botón de actualizar aparece solo si hay versión nueva (o mientras se busca); buscar a mano y la
@@ -1183,11 +1190,14 @@ class Oficina:
         self.cam_title = ttk.Label(kh, text="Cámaras", style="Subtitulo.TLabel")
         self.cam_title.pack(side="left")
         ttk.Button(kh, text="＋ Agregar cámaras", command=lambda: self.camera_dialog()).pack(side="right")
-        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "analiza", "mide", "ajuste", "alertas"),
+        # (10 nov, el dueño: «poco intuitiva… cómo poner a analizar; sacar el en vivo y clips de cada cámara»): una sola
+        # columna dice cómo está la cámara («No se analiza», «Analizando · 5 cuadros/s»…), otra si tiene zonas, y «Mide»
+        # solo aparece si el cliente contrató más de un plan
+        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "zonas", "mide", "alertas"),
                                      show="headings", height=9, selectmode="extended")
-        for col, txt, w, stretch in (("nombre", "Cámara", 150, True), ("estado", "Estado", 150, True),
-                                     ("analiza", "Se analiza", 145, True), ("mide", "Mide", 150, True),
-                                     ("ajuste", "Puesta a punto", 115, False), ("alertas", "Alertas hoy", 85, False)):
+        for col, txt, w, stretch in (("nombre", "Cámara", 190, True), ("estado", "Estado", 300, True),
+                                     ("zonas", "Zonas", 110, False), ("mide", "Mide", 170, True),
+                                     ("alertas", "Alertas hoy", 110, False)):
             self.cam_tree.heading(col, text=txt, anchor="w")
             self.cam_tree.column(col, width=w, stretch=stretch, anchor="center" if col == "alertas" else "w")
         self.cam_tree.pack(fill="x")
@@ -1195,20 +1205,15 @@ class Oficina:
         self.cam_tree.bind("<Double-1>", lambda e: self.camera_dialog(self._sel_camera()))
         self.cam_tree.bind("<Button-3>", self._camera_menu)
         self.cam_tree.bind("<Control-a>", lambda e: self.cam_tree.selection_set(self.cam_tree.get_children()))
-        # UNA barra para la cámara elegida, en el orden en que se pone a punto (pedido del dueño, 2 nov: «al entrar a cada
-        # cliente y marcar la cámara, que estén los botones de subir clip y marcar qué fue, y uno claro de marcar
-        # zonas»); lo de menos uso, en «Más» (y con clic derecho en la lista)
-        # (2 nov, otra vez: «la parte de zonas está muy escondida… dividilo en dos, uno es ver en vivo y otro con
-        # clips»): primero las zonas, después la cámara en vivo con la IA y los clips, cada uno con su botón
+        # UNA barra para la cámara elegida, con los dos pasos que importan a la vista: marcar las zonas y empezar a
+        # analizar (el botón cambia a «■ Dejar de analizar» si ya se analiza). Lo demás, en «Más» y con clic derecho.
+        # Mirar la cámara es la pestaña «En vivo»; enseñarle hurtos con clips, la pestaña «Entrenar IA hurtos».
         bar = ttk.Frame(right)
         bar.pack(fill="x", pady=(8, 0))
         ttk.Button(bar, text="✎ Marcar zonas", style="Primario.TButton",
                    command=lambda: self.zones_dialog(self._sel_camera())).pack(side="left")
-        ttk.Button(bar, text="● En vivo", style="Primario.TButton",
-                   command=lambda: self.tune_dialog(self._sel_camera(), mode="vivo")).pack(side="left", padx=6)
-        ttk.Button(bar, text="🎞 Clips", style="Primario.TButton",
-                   command=lambda: self.clips_dialog(self._sel_camera())).pack(side="left")
-        self.an_btn = ttk.Button(bar, text="Analizar", command=lambda: self.set_analyze(None))
+        self.an_btn = ttk.Button(bar, text=ANALYZE_ON, style="Primario.TButton", width=20,
+                                 command=lambda: self.set_analyze(None))
         self.an_btn.pack(side="left", padx=6)
         ttk.Button(bar, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left")
         cmore = ttk.Menubutton(bar, text="Más", width=6)
@@ -1216,12 +1221,8 @@ class Oficina:
         self._fill_camera_menu(self.cam_menu, full=False)
         cmore["menu"] = self.cam_menu
         cmore.pack(side="left", padx=6)
-        ttk.Label(right, style="Suave.TLabel", wraplength=900, justify="left",
-                  text="Pasos con cada cámara: 1) ✎ Marcar zonas (pasillos, góndolas, caja, salida, entrada): al "
-                       "guardarlas empieza a contar cuántas personas entran a cada una  ·  2) ● En vivo: mirá cómo la IA "
-                       "ve a las personas y las cuenta  ·  3) 🎞 Clips: subí videos de hurtos y de ratos normales y fijate "
-                       "si da alerta  ·  4) ✔ Aprobar y Analizar: la pasa a las máquinas. Clic derecho en la lista: todas "
-                       "las opciones.").pack(anchor="w", pady=(4, 0))
+        ttk.Label(right, style="Suave.TLabel", wraplength=980, justify="left", text=CAMERA_STEPS).pack(
+            anchor="w", pady=(6, 0))
         # detalle de la cámara elegida: su imagen y sus datos
         det = ttk.Frame(right)
         det.pack(fill="both", expand=True, pady=(10, 0))
@@ -1230,7 +1231,10 @@ class Oficina:
         self._cam_photo = None
         self._previews: dict[tuple, bytes] = {}
         self.cam_info = tk.Text(det, height=9, wrap="word", relief="flat", bg="#ffffff", font=("Segoe UI", 10),
-                                padx=12, pady=8, highlightthickness=1, highlightbackground="#d8dee9")
+                                padx=12, pady=8, highlightthickness=1, highlightbackground="#d8dee9", spacing1=2)
+        self.cam_info.tag_configure("titulo", font=("Segoe UI", 12, "bold"), foreground="#011b5d")
+        self.cam_info.tag_configure("falta", foreground="#b45309")
+        self.cam_info.tag_configure("bien", foreground="#15803d")
         self.cam_info.pack(side="left", fill="both", expand=True, padx=(10, 0))
         self._set_info("Elegí una cámara para ver el detalle.")
         self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed, add="+")
@@ -1240,14 +1244,12 @@ class Oficina:
         sel = self._sel_camera
         if full:
             menu.add_command(label="✎ Marcar zonas…", command=lambda: self.zones_dialog(sel()))
-            menu.add_command(label="● En vivo con la IA…", command=lambda: self.tune_dialog(sel(), mode="vivo"))
-            menu.add_command(label="🎞 Clips…", command=lambda: self.clips_dialog(sel()))
-            menu.add_command(label="⬆ Subir un clip nuevo…", command=lambda: self.upload_clip(sel()))
             menu.add_command(label=self._analyze_label(), command=lambda: self.set_analyze(None))
             menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
             menu.add_separator()
+        menu.add_command(label="Ver en la pestaña «En vivo»", command=lambda: self.watch_live(sel()))
+        menu.add_command(label="Alertas que da…", command=self.alerts_dialog)
         menu.add_command(label="Qué mide…", command=self.plans_dialog)
-        menu.add_command(label="Qué alertas da…", command=self.alerts_dialog)
         menu.add_command(label="Probar conexión", command=lambda: self.probe(sel()))
         menu.add_command(label="Bajar grabación…", command=self.recording_dialog)
         menu.add_command(label="Nombres e imágenes de todas…", command=self.names_dialog)
@@ -1275,7 +1277,7 @@ class Oficina:
 
     def _analyze_label(self) -> str:
         cams = self._sel_cameras()
-        return "Dejar de analizar" if cams and all(c.get("analyzed") for c in cams) else "Analizar"
+        return ANALYZE_OFF if cams and all(c.get("analyzed") for c in cams) else ANALYZE_ON
 
     def _tab_changed(self, _e=None) -> None:
         """Al volver a una pestaña se pide lo último (no hay botones «Actualizar»)."""
@@ -1294,10 +1296,16 @@ class Oficina:
         elif self.is_admin and tab == str(getattr(self, "tab_mq", "")):
             self.load_machines()
 
-    def _set_info(self, text: str) -> None:
+    def _set_info(self, text: str, title: str | None = None, step: tuple[str, bool] | None = None) -> None:
+        """El recuadro de detalle. `title`: un renglón en grande arriba (el nombre de la cámara). `step`: (texto, ¿está
+        lista?) con lo que le falta a la cámara, en naranja (o en verde si no le falta nada)."""
         self.cam_info.configure(state="normal")
         self.cam_info.delete("1.0", "end")
-        self.cam_info.insert("1.0", text)
+        if title:
+            self.cam_info.insert("end", title + "\n", "titulo")
+        if step:
+            self.cam_info.insert("end", step[0] + "\n", "bien" if step[1] else "falta")
+        self.cam_info.insert("end", text)
         self.cam_info.configure(state="disabled")
 
     def _sel_client(self) -> dict | None:
@@ -1325,21 +1333,53 @@ class Oficina:
         self._fill_cameras(keep_info)
 
     def _cam_state(self, c: dict) -> str:
+        """Cómo está la cámara, en una sola frase: si se analiza y, si se analiza, cómo le va en la máquina."""
         st = c.get("status")
         if not c.get("enabled", True):
             return "Deshabilitada"
-        if not st:  # nadie la analiza (en «En vivo» se puede mirar igual)
-            if not c.get("analyzed"):
-                return "—"
-            return "Esperando máquina" if not c.get("agent_id") else "Sin datos de la máquina"
+        if not c.get("analyzed") and not st:  # nadie la analiza (en «En vivo» se puede mirar igual)
+            return "No se analiza"
+        if not st:
+            return "Esperando una máquina de análisis" if not c.get("agent_id") else "Empezando a analizar…"
         if not st.get("agent_online"):
-            return "Máquina desconectada"
-        txt = STATE_NAMES.get(st.get("state"), st.get("state") or "—")
-        if st.get("fps") and st.get("state") == "en_linea":
-            txt += f" · {st['fps']:.0f} fps"
+            return "La máquina está desconectada"
+        state = st.get("state")
+        if state == "en_linea":
+            txt = "Analizando" + (f" · {st['fps']:.0f} cuadros/s" if st.get("fps") else "")
             if st.get("idle_pct"):
                 txt += f" · {st['idle_pct']}% quieta"
+        else:
+            txt = STATE_NAMES.get(state, state or "—")
         return txt + (" · solo métricas" if st.get("metrics_only") else "")
+
+    @staticmethod
+    def _zones_text(cam: dict) -> str:
+        n = len(cam.get("zones") or [])
+        return f"✔ {n}" if n else "Sin marcar"
+
+    def _next_step(self, cam: dict, client: dict | None) -> tuple[str, bool]:
+        """Qué le falta a la cámara para estar andando, en una frase (y si ya no le falta nada)."""
+        if not cam.get("enabled", True):
+            return "Está deshabilitada: «Editar» → tildar «Habilitada».", False
+        measures = camera_measures(cam, client)
+        if not measures:
+            return "No mide nada de lo que contrató el cliente: elegilo en «Editar» → «Qué mide esta cámara».", False
+        zones = cam.get("zones") or []
+        st = cam.get("status") or {}
+        if not zones and (cam.get("profile") or "general") != "deposito":
+            lost = ("no avisa «Salida sin pagar» ni «Zona restringida» y no cuenta por sector" if "hurto" in measures
+                    else "no cuenta quién entra ni por sector")
+            if cam.get("analyzed"):
+                return f"Se analiza, pero le faltan las zonas («✎ Marcar zonas»): sin zonas {lost}.", False
+            return "Paso 2: «✎ Marcar zonas» (góndolas, caja, salida, entrada). Después, «▶ Empezar a analizar».", False
+        if not cam.get("analyzed"):
+            return "Paso 3: «▶ Empezar a analizar». Hasta entonces no da alertas ni métricas.", False
+        if not cam.get("agent_id") or (st and not st.get("agent_online")):
+            return ("Se analiza, pero no hay ninguna máquina de análisis en línea: "
+                    + ("prendé una en la pestaña «Máquinas»." if self.is_admin else "avisale a un administrador.")), False
+        if st.get("state") in ("sin_conexion", "error", "reconectando"):
+            return "La máquina no puede abrir el video de esta cámara: «Más» → «Probar conexión».", False
+        return "Lista: se analiza en una máquina y da alertas y métricas.", True
 
     def _fill_cameras(self, keep_info: bool = False) -> None:
         c = self._sel_client()
@@ -1358,30 +1398,45 @@ class Oficina:
         self.cl_sub.configure(text=f"{plans}  ·  {hours}  ·  {web}  ·  alertas: {cnt.get('today', 0)} hoy, "
                                    f"{cnt.get('week', 0)} en 7 días, {cnt.get('unreviewed', 0)} por revisar")
         analyzed = sum(1 for x in cams if x.get("analyzed"))
-        self.cam_title.configure(text=f"Cámaras ({len(cams)})" + (f" · {analyzed} se analizan" if analyzed else ""))
+        self.cam_title.configure(text=f"Cámaras ({len(cams)})" + (
+            f" · {analyzed} se {'analiza' if analyzed == 1 else 'analizan'}" if analyzed else
+            " · ninguna se analiza todavía" if cams else ""))
+        # «Mide» solo si hay algo que elegir (el cliente contrató más de un plan)
+        several = len(client_plans(c)) > 1
+        self.cam_tree.configure(displaycolumns=("nombre", "estado", "zonas", "mide", "alertas") if several else
+                                ("nombre", "estado", "zonas", "alertas"))
         counts = (getattr(self, "alert_counts", None) or {}).get("cameras") or {}
         for cam in cams:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
-                cam["name"], self._cam_state(cam),
-                ("Sí · " + (cam.get("analyzer_name") or "esperando máquina")
-                 + (" · lejos" if camera_detection(cam).far else "")) if cam.get("analyzed") else "No",
-                measures_text(cam, c),
-                TUNING_NAMES.get(cam.get("tuning") or "sin_ajustar", "—"),
+                cam["name"], self._cam_state(cam), self._zones_text(cam), measures_text(cam, c),
                 (counts.get(str(cam["id"])) or {}).get("today", 0) or ""))
-        if prev_cam and self.cam_tree.exists(prev_cam[0]):
+        if prev_cam and all(self.cam_tree.exists(i) for i in prev_cam):
             self.cam_tree.selection_set(prev_cam)  # sigue elegida (el detalle se actualiza solo si no hay otra cosa)
         elif not keep_info:
-            self._set_info("Elegí una cámara para ver el detalle.")
             self._show_preview(None)
+            if not cams:
+                self._set_info("Con «＋ Agregar cámaras» (arriba a la derecha) se cargan las cámaras de este cliente: "
+                               "por Hik-Connect o con el link RTSP del grabador.", title="Este cliente no tiene cámaras")
+            else:
+                self._set_info("Elegí una cámara de la lista para ver su imagen, qué le falta y sus datos.")
+        self._show_analyze_button()
+
+    def _show_analyze_button(self) -> None:
+        """El botón de analizar dice lo que va a hacer con lo elegido: empezar (en azul) o dejar de analizar."""
+        label = self._analyze_label()
+        self.an_btn.configure(text=label, style="Primario.TButton" if label == ANALYZE_ON else "TButton")
 
     def _show_camera(self) -> None:
         cams = self._sel_cameras()
-        self.an_btn.configure(text=self._analyze_label())
+        self._show_analyze_button()
         cam = cams[0] if len(cams) == 1 else None
         if len(cams) > 1:
             self._show_preview(None)
-            return self._set_info(f"{len(cams)} cámaras elegidas: {', '.join(c['name'] for c in cams[:8])}"
-                                  + ("…" if len(cams) > 8 else ""))
+            on = sum(1 for c in cams if c.get("analyzed"))
+            return self._set_info(", ".join(c["name"] for c in cams[:8]) + ("…" if len(cams) > 8 else "")
+                                  + f"\n{on} se {'analiza' if on == 1 else 'analizan'} y {len(cams) - on} no. Con varias "
+                                  "elegidas se puede empezar o dejar de analizar, y en «Más»: las alertas que dan, qué "
+                                  "miden, bajar grabación y eliminar.", title=f"{len(cams)} cámaras elegidas")
         if not cam:
             return
         self._show_preview(cam)
@@ -1389,27 +1444,33 @@ class Oficina:
             return  # se está mostrando el resultado de una prueba: no pisarlo
         self._info_locked = None
         st = cam.get("status") or {}
-        zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])}{' · espera' if z.get('wait') else ''})"
-                          for z in cam.get("zones") or []) or "ninguna (sin zonas no hay alertas: «✎ Marcar zonas»)"
         owner = self._client_of(cam)
+        zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])}{' · espera' if z.get('wait') else ''})"
+                          for z in cam.get("zones") or []) or "ninguna todavía"
         staff_warn = ("\n⚠ Para medir empleados, marcá la zona «Personal (empleados)» con «✎ Marcar zonas» (detrás del "
                       "mostrador, la caja por dentro)." if staff_zone_missing(cam, owner) else "")
         conn = (f"Hik-Connect · grabador {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
                 if cam.get("brand") == "hikconnect" else
                 f"{BRAND_NAMES.get(cam.get('brand'), '')} {cam.get('host')} · canal {cam.get('channel')} · RTSP "
                 f"{cam.get('rtsp_port')} · HTTP {cam.get('http_port')}")
-        self._set_info(
-            f"{cam['name']}\n"
-            f"Estado: {self._cam_state(cam)}{(' · ' + st['error']) if st.get('error') else ''}\n"
-            f"Se analiza: {('sí, en ' + (cam.get('analyzer_name') or 'la primera máquina que se prenda')) if cam.get('analyzed') else 'no (se puede ver en «En vivo»)'}\n"
-            f"Mide: {measures_text(cam, owner, short=False)}{staff_warn}\n"
-            f"Puesta a punto: {self._tuning_text(cam)}\n"
-            f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
-            f"{int(cam.get('process_fps') or 5)} cuadros por segundo · "
-            f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}"
-            f"{(' · detección: ' + detection_text(cam) + detection_pending(cam)) if detection_text(cam) else ''}\n"
-            f"Zonas: {zones}\n"
-            f"Conexión: {conn}")
+        state = self._cam_state(cam) + ((" · " + st["error"]) if st.get("error") else "")
+        if cam.get("analyzed") and cam.get("analyzer_name"):
+            state += f" · en {cam['analyzer_name']}"
+        lines = [f"Estado: {state}", f"Zonas: {zones}{staff_warn}"]
+        measures = camera_measures(cam, owner)
+        if "hurto" in measures:
+            rules, gestures = camera_alerts(cam)
+            names = [n for r, n, _ in ALERT_RULES if r in rules] + [GESTURE_NAMES.get(g, g) for g in gestures]
+            lines.append("Alertas que da: " + (", ".join(names) if names else "ninguna (solo métricas)")
+                         + "  (se cambian en «Más» → «Alertas que da…»)")
+        if len(client_plans(owner)) > 1 or not measures:
+            lines.append(f"Mide: {measures_text(cam, owner, short=False)}")
+        lines.append(f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
+                     f"{int(cam.get('process_fps') or 5)} cuadros por segundo · "
+                     f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}"
+                     + ((" · detección: " + detection_text(cam) + detection_pending(cam)) if detection_text(cam) else ""))
+        lines.append(f"Conexión: {conn}")
+        self._set_info("\n".join(lines), title=cam["name"], step=self._next_step(cam, owner))
 
     def _show_preview(self, cam: dict | None) -> None:
         """La última imagen de la cámara al lado del detalle (se baja una vez por imagen nueva)."""
@@ -1440,23 +1501,6 @@ class Oficina:
             return
         self._cam_photo = ppm_photo(self.tk, img, 320, 180)
         self.cam_img.configure(image=self._cam_photo, text="", width=320, height=180)
-
-    def _tuning_text(self, cam: dict) -> str:
-        """Cómo va la puesta a punto, en los pasos de la barra: zonas, clips subidos en esta PC y aprobación."""
-        t = cam.get("tuning") or "sin_ajustar"
-        if t == "sin_ajustar":
-            try:
-                clips = [v for v in self.library().videos(cam["id"]) if v.exists()]
-            except Exception:  # noqa: BLE001 - sin carpeta de datos: no se sabe
-                clips = []
-            steps = ["zonas ✔" if cam.get("zones") else "falta ✎ Marcar zonas",
-                     f"{len(clips)} clip{'s' if len(clips) != 1 else ''} ✔" if clips else "falta ⬆ Subir clips",
-                     "falta ✔ Aprobar (en «● En vivo» o «🎞 Clips»)"]
-            return " · ".join(steps)
-        txt = {"en_ajuste": "en ajuste", "aprobada": "aprobada"}.get(t, t)
-        if cam.get("tuned_by"):
-            txt += f" por {cam['tuned_by']} el {fmt_date(cam.get('tuned_at'))}"
-        return txt + (f" · {cam['tuning_notes']}" if cam.get("tuning_notes") else "")
 
     # ---------- diálogos de cliente ----------
     def _dialog(self, title: str, width: int = 520):
@@ -1564,8 +1608,9 @@ class Oficina:
             lf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
             ttk.Combobox(lf, textvariable=loc, values=list(LOCATION_NAMES.values()), state="readonly",
                          width=40).pack(anchor="w")
-            ttk.Label(lf, text="Lo normal es marcar cámara por cámara con «✔ Analizar». «Todas sus cámaras» pasa "
-                               "el cliente entero (salvo las marcadas «No analizar»).", foreground="#666", wraplength=400,
+            ttk.Label(lf, text="Lo normal es ir cámara por cámara con «▶ Empezar a analizar». «Todas sus cámaras» "
+                               "pasa el cliente entero (salvo las que se dejaron de analizar).", foreground="#666",
+                      wraplength=400,
                       justify="left").pack(anchor="w", pady=(2, 0))
         # (a la derecha, donde sobra lugar: a la izquierda ya no entraba en 768 de alto)
         nf = ttk.LabelFrame(right, text="Qué mide cada cámara", padding=6)
@@ -2175,7 +2220,7 @@ class Oficina:
         bb.grid(row=24, column=0, columnspan=3, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
-        ttk.Label(bb, text="Qué se analiza se elige con «Analizar» en la lista; las zonas, con «✎ Marcar zonas».",
+        ttk.Label(bb, text="Después de guardar: «✎ Marcar zonas» y «▶ Empezar a analizar», en la lista.",
                   style="Suave.TLabel").pack(side="left")
 
     def hc_key_dialog(self, c: dict, parent, done: Callable[[], None] | None = None) -> None:
@@ -2216,25 +2261,60 @@ class Oficina:
         ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
     def set_analyze(self, analyze: bool | None) -> None:
-        """Elegir qué cámaras se analizan: las marcadas van a las máquinas de análisis; las demás solo se miran
-        en «En vivo». `analyze` None = lo que dice el botón (si todas las elegidas se analizan, dejar de analizar)."""
-        ids = [int(i) for i in self.cam_tree.selection()]
-        if not ids:
-            return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
+        """«▶ Empezar a analizar» / «■ Dejar de analizar»: las cámaras elegidas van a las máquinas de análisis (dan
+        alertas y métricas) o salen de ellas (solo se pueden mirar en «En vivo»). `analyze` None = lo que dice el
+        botón (si todas las elegidas se analizan, dejar de analizar). Al terminar dice en el detalle cómo quedó."""
+        cams = self._sel_cameras()
+        if not cams:
+            return self.mb.showinfo(NOMBRE, "Elegí una cámara de la lista (o varias, con Ctrl o Mayús).")
+        ids = [c["id"] for c in cams]
         if analyze is None:
-            analyze = self._analyze_label() == "Analizar"
-        if not analyze and not self.mb.askyesno(
-                NOMBRE, f"¿Dejar de analizar {len(ids)} cámara(s)?\n\nNo van a generar alertas ni métricas. "
-                         "Se pueden seguir mirando en «En vivo»."):
-            return
-        raw = [c["name"] for c in self.cameras if c["id"] in ids and c.get("tuning") != "aprobada" and not c.get("analyzed")]
-        if analyze and raw and not self.mb.askyesno(
-                NOMBRE, f"{len(raw)} cámara(s) sin aprobar en «● En vivo» o «🎞 Clips» ({', '.join(raw[:4])}"
-                         f"{'…' if len(raw) > 4 else ''}).\n\nSin ajustar pueden dar muchas alertas falsas. "
-                         "¿Analizarlas igual?"):
-            return
-        self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}),
-                    lambda _: self.config_saved(), self.err)
+            analyze = self._analyze_label() == ANALYZE_ON
+        who = f"«{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras"
+        if not analyze:
+            if not self.mb.askyesno(NOMBRE, f"¿Dejar de analizar {who}?\n\nDeja de dar alertas y de medir. Se puede "
+                                            "seguir mirando en la pestaña «En vivo»."):
+                return
+        else:
+            owner = self._sel_client()
+            raw = [c["name"] for c in cams if not c.get("zones") and (c.get("profile") or "general") != "deposito"
+                   and not c.get("analyzed") and camera_measures(c, owner)]
+            if raw and not self.mb.askyesno(
+                    NOMBRE, ("«" + "», «".join(raw[:4]) + "»" + ("…" if len(raw) > 4 else "")
+                             + (" no tiene zonas marcadas" if len(raw) == 1 else " no tienen zonas marcadas")
+                             + ".\n\nSin zonas no avisa «Salida sin pagar» ni «Zona restringida» y no cuenta por "
+                               "sector (los gestos de ocultamiento y el conteo general sí andan). Conviene marcarlas "
+                               "primero con «✎ Marcar zonas».\n\n¿Empezar a analizar igual?")):
+                return
+
+        def told() -> None:
+            """Con la lista ya al día: cómo quedó, en el detalle (sin otra ventana que cerrar)."""
+            now = [c for c in self.cameras if c["id"] in ids]
+            if not analyze:
+                return log.info("%s: ya no se analiza", who)
+            waiting = [c["name"] for c in now if not c.get("agent_id")]
+            if waiting:
+                self.mb.showwarning(NOMBRE, f"{who} quedó marcada para analizar, pero no hay ninguna máquina de análisis "
+                                            "en línea: va a empezar sola cuando se prenda una"
+                                    + (" (pestaña «Máquinas»)." if self.is_admin else " (avisale a un administrador)."))
+            else:
+                names = sorted({c.get("analyzer_name") or "una máquina" for c in now})
+                log.info("%s: se empieza a analizar en %s (en menos de un minuto)", who, ", ".join(names))
+
+        def done(_res) -> None:
+            self.refresh_all(on_done=lambda: self.v.root.after(0, told))
+            if self.on_config_saved:
+                self.on_config_saved()
+        self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}), done,
+                    self.err)
+
+    def watch_live(self, cam: dict | None) -> None:
+        """«Ver en la pestaña «En vivo»»: pasa a esa pestaña con la cámara elegida (se mira; no cambia si se analiza)."""
+        if not cam:
+            return self.mb.showinfo(NOMBRE, "Elegí una cámara de la lista.")
+        show = getattr(self.v, "show_camera", None)
+        if show is None or not show(cam["id"]):
+            self.mb.showinfo(NOMBRE, "Abrí la pestaña «En vivo» y elegí la cámara en la lista de la izquierda.")
 
     def client_pdf(self, days: int) -> None:
         """«⬇ PDF de métricas»: el reporte del cliente elegido (el mismo que baja la web) de los últimos `days` días."""
@@ -2278,7 +2358,7 @@ class Oficina:
                                              + " hurtos: no da alertas, solo cuenta. Se cambia en «Más» → «Qué mide…».")
         now = [camera_alerts(c) for c in cams]
         what = f"«{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras"
-        top, frm = self._dialog(f"Qué alertas da · {cams[0]['name'] if len(cams) == 1 else (owner or {}).get('name', '')}",
+        top, frm = self._dialog(f"Alertas que da · {cams[0]['name'] if len(cams) == 1 else (owner or {}).get('name', '')}",
                                 width=520)
         ttk.Label(frm, text=f"Qué {'avisa' if len(cams) == 1 else 'avisan'} {what}:", wraplength=490,
                   justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
@@ -2487,8 +2567,10 @@ class Oficina:
         return next((w for w in self._tune_windows if w.cam["id"] == cam_id), None)
 
     def tune_dialog(self, cam: dict | None, clips: list | None = None, mode: str = "vivo", pick: bool = True) -> None:
-        """«● En vivo» (y «🎞 Clips» con `mode="clips"`): la cámara con la IA de esta PC (`TuneWindow`). `pick=False`:
-        la cámara no sale de la lista de «Clientes» (la abre «Entrenar IA hurtos» con un clip)."""
+        """La ventana de prueba de una cámara con la IA de esta PC (`TuneWindow`), en vivo o con clips
+        (`mode="clips"`). Ya no está en «Clientes» (pedido del dueño, 10 nov: «sacar el en vivo y clips de cada
+        cámara»): la abre «Entrenar IA hurtos» → «Más» → «Probar el clip con las reglas de su cámara…» (`pick=False`:
+        la cámara no sale de la lista de «Clientes»)."""
         if pick and not self._one_camera(cam, "En vivo" if mode == "vivo" else "Clips"):
             return
         if cam is None:
@@ -2509,15 +2591,6 @@ class Oficina:
             return
         TuneWindow(self, cam, clips=clips, mode=mode)
 
-    def clips_dialog(self, cam: dict | None) -> None:
-        """«🎞 Clips»: los clips de la cámara analizados con la IA. Si todavía no tiene ninguno, primero se elige el
-        primero (y qué pasó en él)."""
-        if not self._one_camera(cam, "Clips"):
-            return
-        if any(v.exists() for v in self.library().videos(cam["id"])) or self._open_window(cam["id"]) is not None:
-            return self.tune_dialog(cam, mode="clips")
-        self.upload_clip(cam)
-
     def zones_changed(self, cam_id: int, body: dict, source=None) -> None:
         """Se guardaron zonas de una cámara: las ventanas abiertas de esa cámara las toman enseguida (se recuenta lo
         analizado y empieza a contar con las zonas nuevas). `source`: la que ya se entera por su cuenta."""
@@ -2534,11 +2607,14 @@ class Oficina:
             return False
         return True
 
-    def zones_dialog(self, cam: dict | None) -> None:
+    def zones_dialog(self, cam: dict | None, pick: bool = True) -> None:
         """«✎ Marcar zonas»: el editor sobre la última imagen de la cámara o, si todavía no tiene (nadie la abrió), sobre
         una foto del vivo que saca solo (`ZonesEditor.snapshot`; si el vivo no abre, un cuadro de un clip suyo subido en
-        esta PC). «Tomar foto del vivo» la cambia por una de ahora."""
-        if not self._one_camera(cam, "Marcar zonas"):
+        esta PC). «Tomar foto del vivo» la cambia por una de ahora. `pick=False`: la cámara no sale de la lista de
+        «Clientes» (la pide «En vivo»)."""
+        if pick and not self._one_camera(cam, "Marcar zonas"):
+            return
+        if cam is None:
             return
         w = self._open_window(cam["id"])
         if w is not None and w.info is not None:  # la cámara está abierta: sobre lo que se está viendo (y sus pisadas)
@@ -2548,6 +2624,30 @@ class Oficina:
                    "¿Guardar?") if cam.get("analyzed") else None
         # sin imagen guardada, el editor saca una foto del vivo (o, si no abre, usa un cuadro de un clip suyo)
         ZonesEditor(self, cam, confirm=confirm)
+
+    def zones_from_live(self, cam_id: int) -> None:
+        """«✎ Marcar zonas» de la pestaña «En vivo»: el editor de la cámara que se está mirando."""
+        cam = next((c for c in self.cameras if c["id"] == cam_id), None)
+        if cam is None:
+            return self.mb.showinfo(NOMBRE, "Todavía no llegó la lista de cámaras. Probá en unos segundos.")
+        self.zones_dialog(cam, pick=False)
+
+    def zones_done(self, cam: dict, zones: list) -> None:
+        """Se guardaron las zonas desde «✎ Marcar zonas»: qué sigue. Si la cámara todavía no se analiza, ofrece
+        empezar ahí mismo (es el paso que sigue); si ya se analiza, no hay nada más que hacer."""
+        if cam.get("analyzed") or not zones:
+            return
+        if not self.mb.askyesno(NOMBRE, f"Zonas de «{cam['name']}» guardadas.\n\n¿Empezar a analizarla ahora? Desde ese "
+                                        "momento da alertas y métricas (se ve en la pestaña «En vivo» y las alertas "
+                                        "llegan a «Alertas»).\n\nCon «No» queda sin analizar: se puede empezar después "
+                                        "con «▶ Empezar a analizar»."):
+            return
+
+        def done(_res) -> None:
+            self.config_saved()
+            log.info("«%s»: se empieza a analizar (en menos de un minuto)", cam["name"])
+        self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": [cam["id"]], "analyze": True}), done,
+                    self.err)
 
     def _clip_frame(self, cam: dict):
         """Un cuadro (del medio) del clip más nuevo de la cámara subido en esta PC, con píxeles cuadrados. None si no
@@ -2569,20 +2669,8 @@ class Oficina:
                 cap.release()
         return None
 
-    def upload_clip(self, cam: dict | None) -> None:
-        """«⬆ Subir clip»: se eligen videos de esa cámara, se dice qué pasó (hurto y en qué momento, o nada raro) y se
-        analizan enseguida con su configuración («🎞 Clips»); al final dice si dio alerta y por qué, y ofrece mandarlo
-        a entrenar."""
-        if not self._one_camera(cam, "Subir clip"):
-            return
-        if self.agent_of is None or self.agent_of() is None:
-            return self.mb.showinfo(NOMBRE, "La app todavía está arrancando el analizador. Probá en unos segundos.")
-        clips = self.pick_clips(cam, self.v.root)
-        if clips:
-            self.tune_dialog(cam, clips=clips, mode="clips")
-
     def pick_clips(self, cam: dict, parent) -> list | None:
-        """«⬆ Subir clips» (en «🎞 Clips» y con clic derecho en la cámara): se eligen videos de esa cámara (por ejemplo, un
+        """«⬆ Subir clips» (en «🎞 Clips» de la ventana de prueba de la cámara): se eligen videos de esa cámara (por ejemplo, un
         hurto que pasó) y qué se ve en ellos; quedan en los videos de prueba de la cámara. Devuelve esos videos (None si
         se canceló)."""
         from tkinter import filedialog
@@ -2719,7 +2807,7 @@ class Oficina:
         self.al_client = tk.StringVar(value="Todos")
         ttk.Label(top, text="Mostrar", style="Subtitulo.TLabel").pack(side="left")
         ttk.Combobox(top, textvariable=self.al_state, values=["Sin revisar", "Todas", "Hurto", "Sospechoso", "Normal",
-                                                               "Falso positivo"], state="readonly", width=14).pack(side="left", padx=6)
+                                                               "Falsa alarma"], state="readonly", width=14).pack(side="left", padx=6)
         ttk.Label(top, text="Cliente").pack(side="left")
         self.al_client_cb = ttk.Combobox(top, textvariable=self.al_client, values=["Todos"], state="readonly", width=24)
         self.al_client_cb.pack(side="left", padx=6)
@@ -3080,8 +3168,8 @@ class Oficina:
                 if not a.get("has_pool_key"):
                     info += "  Falta crear la clave para máquinas («Más»)."
             else:
-                info = ("Las máquinas analizan las cámaras marcadas «Analizar» en Clientes; las demás solo se miran en "
-                        "«En vivo». Cómo instalar una máquina: deploy/maquina-analisis/README.md.")
+                info = ("Las máquinas analizan las cámaras a las que se les dio «▶ Empezar a analizar» en Clientes; las "
+                        "demás solo se miran en «En vivo». Cómo instalar una máquina: deploy/maquina-analisis/README.md.")
                 if a.get("cameras"):
                     info += (f"  Ahora {a['cameras']} cámara(s) van a máquinas · carga {p.get('units', 0)} · hacen "
                              f"falta {p.get('desired', 0)} máquina(s) · {p.get('online', 0)} en línea.")
@@ -3567,8 +3655,8 @@ class ZonesEditor:
         # (debajo de la imagen, donde sobra lugar: en la columna de la derecha, con una zona de espera elegida, la
         # ventana pasaba los 768 de alto y «Guardar zonas» quedaba debajo de la barra de tareas)
         ttk.Label(left, text="Al guardar, la cámara cuenta cuántas personas entran a cada zona y, en las de espera, "
-                             "cuánto esperan (se ve en «● En vivo» y, si se analiza, en las métricas). Los tiempos de "
-                             "las alertas se prueban en «● En vivo» o «🎞 Clips».", style="Suave.TLabel",
+                             "cuánto esperan: se ve en la pestaña «En vivo» (con «Ver con la IA de esta PC») y, si se "
+                             "analiza, en las métricas.", style="Suave.TLabel",
                   wraplength=self.W, justify="left").pack(anchor="w", pady=(6, 0))
         right = ttk.Frame(frm, padding=(12, 0, 0, 0))
         right.grid(row=0, column=1, sticky="n")
@@ -3726,8 +3814,8 @@ class ZonesEditor:
                 self.base = cv2.resize(frame, (self.W, self.H), interpolation=cv2.INTER_AREA)
                 self.info.configure(text=f"Imagen de un clip de esta cámara (el vivo no abrió: {why})")
                 return self.draw()
-            self.info.configure(text=f"No se pudo tomar la foto: {why}. Probá de nuevo o abrila en «● En vivo»; "
-                                     "podés dibujar igual sobre el negro.")
+            self.info.configure(text=f"No se pudo tomar la foto: {why}. Probá de nuevo o abrila en la pestaña «En "
+                                     "vivo»; podés dibujar igual sobre el negro.")
         self.app.bg.run(take, done, fail)
 
     # ---------- mouse ----------
@@ -3964,15 +4052,14 @@ class ZonesEditor:
             self.top.destroy()
             self.app.config_saved()
             self.app.zones_changed(self.cam["id"], body, source=self.on_saved)
+            self.app.v.log_handler.q.put_nowait(f"{datetime.now():%H:%M:%S}  Zonas de «{self.cam['name']}» guardadas: "
+                                                 "rigen en segundos (también en «En vivo», sin reabrir la cámara)")
             if self.on_saved:
                 self.on_saved(body)
-            elif zones and self.app._open_window(self.cam["id"]) is None and self.app.agent_of is not None \
-                    and self.app.agent_of() is not None:
-                # (pedido del dueño, 2 nov: «cuando guarde las zonas automáticamente se tiene que quedar marcado y
-                # contando»): se abre la cámara en vivo con las zonas nuevas, contando quién entra a cada una
-                TuneWindow(self.app, self.cam, mode="vivo")
-            self.app.v.log_handler.q.put_nowait(f"{datetime.now():%H:%M:%S}  Zonas de «{self.cam['name']}» guardadas: "
-                                                 "la PC central las aplica en segundos")
+            else:
+                # las zonas quedan contando en «En vivo» (con «Ver con la IA») y en las máquinas; lo que sigue, si la
+                # cámara todavía no se analiza, es empezar a analizarla: se ofrece acá mismo
+                self.app.zones_done(self.cam, zones)
         self.app.bg.run(lambda: self.app.api.put(f"/api/cameras/{self.cam['id']}/analysis", body), done,
                         lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
 
@@ -5250,7 +5337,7 @@ class TuneWindow:
                 self.app.mb.showinfo(NOMBRE, f"«{self.cam['name']}» quedó aprobada " + (
                     f"y la tiene la máquina «{where}»: empieza a analizarla en menos de un minuto." if where else
                     "pero ahora no hay ninguna máquina de análisis en línea: la toma la primera que se prenda (mirá "
-                    "«Analizar» en Clientes)."), parent=self.top)
+                    "el «Estado» en Clientes)."), parent=self.top)
                 self.close(force=True)
             self.app.bg.run(work, done, lambda e: self.app.mb.showerror(NOMBRE, str(e), parent=self.top))
         if self.dirty:
@@ -5847,7 +5934,7 @@ class NamesWindow:
 class RecordingWindow:
     """«Bajar grabación…»: tramos de la grabación de las cámaras elegidas (del disco del grabador, por Hik-Connect o por
     IP y puertos) a archivos MP4 en esta PC, de a uno, sin ffmpeg (agent/grabacion.py). Quedan en Descargas\\VIGIA y,
-    si se elige, en los clips de cada cámara (para probarlos en «🎞 Clips»)."""
+    para enseñarle a la IA con ellos se suben en «Entrenar IA hurtos» → «⬆ Subir clips…»."""
 
     def __init__(self, app: Oficina, cams: list[dict]):
         from .biblioteca import default_folder
@@ -5859,7 +5946,7 @@ class RecordingWindow:
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
         self.closed = False
-        self._add_lib = True
+        self._add_lib = False  # (ya no se suman a los videos de prueba de la cámara: se suben en «Entrenar IA hurtos»)
         self._shown: list[tuple] = []
         names = ", ".join(c["name"] for c in cams[:4]) + (f" y {len(cams) - 4} más" if len(cams) > 4 else "")
         self.top, frm = app._dialog("Bajar grabación", width=640)
@@ -5876,7 +5963,7 @@ class RecordingWindow:
         self.t2 = tk.StringVar(value="09:30")
         self.chunk = tk.StringVar(value=str(CHUNK_MINUTES))
         self.folder = tk.StringVar(value=str(default_folder()))
-        self.add_lib = tk.BooleanVar(value=True)
+        self.add_lib = tk.BooleanVar(value=False)
         app._row(frm, 2, "Día (dd/mm/aaaa)", ttk.Entry(frm, textvariable=self.day, width=12))
         app._row(frm, 3, "Desde (hh:mm)", ttk.Entry(frm, textvariable=self.t1, width=8))
         app._row(frm, 4, "Hasta (hh:mm)", ttk.Entry(frm, textvariable=self.t2, width=8))
@@ -5885,8 +5972,9 @@ class RecordingWindow:
         ttk.Entry(ff, textvariable=self.folder, width=46).pack(side="left", fill="x", expand=True)
         ttk.Button(ff, text="Cambiar…", command=self.pick_folder).pack(side="left", padx=(4, 0))
         app._row(frm, 6, "Carpeta", ff)
-        ttk.Checkbutton(frm, text="Sumarlos a los clips de cada cámara (para «🎞 Clips»)",
-                        variable=self.add_lib).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(frm, style="Suave.TLabel", wraplength=600, justify="left", text=(
+            "Para enseñarle a la IA con lo que bajes: pestaña «Entrenar IA hurtos» → «⬆ Subir clips…» (abre esta "
+            "misma carpeta).")).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.tree = ttk.Treeview(frm, columns=("estado",), show="tree headings", height=8)
         self.tree.heading("#0", text="Tramo", anchor="w")
         self.tree.heading("estado", text="Estado", anchor="w")
