@@ -94,13 +94,13 @@ BRAND_SEL = {"hikvision": "Hikvision", "dahua": "Dahua", "hikconnect": "Hikvisio
 STREAM_NAMES = {"sub": "Secundaria (recomendada: menos internet)", "main": "Principal (más resolución y más internet)"}
 # «⬇ PDF de métricas» del cliente: qué período (días hasta hoy, incluido)
 PDF_PERIODS = (("Hoy", 1), ("Últimos 7 días", 7), ("Últimos 30 días", 30))
+GESTURE_SHORT = {"mano_bolsillo": "bolsillo", "mano_ropa": "ropa", "mano_bolsa": "bolsa"}
 # el botón de la cámara que la manda (o la saca) de las máquinas de análisis: uno solo, que cambia según lo elegido
 ANALYZE_ON, ANALYZE_OFF = "▶ Empezar a analizar", "■ Dejar de analizar"
 # los tres pasos de una cámara, a la vista en «Clientes» (pedido del dueño, 10 nov: «poco intuitiva… cómo poner a
 # analizar»): nada más que esto hace falta para que una cámara dé alertas y métricas
-CAMERA_STEPS = ("Para que una cámara dé alertas y métricas:  1) ＋ Agregar cámaras   2) ✎ Marcar zonas (góndolas, caja, "
-                "salida, entrada)   3) ▶ Empezar a analizar.     Para verla: pestaña «En vivo».  Para enseñarle "
-                "hurtos: pestaña «Entrenar IA hurtos».")
+CAMERA_STEPS = ("Pasos:  1) ＋ Agregar cámaras   2) ✎ Marcar zonas   3) ▶ Empezar a analizar.      Para verla: pestaña "
+                "«En vivo».   Para enseñarle hurtos: «Entrenar IA hurtos».")
 # «Alertas que da…»: las reglas, con lo que hacen (los gestos van con GESTURE_NAMES)
 ALERT_RULES = (("salida_sin_pago", "Salida sin pagar", "tomó algo frente a una góndola y salió sin pasar por la caja"),
                ("zona_restringida", "Zona restringida", "alguien entra a una zona marcada «Restringida»"),
@@ -1194,10 +1194,11 @@ class Oficina:
         # columna dice cómo está la cámara («No se analiza», «Analizando · 5 cuadros/s»…), otra si tiene zonas, y «Mide»
         # solo aparece si el cliente contrató más de un plan
         self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "zonas", "mide", "alertas"),
-                                     show="headings", height=9, selectmode="extended")
-        for col, txt, w, stretch in (("nombre", "Cámara", 190, True), ("estado", "Estado", 300, True),
-                                     ("zonas", "Zonas", 110, False), ("mide", "Mide", 170, True),
-                                     ("alertas", "Alertas hoy", 110, False)):
+                                     show="headings", height=6, selectmode="extended")
+        # (los anchos suman lo de antes: con más, la pestaña pedía más ancho que una pantalla de 1366)
+        for col, txt, w, stretch in (("nombre", "Cámara", 170, True), ("estado", "Estado", 250, True),
+                                     ("zonas", "Zonas", 100, False), ("mide", "Mide", 150, True),
+                                     ("alertas", "Alertas hoy", 100, False)):
             self.cam_tree.heading(col, text=txt, anchor="w")
             self.cam_tree.column(col, width=w, stretch=stretch, anchor="center" if col == "alertas" else "w")
         self.cam_tree.pack(fill="x")
@@ -1221,16 +1222,20 @@ class Oficina:
         self._fill_camera_menu(self.cam_menu, full=False)
         cmore["menu"] = self.cam_menu
         cmore.pack(side="left", padx=6)
-        ttk.Label(right, style="Suave.TLabel", wraplength=980, justify="left", text=CAMERA_STEPS).pack(
+        ttk.Label(right, style="Suave.TLabel", wraplength=960, justify="left", text=CAMERA_STEPS).pack(
             anchor="w", pady=(6, 0))
         # detalle de la cámara elegida: su imagen y sus datos
         det = ttk.Frame(right)
         det.pack(fill="both", expand=True, pady=(10, 0))
-        self.cam_img = tk.Label(det, bg="#e4e9f2", width=40, height=10, text="Sin imagen", fg="#8a93a6")
-        self.cam_img.pack(side="left", anchor="n")
+        imgf = tk.Frame(det, width=324, height=184, bg="#e4e9f2")
+        imgf.pack(side="left", anchor="n")
+        imgf.pack_propagate(False)
+        self.cam_img = tk.Label(imgf, bg="#e4e9f2", text="Sin imagen", fg="#8a93a6")
+        self.cam_img.pack(fill="both", expand=True)
         self._cam_photo = None
         self._previews: dict[tuple, bytes] = {}
-        self.cam_info = tk.Text(det, height=9, wrap="word", relief="flat", bg="#ffffff", font=("Segoe UI", 10),
+        # (ancho pedido chico: toma lo que sobre; con el de fábrica, 80 letras, la pestaña pedía más que 1366)
+        self.cam_info = tk.Text(det, height=9, width=40, wrap="word", relief="flat", bg="#ffffff", font=("Segoe UI", 10),
                                 padx=12, pady=8, highlightthickness=1, highlightbackground="#d8dee9", spacing1=2)
         self.cam_info.tag_configure("titulo", font=("Segoe UI", 12, "bold"), foreground="#011b5d")
         self.cam_info.tag_configure("falta", foreground="#b45309")
@@ -1460,10 +1465,11 @@ class Oficina:
         measures = camera_measures(cam, owner)
         if "hurto" in measures:
             rules, gestures = camera_alerts(cam)
-            names = [n for r, n, _ in ALERT_RULES if r in rules] + [GESTURE_NAMES.get(g, g) for g in gestures]
-            lines.append("Alertas que da: " + (", ".join(names) if names else "ninguna (solo métricas)")
-                         + "  (se cambian en «Más» → «Alertas que da…»)")
-        if len(client_plans(owner)) > 1 or not measures:
+            names = [n.lower() for r, n, _ in ALERT_RULES if r in rules]
+            if gestures:
+                names.append("gestos (" + ", ".join(GESTURE_SHORT.get(g, g) for g in gestures) + ")")
+            lines.append("Alertas que da: " + (", ".join(names) if names else "ninguna (solo métricas)"))
+        if not measures:
             lines.append(f"Mide: {measures_text(cam, owner, short=False)}")
         lines.append(f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
                      f"{int(cam.get('process_fps') or 5)} cuadros por segundo · "
@@ -1477,12 +1483,12 @@ class Oficina:
         self._preview_for = cam["id"] if cam else None
         if not cam or not cam.get("has_preview"):
             self._cam_photo = None
-            self.cam_img.configure(image="", text="Sin imagen" if cam else "", width=40, height=10)
+            self.cam_img.configure(image="", text="Sin imagen todavía" if cam else "")
             if cam:  # todavía sin imagen propia: la de un clip suyo subido en esta PC, si hay
                 frame = self._clip_frame(cam)
                 if frame is not None:
                     self._cam_photo = ppm_photo(self.tk, frame, 320, 180)
-                    self.cam_img.configure(image=self._cam_photo, text="", width=320, height=180)
+                    self.cam_img.configure(image=self._cam_photo, text="")
             return
         key = (cam["id"], cam.get("preview_at"))
         if key in self._previews:
@@ -1500,7 +1506,7 @@ class Oficina:
         if img is None:
             return
         self._cam_photo = ppm_photo(self.tk, img, 320, 180)
-        self.cam_img.configure(image=self._cam_photo, text="", width=320, height=180)
+        self.cam_img.configure(image=self._cam_photo, text="")
 
     # ---------- diálogos de cliente ----------
     def _dialog(self, title: str, width: int = 520):
@@ -2013,11 +2019,26 @@ class Oficina:
                                                        for d in DAYS))
         ttk.Label(side, text=hours_txt, foreground="#666", wraplength=370, justify="left").grid(
             row=5, column=0, sticky="w", pady=(0, 8))
-        srow(6, "Cuadros por segundo (5 a 15)", ttk.Spinbox(side, from_=5, to=15, textvariable=v["fps"], width=6),
-             sticky="w")
+        # lo fino va plegado (10 nov: menos cosas a la vista al cargar una cámara): se abre solo si la cámara ya tiene
+        # algo distinto de lo de siempre
+        fine_open = tk.BooleanVar(value=bool(cam.get("id")) and (int(cam.get("process_fps") or 5) != 5
+                                                                 or bool(detection_text(cam))))
+        fine: list = []
+        ttk.Checkbutton(side, text="Ajustes finos (cuadros por segundo, sensibilidad para ver personas)",
+                        variable=fine_open, command=lambda: fine_layout()).grid(row=6, column=0, sticky="w", pady=(0, 6))
+        fps_lbl = ttk.Label(side, text="Cuadros por segundo (5 a 15)")
+        fps_lbl.grid(row=7, column=0, sticky="w")
+        fps_sb = ttk.Spinbox(side, from_=5, to=15, textvariable=v["fps"], width=6)
+        fps_sb.grid(row=8, column=0, sticky="w", pady=(1, 8))
         # detección de personas (pedido del dueño, 6 nov: «si están lejos no las cuenta»)
         df = ttk.LabelFrame(side, text="Detección de personas", padding=6)
-        df.grid(row=8, column=0, sticky="ew")
+        df.grid(row=9, column=0, sticky="ew")
+        fine += [fps_lbl, fps_sb, df]
+
+        def fine_layout() -> None:
+            for w in fine:
+                w.grid() if fine_open.get() else w.grid_remove()
+        fine_layout()
         motion = (cam.get("detector") or "yolo") == "motion"  # (el de movimiento no tiene sensibilidad)
         sens_row = ttk.Frame(df)  # (todo en un renglón y la ayuda corta: con «Más opciones» entra en 768 de alto)
         sens_row.pack(anchor="w")
@@ -3649,8 +3670,9 @@ class ZonesEditor:
                               wraplength=self.W - 170, justify="left")
         self.info.pack(side="left", anchor="w", padx=(8, 0))
         self._snapping = False
-        ttk.Label(left, text="Zona nueva: «＋ Zona nueva» y clics en el piso, doble clic para cerrarla. Corregir: clic en "
-                             "una zona, arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",
+        ttk.Label(left, text="Cómo se marca:  1) elegí el tipo y un nombre   2) «＋ Zona nueva» y clics sobre el piso, "
+                             "punto por punto   3) doble clic para cerrarla   4) «Guardar zonas».   Corregir: clic en "
+                             "la zona y arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",
                   foreground="#666", wraplength=self.W, justify="left").pack(anchor="w")
         # (debajo de la imagen, donde sobra lugar: en la columna de la derecha, con una zona de espera elegida, la
         # ventana pasaba los 768 de alto y «Guardar zonas» quedaba debajo de la barra de tareas)
@@ -3740,7 +3762,7 @@ class ZonesEditor:
 
         def done(data):
             img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-            if img is None:
+            if img is None or not self._alive():  # (o cerraron el editor antes de que llegara la imagen)
                 return
             self.base = cv2.resize(img, (self.W, self.H), interpolation=cv2.INTER_AREA)
             self.info.configure(text=f"Imagen de {fmt_date(self.cam.get('preview_at'))}")

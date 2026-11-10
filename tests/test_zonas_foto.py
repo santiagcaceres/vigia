@@ -32,7 +32,7 @@ def _app(tk, root, agent, clip=None):
         mb=types.SimpleNamespace(showinfo=lambda *a, **k: None, showwarning=lambda *a, **k: None,
                                  showerror=lambda *a, **k: None, askyesno=lambda *a, **k: True),
         bg=bg, api=types.SimpleNamespace(put=lambda path, body: {}), config_saved=lambda: None,
-        zones_changed=lambda *a, **k: None, _open_window=lambda cid: None,
+        zones_changed=lambda *a, **k: None, _open_window=lambda cid: None, zones_done=lambda *a, **k: None,
         agent_of=(lambda: agent) if agent is not None else None, _clip_frame=lambda cam: clip)
     app._dialog = types.MethodType(of.Oficina._dialog, app)
     return app

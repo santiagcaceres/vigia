@@ -259,6 +259,7 @@ def test_el_editor_guarda_y_saca_la_espera():
                                      showerror=lambda *a, **k: msgs.append(a), askyesno=lambda *a, **k: True),
             bg=bg, api=types.SimpleNamespace(put=lambda path, body: sent.append((path, body)) or {}),
             config_saved=lambda: None, zones_changed=lambda *a, **k: None, _open_window=lambda cid: None,
+            zones_done=lambda *a, **k: None,
             agent_of=None)
         app._dialog = types.MethodType(of.Oficina._dialog, app)
         poly = [[0.1, 0.1], [0.5, 0.1], [0.5, 0.5], [0.1, 0.5]]

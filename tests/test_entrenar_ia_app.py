@@ -113,7 +113,7 @@ def test_cuanto_hay_para_entrenar_y_que_se_dice():
     assert c["normal_minutes"] == 10
     text, enough = ei.ia_advice(c)
     assert not enough and "al menos 5 hurtos marcados" in text and "30 a 50" in text
-    assert ei.ia_counts_text(c) == "4 clips: 2 con hurto (3 marcas) · 1 normales (10 min) · 1 sin marcar."
+    assert ei.ia_counts_text(c) == "4 clips: 2 con hurto (3 marcas) · 1 normal (10 min) · 1 sin marcar."
     # el resumen del servidor manda (y sus mínimos)
     server = {"clips": 9, "theft_clips": 4, "marks": 8, "normal_clips": 3, "normal_minutes": 25.0, "unmarked": 2,
               "old_version": 1, "min_marks": 5, "min_normal_clips": 3, "min_normal_minutes": 10.0,
@@ -635,7 +635,8 @@ def test_la_pestana_esta_entre_alertas_y_maquinas_y_entra_en_1366x768(tmp_path):
                                                "con la persona a la vista y su postura). Empieza a servir de verdad "
                                                "con 30 a 50.")  # (el texto más largo que llega del servidor)
                 v.root.update()
-                for w in (tab.canvas, tab.save_btn, panel["tree"], panel["btn"], tab.tree, tab.mtree):
+                for w in (tab.canvas, tab.add_btn, tab.normal_btn, tab.guide, tab.step_lbl, panel["tree"], panel["btn"],
+                          tab.tree, tab.mtree):
                     assert w.winfo_ismapped(), w
                     assert w.winfo_rootx() + w.winfo_width() <= v.root.winfo_rootx() + 1366, w
                     assert w.winfo_rooty() + w.winfo_height() <= v.root.winfo_rooty() + 698, w
@@ -694,7 +695,10 @@ def test_subir_marcar_guardar_entrenar_y_activar(tmp_path):
         assert "1 clip subido" in tab.up_lbl.cget("text")
         # queda elegido y se ve con el video de esta PC
         row = tab.tree.item(str(server.clips[0]["id"]))
-        assert row["values"][-1] == "✔" and row["values"][2] == "Sin marcar" and row["values"][3] == "lucia"
+        assert row["values"][-1] == "✔" and row["values"][1] == "Sin marcar" and "subió lucia" in tab.info.cget("text")
+        # arriba dice qué sigue; al lado del clip, el primer paso para marcar
+        assert tab.guide.cget("text").startswith("Ahora:  Falta decir qué pasa en 1 clip")
+        assert "Donde EMPIEZA" in tab.step_lbl.cget("text")
         assert tab.clip["id"] == server.clips[0]["id"] and tab.video == str(video.resolve())
         assert "el video está en esta PC" in tab.info.cget("text")
         _pump(v, lambda: tab.base is not None)
@@ -704,51 +708,60 @@ def test_subir_marcar_guardar_entrenar_y_activar(tmp_path):
         tab._goto(1.0)
         _pump(v, lambda: abs(tab.base_t - 1.0) < 1e-6 and tab._shown_rec is not None)
         tab.set_start()
-        assert tab.start_lbl.cget("text") == "0:01.0"
+        assert tab.start_lbl.cget("text") == "0:01.0" and "TERMINA" in tab.step_lbl.cget("text")
         _click_person(tab, 1)
         assert tab.sel_track == 1 and "#1" in tab.who_lbl.cget("text")
         tab._goto(2.6)
         tab.set_end()
+        assert "Guardar este hurto" in tab.step_lbl.cget("text")  # ya está todo: falta el botón
         tab.kind.set("Al bolsillo")
         tab.add_mark()
+        # «✔ Guardar este hurto» lo guarda en el momento (no hay otro botón de guardar)
         assert tab.marks == [{"start": 1.0, "end": 2.6, "track_id": 1, "kind": "bolsillo"}]
-        assert tab.dirty and tab.save_lbl.cget("text") == "sin guardar" and len(tab.mtree.get_children()) == 1
+        put = server.sent("PUT", f"/api/training/clips/{server.clips[0]['id']}")[-1]
+        assert put == {"verdict": "hurto", "marks": [{"start": 1.0, "end": 2.6, "track_id": 1, "kind": "bolsillo"}]}
+        assert not tab.dirty and len(tab.mtree.get_children()) == 1
+        assert tab.step_lbl.cget("text").startswith("✔ Hurto guardado")
+        assert tab.tree.item(str(server.clips[0]["id"]))["values"][1] == "Hurto: 1 marca"
+        assert not [m for m in off.mb.seen if m[0] == "warning"]
         # mientras dura la marca, la persona se dibuja en rojo con el cartel
         tab._goto(2.0)
         _pump(v, lambda: abs(tab.base_t - 2.0) < 1e-6)
         assert tab._active(2.0) and tab._active(3.0) == []
-        tab.save_marks()
-        put = server.sent("PUT", f"/api/training/clips/{server.clips[0]['id']}")[-1]
-        assert put == {"verdict": "hurto", "marks": [{"start": 1.0, "end": 2.6, "track_id": 1, "kind": "bolsillo"}]}
-        assert not tab.dirty and tab.tree.item(str(server.clips[0]["id"]))["values"][2] == "Hurto: 1 marca"
-        assert not [m for m in off.mb.seen if m[0] == "warning"]
         # una marca de alguien sin postura en ese rato: el servidor lo dice y la app avisa
         tab.marks.append({"start": 3.0, "end": 3.5, "track_id": 99, "kind": None})
         tab._mark_changed()
-        tab.save_marks()
-        assert any("no enseña nada" in m[1] for m in off.mb.seen if m[0] == "warning")
+        assert any("no le enseña nada" in m[1] for m in off.mb.seen if m[0] == "warning")
+        # «Quitar» también se guarda solo
         tab.mtree.selection_set("1")
         tab.remove_mark()
-        tab.save_marks()
+        assert len(server.sent("PUT", f"/api/training/clips/{server.clips[0]['id']}")[-1]["marks"]) == 1
         # sin persona elegida pregunta; sin fin, explica
         tab.m_start, tab.m_end = 0.5, None
         tab.add_mark()
         assert "Fin del hurto" in off.mb.seen[-1][1]
 
-        # entrenar la IA de movimientos: el resultado en palabras, el modelo apagado hasta «Activar»
+        # entrenar la IA de movimientos: el resultado en palabras y, ahí mismo, la pregunta para activarla
         tab.scope.set("Almacén Demo")
         tab.load()
+        off.mb.answer = False  # «No»: queda entrenada y apagada, hasta «Activar»
         tab.train_ia()
         assert server.sent("POST", "/api/training/ia/run")[-1] == {"client_id": 1, "target_recall": 0.8}
         assert tab.ia["result"].cget("text").startswith(
             "De 12 hurtos marcados vio 9 · 1,5 falsas alarmas por hora de video normal")
+        assert "falta «Activar»" in tab.ia["result"].cget("text")
+        assert any("IA de movimientos para Almacén Demo" in m[1] for m in off.mb.seen if m[0] == "ask")
         rows = tab.ia["tree"].get_children()
         assert rows == ("7",) and tab.ia["tree"].item("7")["values"][2:] == ["vio 9 de 12 · 1,5 falsas/hora", ""]
+        assert ("POST", "/api/training/ia/models/7/activate", None) not in server.calls
+        assert "apagada" in tab.guide.cget("text")
+        # con «Sí» (o después, con «Activar») las máquinas la empiezan a usar
+        off.mb.answer = True
         tab.ia["tree"].selection_set("7")
         tab.set_model(True, True)
-        assert any("IA de movimientos para Almacén Demo" in m[1] for m in off.mb.seen if m[0] == "ask")
         assert ("POST", "/api/training/ia/models/7/activate", None) in server.calls
-        assert tab.ia["tree"].item("7")["values"][-1] == "sí"
+        assert tab.ia["tree"].item("7")["values"][-1] == "sí" and "✔ En uso" in tab.ia["result"].cget("text")
+        assert "está activada" in tab.guide.cget("text")
         tab.ia["tree"].selection_set("7")
         tab.set_model(True, False)
         assert ("POST", "/api/training/ia/models/7/deactivate", None) in server.calls
@@ -763,8 +776,8 @@ def test_subir_marcar_guardar_entrenar_y_activar(tmp_path):
         tab.train_filter()
         assert server.sent("POST", "/api/training/run")[-1] == {"client_id": 1}
         assert tab.flt["result"].cget("text").startswith("Con 40 ejemplos: Deja pasar el 90 % de los hurtos")
-        tab.flt["tree"].selection_set("4")
-        tab.set_model(False, True)
+        # recién entrenado, pregunta si se activa (con cómo anduvo): «Sí» lo deja en uso
+        assert any("¿Activar el filtro de alertas para Almacén Demo?" in m[1] for m in off.mb.seen if m[0] == "ask")
         assert ("POST", "/api/models/4/activate", None) in server.calls
         # para todos los clientes
         tab.scope.set(ei.ALL_CLIENTS)
