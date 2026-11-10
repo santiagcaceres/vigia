@@ -53,6 +53,9 @@ class Client(Base):
     ip_http_port: Mapped[int | None] = mapped_column(Integer, nullable=True)  # vacío = la página no está abierta
     ip_username: Mapped[str | None] = mapped_column(String(80), nullable=True)
     ip_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # «demora estándar» por sector: {nombre_de_zona: segundos}. Si el tiempo promedio en esa zona supera el umbral,
+    # el Resumen del cliente y el PDF marcan «demora en <zona>». Es solo para mostrar: no lo usa el agente. (10 nov)
+    zone_limits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -414,7 +417,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-09.1"
+SCHEMA_VERSION = "2026-11-10.1"
 
 
 class CameraMetric(Base):

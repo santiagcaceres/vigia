@@ -352,3 +352,60 @@ def test_reporte_de_metricas_en_pdf_para_todos_los_usuarios(app):
         assert u.get("/api/metrics/report.pdf", params={"days": 30}).content.startswith(b"%PDF")
         otro = c.post("/api/clients", json={"name": "Otro"}).json()["id"]
         assert u.get("/api/metrics/report.pdf", params={"client_id": otro}).status_code == 403
+
+
+def test_demora_estandar_por_sector(app):
+    """«Demora estándar» por sector: el admin fija el umbral (clients.zone_limits) y la web/PDF marcan «demora» donde el
+    tiempo promedio en la zona lo supera. Es solo para mostrar: no cambia el análisis."""
+    with TestClient(app) as c:
+        c.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        cid = c.post("/api/clients", json={"name": "Minas Centro", "plans": ["comercio"],
+                                           "timezone": "America/Montevideo"}).json()["id"]
+        ag = c.post("/api/agents", json={"name": "central", "client_id": None}).json()
+        h = {"X-Agent-Token": ag["token"]}
+        cam = c.post("/api/cameras", json={"client_id": cid, "agent_id": ag["id"], "name": "Pasillo", "host": "h",
+                                           "password": "x", "mode": "vivo"}).json()
+        today = datetime.now(ZoneInfo("America/Montevideo")).replace(minute=0, second=0, microsecond=0, tzinfo=None)
+        # Pasillo: 5 visitas, 600 s → 120 s de promedio; Caja: 10 visitas, 300 s → 30 s de promedio
+        c.post("/api/agent/metrics", headers=h, json={"buckets": [{"camera_id": cam["id"],
+               "bucket_start": today.isoformat(), "data": {**empty_bucket(), "people": 15, "frames": 100,
+               "zones": {"Pasillo": {"type": "aisle", "visits": 5, "dwell_s": 600},
+                         "Caja": {"type": "checkout", "visits": 10, "dwell_s": 300}}}}]})
+        # al principio no hay umbrales
+        m = c.get("/api/metrics", params={"client_id": cid, "days": 1}).json()
+        assert m["zone_limits"] == {}
+        assert m["total"]["zones"]["Pasillo"]["dwell_s"] == 600 and m["total"]["zones"]["Pasillo"]["visits"] == 5
+        assert c.get("/api/clients").json()[0]["zone_limits"] == {}
+        # el admin fija la demora estándar por sector
+        r = c.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"Pasillo": 90, "Caja": 60}})
+        assert r.status_code == 200 and r.json()["zone_limits"] == {"Pasillo": 90.0, "Caja": 60.0}
+        m = c.get("/api/metrics", params={"client_id": cid, "days": 1}).json()
+        assert m["zone_limits"] == {"Pasillo": 90.0, "Caja": 60.0}
+        # queda guardado en el cliente (lo lee la web para prellenar)
+        assert c.get("/api/clients").json()[0]["zone_limits"] == {"Pasillo": 90.0, "Caja": 60.0}
+        # la lógica del flag (promedio >= umbral): Pasillo 120 s >= 90 → demora; Caja 30 s < 60 → no
+        z = m["total"]["zones"]
+        assert z["Pasillo"]["dwell_s"] / z["Pasillo"]["visits"] >= m["zone_limits"]["Pasillo"]
+        assert z["Caja"]["dwell_s"] / z["Caja"]["visits"] < m["zone_limits"]["Caja"]
+        # un 0 saca el umbral de esa zona; los nombres vacíos se ignoran
+        c.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"Pasillo": 120, "Caja": 0, "  ": 50}})
+        assert c.get("/api/metrics", params={"client_id": cid}).json()["zone_limits"] == {"Pasillo": 120.0}
+        # validación
+        assert c.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"X": 90000}}).status_code == 422
+        assert c.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"X": "tarde"}}).status_code == 422
+        assert c.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"X": "nan"}}).status_code == 422
+        assert c.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"X": "inf"}}).status_code == 422
+        assert c.get("/api/metrics", params={"client_id": cid}).json()["zone_limits"] == {"Pasillo": 120.0}  # sigue igual
+        # el reporte en PDF sigue saliendo (con la marca «(demora)» en «A dónde van»)
+        assert c.get("/api/metrics/report.pdf", params={"client_id": cid, "days": 1}).content.startswith(b"%PDF")
+        # un operador también puede fijarlos; un cliente no
+        c.post("/api/users", json={"username": "lucia", "password": "clave-lucia-123", "role": "entrenador"})
+        op = TestClient(app)
+        op.post("/api/login", json={"username": "lucia", "password": "clave-lucia-123"})
+        assert op.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"Pasillo": 100}}).status_code == 200
+        c.post("/api/users", json={"username": "dueno", "password": "clave-dueno-1", "role": "cliente", "client_id": cid})
+        cl = TestClient(app)
+        cl.post("/api/login", json={"username": "dueno", "password": "clave-dueno-1"})
+        assert cl.put(f"/api/clients/{cid}/zone-limits", json={"limits": {"Pasillo": 100}}).status_code == 403
+        # pero el cliente sí ve el umbral en sus métricas
+        assert cl.get("/api/metrics").json()["zone_limits"] == {"Pasillo": 100.0}

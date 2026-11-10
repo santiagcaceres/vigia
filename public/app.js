@@ -368,6 +368,16 @@ const fmtClock = (s) => {
   if (s >= 3600) { const mm = roundEven(s / 60); return `${Math.floor(mm / 60)} h ${mm % 60} min`; }
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
+/** Segundos como «mm:ss» también de una hora para arriba («90:00»): lo que `parseClock` vuelve a leer igual (con
+ *  `fmtClock`, «1 h 30 min» se leía como 1 minuto al volver a guardar). */
+const fmtMinSec = (s) => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+/** «2:00» → 120 s; «2:30» → 150 s; un número suelto se toma como minutos («2» → 120 s). Vacío → 0. */
+const parseClock = (s) => {
+  s = String(s == null ? "" : s).trim().replace(",", ":");
+  if (!s) return 0;
+  if (s.includes(":")) { const p = s.split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+  return Math.round((parseFloat(s) || 0) * 60);
+};
 /** Un rato largo dicho en una frase: «12 min», «menos de 1 min» o «1 h 12 min». */
 const fmtMinutes = (s) => {
   if (!s) return "0 min";
@@ -448,6 +458,10 @@ async function metricsView(v, clientId) {
   const tile = (n, label, hint) => `<div class="panel stat"><span class="n">${n}</span><span>${label}</span>${hint ? `<span class="muted">${hint}</span>` : ""}</div>`;
   const period = (d) => `<a class="btn small ${days === d ? "primary" : ""}" href="#/${isAdmin() ? "metricas?client_id=" + clientId + "&" : "resumen?"}days=${d}">${d === 1 ? "Hoy" : d + " días"}</a>`;
   const zones = Object.entries(t.zones || {}).sort((a, b) => b[1].visits - a[1].visits);
+  // «demora estándar» por sector (segundos). Si el tiempo promedio en la zona lo supera, se marca «demora».
+  const limits = m.zone_limits || {};
+  const zoneDelay = (name, z) => limits[name] > 0 && z.visits && avg(z.dwell_s, z.visits) >= limits[name];
+  const delayed = zones.filter(([name, z]) => zoneDelay(name, z));
   const sinDatos = !t.frames;
   const pdf = `/api/metrics/report.pdf?days=${days}` + (isAdmin() ? `&client_id=${clientId}` : "");
   // cada cámara mide los planes del cliente que le eligieron (`measures`); lo que una cámara no mide sale «—»
@@ -520,10 +534,12 @@ async function metricsView(v, clientId) {
         ${tile(fmtDur(avg(t.people_dwell_s, t.people)), "Tiempo promedio en cámara", "")}
         ${tile(t.people_max, "Máximo al mismo tiempo", "")}
         ${zones.length ? tile(esc(zones[0][0]), "Zona más visitada", `${zones[0][1].visits} visitas`) : ""}
+        ${delayed.length ? `<div class="panel stat"><span class="n" style="color:var(--warn)">${delayed.length}</span><span>${delayed.length === 1 ? "Sector con demora" : "Sectores con demora"}</span><span class="muted">${delayed.map(([n]) => esc(n)).join(", ")}</span></div>` : ""}
       </div>
       ${t.door || t.entries ? `<div class="panel" style="margin-top:12px"><b>${t.door ? "Entraron" : "Pasaron por la entrada"} ${days === 1 ? "por hora" : "por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "entries", t.door ? "entraron" : "pasaron")}</div>` : ""}
-      ${zones.length ? `<div class="panel" style="margin-top:12px"><b>A dónde van</b><div class="table-wrap"><table><thead><tr><th>Zona</th><th>Tipo</th><th>Visitas</th><th>Tiempo promedio</th><th></th></tr></thead>
-        <tbody>${zones.map(([name, z]) => `<tr><td>${esc(name)}</td><td>${esc(ZONE_NAMES[z.type] || z.type)}</td><td>${z.visits}</td><td>${fmtDur(avg(z.dwell_s, z.visits))}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * z.visits / Math.max(1, zones[0][1].visits))}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}` : ""}
+      ${zones.length ? `<div class="panel" style="margin-top:12px"><b>A dónde van</b><div class="table-wrap"><table><thead><tr><th>Zona</th><th>Tipo</th><th>Visitas</th><th>Tiempo promedio</th><th>Demora estándar</th><th></th></tr></thead>
+        <tbody>${zones.map(([name, z]) => { const d = zoneDelay(name, z); return `<tr><td>${esc(name)}</td><td>${esc(ZONE_NAMES[z.type] || z.type)}</td><td>${z.visits}</td><td>${fmtDur(avg(z.dwell_s, z.visits))}${d ? ` <span class="warn-text">⚠ demora</span>` : ""}</td><td>${isAdmin() ? `<input class="zlimit" data-zone="${esc(name)}" value="${limits[name] > 0 ? fmtMinSec(limits[name]) : ""}" placeholder="mm:ss" style="width:70px">` : limits[name] > 0 ? fmtClock(limits[name]) : `<span class="muted">—</span>`}</td><td style="width:30%"><div class="bar"><i style="width:${Math.round(100 * z.visits / Math.max(1, zones[0][1].visits))}%"></i></div></td></tr>`; }).join("")}</tbody></table></div>
+        ${isAdmin() ? `<div class="row" style="margin-top:8px"><button id="save-zlimits" class="btn small primary">Guardar demoras</button><span class="muted small" style="margin-left:10px">Poné cuánto es lo normal en cada sector (mm:ss). Si el promedio lo supera, el cliente ve «⚠ demora» acá y en su resumen.</span></div>` : ""}</div>` : ""}` : ""}
     ${waitHtml}
     ${plans.includes("estacion") ? `
       <h2>Estación de servicio</h2>
@@ -552,6 +568,14 @@ async function metricsView(v, clientId) {
     <p class="muted small" style="margin-top:18px">Cómo se mide: "Entraron" cuenta a quien cruza la puerta hacia adentro en la cámara de la entrada (una sola cámara, así nadie se cuenta dos veces). No se muestra una suma de personas de todas las cámaras: la misma persona aparece en varias y, si sale del cuadro y vuelve, cuenta de nuevo. "A dónde van" cuenta visitas: quien vuelve a una zona suma otra visita. Personal: quien pisa la zona de empleados (detrás del mostrador, depósito) o aparece con el local cerrado no cuenta como cliente; los demás empleados sí. No reconoce caras. "Espera hasta el pistero" es el tiempo desde que el vehículo entra a la zona Surtidor hasta que una persona pisa esa misma zona. Cada cámara suma solo lo que mide (por ejemplo, la de afuera la estación y la de adentro la gente del comercio).</p>`;
   const sel = $("#m-client", v);
   if (sel) sel.addEventListener("change", () => { location.hash = `#/metricas?client_id=${sel.value}&days=${days}`; });
+  const saveZ = $("#save-zlimits", v);  // «demora estándar» por sector (solo admin)
+  if (saveZ) saveZ.addEventListener("click", async () => {
+    const out = {};
+    $$(".zlimit", v).forEach((i) => { const secs = parseClock(i.value); if (secs > 0) out[i.dataset.zone] = secs; });
+    saveZ.disabled = true;
+    try { await api("PUT", `/api/clients/${clientId}/zone-limits`, { limits: out }); toast("Demoras guardadas"); route(); }
+    catch (e) { saveZ.disabled = false; fail(e); }
+  });
 }
 
 boot();

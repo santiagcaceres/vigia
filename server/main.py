@@ -642,6 +642,11 @@ class ZoneIn(BaseModel):
     wait: bool | None = None
 
 
+class ZoneLimitsIn(BaseModel):
+    # «demora estándar» por sector: nombre de zona -> segundos. Un valor <= 0 o ausente = sin umbral.
+    limits: dict[str, float] = {}
+
+
 class AnalysisIn(BaseModel):
     zones: list[ZoneIn] = []
     rules: dict = {}
@@ -968,7 +973,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "contact_whatsapp": c.contact_whatsapp, "contact_email": c.contact_email,
                 "webhook_url": c.webhook_url, "notify_channels": notifier.available(c),
                 "plans": list(c.plans or ["hurto"]), "hours": c.hours,
-                "analysis_location": c.analysis_location or "general", "created_at": iso(c.created_at)}
+                "analysis_location": c.analysis_location or "general", "zone_limits": c.zone_limits or {},
+                "created_at": iso(c.created_at)}
 
     def user_dict(u: User) -> dict:
         return {"id": u.id, "username": u.username, "role": u.role, "client_id": u.client_id, "active": u.active}
@@ -1668,6 +1674,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         bump_rev(s)
+        s.commit()
+        return client_out(s, c)
+
+    @app.put("/api/clients/{cid}/zone-limits")
+    def set_zone_limits(cid: int, body: ZoneLimitsIn, _: User = Depends(staff), s=Depends(db)) -> dict:
+        """«Demora estándar» por sector (segundos): si el tiempo promedio en una zona la supera, el Resumen del cliente
+        y el PDF marcan «demora en <zona>». Es solo para mostrar (no lo usa el agente ni cambia el análisis).
+        {nombre: segundos}; un valor 0 o ausente saca el umbral de esa zona."""
+        clean: dict[str, float] = {}
+        for name, secs in (body.limits or {}).items():
+            name = str(name).strip()[:120]
+            try:
+                secs = float(secs)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(422, f"«{name}»: la demora va en segundos (un número)") from exc
+            if not math.isfinite(secs):  # (NaN o infinito: no se pueden guardar ni comparar)
+                raise HTTPException(422, f"«{name}»: la demora va en segundos (un número)")
+            if not name or secs <= 0:
+                continue
+            if secs > 86400:
+                raise HTTPException(422, f"«{name}»: la demora no puede pasar de 24 horas")
+            clean[name] = round(secs, 1)
+        if len(clean) > 200:
+            raise HTTPException(422, "Demasiados sectores con demora (máximo 200)")
+        c = get_or_404(s, Client, cid, "Cliente")
+        c.zone_limits = clean or None
         s.commit()
         return client_out(s, c)
 
@@ -3730,6 +3762,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             by_cam[r.camera_id] = merge_bucket(by_cam.get(r.camera_id, empty_bucket()), data)
         return {"client_id": client.id, "client_name": client.name, "plans": list(client.plans or ["hurto"]),
                 "since": since.date().isoformat(), "until": until.date().isoformat(),
+                # «demora estándar» por sector (segundos): la web y el PDF marcan «demora» donde el promedio la supera
+                "zone_limits": client.zone_limits or {},
                 "total": total,
                 "by_day": [{"date": d, **by_day[d]} for d in sorted(by_day)],
                 "by_hour": [{"hour": h, **by_hour[h]} for h in sorted(by_hour)],

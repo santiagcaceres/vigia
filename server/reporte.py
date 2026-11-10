@@ -264,6 +264,7 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
                  "minutos).", size=10)
 
     zones = sorted((t.get("zones") or {}).items(), key=lambda kv: -kv[1].get("visits", 0))
+    limits = m.get("zone_limits") or {}  # «demora estándar» por sector: se marca «(demora)» donde el promedio la supera
     show_people = "comercio" in plans or ("estacion" not in plans and t.get("people"))
     if show_people:
         pdf.h2("Gente")
@@ -303,10 +304,14 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
                       [36, 32, 32, 44, 38])
         if zones:
             pdf.h2("A dónde van")
+
+            def _zrow(name, z):
+                prom = avg(z.get("dwell_s", 0), z.get("visits", 0))
+                lim = limits.get(name)
+                txt = dur(prom) + (" (demora)" if lim and z.get("visits") and prom >= lim else "")
+                return [name, ZONE_NAMES.get(z.get("type"), z.get("type") or ""), str(z.get("visits", 0)), txt]
             pdf.table(["Zona", "Tipo", "Visitas", "Tiempo promedio"],
-                      [[name, ZONE_NAMES.get(z.get("type"), z.get("type") or ""), str(z.get("visits", 0)),
-                        dur(avg(z.get("dwell_s", 0), z.get("visits", 0)))] for name, z in zones],
-                      [70, 40, 30, 42])
+                      [_zrow(name, z) for name, z in zones], [70, 40, 30, 42])
     if "estacion" in plans:
         pdf.h2("Estación de servicio")
         pdf.tiles([(str(t["vehicles"]), "Vehículos", f"{t['pump_vehicles']} pasaron por un surtidor"),

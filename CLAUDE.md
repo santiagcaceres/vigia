@@ -367,6 +367,20 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     zonas → «¿empezar a analizar?» → la máquina la toma → «Lista»). Pruebas: `tests/test_app_facil.py` y
     `tests/test_entrenar_ia_app.py`. **La guía de operadores (`docs/guia-operadores*`) quedó vieja** (botones y capturas
     de la 1.38): hay que rehacerla. Sin probar en Windows: «▶» y «■» en los botones (ya se usaban en «Máquinas»).
+- **«Demora estándar» por sector en la web (10 nov, el dueño: «una opción que me permita saber cuánto demora la gente
+  por promedio en cada lugar; marcar cuánto es una demora estándar y si demora más de eso, que marque "demora en el
+  sector X"»).** Solo web + servidor, **display-only**: no toca el agente ni las máquinas (el tiempo promedio por zona
+  —`zones.dwell_s/visits`— ya venía en el cubo y ya se mostraba en «A dónde van»; lo nuevo es el umbral y el flag).
+  `clients.zone_limits` (JSON `{nombre_de_zona: segundos}`, `SCHEMA_VERSION` 2026-11-10.1). El admin fija la demora
+  estándar por sector en **Métricas → «A dónde van»** (columna «Demora estándar», mm:ss; «Guardar demoras» →
+  `PUT /api/clients/{id}/zone-limits`, staff, `ZoneLimitsIn`; 0 o vacío la saca); el cliente la ve de **solo lectura** en
+  su **Resumen**. Si el promedio en una zona supera el umbral: «⚠ demora» en la fila, un tile «Sector con demora» y, en
+  el PDF, «(demora)» en «A dónde van» (`server/reporte.py`). `metrics_summary` y `client_dict` devuelven `zone_limits`.
+  Solo con plan «comercio» (donde ya se muestran las zonas). Pensado a partir de un panel de la competencia (SUPRA
+  Vision) que el dueño mostró; se hizo sobre lo nuestro. Prueba: `tests/test_metrics.py::test_demora_estandar_por_sector`.
+  Probado de punta a punta con la web local (capturas del admin y del cliente). Al publicarlo se corrigieron dos
+  casos de borde: el servidor rechaza NaN e infinito (422) y la casilla muestra siempre «mm:ss» (`fmtMinSec`; con
+  `fmtClock`, una demora de una hora o más se veía «1 h 30 min» y al volver a guardar quedaba en 1 minuto).
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
