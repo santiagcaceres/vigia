@@ -99,7 +99,7 @@ GESTURE_SHORT = {"mano_bolsillo": "bolsillo", "mano_ropa": "ropa", "mano_bolsa":
 ANALYZE_ON, ANALYZE_OFF = "▶ Empezar a analizar", "■ Dejar de analizar"
 # los tres pasos de una cámara, a la vista en «Clientes» (pedido del dueño, 10 nov: «poco intuitiva… cómo poner a
 # analizar»): nada más que esto hace falta para que una cámara dé alertas y métricas
-CAMERA_STEPS = ("Pasos:  1) ＋ Agregar cámaras   2) ✎ Marcar zonas   3) ▶ Empezar a analizar.      Para verla: pestaña "
+CAMERA_STEPS = ("Pasos:  1) ＋ Agregar cámaras   2) ✎ Marcar zonas   3) ▶ Empezar a analizar.      Para verla: "
                 "«En vivo».   Para enseñarle hurtos: «Entrenar IA hurtos».")
 # «Alertas que da…»: las reglas, con lo que hacen (los gestos van con GESTURE_NAMES)
 ALERT_RULES = (("salida_sin_pago", "Salida sin pagar", "tomó algo frente a una góndola y salió sin pasar por la caja"),
@@ -1342,7 +1342,8 @@ class Oficina:
         st = c.get("status")
         if not c.get("enabled", True):
             return "Deshabilitada"
-        if not c.get("analyzed") and not st:  # nadie la analiza (en «En vivo» se puede mirar igual)
+        if not c.get("analyzed") and not (st and c.get("agent_id")):
+            # nadie la analiza (en «En vivo» se puede mirar igual); un estado sin máquina es de antes de dejarla
             return "No se analiza"
         if not st:
             return "Esperando una máquina de análisis" if not c.get("agent_id") else "Empezando a analizar…"
@@ -1410,6 +1411,7 @@ class Oficina:
         several = len(client_plans(c)) > 1
         self.cam_tree.configure(displaycolumns=("nombre", "estado", "zonas", "mide", "alertas") if several else
                                 ("nombre", "estado", "zonas", "alertas"))
+        self.cam_tree.column("estado", width=250 if several else 400)  # (sin «Mide», su lugar es del estado)
         counts = (getattr(self, "alert_counts", None) or {}).get("cameras") or {}
         for cam in cams:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
@@ -1671,7 +1673,7 @@ class Oficina:
         bb = ttk.Frame(frm)
         bb.grid(row=15, column=0, columnspan=3, sticky="e")
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
-        ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
+        ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
     def export_dialog(self) -> None:
         """Exportar métricas: en PDF (el reporte para leer o mandar, el mismo que baja la web) o para Excel (CSV, una
@@ -2315,8 +2317,9 @@ class Oficina:
                 return log.info("%s: ya no se analiza", who)
             waiting = [c["name"] for c in now if not c.get("agent_id")]
             if waiting:
-                self.mb.showwarning(NOMBRE, f"{who} quedó marcada para analizar, pero no hay ninguna máquina de análisis "
-                                            "en línea: va a empezar sola cuando se prenda una"
+                self.mb.showwarning(NOMBRE, f"{who} {'quedó marcada' if len(ids) == 1 else 'quedaron marcadas'} para "
+                                            "analizar, pero no hay ninguna máquina de análisis en línea: va a empezar "
+                                            "sola cuando se prenda una"
                                     + (" (pestaña «Máquinas»)." if self.is_admin else " (avisale a un administrador)."))
             else:
                 names = sorted({c.get("analyzer_name") or "una máquina" for c in now})
@@ -2628,11 +2631,11 @@ class Oficina:
             return False
         return True
 
-    def zones_dialog(self, cam: dict | None, pick: bool = True) -> None:
+    def zones_dialog(self, cam: dict | None, pick: bool = True, image=None, note: str | None = None) -> None:
         """«✎ Marcar zonas»: el editor sobre la última imagen de la cámara o, si todavía no tiene (nadie la abrió), sobre
         una foto del vivo que saca solo (`ZonesEditor.snapshot`; si el vivo no abre, un cuadro de un clip suyo subido en
         esta PC). «Tomar foto del vivo» la cambia por una de ahora. `pick=False`: la cámara no sale de la lista de
-        «Clientes» (la pide «En vivo»)."""
+        «Clientes» (la pide «En vivo», que pasa en `image` lo que se está viendo)."""
         if pick and not self._one_camera(cam, "Marcar zonas"):
             return
         if cam is None:
@@ -2644,14 +2647,18 @@ class Oficina:
         confirm = ("Esta cámara ya se analiza en las máquinas: las zonas nuevas rigen enseguida (alertas reales). "
                    "¿Guardar?") if cam.get("analyzed") else None
         # sin imagen guardada, el editor saca una foto del vivo (o, si no abre, usa un cuadro de un clip suyo)
-        ZonesEditor(self, cam, confirm=confirm)
+        ZonesEditor(self, cam, image=image, confirm=confirm, note=note)
 
     def zones_from_live(self, cam_id: int) -> None:
         """«✎ Marcar zonas» de la pestaña «En vivo»: el editor de la cámara que se está mirando."""
         cam = next((c for c in self.cameras if c["id"] == cam_id), None)
         if cam is None:
             return self.mb.showinfo(NOMBRE, "Todavía no llegó la lista de cámaras. Probá en unos segundos.")
-        self.zones_dialog(cam, pick=False)
+        # sobre lo que se está viendo ahora (si el video ya abrió): las zonas quedan donde uno las ve
+        agent = self.agent_of() if self.agent_of else None
+        frame = agent.live_frame(cam_id) if agent is not None else None
+        self.zones_dialog(cam, pick=False, image=frame,
+                          note="Imagen de ahora (lo que se ve en «En vivo»)" if frame is not None else None)
 
     def zones_done(self, cam: dict, zones: list) -> None:
         """Se guardaron las zonas desde «✎ Marcar zonas»: qué sigue. Si la cámara todavía no se analiza, ofrece
@@ -2855,16 +2862,21 @@ class Oficina:
         self.al_desc.pack(anchor="w")
         self.al_img = tk.Label(right, bg="#111", height=20)
         self.al_img.pack(fill="both", expand=True, pady=6)
+        # (10 nov: revisar de corrido con el teclado: la primera alerta queda elegida sola, espacio = ver el clip,
+        # 1 a 4 = qué fue, y pasa a la siguiente. Los botones no se quedan con el foco: si no, la barra espaciadora
+        # volvería a apretar el último botón tocado)
         b = ttk.Frame(right)
         b.pack(fill="x")
-        ttk.Button(b, text="▶ Reproducir clip", command=self.play_clip).pack(side="left")
-        ttk.Button(b, text="Abrir en el reproductor", command=self.open_clip).pack(side="left", padx=6)
-        ttk.Button(b, text="Avisar al cliente…", style="Primario.TButton", command=self.report_dialog).pack(side="right")
+        ttk.Button(b, text="▶ Reproducir clip (espacio)", takefocus=False, command=self.play_clip).pack(side="left")
+        ttk.Button(b, text="Abrir en el reproductor", takefocus=False, command=self.open_clip).pack(side="left", padx=6)
+        ttk.Button(b, text="Avisar al cliente…", style="Primario.TButton", takefocus=False,
+                   command=self.report_dialog).pack(side="right")
         lb = ttk.Frame(right)
         lb.pack(fill="x", pady=(6, 0))
-        ttk.Label(lb, text="Etiqueta (teclas 1-4)", style="Subtitulo.TLabel").pack(side="left", padx=(0, 4))
+        ttk.Label(lb, text="¿Qué fue? (teclas 1 a 4)", style="Subtitulo.TLabel").pack(side="left", padx=(0, 4))
         for key, lab in LABEL_KEYS.items():
-            ttk.Button(lb, text=f"{key} · {LABEL_NAMES[lab]}", command=lambda l=lab: self.set_label(l)).pack(side="left", padx=3)
+            ttk.Button(lb, text=f"{key} · {LABEL_NAMES[lab]}", takefocus=False,
+                       command=lambda l=lab: self.set_label(l)).pack(side="left", padx=3)
         self.v.root.bind("<Key>", self._on_key, add="+")
         self.alerts: list[dict] = []
         self._play = {"cap": None, "job": None, "photo": None, "path": None}
@@ -2896,7 +2908,27 @@ class Oficina:
             elif remote and prev and str(getattr(self, "_al_shown", "")) == prev[0]:
                 self.al_desc.configure(text=f"{self.al_desc.cget('text')}  · ya no está en la lista: ¿la revisó otro "
                                             "usuario?")
+            elif self.alerts and not prev:  # nada elegido: la primera, así ya se ve la foto (y andan las teclas)
+                first = str(self.alerts[0]["id"])
+                self.al_tree.selection_set(first)
+                self.al_tree.focus(first)
+            elif not self.alerts and not prev:
+                self._alerts_empty()
         self.bg.run(lambda: self.api.get("/api/events", label=label, client_id=cid, limit=200), done, self._net_fail)
+
+    def _alerts_empty(self) -> None:
+        """No hay alertas con ese filtro: lo dice (antes quedaba «Elegí una alerta» sobre un recuadro negro)."""
+        self.stop_clip()
+        self._al_shown = None
+        todo = self.al_state.get() == "Sin revisar"
+        self.al_title.configure(text="No hay alertas sin revisar" if todo else "No hay alertas con ese filtro")
+        self.al_desc.configure(text="Cuando una cámara que se analiza dé una alerta, aparece acá (y cuenta en «Por "
+                                    "revisar» de la lista de clientes)." if todo else
+                                    "Probá con otro cliente o con «Todas» en «Mostrar».")
+        img = getattr(self, "al_img", None)
+        if img is not None:
+            self._play["photo"] = None
+            img.configure(image="")
 
     def _sel_alert(self) -> dict | None:
         sel = self.al_tree.selection()
@@ -2986,9 +3018,15 @@ class Oficina:
             self._clip_file(e, open_file)
 
     def _on_key(self, ev) -> None:
-        if ev.char in LABEL_KEYS and self.v.notebook.select() == str(self.tab_alerts):
-            if not isinstance(ev.widget, (self.tk.Entry, self.ttk.Entry, self.tk.Text)):
-                self.set_label(LABEL_KEYS[ev.char])
+        """En «Alertas»: 1 a 4 etiquetan la alerta elegida y la barra espaciadora reproduce su clip."""
+        if (ev.char in LABEL_KEYS or ev.keysym == "space") and self.v.notebook.select() == str(self.tab_alerts):
+            if isinstance(ev.widget, (self.tk.Entry, self.ttk.Entry, self.tk.Text, self.ttk.Combobox)):
+                return
+            if isinstance(ev.widget, str) or ev.widget.winfo_toplevel() is not self.v.root:
+                return  # (la lista desplegada de un selector, o se está escribiendo en otra ventana)
+            if ev.keysym == "space":
+                return self.play_clip()
+            self.set_label(LABEL_KEYS[ev.char])
 
     def set_label(self, label: str) -> None:
         e = self._sel_alert()
@@ -3049,7 +3087,7 @@ class Oficina:
     def _build_admin(self) -> None:
         ttk, f = self.ttk, self.tab_admin
         ttk.Label(f, text="Usuarios", style="Subtitulo.TLabel").pack(anchor="w")
-        ttk.Label(f, text="Administradores y empleados entran a esta app con su usuario y clave. Los clientes entran a "
+        ttk.Label(f, text="Administradores y operadores entran a esta app con su usuario y clave. Los clientes entran a "
                           "la web y ven solo su local.", style="Suave.TLabel", wraplength=900, justify="left").pack(
             anchor="w", pady=(0, 4))
         self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "activo"), show="tree headings", height=5,
@@ -3574,7 +3612,7 @@ class Oficina:
         bb = ttk.Frame(frm)
         bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
-        ttk.Button(bb, text="Guardar", command=save).pack(side="right", padx=6)
+        ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
 
 # dónde va cada tipo de zona (las zonas van sobre el PISO: se mira dónde pisa cada persona)

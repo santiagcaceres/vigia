@@ -137,6 +137,9 @@ def test_la_lista_de_alertas_se_recarga_sin_cortar_el_clip():
         off.err = lambda exc: pytest.fail(str(exc))
         off.load_alerts()
         root.update()
+        # sin nada elegido queda elegida la primera (ya se ve la foto y andan las teclas 1 a 4 y el espacio)
+        assert off.al_tree.selection() == ("1",) and off._al_shown == 1
+        stops.clear()
         off.al_tree.selection_set("2")
         root.update()
         assert off._al_shown == 2 and len(stops) == 1

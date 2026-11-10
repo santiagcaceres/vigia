@@ -84,6 +84,8 @@ def test_el_estado_de_la_camara_en_una_frase_y_que_le_falta():
     c = _cam(zones=ZONA, analyzed=True, agent_id=7, status={"agent_online": True, "state": "sin_conexion"})
     assert o._cam_state(c) == "Sin conexión" and "«Probar conexión»" in o._next_step(c, o.clients[0])[0]
     assert o._cam_state(_cam(enabled=False)) == "Deshabilitada"
+    # recién se dejó de analizar: el último estado que mandó la máquina ya no cuenta
+    assert o._cam_state(_cam(zones=ZONA, status=EN_LINEA)) == "No se analiza"
 
 
 def test_empezar_y_dejar_de_analizar_con_un_boton():
@@ -169,6 +171,28 @@ def test_ya_no_hay_en_vivo_ni_clips_por_camara():
     o.v = types.SimpleNamespace(show_camera=lambda cid: False)  # (todavía no llegó la lista de «En vivo»)
     o.watch_live(o.cameras[0])
     assert "Abrí la pestaña «En vivo»" in o.said[-1][1]
+
+
+def test_marcar_zonas_desde_en_vivo_usa_lo_que_se_esta_viendo(monkeypatch):
+    import numpy as np
+    c = _cam(7, zones=ZONA, analyzed=True)
+    o = _oficina([c])
+    o._tune_windows = []
+    opened = []
+    monkeypatch.setattr(of, "ZonesEditor", lambda app, cam, **kw: opened.append((cam["id"], kw)))
+    frame = np.zeros((90, 160, 3), np.uint8)
+    o.agent_of = lambda: types.SimpleNamespace(live_frame=lambda cid: frame if cid == 7 else None)
+    o.zones_from_live(7)
+    cam_id, kw = opened[0]
+    assert cam_id == 7 and kw["image"] is frame and "En vivo" in kw["note"]
+    assert "ya se analiza" in kw["confirm"]  # (las zonas nuevas rigen enseguida en la máquina: pregunta al guardar)
+    # el video todavía no abrió: el editor busca la imagen por su cuenta (la guardada o una foto del vivo)
+    o.agent_of = lambda: types.SimpleNamespace(live_frame=lambda cid: None)
+    o.zones_from_live(7)
+    assert opened[1][1]["image"] is None and opened[1][1]["note"] is None
+    # una cámara que todavía no está en la lista de «Clientes»
+    o.zones_from_live(99)
+    assert len(opened) == 2 and "Todavía no llegó la lista" in o.said[-1][1]
 
 
 def test_las_etiquetas_dicen_falsa_alarma():

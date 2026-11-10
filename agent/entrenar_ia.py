@@ -718,7 +718,7 @@ class EntrenarIA:
                    command=lambda: self.set_model(ia, False)).pack(side="left", padx=4)
         ttk.Label(bb, text="En uso = la usan las máquinas." if ia else "En uso = lo usan las máquinas.",
                   style="Suave.TLabel").pack(side="left", padx=(6, 0))
-        return {"info": info, "btn": btn, "result": result, "tree": tree, "shown": False}
+        return {"info": info, "btn": btn, "result": result, "tree": tree, "shown": False, "fresh": None}
 
     # ---------- carga ----------
     def clients_changed(self) -> None:
@@ -867,7 +867,8 @@ class EntrenarIA:
             panel["shown"] = True
             panel["result"].configure(text=ia_result_text(met) + ". Todavía no está en uso: falta «Activar».",
                                       foreground="")
-            self.load_ia(then=lambda: self._offer_activate(True, (m or {}).get("id")))
+            panel["fresh"] = (m or {}).get("id")
+            self.load_ia(then=lambda: self._offer_activate(True, panel["fresh"]))
 
         def fail(exc: Exception) -> None:
             panel["btn"].configure(text="Entrenar", state="normal")
@@ -891,7 +892,8 @@ class EntrenarIA:
             panel["result"].configure(text=f"Con {(m or {}).get('n_samples', 0)} ejemplos: "
                                            + filter_result_text((m or {}).get("metrics"))
                                            + ". Todavía no está en uso: falta «Activar».", foreground="")
-            self.load_filter(then=lambda: self._offer_activate(False, (m or {}).get("id")))
+            panel["fresh"] = (m or {}).get("id")
+            self.load_filter(then=lambda: self._offer_activate(False, panel["fresh"]))
 
         def fail(exc: Exception) -> None:
             panel["btn"].configure(text="Entrenar", state="normal")
@@ -940,7 +942,7 @@ class EntrenarIA:
         action = "activate" if on else "deactivate"
 
         def done(_r) -> None:
-            if on and panel["shown"]:
+            if on and panel["shown"] and panel.get("fresh") == m["id"]:  # (el resultado que se ve es de ese)
                 text = str(panel["result"].cget("text")).replace(" Todavía no está en uso: falta «Activar».", "")
                 panel["result"].configure(text=f"{text} ✔ En uso para {who}.")
             self.load_ia() if ia else self.load_filter()

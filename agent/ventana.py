@@ -25,6 +25,7 @@ import math
 import queue
 import socket
 import sys
+import textwrap
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -53,8 +54,15 @@ def tile(frame: np.ndarray | None, name: str, state: str, tw: int = TILE_W, th: 
     k = max(1.0, th / TILE_H)  # letras y franja más grandes en celdas grandes
     if frame is None:
         img = np.full((th, tw, 3), (30, 30, 30), np.uint8)
-        cv2.putText(img, state, (int(16 * k), th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * k, (170, 170, 170),
-                    max(1, int(k)), cv2.LINE_AA)
+        # el motivo entero, en varios renglones (antes un «Sin conexión: no se encuentra…» largo quedaba cortado,
+        # y es justo lo que hay que leer)
+        size = 0.7 * k if len(state) <= 40 else 0.55 * k
+        lines = textwrap.wrap(state, max(12, int((tw - 32 * k) / (20 * size)))) or [""]
+        step = int(34 * size)
+        y = th // 2 - step * (len(lines) - 1) // 2
+        for i, line in enumerate(lines[:6]):
+            cv2.putText(img, line, (int(16 * k), y + i * step), cv2.FONT_HERSHEY_SIMPLEX, size, (170, 170, 170),
+                        max(1, int(k)), cv2.LINE_AA)
     else:
         h, w = frame.shape[:2]
         scale = min(tw / w, th / h)
