@@ -220,6 +220,7 @@ def test_el_editor_de_zonas_guarda_la_deteccion_que_se_probaba():
             mb=Msgs(), bg=types.SimpleNamespace(run=_run),
             api=types.SimpleNamespace(put=lambda path, body: sent.append((path, body)) or {}),
             config_saved=lambda: None, zones_changed=lambda *a, **k: None, _open_window=lambda cid: None,
+            zones_done=lambda *a, **k: None,
             agent_of=None)
         app._dialog = types.MethodType(of.Oficina._dialog, app)
         cam = {"id": 9, "name": "Depósito fondo", "has_preview": False, "zones": [],
@@ -336,6 +337,7 @@ def _window(tk, root, monkeypatch, tmp_path, info, mode="vivo", videos=(), msgs=
         api=types.SimpleNamespace(put=put or (lambda path, body: sent.append((path, body)) or dict(body)),
                                   post=lambda path, body: sent.append((path, body)) or {}),
         config_saved=lambda: None, zones_changed=lambda *a, **k: None, _open_window=lambda cid: None,
+            zones_done=lambda *a, **k: None,
         _clip_frame=lambda cam: None, library=lambda: types.SimpleNamespace(videos=lambda cid: list(lib)))
     agent = FakeAgent(info)
     app.agent_of = lambda: agent

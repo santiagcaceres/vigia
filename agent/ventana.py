@@ -25,6 +25,7 @@ import math
 import queue
 import socket
 import sys
+import textwrap
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -37,6 +38,12 @@ from . import arranque, estilo, marca
 log = logging.getLogger("vigia.ventana")
 
 TITULO = marca.NOMBRE
+# «En vivo» sin nada elegido: qué hacer, con letra de la ventana (antes iba dibujado en la imagen, sin tildes)
+EMPTY_TEXT = ("Elegí a la izquierda las cámaras que querés ver\n\n"
+              "Un clic abre la cámara acá (Ctrl o Mayús para ver varias a la vez).\n"
+              "Con «Ver con la IA de esta PC» se ven las personas, las zonas y los gestos, como los ve el análisis.\n\n"
+              "Mirar una cámara no la pone a analizar: para que dé alertas y métricas,\n"
+              "pestaña «Clientes» → «▶ Empezar a analizar».")
 TILE_W, TILE_H = 640, 360
 ESTADOS = {"en_linea": "En línea", "sin_conexion": "Sin conexión", "reconectando": "Reconectando",
            "error": "Error", "iniciando": "Conectando", "detenida": "Detenida", "escuchando": "Escuchando alarmas"}
@@ -47,8 +54,15 @@ def tile(frame: np.ndarray | None, name: str, state: str, tw: int = TILE_W, th: 
     k = max(1.0, th / TILE_H)  # letras y franja más grandes en celdas grandes
     if frame is None:
         img = np.full((th, tw, 3), (30, 30, 30), np.uint8)
-        cv2.putText(img, state, (int(16 * k), th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * k, (170, 170, 170),
-                    max(1, int(k)), cv2.LINE_AA)
+        # el motivo entero, en varios renglones (antes un «Sin conexión: no se encuentra…» largo quedaba cortado,
+        # y es justo lo que hay que leer)
+        size = 0.7 * k if len(state) <= 40 else 0.55 * k
+        lines = textwrap.wrap(state, max(12, int((tw - 32 * k) / (20 * size)))) or [""]
+        step = int(34 * size)
+        y = th // 2 - step * (len(lines) - 1) // 2
+        for i, line in enumerate(lines[:6]):
+            cv2.putText(img, line, (int(16 * k), y + i * step), cv2.FONT_HERSHEY_SIMPLEX, size, (170, 170, 170),
+                        max(1, int(k)), cv2.LINE_AA)
     else:
         h, w = frame.shape[:2]
         scale = min(tw / w, th / h)
@@ -126,6 +140,8 @@ class Ventana:
         self.main_built = False
         self.on_logout: Callable[[], None] | None = None
         self.hooks: list[Callable[[], None]] = []  # se llaman en cada pump (resultados de red de la oficina)
+        self.on_zones: Callable[[int], None] | None = None  # «✎ Marcar zonas» de «En vivo» (lo pone la Oficina)
+        self._empty = False  # «En vivo» está mostrando el texto de «nada elegido»
         self._shown = False  # ya se dibujó una vez (se cierra la pantalla de carga del .exe)
         self.analyze = False
         self.on_demand = False  # app de escritorio: lo elegido se abre en esta PC (ver Agent._demand_tick)
@@ -285,8 +301,7 @@ class Ventana:
             left.pack(side="left", fill="y")
             ttk.Label(left, text="Cámaras" if on_demand else "Clientes y cámaras", style="Subtitulo.TLabel").pack(
                 anchor="w")
-            help_text = ("Clic en una cámara para verla (Ctrl o Mayús\npara varias). Ver no la analiza: eso se elige "
-                         "en\n«Clientes»."
+            help_text = ("Clic en una cámara para verla (Ctrl o Mayús\npara varias)."
                          if on_demand else "Elegí qué ver (Ctrl o Shift para varias).\nUn cliente = todas sus cámaras.")
             ttk.Label(left, text=help_text, style="Suave.TLabel").pack(anchor="w", pady=(0, 6))
             # abajo y fijos (antes que la lista, que ocupa lo que sobra): en pantallas de 768 de alto no quedan tapados
@@ -296,15 +311,16 @@ class Ventana:
             btns.pack(fill="x", pady=6)
             if not on_demand:  # a demanda no: abriría todas las cámaras de golpe
                 ttk.Button(btns, text="Todas", command=self._select_all).pack(side="left", padx=(0, 4))
+            if on_demand:  # las zonas de la cámara que se está mirando, sin ir a «Clientes»
+                ttk.Button(btns, text="✎ Marcar zonas", command=self._zones).pack(side="left", padx=(0, 4))
             ttk.Button(btns, text="Cerrar todas" if on_demand else "Ninguna",
                        command=self._select_none).pack(side="left")
             if on_demand:  # mirar con la IA de esta PC: lo mismo que el análisis, sin guardar ni medir nada
                 self._ai_var = tk.BooleanVar(value=self._ai)
                 ttk.Checkbutton(foot, text="Ver con la IA de esta PC", variable=self._ai_var,
                                 command=self._on_ai).pack(anchor="w", pady=(2, 0))
-                ttk.Label(foot, text="Personas, postura, objetos, zonas y gestos, solo\npara ver cómo la capta: no "
-                                     "guarda ni mide\nnada. Abre el video del grabador (usa esta PC).",
-                          style="Suave.TLabel").pack(anchor="w")
+                ttk.Label(foot, text="Muestra personas, zonas y gestos como los ve\nel análisis. Solo para mirar: "
+                                     "no guarda ni\nmide nada.", style="Suave.TLabel").pack(anchor="w")
             self.info = ttk.Label(foot, text="", style="Suave.TLabel", wraplength=340, justify="left")
             self.info.pack(anchor="w", pady=(4, 0))
             self.tree = ttk.Treeview(left, columns=("estado",), show="tree headings", selectmode="extended", height=10)
@@ -316,7 +332,8 @@ class Ventana:
             self.tree.bind("<<TreeviewSelect>>", self._on_select)
             right = tk.Frame(body, bg="#111")
             right.pack(side="right", fill="both", expand=True)
-            self.canvas = tk.Label(right, bg="#111")
+            self.canvas = tk.Label(right, bg="#111", fg="#c8ced8", justify="center",
+                                   font=(estilo.familia(self.root), 12))
             self.canvas.pack(fill="both", expand=True)
             self.live_tab = body
         self.main_built = True
@@ -415,6 +432,26 @@ class Ventana:
     def _select_all(self) -> None:
         self.tree.selection_set(list(self._cam_rows.values()))
 
+    def _zones(self) -> None:
+        """«✎ Marcar zonas» de «En vivo»: el editor de zonas de la cámara elegida (una sola)."""
+        ids = sorted(self._selected or ())
+        if len(ids) != 1:
+            return self.messagebox.showinfo(TITULO, "Elegí una sola cámara de la lista para marcarle las zonas.")
+        if self.on_zones is not None:
+            self.on_zones(ids[0])
+
+    def show_camera(self, cam_id: int) -> bool:
+        """Pasa a «En vivo» con esa cámara elegida (la pide «Clientes» → «Ver en la pestaña «En vivo»»). False si la
+        cámara todavía no está en la lista."""
+        row = self._cam_rows.get(cam_id)
+        if not self.main_built or not self.analyze or row is None:
+            return False
+        self.notebook.select(self.live_tab)
+        self.tree.selection_set(row)
+        self.tree.see(row)
+        self._on_select()
+        return True
+
     def _select_none(self) -> None:
         self.tree.selection_set(())
         self._selected = set()
@@ -457,6 +494,16 @@ class Ventana:
         if self.notebook.select() != str(self.live_tab):
             return  # no se dibuja el mosaico si no se está mirando esa pestaña
         try:
+            if not tiles and self.on_demand:  # nada elegido: qué hacer, en palabras (una sola vez, no en cada cuadro)
+                if not self._empty:
+                    self._empty, self._photo = True, None
+                    self.canvas.configure(image="", text=EMPTY_TEXT)
+                if note:
+                    self.info.configure(text=note)
+                return
+            if self._empty:
+                self._empty = False
+                self.canvas.configure(text="")
             w, h = max(self.canvas.winfo_width(), 1), max(self.canvas.winfo_height(), 1)
             img = mosaic(tiles, (w - 4, h - 4) if w > 1 and h > 1 else None)  # (el borde del lugar)
             if w > 1 and h > 1:

@@ -552,7 +552,7 @@ class Agent:
         if self.window is not None and c["id"] in self.window.selected_ids():
             return "Abriendo..."
         if c.get("on_servers"):
-            return "Se analiza" + (f" · {c['elsewhere']}" if c.get("elsewhere") else "")
+            return "Se analiza"  # (en qué máquina está en «Clientes»: acá la columna es angosta)
         return ""
 
     def live_frame(self, cam_id: int):

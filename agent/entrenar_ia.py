@@ -2,19 +2,24 @@
 pondremos si hubo hurto y dónde; aplicarle la IA de YOLO y la postura a estos videos y ahí entrenaremos a la IA»).
 
 Todo lo de entrenar está acá (la web queda para los clientes), para administradores y operadores:
-- **Clips** (izquierda): los de la nube (`GET /api/training/clips`), con cliente, cámara, duración, estado, quién lo
-  subió y si el video está en esta PC. «⬆ Subir clips…»: se eligen videos, el cliente y la cámara, y se analizan EN
-  ESTA PC, de a uno, en otro hilo (agent/ia_clips.py: YOLO con la sensibilidad de la cámara, seguimiento, postura de
-  todas las personas y bolsos) → core.hurto_ia.person_windows → `POST /api/training/clips` y el .json.gz de los
-  cuadros directo al almacenamiento (`data_upload`). **El video no sale de la PC.**
-- **Clip elegido** (derecha): se reproduce con los recuadros, el número de cada persona y su esqueleto (si el video
-  no está en esta PC, los mismos datos sobre fondo gris). Marcar un hurto = «Inicio del hurto» y «Fin del hurto» en
-  el momento de la barra, clic en la persona que roba y «Cómo» → la marca va a la lista. «Este clip es normal»,
-  «Guardar marcas» (`PUT`) y «Probar con las reglas y mandar al filtro…» (la ventana de la cámara en «🎞 Clips»).
-- **Entrenar** (abajo a la izquierda), con el alcance de arriba (todos los clientes o uno):
+Los tres pasos van numerados en la pantalla (10 nov, el dueño: «poco intuitiva… cómo entrenar») y arriba una frase
+dice qué sigue según lo que hay (`guide_text`):
+- **1 · Clips** (izquierda): los de la nube (`GET /api/training/clips`), con la cámara, el estado y si el video está
+  en esta PC. «⬆ Subir clips…»: se eligen videos, el cliente y la cámara, y se analizan EN ESTA PC, de a uno, en otro
+  hilo (agent/ia_clips.py: YOLO con la sensibilidad de la cámara, seguimiento, postura de todas las personas y bolsos)
+  → core.hurto_ia.person_windows → `POST /api/training/clips` y el .json.gz de los cuadros directo al almacenamiento
+  (`data_upload`). **El video no sale de la PC.**
+- **2 · ¿Qué pasa en este clip?** (derecha): se reproduce con los recuadros, el número de cada persona y su esqueleto
+  (si el video no está en esta PC, los mismos datos sobre fondo gris). Un hurto = «Inicio del hurto» y «Fin del hurto»
+  en el momento de la barra, clic en la persona que roba, «Cómo» y «✔ Guardar este hurto»; si no hay hurto, «✔ Es un
+  clip normal». **Todo se guarda solo** (`PUT`), sin otro botón, y un renglón dice qué falta hacer en cada momento.
+  En «Más»: probar el clip con las reglas de su cámara (la ventana de prueba de la cámara, `TuneWindow`), ubicar el
+  video y borrar.
+- **3 · Entrenar** (abajo a la izquierda), con el cliente elegido arriba (o todos):
   «IA de movimientos» (core/hurto_ia.py: aprende con los esqueletos de los clips marcados y da alertas propias,
   «Posible hurto (IA de movimientos)») y «Filtro de alertas» (server/training.py: aprende a descartar falsas alarmas
-  con las alertas etiquetadas). Entrenar, ver qué tan bien anduvo en palabras y activar o apagar cada modelo.
+  con las alertas etiquetadas). «Entrenar» dice qué tan bien anduvo en palabras y ofrece activarla ahí mismo; la lista
+  de abajo sirve para activar o apagar cualquiera.
 
 Las llamadas a la red van en hilos (`app.bg.run`); analizar un clip y leer el video para mostrarlo también (nunca se
 traba la ventana). Entra en una pantalla de 1366x768.
@@ -62,6 +67,8 @@ POLL_MS = 50
 # 40 MB descomprimido) y solo si comprimido pasa esto hay que cortarlo
 MAX_BODY = 4_000_000
 IDLE_HINT = "El video queda en esta PC: a la nube va solo lo que vio la IA (recuadros y esqueletos)."
+NORMAL_TEXT = "✔ Es un clip normal (no hay hurto)"
+ADD_TEXT = "✔ Guardar este hurto"
 GREEN, ORANGE, RED, VIOLET = (0, 200, 0), (0, 140, 255), (0, 0, 255), (230, 80, 230)
 
 
@@ -151,7 +158,7 @@ def summary_counts(summary, clips: list[dict]) -> dict:
 
 def ia_counts_text(c: dict) -> str:
     text = (f"{plural(int(c['clips']), 'clip')}: {int(c['theft_clips'])} con hurto "
-            f"({plural(int(c['marks']), 'marca')}) · {int(c['normal_clips'])} normales "
+            f"({plural(int(c['marks']), 'marca')}) · {plural(int(c['normal_clips']), 'normal', 'normales')} "
             f"({_num(c['normal_minutes']):.0f} min) · {int(c['unmarked'])} sin marcar.")
     if c.get("old_version"):
         text += (f" {plural(int(c['old_version']), 'clip')} de una versión vieja de la app no cuenta"
@@ -174,6 +181,25 @@ def ia_advice(c: dict) -> tuple[str, bool]:
                 f"sirve de verdad con {good} a 50 y varias horas de video normal."), True
     return ("Hay bastantes ejemplos. Después de entrenar mirá cuántos hurtos ve y cuántas falsas alarmas da antes de "
             "activarla."), True
+
+
+def guide_text(c: dict, models: list[dict]) -> str:
+    """Lo que sigue, en una frase, según lo que hay: subir clips, marcarlos, entrenar o activar."""
+    if int(c["clips"]) == 0:
+        return "Empezá por «⬆ Subir clips…»: videos cortos de hurtos y también de ratos normales (sin hurto)."
+    n = int(c["unmarked"])
+    if n > 0:
+        return (f"Falta decir qué pasa en {plural(n, 'clip')} («Sin marcar»): elegí uno en la lista y marcá el hurto, "
+                "o «✔ Es un clip normal».")
+    if any(m.get("active") for m in models):
+        return ("La IA de movimientos está activada: las máquinas ya la usan. Con más clips marcados, entrenala de "
+                "nuevo y activá la nueva.")
+    if models:
+        return "La IA ya está entrenada pero apagada: elegila abajo y «Activar» para que las máquinas la usen."
+    advice, enough = ia_advice(c)
+    if not enough:
+        return advice
+    return "Ya alcanza para una primera prueba: apretá «Entrenar» (abajo a la izquierda)."
 
 
 def ia_result_text(met: dict | None) -> str:
@@ -222,13 +248,14 @@ def filter_counts(summary: dict | None, client_id: int | None) -> dict:
 def filter_text(c: dict) -> tuple[str, str, bool]:
     """(cuántas alertas etiquetadas hay, qué falta o qué mirar, alcanza)."""
     text = (f"{c['pos'] + c['neg']} alertas etiquetadas: {c['pos']} hurto o sospechoso, {c['neg']} normal o falsa "
-            f"alarma ({c['tuning']} desde la ventana de la cámara) · {c['unlabeled']} sin revisar.")
+            f"alarma" + (f" ({c['tuning']} de pruebas con clips)" if c["tuning"] else "")
+            + f" · {c['unlabeled']} sin revisar.")
     enough = c["pos"] + c["neg"] >= c["min_total"] and min(c["pos"], c["neg"]) >= c["min_per_class"]
     if enough:
         advice = "Alcanza. Después de entrenar mirá cuántos hurtos deja pasar: tienen que ser casi todos."
     else:
-        advice = (f"Hacen falta {c['min_total']} en total y {c['min_per_class']} de cada lado: se suman etiquetando "
-                  "en «Alertas» o desde la ventana de la cámara.")
+        advice = (f"Hacen falta {c['min_total']} en total y {c['min_per_class']} de cada lado: se suman revisando "
+                  "las alertas en la pestaña «Alertas» (teclas 1 a 4).")
     return text, advice, enough
 
 
@@ -459,7 +486,9 @@ class EntrenarIA:
         self.m_start: float | None = None
         self.m_end: float | None = None
         self.marks: list[dict] = []
-        self.dirty = False
+        self.dirty = False  # hay marcas que todavía no llegaron al servidor (se guardan solas; True si falló)
+        self._unsaved: str | None = None  # el veredicto del último guardado que todavía no se confirmó
+        self._said: str | None = None  # lo último que pasó con el clip («✔ Hurto guardado…»), para el renglón de pasos
         self._frames_error: str | None = None  # los cuadros del clip no se pudieron bajar
         self._loaded_scope: int | None = None
         self.ia_models: list[dict] = []
@@ -510,33 +539,32 @@ class EntrenarIA:
     # ---------- armado ----------
     def _build(self) -> None:
         tk, ttk, f = self.tk, self.ttk, self.frame
+        # arriba, qué sigue (una frase que cambia sola: subir, marcar, entrenar o activar)
+        self.guide = ttk.Label(f, text="", style="Subtitulo.TLabel", wraplength=1300, justify="left")
+        self.guide.pack(side="top", anchor="w", padx=2, pady=(0, 6))
         left = ttk.Frame(f, padding=(2, 0, 12, 0))
         left.pack(side="left", fill="y")
         right = ttk.Frame(f, padding=(2, 0, 2, 0))
         right.pack(side="left", fill="both", expand=True)
 
-        # --- clips
+        # --- 1 · clips
+        # (todo en un renglón: el título con cuántos hay, de qué cliente se ven y entrenan, y subir)
         lh = ttk.Frame(left)
-        lh.pack(fill="x")
-        ttk.Label(lh, text="Clips para entrenar", style="Subtitulo.TLabel").pack(side="left")
+        lh.pack(fill="x", pady=(0, 4))
+        self.clips_title = ttk.Label(lh, text="1 · Clips", style="Subtitulo.TLabel")
+        self.clips_title.pack(side="left")
         ttk.Button(lh, text="⬆ Subir clips…", style="Primario.TButton", command=self.upload_dialog).pack(side="right")
-        sh = ttk.Frame(left)
-        sh.pack(fill="x", pady=(4, 4))
-        ttk.Label(sh, text="Ver y entrenar").pack(side="left")
         self.scope = tk.StringVar(value=ALL_CLIENTS)
-        self.scope_cb = ttk.Combobox(sh, textvariable=self.scope, values=[ALL_CLIENTS], state="readonly", width=22)
-        self.scope_cb.pack(side="left", padx=6)
+        self.scope_cb = ttk.Combobox(lh, textvariable=self.scope, values=[ALL_CLIENTS], state="readonly", width=19)
+        self.scope_cb.pack(side="right", padx=8)
         self.scope_cb.bind("<<ComboboxSelected>>", lambda e: self.load())
-        self.count_lbl = ttk.Label(sh, text="", style="Suave.TLabel")
-        self.count_lbl.pack(side="left")
-        self.tree = ttk.Treeview(left, columns=("donde", "dura", "estado", "subio", "aca"), show="tree headings",
-                                 height=5, selectmode="browse")
-        for col, txt, w, anchor in (("#0", "Clip", 104, "w"), ("donde", "Cliente · cámara", 100, "w"),
-                                    ("dura", "Dura", 44, "center"), ("estado", "Estado", 112, "w"),
-                                    ("subio", "Subió", 56, "w"), ("aca", "En PC", 60, "center")):
+        self.tree = ttk.Treeview(left, columns=("donde", "estado", "aca"), show="tree headings", height=3,
+                                 selectmode="browse")
+        for col, txt, w, anchor in (("#0", "Clip", 166, "w"), ("donde", "Cámara · cliente", 150, "w"),
+                                    ("estado", "Estado", 102, "w"), ("aca", "En PC", 58, "center")):
             self.tree.heading(col, text=txt, anchor="w" if anchor == "w" else "center")
             self.tree.column(col, width=w, minwidth=36, stretch=col in ("#0", "donde"), anchor=anchor)
-        self.tree.pack(fill="x")
+        self.tree.pack(fill="both", expand=True)  # (el alto que sobre: en una pantalla grande, muchos renglones)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_clip())
         # estado de la subida (lugar fijo: la ventana no salta al empezar o terminar)
         up = ttk.Frame(left, height=38)
@@ -549,32 +577,38 @@ class EntrenarIA:
         self.stop_btn = ttk.Button(row, text="■ Frenar", style="Chico.TButton", width=8, command=self.stop_upload)
         self.up_bar = ttk.Progressbar(up, mode="determinate", maximum=100)
 
-        # --- entrenar (las dos IA, con el alcance de arriba); pestañas más bajas que las de la ventana
+        # --- 3 · entrenar (las dos IA, con el cliente de arriba); pestañas más bajas que las de la ventana
+        ttk.Label(left, text="3 · Entrenar (con lo del cliente elegido arriba)",
+                  style="Subtitulo.TLabel").pack(anchor="w", pady=(2, 2))
         st = ttk.Style(self.root)
         st.configure("Entrenar.TNotebook", tabmargins=(0, 2, 0, 0))
         st.configure("Entrenar.TNotebook.Tab", padding=(12, 4))
         nb = ttk.Notebook(left, style="Entrenar.TNotebook")
-        nb.pack(fill="both", expand=True)
+        nb.pack(fill="x")
         self.train_nb = nb
         self.ia = self._train_panel(nb, "IA de movimientos", ia=True)
         self.flt = self._train_panel(nb, "Filtro de alertas", ia=False)
 
-        # --- clip elegido
+        # --- 2 · el clip elegido
         rh = ttk.Frame(right)
         rh.pack(fill="x")
         self.title = ttk.Label(rh, text="Elegí un clip de la lista", style="Titulo.TLabel")
         self.title.pack(side="left")
         more = ttk.Menubutton(rh, text="Más", width=6)
         menu = tk.Menu(more, tearoff=False)
+        # (avanzado: la ventana de prueba de la cámara con este clip, para ver si sus reglas y gestos dan alerta,
+        # probar otros tiempos y mandar esas alertas al filtro)
+        menu.add_command(label="Probar el clip con las reglas de su cámara…", command=self.try_rules)
+        menu.add_separator()
         menu.add_command(label="Ubicar el video en esta PC…", command=self.locate_video)
         menu.add_command(label="Abrir la carpeta del video", command=self.open_folder)
         menu.add_separator()
         menu.add_command(label="Borrar el clip…", command=self.delete_clip)
         more["menu"] = menu
         more.pack(side="right")
-        self.info = ttk.Label(right, text="Subí clips de hurtos y de ratos normales; después marcá en cada uno quién "
-                                          "roba y en qué momento.", style="Suave.TLabel", wraplength=780,
-                              justify="left")
+        self.info = ttk.Label(right, text="Subí clips de hurtos y de ratos normales; después decí en cada uno qué "
+                                          "pasa: quién roba y en qué momento, o que es normal.",
+                              style="Suave.TLabel", wraplength=780, justify="left")
         self.info.pack(anchor="w", pady=(0, 6), fill="x")
         body = ttk.Frame(right)
         body.pack(fill="both", expand=True)
@@ -596,20 +630,21 @@ class EntrenarIA:
         self.scale.pack(side="left", fill="x", expand=True)
         self.time_lbl = ttk.Label(ctl, text="0:00.0 / 0:00", width=13, anchor="e")
         self.time_lbl.pack(side="left", padx=(6, 0))
-        ttk.Label(pl, text="Clic sobre una persona para elegirla (se pone naranja). En rojo, la persona de una marca "
-                           "mientras dura.", style="Suave.TLabel", wraplength=PLAYER_W, justify="left").pack(
+        ttk.Label(pl, text="Clic sobre una persona para elegirla (se pone naranja). En rojo, la persona de un hurto "
+                           "marcado, mientras dura.", style="Suave.TLabel", wraplength=PLAYER_W, justify="left").pack(
             anchor="w", pady=(4, 0))
-        ttk.Button(pl, text="Probar con las reglas y mandar al filtro…", command=self.try_rules).pack(
-            anchor="w", pady=(8, 0))
-        ttk.Label(pl, text="Abre la ventana de la cámara con este clip: si las reglas o los gestos dan alerta, se "
-                           "etiquetan y se mandan al filtro de alertas.", style="Suave.TLabel", wraplength=PLAYER_W,
-                  justify="left").pack(anchor="w", pady=(2, 0))
 
         mk = ttk.Frame(body, padding=(12, 0, 0, 0))
         mk.pack(side="left", fill="both", expand=True, anchor="n")
-        ttk.Label(mk, text="Marcar el hurto", style="Subtitulo.TLabel").pack(anchor="w")
+        ttk.Label(mk, text="2 · ¿Qué pasa en este clip?", style="Subtitulo.TLabel").pack(anchor="w")
+        # qué hacer ahora, paso por paso (lugar fijo: los botones de abajo no saltan cuando cambia el texto)
+        sf = ttk.Frame(mk, height=54)
+        sf.pack(fill="x", pady=(2, 2))
+        sf.pack_propagate(False)
+        self.step_lbl = ttk.Label(sf, text="", style="Aviso.TLabel", wraplength=256, justify="left")
+        self.step_lbl.pack(anchor="nw")
         r1 = ttk.Frame(mk)
-        r1.pack(fill="x", pady=(4, 0))
+        r1.pack(fill="x", pady=(2, 0))
         ttk.Button(r1, text="Inicio del hurto", width=14, command=self.set_start).pack(side="left")
         self.start_lbl = ttk.Label(r1, text="—", width=7)
         self.start_lbl.pack(side="left", padx=6)
@@ -618,7 +653,7 @@ class EntrenarIA:
         ttk.Button(r2, text="Fin del hurto", width=14, command=self.set_end).pack(side="left")
         self.end_lbl = ttk.Label(r2, text="—", width=7)
         self.end_lbl.pack(side="left", padx=6)
-        self.who_lbl = ttk.Label(mk, text="", style="Suave.TLabel", wraplength=250, justify="left")
+        self.who_lbl = ttk.Label(mk, text="", style="Suave.TLabel", wraplength=256, justify="left")
         self.who_lbl.pack(anchor="w", pady=(6, 0))
         r3 = ttk.Frame(mk)
         r3.pack(fill="x", pady=(4, 0))
@@ -626,9 +661,11 @@ class EntrenarIA:
         self.kind = tk.StringVar(value=KIND_NAMES[None])
         ttk.Combobox(r3, textvariable=self.kind, values=list(KIND_NAMES.values()), state="readonly",
                      width=19).pack(side="left", padx=6)
-        ttk.Button(mk, text="＋ Agregar la marca", style="Primario.TButton", command=self.add_mark).pack(
-            anchor="w", pady=(6, 4))
-        self.mtree = ttk.Treeview(mk, columns=("desde", "hasta", "persona", "como"), show="headings", height=3,
+        r5 = ttk.Frame(mk)
+        r5.pack(fill="x", pady=(6, 4))
+        self.add_btn = ttk.Button(r5, text=ADD_TEXT, style="Primario.TButton", command=self.add_mark)
+        self.add_btn.pack(side="left")
+        self.mtree = ttk.Treeview(mk, columns=("desde", "hasta", "persona", "como"), show="headings", height=2,
                                   selectmode="browse")
         for col, txt, w in (("desde", "Desde", 60), ("hasta", "Hasta", 58), ("persona", "Persona", 68),
                             ("como", "Cómo", 86)):
@@ -639,25 +676,24 @@ class EntrenarIA:
         r4 = ttk.Frame(mk)
         r4.pack(fill="x", pady=(4, 0))
         ttk.Button(r4, text="Quitar", style="Chico.TButton", width=7, command=self.remove_mark).pack(side="left")
-        ttk.Button(r4, text="Ir a la marca", style="Chico.TButton", width=12, command=self.goto_mark).pack(
+        ttk.Button(r4, text="Ir al hurto", style="Chico.TButton", width=10, command=self.goto_mark).pack(
             side="left", padx=4)
-        ttk.Button(mk, text="Este clip es normal (no hay hurto)", command=self.set_normal).pack(anchor="w",
-                                                                                             pady=(8, 0))
-        r5 = ttk.Frame(mk)
-        r5.pack(fill="x", pady=(6, 0))
-        self.save_btn = ttk.Button(r5, text="Guardar marcas", style="Primario.TButton", command=self.save_marks)
-        self.save_btn.pack(side="left")
-        self.save_lbl = ttk.Label(r5, text="", style="Suave.TLabel")
-        self.save_lbl.pack(side="left", padx=6)
+        ttk.Label(mk, text="¿No hay ningún hurto en el clip?", style="Suave.TLabel").pack(anchor="w", pady=(10, 2))
+        self.normal_btn = ttk.Button(mk, text=NORMAL_TEXT, command=self.set_normal)
+        self.normal_btn.pack(anchor="w")
         self._show_who()
         self._draw_empty()
+        self._show_guide()
 
     def _train_panel(self, nb, title: str, ia: bool) -> dict:
-        """Una de las dos IA: cuántos ejemplos hay, «Entrenar» (al lado, qué falta o cómo anduvo) y sus modelos con
-        «Activar» / «Apagar»."""
+        """Una de las dos IA: cuántos ejemplos hay, «Entrenar» (al lado, qué falta o cómo anduvo; al terminar ofrece
+        activarla) y sus modelos con «Activar» / «Apagar»."""
         ttk = self.ttk
         p = ttk.Frame(nb, padding=(6, 4, 6, 2))
         nb.add(p, text=f"  {title}  ")
+        ttk.Label(p, style="Suave.TLabel", text=(
+            "Aprende de los clips marcados y da alertas propias." if ia else
+            "Aprende de las alertas revisadas a descartar las falsas.")).pack(anchor="w", fill="x")
         info = ttk.Label(p, text="Cargando…", wraplength=440, justify="left")
         info.pack(anchor="w", fill="x")
         row = ttk.Frame(p)
@@ -667,7 +703,8 @@ class EntrenarIA:
         btn.pack(side="left", anchor="n")
         result = ttk.Label(row, text="", wraplength=356, justify="left")
         result.pack(side="left", padx=(8, 0), fill="x", expand=True)
-        cols = (("fecha", "Fecha", 94), ("para", "Para", 98), ("res", "Cómo anduvo", 196), ("uso", "En uso", 64))
+        cols = (("fecha", "Entrenada" if ia else "Entrenado", 94), ("para", "Para", 98), ("res", "Cómo anduvo", 196),
+                ("uso", "En uso", 64))
         tree = self.ttk.Treeview(p, columns=[c[0] for c in cols], show="headings", height=2, selectmode="browse")
         for col, txt, w in cols:
             tree.heading(col, text=txt, anchor="w")
@@ -679,9 +716,9 @@ class EntrenarIA:
                    command=lambda: self.set_model(ia, True)).pack(side="left")
         ttk.Button(bb, text="Apagar", style="Chico.TButton", width=8,
                    command=lambda: self.set_model(ia, False)).pack(side="left", padx=4)
-        ttk.Label(bb, text="Activado, lo usan las máquinas." if not ia else "Activada, la usan las máquinas.",
+        ttk.Label(bb, text="En uso = la usan las máquinas." if ia else "En uso = lo usan las máquinas.",
                   style="Suave.TLabel").pack(side="left", padx=(6, 0))
-        return {"info": info, "btn": btn, "result": result, "tree": tree, "shown": False}
+        return {"info": info, "btn": btn, "result": result, "tree": tree, "shown": False, "fresh": None}
 
     # ---------- carga ----------
     def clients_changed(self) -> None:
@@ -730,17 +767,15 @@ class EntrenarIA:
         self.tree.delete(*self.tree.get_children())
         local = self.local
         one = self.scope_id() is not None  # con un cliente elegido, la columna dice solo la cámara
-        self.tree.heading("donde", text="Cámara" if one else "Cliente · cámara")
+        self.tree.heading("donde", text="Cámara" if one else "Cámara · cliente")
         for c in self.clips:
             cam = c.get("camera_name") or (self._cam(c.get("camera_id")) or {}).get("name") or ""
             cli = "" if one else (c.get("client_name") or self._client_name(c.get("client_id")))
-            where = " · ".join(x for x in (cli, cam) if x) or "—"
+            where = " · ".join(x for x in (cam, cli) if x) or "—"
             name = str(c.get("name") or "")
             self.tree.insert("", "end", iid=str(c["id"]), text=name, values=(
-                where, fmt_t(_num(c.get("duration_s"))), verdict_text(c), uploader_of(c),
-                "✔" if local.path_of(c.get("uuid")) else ""))
-        n_here = sum(1 for c in self.clips if local.path_of(c.get("uuid")))
-        self.count_lbl.configure(text=f"{len(self.clips)} · {n_here} en esta PC")
+                where, verdict_text(c), "✔" if local.path_of(c.get("uuid")) else ""))
+        self.clips_title.configure(text=f"1 · Clips ({len(self.clips)})" if self.clips else "1 · Clips")
         if prev and self.tree.exists(prev[0]):
             self.tree.selection_set(prev)
         elif self.clip is not None and self.tree.exists(str(self.clip["id"])):
@@ -752,7 +787,7 @@ class EntrenarIA:
         if self.tree.exists(iid):
             self.tree.set(iid, "estado", verdict_text(clip))
 
-    def load_ia(self) -> None:
+    def load_ia(self, then: Callable[[], None] | None = None) -> None:
         cid = self.scope_id()
 
         def done(summary) -> None:
@@ -763,6 +798,8 @@ class EntrenarIA:
             self.ia_models = _items((summary or {}).get("models") if isinstance(summary, dict) else None)
             self._show_ia_counts()
             self._fill_models(True)
+            if then is not None:
+                then()
 
         def fail(exc: Exception) -> None:
             if getattr(exc, "status", 0) == 404:
@@ -777,8 +814,13 @@ class EntrenarIA:
         self.ia["info"].configure(text=ia_counts_text(c))
         if not self.ia["shown"]:  # (hasta que se entrene: qué falta, o que alcanza)
             self.ia["result"].configure(text=advice, foreground="" if enough else "#b45309")
+        self._show_guide()
 
-    def load_filter(self) -> None:
+    def _show_guide(self) -> None:
+        """La frase de arriba: qué sigue (subir, marcar, entrenar o activar)."""
+        self.guide.configure(text="Ahora:  " + guide_text(summary_counts(self.ia_summary, self.clips), self.ia_models))
+
+    def load_filter(self, then: Callable[[], None] | None = None) -> None:
         cid = self.scope_id()
 
         def done(res) -> None:
@@ -792,6 +834,8 @@ class EntrenarIA:
             # (como en la IA: con un cliente, los suyos y los de todos; con «Todos», todos)
             self.filter_models = [m for m in _items(models) if cid is None or m.get("client_id") in (cid, None)]
             self._fill_models(False)
+            if then is not None:
+                then()
         self.app.bg.run(lambda: (self.app.api.get("/api/training/summary"), self.app.api.get("/api/models")), done,
                         lambda e: self.flt["info"].configure(text=f"No se pudo traer lo del filtro: {e}"))
 
@@ -807,6 +851,8 @@ class EntrenarIA:
             else:
                 vals = (model_date(m), scope_name(m), filter_model_text(m), "sí" if m.get("active") else "")
             tree.insert("", "end", iid=str(m["id"]), values=vals)
+        if ia:
+            self._show_guide()
 
     # ---------- entrenar ----------
     def train_ia(self) -> None:
@@ -819,9 +865,10 @@ class EntrenarIA:
             panel["btn"].configure(text="Entrenar", state="normal")
             met = (m or {}).get("metrics") or {}
             panel["shown"] = True
-            panel["result"].configure(text=ia_result_text(met) + ". Todavía no está en uso: elegila y «Activar».",
+            panel["result"].configure(text=ia_result_text(met) + ". Todavía no está en uso: falta «Activar».",
                                       foreground="")
-            self.load_ia()
+            panel["fresh"] = (m or {}).get("id")
+            self.load_ia(then=lambda: self._offer_activate(True, panel["fresh"]))
 
         def fail(exc: Exception) -> None:
             panel["btn"].configure(text="Entrenar", state="normal")
@@ -844,8 +891,9 @@ class EntrenarIA:
             panel["shown"] = True
             panel["result"].configure(text=f"Con {(m or {}).get('n_samples', 0)} ejemplos: "
                                            + filter_result_text((m or {}).get("metrics"))
-                                           + ". Todavía no está en uso: elegilo y «Activar».", foreground="")
-            self.load_filter()
+                                           + ". Todavía no está en uso: falta «Activar».", foreground="")
+            panel["fresh"] = (m or {}).get("id")
+            self.load_filter(then=lambda: self._offer_activate(False, panel["fresh"]))
 
         def fail(exc: Exception) -> None:
             panel["btn"].configure(text="Entrenar", state="normal")
@@ -855,28 +903,50 @@ class EntrenarIA:
             self._fail(exc)
         self.app.bg.run(lambda: self.app.api.post("/api/training/run", {"client_id": cid}), done, fail)
 
-    def set_model(self, ia: bool, on: bool) -> None:
+    def _offer_activate(self, ia: bool, model_id) -> None:
+        """Recién entrenada: queda elegida en la lista y se ofrece activarla ahí mismo (un paso menos; con «No» queda
+        apagada y se activa después con «Activar»)."""
+        tree = (self.ia if ia else self.flt)["tree"]
+        if model_id is None or not tree.exists(str(model_id)):
+            return
+        tree.selection_set(str(model_id))
+        self.set_model(ia, True, fresh=True)
+
+    def set_model(self, ia: bool, on: bool, fresh: bool = False) -> None:
+        """«Activar» / «Apagar» el modelo elegido. `fresh`: recién entrenado (se pregunta siempre, con cómo anduvo)."""
         panel = self.ia if ia else self.flt
         sel = panel["tree"].selection()
         if not sel:
-            return self._say("info", "Elegí un modelo de la lista.")
+            return self._say("info", "Elegí uno de la lista (el que dice cómo anduvo).")
         models = self.ia_models if ia else self.filter_models
         m = next((x for x in models if str(x["id"]) == sel[0]), None)
         if m is None:
             return
+        who = "todos los clientes" if m.get("client_id") is None else scope_name(m)
+        met = m.get("metrics") or {}
         if on and ia:
-            met = m.get("metrics") or {}
-            who = "todos los clientes" if m.get("client_id") is None else scope_name(m)
             if not self.app.mb.askyesno(NOMBRE, f"¿Activar la IA de movimientos para {who}?\n\n"
                                                 f"{ia_result_text(met)}.\n\nLas máquinas van a dar alertas «Posible "
                                                 "hurto (IA de movimientos)» en las cámaras que miden hurtos (la toman "
                                                 "en menos de un minuto). Con pocos ejemplos puede dar falsas alarmas: "
                                                 "revisalas en «Alertas» y etiquetalas."):
                 return
+        elif on and fresh:
+            if not self.app.mb.askyesno(NOMBRE, f"¿Activar el filtro de alertas para {who}?\n\n"
+                                                f"{filter_result_text(met)}.\n\nDesde ahora las máquinas descartan "
+                                                "solas las alertas que el filtro considera falsas alarmas (lo toman en "
+                                                "menos de un minuto). Si deja pasar pocos hurtos, mejor no activarlo "
+                                                "todavía: etiquetá más alertas y entrenalo de nuevo."):
+                return
         base = "/api/training/ia/models" if ia else "/api/models"
         action = "activate" if on else "deactivate"
-        self.app.bg.run(lambda: self.app.api.post(f"{base}/{m['id']}/{action}"),
-                        lambda _r: self.load_ia() if ia else self.load_filter(), self._fail)
+
+        def done(_r) -> None:
+            if on and panel["shown"] and panel.get("fresh") == m["id"]:  # (el resultado que se ve es de ese)
+                text = str(panel["result"].cget("text")).replace(" Todavía no está en uso: falta «Activar».", "")
+                panel["result"].configure(text=f"{text} ✔ En uso para {who}.")
+            self.load_ia() if ia else self.load_filter()
+        self.app.bg.run(lambda: self.app.api.post(f"{base}/{m['id']}/{action}"), done, self._fail)
 
     # ---------- subir ----------
     def upload_dialog(self) -> None:
@@ -1139,7 +1209,7 @@ class EntrenarIA:
         text = f"✔ {plural(len(ok), 'clip subido', 'clips subidos')}" + (
             f" · {len(bad)} con problemas" if bad else "") + (" · frenado" if problem == "Frenado." else "")
         if ok:
-            text += ". Elegí cada uno y marcá el hurto (o «Este clip es normal»)."
+            text += ". Elegí cada uno y marcá el hurto (o «✔ Es un clip normal»)."
         self.up_lbl.configure(text=text)
         if bad or notes:
             lines = [f"• {n}: {w}" for n, w in bad + notes]
@@ -1160,17 +1230,17 @@ class EntrenarIA:
         clip = self._sel()
         if clip is None or (self.clip is not None and clip.get("id") == self.clip.get("id")):
             return
-        if self.dirty and self.clip is not None and self.app.mb.askyesno(
-                NOMBRE, f"Las marcas de «{self.clip.get('name')}» no se guardaron. ¿Guardarlas antes de cambiar de clip?"):
-            self.save_marks()
+        if self.dirty and self.clip is not None:
+            self.save_marks()  # (lo que no se pudo guardar antes, por un corte: otro intento, sin preguntar)
         self._open(clip)
 
     def _open(self, clip: dict) -> None:
         self._close_video()
         self.clip = clip
         self.marks = copy.deepcopy(clip.get("marks") or [])
-        self.dirty = False
+        self.dirty, self._unsaved = False, None
         self.sel_track, self.m_start, self.m_end = None, None, None
+        self._said = None
         self.pos, self.playing, self.base, self.base_t, self._shown_rec = 0.0, False, None, 0.0, None
         self.play_btn.configure(text="▶")
         self.frames, self.times = [], []
@@ -1179,7 +1249,6 @@ class EntrenarIA:
         self.title.configure(text=self._short(str(clip.get("name") or "Clip")))
         self._fill_marks()
         self._show_who()
-        self.save_lbl.configure(text="")
         data = self.local.load_data(uuid) if uuid else None
         self._frames_error = None
         if data is not None:
@@ -1372,31 +1441,54 @@ class EntrenarIA:
         self._show_who()
         self._redraw()
 
+    def step_text(self) -> str:
+        """Qué hacer ahora con el clip elegido, paso por paso."""
+        if self.clip is None:
+            return "Elegí un clip de la lista de la izquierda."
+        if self.m_start is None:
+            if self._said:
+                return self._said
+            if self.marks:
+                return ("Este clip tiene " + plural(len(self.marks), "hurto marcado", "hurtos marcados")
+                        + ". Si hay otro, llevá la barra a donde EMPIEZA y apretá «Inicio del hurto».")
+            if (self.clip.get("verdict") or "sin_marcar") == "normal":
+                return "Guardado como clip normal. Si en realidad hay un hurto, marcalo acá abajo."
+            return "Buscá el hurto con ▶ o la barra. Donde EMPIEZA, apretá «Inicio del hurto»."
+        if self.m_end is None:
+            return "Ahora llevá la barra a donde TERMINA el hurto y apretá «Fin del hurto»."
+        if self.sel_track is None:
+            return "Hacé clic sobre la persona que roba, en la imagen (queda en naranja)."
+        return f"Listo: apretá «{ADD_TEXT}»."
+
     def _show_who(self) -> None:
         self.who_lbl.configure(text=(f"Persona: #{self.sel_track} (elegida en la imagen)" if self.sel_track is not None
-                                     else "Persona: hacé clic sobre la que roba, en la imagen"),
+                                     else "Persona: clic sobre la que roba"),
                                style="TLabel" if self.sel_track is not None else "Suave.TLabel")
         self.start_lbl.configure(text=fmt_t(self.m_start, True) if self.m_start is not None else "—")
         self.end_lbl.configure(text=fmt_t(self.m_end, True) if self.m_end is not None else "—")
+        text = self.step_text()
+        self.step_lbl.configure(text=text, foreground="#15803d" if text.startswith("✔") else "#b45309")
 
     # ---------- marcas ----------
     def set_start(self) -> None:
         if self.clip is None:
-            return
+            return self._say("info", "Elegí un clip de la lista.")
         self.m_start = round(self.pos, 1)
+        self._said = None
         if self.m_end is not None and self.m_end <= self.m_start:
             self.m_end = None
         self._show_who()
 
     def set_end(self) -> None:
         if self.clip is None:
-            return
+            return self._say("info", "Elegí un clip de la lista.")
         if self.m_start is not None and self.pos <= self.m_start:
             return self._say("info", "El fin tiene que ser después del inicio: llevá la barra más adelante.")
         self.m_end = round(self.pos, 1)
         self._show_who()
 
     def add_mark(self) -> None:
+        """«✔ Guardar este hurto»: la marca (inicio, fin, persona y cómo) va a la lista y se guarda en el momento."""
         if self.clip is None:
             return self._say("info", "Elegí un clip de la lista.")
         if self.m_start is None or self.m_end is None:
@@ -1405,7 +1497,7 @@ class EntrenarIA:
         if self.m_end <= self.m_start:
             return self._say("info", "El fin tiene que ser después del inicio.")
         if self.sel_track is None and not self.app.mb.askyesno(
-                NOMBRE, "No elegiste a la persona que roba (clic sobre ella en la imagen). ¿Agregar la marca igual? "
+                NOMBRE, "No elegiste a la persona que roba (clic sobre ella en la imagen). ¿Guardar el hurto igual? "
                         "Vale para cualquier persona que esté en ese momento: sirve menos para entrenar."):
             return
         kind = next((k for k, v in KIND_NAMES.items() if v == self.kind.get()), None)
@@ -1414,14 +1506,15 @@ class EntrenarIA:
         self.marks.sort(key=lambda m: m["start"])
         self.m_start = self.m_end = None
         self.sel_track = None
+        self._said = "✔ Hurto guardado. Si hay otro en este clip, marcalo igual; si no, pasá al clip siguiente."
         self._mark_changed()
 
     def _mark_changed(self) -> None:
-        self.dirty = True
-        self.save_lbl.configure(text="sin guardar", style="Aviso.TLabel")
+        """Cambiaron las marcas del clip (una nueva, o se quitó una): a la lista y al servidor, sin otro botón."""
         self._fill_marks()
         self._show_who()
         self._redraw()
+        self.save_marks()
 
     def _fill_marks(self) -> None:
         self.mtree.delete(*self.mtree.get_children())
@@ -1438,8 +1531,10 @@ class EntrenarIA:
     def remove_mark(self) -> None:
         i = self._sel_mark()
         if i is None:
-            return self._say("info", "Elegí una marca de la lista.")
+            return self._say("info", "Elegí un hurto de la lista de abajo.")
         del self.marks[i]
+        self._said = "Hurto quitado." + ("" if self.marks else " El clip queda sin marcar: marcá el hurto o «✔ Es un "
+                                                               "clip normal».")
         self._mark_changed()
 
     def goto_mark(self) -> None:
@@ -1453,16 +1548,21 @@ class EntrenarIA:
     def _verdict(self) -> str:
         if self.marks:
             return "hurto"
+        if self._unsaved == "normal":  # «normal» que no llegó a guardarse (un corte): se vuelve a mandar así
+            return "normal"
         v = (self.clip or {}).get("verdict") or "sin_marcar"
         return "normal" if v == "normal" else "sin_marcar"
 
-    def save_marks(self, verdict: str | None = None) -> None:
+    def save_marks(self, verdict: str | None = None, then: Callable[[], None] | None = None) -> None:
+        """Guarda las marcas del clip elegido (lo llaman solos «✔ Guardar este hurto», «Quitar» y «✔ Es un clip
+        normal»). `then`: qué hacer cuando quedó guardado."""
         clip = self.clip
         if clip is None:
             return
+        self.dirty = True
         body = {"verdict": verdict or self._verdict(), "marks": copy.deepcopy(self.marks)}
+        self._unsaved = body["verdict"]
         cid = clip.get("id")
-        self.save_lbl.configure(text="guardando…", style="Suave.TLabel")
 
         def done(res) -> None:
             row = res if isinstance(res, dict) and res.get("id") == cid else None
@@ -1473,40 +1573,63 @@ class EntrenarIA:
                         c.update({k: v for k, v in row.items() if k != "windows"})
                     self._row_of(c)
             if self.clip is not None and self.clip.get("id") == cid:
-                self.dirty = False
-                self.save_lbl.configure(text="✔ guardado", style="Suave.TLabel")
+                self.dirty, self._unsaved = False, None
+                self._show_who()
+            self.ia_summary = None  # (las cuentas del servidor quedaron viejas: hasta que lleguen, las de la lista)
             self._show_ia_counts()
+            self.load_ia()
             empty = [i for i in (row or {}).get("marks_without_windows") or [] if isinstance(i, int)
                      and 0 <= i < len(body["marks"])]
             if empty and body["verdict"] == "hurto":
                 lines = [f"• {mark_text(body['marks'][i])}" for i in empty]
-                self._say("warning", f"{'Esta marca no enseña' if len(empty) == 1 else 'Estas marcas no enseñan'} nada "
-                                     "a la IA de movimientos:\n" + "\n".join(lines) + "\n\nEn ese rato la IA no vio "
+                self._say("warning", f"{'Este hurto no le enseña' if len(empty) == 1 else 'Estos hurtos no le enseñan'} "
+                                     "nada a la IA de movimientos:\n" + "\n".join(lines) + "\n\nEn ese rato la IA no vio "
                                      "la postura de esa persona (tapada, de espaldas, muy chica o fuera de la imagen). "
                                      "Marcá el rato en que se la ve bien, o elegí a la persona correcta.")
+            if then is not None:
+                then()
 
         def fail(exc: Exception) -> None:
             if self.clip is not None and self.clip.get("id") == cid:
-                self.save_lbl.configure(text="sin guardar", style="Aviso.TLabel")
+                self._said = "⚠ No se pudo guardar (¿sin conexión?). Se vuelve a intentar al cambiar de clip."
+                self._show_who()
             self._fail(exc)
         self.app.bg.run(lambda: self.app.api.put(f"/api/training/clips/{cid}", body), done, fail)
 
     def set_normal(self) -> None:
+        """«✔ Es un clip normal»: se guarda como normal (sin hurtos) y pasa solo al clip siguiente sin marcar."""
         if self.clip is None:
             return self._say("info", "Elegí un clip de la lista.")
-        if self.marks and not self.app.mb.askyesno(NOMBRE, f"El clip tiene {plural(len(self.marks), 'marca')} de hurto: "
-                                                           "se borran. ¿Seguro que es un clip normal?"):
+        if self.marks and not self.app.mb.askyesno(NOMBRE, "El clip tiene " + plural(len(self.marks), "hurto marcado",
+                                                                                 "hurtos marcados")
+                                                           + ": se borran. ¿Seguro que es un clip normal?"):
             return
         self.marks = []
+        self.m_start = self.m_end = self.sel_track = None
+        self._said = "✔ Guardado como clip normal."
         self._fill_marks()
+        self._show_who()
         self._redraw()
-        self.save_marks("normal")
+        self.save_marks("normal", then=self._next_unmarked)
+
+    def _next_unmarked(self) -> None:
+        """Después de «normal»: el clip siguiente que todavía no se marcó (si hay), así se marcan varios de corrido."""
+        if self.clip is None:
+            return
+        ids = [str(c.get("id")) for c in self.clips]
+        cur = str(self.clip.get("id"))
+        after = ids[ids.index(cur) + 1:] + ids[:ids.index(cur)] if cur in ids else ids
+        todo = {str(c.get("id")) for c in self.clips if (c.get("verdict") or "sin_marcar") == "sin_marcar"}
+        nxt = next((i for i in after if i in todo and self.tree.exists(i)), None)
+        if nxt is not None:
+            self.tree.selection_set(nxt)
+            self.tree.see(nxt)
 
     # ---------- más ----------
     def try_rules(self) -> None:
-        """«Probar con las reglas y mandar al filtro…»: la ventana de la cámara en «🎞 Clips» con este video (marcado
-        como hurto en el primer momento marcado, o normal), para ver si las reglas y gestos dan alerta y mandar esas
-        alertas al filtro."""
+        """«Más» → «Probar el clip con las reglas de su cámara…»: la ventana de prueba de la cámara (en «🎞 Clips») con
+        este video (marcado como hurto en el primer momento marcado, o normal), para ver si las reglas y gestos dan
+        alerta, probar otros tiempos y mandar esas alertas al filtro."""
         clip = self.clip
         if clip is None:
             return self._say("info", "Elegí un clip de la lista.")
@@ -1520,7 +1643,7 @@ class EntrenarIA:
         cam = self._cam(clip["camera_id"])
         if cam is None:
             return self._say("info", "No encuentro la cámara de este clip en la lista (¿la borraron?).")
-        if self.dirty and self.app.mb.askyesno(NOMBRE, "Las marcas no se guardaron. ¿Guardarlas primero?"):
+        if self.dirty:
             self.save_marks()
         lib = self.app.library()
         lib.add(cam["id"], [self.video])
@@ -1585,8 +1708,10 @@ class EntrenarIA:
             if self.clip is clip:
                 self._close_video()
                 self.clip, self.frames, self.times, self.marks, self.dirty = None, [], [], [], False
+                self.m_start = self.m_end = self.sel_track = self._said = None
                 self.title.configure(text="Elegí un clip de la lista")
                 self._fill_marks()
+                self._show_who()
                 self._draw_empty()
             self._fill_clips()
             self._show_ia_counts()

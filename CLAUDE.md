@@ -332,6 +332,39 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   cabecera del cliente, **«⬇ PDF de métricas»** (Hoy / 7 / 30 días → `report.pdf` → Descargas). Ojo con fechas en SQL:
   `events.occurred_at` es `timestamp without time zone` en UTC (`(occurred_at at time zone 'UTC') at time zone
   'America/Montevideo'`). Prueba: `tests/test_alertas_camara.py`.
+- **App más fácil de usar (10 nov, el dueño: «la app de escritorio es poco intuitiva… hacelo lo más fluido para el
+  usuario: cómo entrenar, cómo poner a analizar; sacar el en vivo y clips de cada cámara»; app 1.44.0).** Solo la app
+  (el servidor no cambió). Reemplaza lo de las entradas de la app 1.36 a 1.43 sobre la barra de la cámara.
+  - **Clientes:** la cámara tiene los pasos a la vista: **«✎ Marcar zonas»** y **«▶ Empezar a analizar»** (en azul; pasa
+    a «■ Dejar de analizar» si ya se analiza) · Editar · Más (Ver en la pestaña «En vivo», **«Alertas que da…»** [ex «Qué
+    alertas da…»], Qué mide…, Probar conexión, Bajar grabación…, Nombres e imágenes, Elegir todas, Eliminar). **Salieron
+    «● En vivo» y «🎞 Clips» de cada cámara** (y `clips_dialog` / `upload_clip`). Columnas: Cámara · **Estado** (una sola
+    frase: «No se analiza», «Esperando una máquina de análisis», «Analizando · 5 cuadros/s»…, `_cam_state`) · **Zonas**
+    («✔ 3» / «Sin marcar») · Mide (solo si el cliente tiene más de un plan) · Alertas hoy; ya no hay «Se analiza» ni
+    «Puesta a punto». El detalle arranca con **qué le falta** a la cámara (`_next_step`: «Paso 2: marcar zonas», «Paso 3:
+    empezar a analizar», «no hay máquina en línea», «Lista»), en naranja o verde. «Empezar a analizar» sin zonas pregunta
+    (dice qué se pierde) y, si no hay máquina en línea, lo avisa.
+  - **Guardar zonas** ya no abre la ventana de la cámara: si la cámara no se analiza, pregunta «¿Empezar a analizarla
+    ahora?» (`Oficina.zones_done`). El editor trae «Cómo se marca» en 4 pasos.
+  - **En vivo:** sin nada elegido explica qué hacer (texto de la ventana, con tildes: antes iba dibujado en la imagen);
+    botón **«✎ Marcar zonas»** de la cámara que se mira (`Ventana.on_zones` → `Oficina.zones_from_live`);
+    `Ventana.show_camera` (lo usa «Ver en la pestaña «En vivo»»); el motivo de una cámara que no abre va entero, en
+    varios renglones (antes cortado).
+  - **Entrenar IA hurtos:** pasos numerados (1 · Clips, 2 · ¿Qué pasa en este clip?, 3 · Entrenar) y arriba una frase
+    que dice **qué sigue** (`guide_text`: subir, marcar N clips, faltan datos, entrenar, activar). Marcar: un renglón guía
+    cada paso (`step_text`: inicio → fin → clic en la persona → «✔ Guardar este hurto»); **todo se guarda solo** (no hay
+    «Guardar marcas»); «✔ Es un clip normal» guarda y pasa al siguiente clip sin marcar. **«Entrenar» ofrece activar
+    ahí mismo** (`_offer_activate`; el filtro también pregunta). La lista de clips toma el alto que sobre. «Probar el
+    clip con las reglas de su cámara…» pasó a «Más» (es la única entrada que queda a la ventana de prueba `TuneWindow`,
+    donde siguen los tiempos de las reglas y de los gestos, «⚑ Marcar hurto» en vivo y «Aprobar»).
+  - **Alertas:** la primera queda elegida sola, **barra espaciadora = reproducir el clip**, teclas 1 a 4 = qué fue (los
+    botones no toman el foco); «Falsa alarma» en vez de «Falso positivo»; sin alertas lo dice.
+  - **Formulario de la cámara:** «Ajustes finos (cuadros por segundo, sensibilidad)» plegado salvo que la cámara ya tenga
+    algo distinto. «Bajar grabación» ya no suma los videos a «los clips de la cámara» (se suben en «Entrenar IA hurtos»).
+  - Probado con servidor local y la app en Xvfb (capturas de antes y después de cada pantalla, y el camino completo:
+    zonas → «¿empezar a analizar?» → la máquina la toma → «Lista»). Pruebas: `tests/test_app_facil.py` y
+    `tests/test_entrenar_ia_app.py`. **La guía de operadores (`docs/guia-operadores*`) quedó vieja** (botones y capturas
+    de la 1.38): hay que rehacerla. Sin probar en Windows: «▶» y «■» en los botones (ya se usaban en «Máquinas»).
 - **Descarga de la app desde la web (23 oct):** `GET /api/app/download` (staff logueado) redirige al .zip de la
   última Release; el botón de la pantalla «Usá la app de escritorio» apunta ahí (sirve aunque el repo sea privado).
   Guía del técnico para instalar un local: `docs/guia-tecnico-instalacion.html` + `.pdf` (DVR → IP fija → router
