@@ -374,3 +374,74 @@ def test_de_que_avisa_cada_camara_y_por_que_no():
     assert of.blocked_note("fuera_de_horario", dos, abierto).startswith("Hoy no puede saltar en 1 de las 2 (A)")
     assert of.blocked_note("fuera_de_horario", dos[:1], abierto).startswith("Hoy no puede saltar: con el local")
     assert of.blocked_note("salida_sin_pago", dos, abierto) == ""
+
+
+def test_usuarios_a_todo_el_alto_con_filtro_y_clave_nueva():
+    """Administración → Usuarios (11 nov, el dueño: «que ocupe todo el largo de la pantalla y filtrá por clientes,
+    operadores… y mostrá la contraseña de todos al darle editar»): la lista llena el alto y se filtra por rol. Las claves
+    no se pueden mostrar (el servidor guarda solo su huella): en «Editar», «Generar» da una nueva, se ve en claro y al
+    guardar sale con «Copiar» para pasarla."""
+    tk = pytest.importorskip("tkinter")
+    if os.name != "nt" and not os.environ.get("DISPLAY"):
+        pytest.skip("sin pantalla (correr con xvfb-run)")
+    from tkinter import ttk
+
+    from agent import estilo
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"sin Tk: {exc}")
+    try:
+        root.geometry("1366x698+0+0")
+        estilo.aplicar(root)
+        users = [{"id": 1, "username": "admin", "role": "admin", "active": True},
+                 {"id": 2, "username": "lucia", "role": "entrenador", "active": True},
+                 {"id": 3, "username": "minas", "role": "cliente", "client_id": 3, "active": True},
+                 {"id": 4, "username": "cristino", "role": "cliente", "client_id": 4, "active": True}]
+        o = of.Oficina.__new__(of.Oficina)
+        o.tk, o.ttk, o.is_admin = tk, ttk, True
+        o.v = types.SimpleNamespace(root=root, log_handler=types.SimpleNamespace(q=queue.Queue()))
+        o.clients = [{"id": 3, "name": "Minas"}, {"id": 4, "name": "Cristino"}]
+        o.cameras = []
+        sent, said = [], []
+        o.mb = types.SimpleNamespace(showinfo=lambda *a, **k: None, showerror=lambda *a, **k: said.append(a[1]))
+        o.bg = types.SimpleNamespace(run=lambda fn, done=None, fail=None: done(fn()) if done else fn())
+        o.api = types.SimpleNamespace(get=lambda path, **kw: users, server="https://analitica-critica.vercel.app",
+                                      put=lambda path, body: sent.append((path, body)) or body)
+        o.config_saved = lambda: None
+        o.tab_admin = ttk.Frame(root, padding=8)
+        o.tab_admin.pack(fill="both", expand=True)
+        o._build_admin()
+        o.load_users()
+        root.update()
+        # la lista llena el alto que sobra
+        assert o.us_tree.winfo_height() > 400, o.us_tree.winfo_height()
+        assert [o.us_tree.item(i)["text"] for i in o.us_tree.get_children()] == ["admin", "lucia", "cristino", "minas"]
+        assert str(o.us_filter_btns["cliente"].cget("text")) == "Clientes (2)"
+        o.us_filter.set("cliente")
+        o._fill_users()
+        assert [o.us_tree.item(i)["text"] for i in o.us_tree.get_children()] == ["cristino", "minas"]
+        o.us_filter.set("entrenador")
+        o._fill_users()
+        assert [o.us_tree.item(i)["text"] for i in o.us_tree.get_children()] == ["lucia"]
+
+        # «Editar»: la clave no se ve (no se guarda); «Generar» da una nueva, en claro, y al guardar sale con «Copiar»
+        o.user_dialog(users[1])
+        root.update()
+        top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+        labels = [str(w.cget("text")) for w in _walk(top) if w.winfo_class() == "TLabel"]
+        assert of.PASSWORD_NOTE in labels
+        entry = next(w for w in _walk(top) if w.winfo_class() == "TEntry" and str(w.cget("show")) == "•")
+        next(w for w in _walk(top) if w.winfo_class() == "TButton" and str(w.cget("text")) == "Generar").invoke()
+        new = entry.get()
+        assert len(new) >= 10 and str(entry.cget("show")) == ""
+        next(w for w in _walk(top) if w.winfo_class() == "TButton" and str(w.cget("text")) == "Guardar").invoke()
+        root.update()
+        assert sent and sent[-1][0] == "/api/users/2" and sent[-1][1]["password"] == new, said
+        shown = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel) and w.winfo_exists()][-1]
+        text = next(w for w in _walk(shown) if w.winfo_class() == "Text").get("1.0", "end")
+        assert "Usuario: lucia" in text and f"Clave: {new}" in text
+        next(w for w in _walk(shown) if w.winfo_class() == "TButton" and str(w.cget("text")) == "Copiar").invoke()
+        assert root.clipboard_get() == text.rstrip("\n")
+    finally:
+        root.destroy()

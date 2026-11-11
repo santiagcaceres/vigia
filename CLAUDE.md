@@ -402,6 +402,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   horario (alguien con el local cerrado)» (antes «Persona con el local cerrado»: no se la encontraba con el nombre de la
   alerta) y debajo de cada casilla, en naranja, si en esas cámaras hoy no puede saltar y por qué (`blocked_note`).
   Pruebas: `tests/test_app_facil.py`, `tests/test_alertas_camara.py`.
+  **App 1.46.1 (11 nov, el dueño: «que ocupe todo el largo de la pantalla y filtrá por clientes, operadores… y mostrá la
+  contraseña de todos al darle editar»):** Administración → Usuarios: botones y «Mostrar: Todos · Administradores ·
+  Operadores · Clientes (N)» arriba (`USER_FILTERS`, `_fill_users`, ordenado por rol y nombre) y la lista con todo el alto
+  y barra. **Las claves no se muestran: el servidor guarda solo su huella (scrypt), no hay de dónde sacarlas** (y no se
+  pasó a guardarlas recuperables a propósito). En «Editar», «Generar» pone una clave nueva en claro (`make_password`) y al
+  guardar sale con «Copiar» (`user_access_dialog`: para un cliente, el texto de la web; para el equipo, el de la app).
+  Prueba: `test_usuarios_a_todo_el_alto_con_filtro_y_clave_nueva`.
 - **«Demora estándar» por sector en la web (10 nov, el dueño: «una opción que me permita saber cuánto demora la gente
   por promedio en cada lugar; marcar cuánto es una demora estándar y si demora más de eso, que marque "demora en el
   sector X"»).** Solo web + servidor, **display-only**: no toca el agente ni las máquinas (el tiempo promedio por zona

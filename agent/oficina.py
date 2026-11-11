@@ -69,6 +69,11 @@ PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comerci
 PLAN_SHORT = {"hurto": "Hurto", "comercio": "Comercio", "estacion": "Estación",
               "empleados": "Empleados"}  # (columna «Mide» de las cámaras)
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cliente"}  # (operador = «entrenador» por dentro)
+ROLE_ORDER = {"admin": 0, "entrenador": 1, "cliente": 2}
+# filtro de «Administración» → Usuarios
+USER_FILTERS = (("", "Todos"), ("admin", "Administradores"), ("entrenador", "Operadores"), ("cliente", "Clientes"))
+PASSWORD_NOTE = ("La clave de nadie se puede ver: el sistema no la guarda, solo una huella para comprobarla. Si se la "
+                 "olvidó, tocá «Generar», guardá y pasale la nueva. Vacío = sigue con la que tiene.")
 # qué cámaras analizan las máquinas (server/pool.py): las elegidas en «Clientes» o todas
 ANALYSIS_MODES = {"pcs": "Solo las elegidas en «Clientes»",
                   "servidores": "Todas las cámaras"}
@@ -1894,6 +1899,33 @@ class Oficina:
         btn = ttk.Button(bb, text="Copiar", command=copy)
         btn.pack(side="right", padx=6)
 
+    def user_access_dialog(self, user: str, pwd: str, role: str, client: str = "") -> None:
+        """Los datos de un usuario con su clave nueva, para pasárselos (es la única vez que se ve la clave). Un usuario
+        de cliente entra a la web; uno del equipo, a la app."""
+        if role == "cliente":
+            return self.web_access_dialog(client or user, user, pwd)
+        ttk = self.ttk
+        url = self.api.server
+        text = (f"Hola, estos son tus datos para entrar a la app de {NOMBRE}:\n\nUsuario: {user}\nClave: {pwd}\n\n"
+                f"La app se baja entrando a {url} con estos datos.")
+        top, frm = self._dialog(f"Datos de {user}", width=480)
+        ttk.Label(frm, text="Pasáselos por privado (WhatsApp o en persona). Después de cerrar esta ventana la clave ya "
+                            "no se puede volver a ver.", wraplength=450, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        box = self.tk.Text(frm, height=7, width=58, wrap="word", font=("Segoe UI", 10))
+        box.insert("1.0", text)
+        box.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+        def copy():
+            self.v.root.clipboard_clear()
+            self.v.root.clipboard_append(text)
+            btn.configure(text="Copiado ✓")
+        bb = ttk.Frame(frm)
+        bb.grid(row=2, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(bb, text="Cerrar", command=top.destroy).pack(side="right")
+        btn = ttk.Button(bb, text="Copiar", command=copy)
+        btn.pack(side="right", padx=6)
+
     def delete_client(self) -> None:
         c = self._sel_client()
         if not c:
@@ -3172,25 +3204,40 @@ class Oficina:
 
     # ================================================================ administración
     def _build_admin(self) -> None:
-        ttk, f = self.ttk, self.tab_admin
+        """Usuarios (11 nov, el dueño: «que ocupe todo el largo de la pantalla y filtrá por clientes, operadores»): los
+        botones y el filtro arriba (con muchos usuarios la lista crece hacia abajo y no los tapa) y la lista con todo el
+        alto que sobre."""
+        tk, ttk, f = self.tk, self.ttk, self.tab_admin
         ttk.Label(f, text="Usuarios", style="Subtitulo.TLabel").pack(anchor="w")
         ttk.Label(f, text="Administradores y operadores entran a esta app con su usuario y clave. Los clientes entran a "
                           "la web y ven solo su local.", style="Suave.TLabel", wraplength=900, justify="left").pack(
             anchor="w", pady=(0, 4))
-        self.us_tree = ttk.Treeview(f, columns=("rol", "cliente", "activo"), show="tree headings", height=5,
-                                    selectmode="browse")
-        self.us_tree.heading("#0", text="Usuario")
-        for col, txt, w in (("rol", "Rol", 120), ("cliente", "Cliente", 160),
-                            ("activo", "Activo", 60)):
-            self.us_tree.heading(col, text=txt)
-            self.us_tree.column(col, width=w)
-        self.us_tree.pack(fill="x")
-        self.us_tree.bind("<Double-1>", lambda e: self.user_dialog(self._sel_user()))
         b = ttk.Frame(f)
-        b.pack(fill="x", pady=6)
+        b.pack(fill="x", pady=(0, 6))
         ttk.Button(b, text="＋ Nuevo usuario", command=lambda: self.user_dialog()).pack(side="left")
         ttk.Button(b, text="Editar", command=lambda: self.user_dialog(self._sel_user())).pack(side="left", padx=6)
         ttk.Button(b, text="Eliminar", command=self.delete_user).pack(side="left")
+        self.us_filter = tk.StringVar(value="")
+        self.us_filter_btns: dict[str, object] = {}
+        for key, txt in reversed(USER_FILTERS):  # (a la derecha, en el orden de USER_FILTERS)
+            rb = ttk.Radiobutton(b, text=txt, variable=self.us_filter, value=key, command=self._fill_users)
+            rb.pack(side="right", padx=(10, 0))
+            self.us_filter_btns[key] = rb
+        ttk.Label(b, text="Mostrar:").pack(side="right")
+        lst = ttk.Frame(f)
+        lst.pack(fill="both", expand=True)
+        self.us_tree = ttk.Treeview(lst, columns=("rol", "cliente", "activo"), show="tree headings", height=5,
+                                    selectmode="browse")
+        self.us_tree.heading("#0", text="Usuario", anchor="w")
+        for col, txt, w in (("rol", "Rol", 120), ("cliente", "Cliente", 160),
+                            ("activo", "Activo", 60)):
+            self.us_tree.heading(col, text=txt, anchor="w")
+            self.us_tree.column(col, width=w)
+        sb = ttk.Scrollbar(lst, orient="vertical", command=self.us_tree.yview)
+        self.us_tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.us_tree.pack(side="left", fill="both", expand=True)
+        self.us_tree.bind("<Double-1>", lambda e: self.user_dialog(self._sel_user()))
         self.users: list[dict] = []
 
     # ================================================================ máquinas
@@ -3647,12 +3694,25 @@ class Oficina:
     def load_users(self) -> None:
         def done(users):
             self.users = users
-            self.us_tree.delete(*self.us_tree.get_children())
-            for u in users:
-                self.us_tree.insert("", "end", iid=str(u["id"]), text=u["username"], values=(
-                    ROLE_NAMES.get(u["role"], u["role"]), self.client_name(u.get("client_id")) if u.get("client_id") else "—",
-                    "Sí" if u.get("active") else "No"))
+            self._fill_users()
         self.bg.run(lambda: self.api.get("/api/users"), done, self._net_fail)
+
+    def _fill_users(self) -> None:
+        """La lista con el filtro elegido (Todos, Administradores, Operadores, Clientes), cada uno con cuántos hay."""
+        role = self.us_filter.get()
+        for key, txt in USER_FILTERS:
+            n = sum(1 for u in self.users if not key or u.get("role") == key)
+            self.us_filter_btns[key].configure(text=f"{txt} ({n})")
+        prev = self.us_tree.selection()
+        self.us_tree.delete(*self.us_tree.get_children())
+        shown = sorted((u for u in self.users if not role or u.get("role") == role),
+                       key=lambda u: (ROLE_ORDER.get(u.get("role"), 9), u["username"].lower()))
+        for u in shown:
+            self.us_tree.insert("", "end", iid=str(u["id"]), text=u["username"], values=(
+                ROLE_NAMES.get(u["role"], u["role"]), self.client_name(u.get("client_id")) if u.get("client_id") else "—",
+                "Sí" if u.get("active") else "No"))
+        if prev and all(self.us_tree.exists(i) for i in prev):
+            self.us_tree.selection_set(prev)
 
     def _sel_user(self) -> dict | None:
         sel = self.us_tree.selection()
@@ -3677,10 +3737,22 @@ class Oficina:
         client = tk.StringVar(value=self.client_name(u.get("client_id")) if u.get("client_id") else "")
         active = tk.BooleanVar(value=u.get("active", True))
         self._row(frm, 0, "Usuario", ttk.Entry(frm, textvariable=name))
-        self._row(frm, 1, "Clave nueva (mín. 8)" if u.get("id") else "Clave (mín. 8)", ttk.Entry(frm, textvariable=pwd, show="•"))
-        self._row(frm, 2, "Rol", ttk.Combobox(frm, textvariable=role, values=list(ROLE_NAMES.values()), state="readonly"))
-        self._row(frm, 3, "Cliente (solo rol Cliente)", ttk.Combobox(frm, textvariable=client, values=[c["name"] for c in self.clients], state="readonly"))
-        ttk.Checkbutton(frm, text="Activo", variable=active).grid(row=4, column=1, sticky="w")
+        # la clave no se puede mostrar: el servidor guarda solo su huella (scrypt), nunca la clave. Para pasársela a
+        # alguien que se la olvidó: «Generar» una nueva, que se ve en claro y, al guardar, sale con «Copiar»
+        pf = ttk.Frame(frm)
+        pwd_entry = ttk.Entry(pf, textvariable=pwd, show="•")
+        pwd_entry.pack(side="left", fill="x", expand=True)
+
+        def generate() -> None:
+            pwd.set(make_password())
+            pwd_entry.configure(show="")
+        ttk.Button(pf, text="Generar", command=generate).pack(side="left", padx=(6, 0))
+        self._row(frm, 1, "Clave nueva (mín. 8)" if u.get("id") else "Clave (mín. 8)", pf)
+        ttk.Label(frm, text=PASSWORD_NOTE if u.get("id") else "«Generar» da una clave segura, fácil de dictar.",
+                  style="Suave.TLabel", wraplength=330, justify="left").grid(row=2, column=1, sticky="w", pady=(0, 6))
+        self._row(frm, 3, "Rol", ttk.Combobox(frm, textvariable=role, values=list(ROLE_NAMES.values()), state="readonly"))
+        self._row(frm, 4, "Cliente (solo rol Cliente)", ttk.Combobox(frm, textvariable=client, values=[c["name"] for c in self.clients], state="readonly"))
+        ttk.Checkbutton(frm, text="Activo", variable=active).grid(row=5, column=1, sticky="w")
         def save():
             body = {"username": name.get().strip(), "password": pwd.get() or None,
                     "role": next((k for k, t in ROLE_NAMES.items() if t == role.get()), "entrenador"),
@@ -3695,9 +3767,12 @@ class Oficina:
             def done(_):
                 top.destroy()
                 self.config_saved()
+                if body["password"]:  # la clave nueva: la única vez que se puede ver, con «Copiar» para pasarla
+                    self.user_access_dialog(body["username"], body["password"], body["role"],
+                                            self.client_name(body["client_id"]) if body["client_id"] else "")
             self.bg.run(send, done, lambda e: self.mb.showerror(NOMBRE, str(e), parent=top))
         bb = ttk.Frame(frm)
-        bb.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        bb.grid(row=6, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(bb, text="Cancelar", command=top.destroy).pack(side="right")
         ttk.Button(bb, text="Guardar", style="Primario.TButton", command=save).pack(side="right", padx=6)
 
