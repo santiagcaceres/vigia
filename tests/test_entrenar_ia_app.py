@@ -140,7 +140,7 @@ def test_el_identificador_del_video(tmp_path):
     data = os.urandom(3 * 1024 * 1024)
     a.write_bytes(data)
     b.write_bytes(data)  # una copia (otra PC, otra carpeta): el mismo clip
-    c.write_bytes(data[:-1] + b"x")  # cambia el final
+    c.write_bytes(data[:-1] + bytes([data[-1] ^ 0xFF]))  # cambia el final (siempre: con b"x" fallaba 1 de cada 256)
     ua = ia_clips.clip_uuid(a)
     assert len(ua) == 40 and ua.isalnum()
     assert ia_clips.clip_uuid(b) == ua and ia_clips.clip_uuid(c) != ua

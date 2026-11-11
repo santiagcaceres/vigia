@@ -207,7 +207,7 @@ def test_las_alarmas_le_pasan_la_postura_y_el_analisis_completo_a_analyze_clip(t
         def post_event(self, meta, jpg):
             self.events.append(meta)
 
-        def put_clip(self, uuid, path, source):
+        def put_clip(self, uuid, path, source, **kw):
             pass
 
         def alarm_done(self, aid, result, stats, ev=None):

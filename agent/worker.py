@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import cv2
 
 from core.analyzer import Analyzer, ClipReady, Finding
-from core.clips import write_mp4
+from core.clips import video_offset, write_mp4
 from core.detectors import DetectionConfig, Detector, tuned
 from core.gestos import GESTURE_NAMES
 from core.imagen import pixel_aspect, square_pixels
@@ -486,10 +486,12 @@ class CameraWorker:
                 if wait > 0:
                     self._stop.wait(wait)
                 if download_nvr_clip(self.hik, start, end, out):
-                    self.outbox.clip_done(c.uuid, "nvr")
+                    # (el tramo del grabador arranca en `start`: la alerta, tantos segundos después)
+                    self.outbox.clip_done(c.uuid, "nvr", round(max(0.0, f.ts - c.start_ts), 2))
                     return
             if write_mp4(c.frames, out):
-                self.outbox.clip_done(c.uuid, "buffer")
+                # en qué segundo del clip está la alerta: la app lo marca en la barra del reproductor
+                self.outbox.clip_done(c.uuid, "buffer", video_offset(c.frames, f.ts) if f is not None else None)
             else:
                 self.outbox.clip_done(c.uuid, None)
         except Exception:

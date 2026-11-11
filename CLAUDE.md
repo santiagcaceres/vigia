@@ -367,6 +367,28 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     zonas → «¿empezar a analizar?» → la máquina la toma → «Lista»). Pruebas: `tests/test_app_facil.py` y
     `tests/test_entrenar_ia_app.py`. **La guía de operadores (`docs/guia-operadores*`) quedó vieja** (botones y capturas
     de la 1.38): hay que rehacerla. Sin probar en Windows: «▶» y «■» en los botones (ya se usaban en «Máquinas»).
+- **Reproductor de «Alertas» con la IA (11 nov, el dueño: «cuando miro las alertas, que se muestre con la IA, y en el
+  reproductor una barra para ver por dónde va y dónde sería el hurto, y opciones de iniciar y pausar el video; sacá la
+  opción de ver en el reproductor»; app 1.45.0).** `agent/alerta_video.py` (`AlertPlayer`, `Timeline`). Al elegir una
+  alerta se ve su foto; a los 0,35 s (si no se pasó a otra) el clip se baja solo (`_fetch_clip`, queda en la carpeta
+  temporal) y se analiza **en la PC** con `ia_clips.analyze` (YOLO con la sensibilidad de la cámara, seguimiento,
+  postura y bolsos, 5 cuadros/s), en otro hilo y de a poco (`on_frame`): recuadros, número, esqueleto y las zonas de la
+  cámara aparecen apenas esa parte está analizada; cerca de la alerta, cartel «ALERTA: …» y la persona en rojo. No guarda
+  ni manda nada. Lo analizado de las últimas 6 alertas queda en memoria. Barra: largo del clip, hasta dónde llegó la IA,
+  el momento de la alerta en rojo («alerta» o «alerta (aprox.)») y por dónde va; clic o arrastrar = ir ahí. «▶
+  Reproducir» / «❚❚ Pausa», «−5 s» / «+5 s»; teclado: espacio, flechas ← → (5 s) y 1 a 4. Al abrir queda 4 s antes de
+  la alerta. Salió «Abrir en el reproductor»; «Avisar al cliente…» pasó arriba a la derecha.
+  - **Dónde está la alerta en el clip** (`alert_offset`): las máquinas mandan el segundo con el clip
+    (`clip-done` con `offset_s` → `events.meta.clip_offset_s`; `core.clips.video_offset`: en el MP4 del buffer los ratos
+    quietos —1 cuadro/s— pasan a la misma velocidad que el resto, así que no es `ts − inicio`; en el del grabador sí).
+    **Las máquinas lo mandan recién al reiniciarse** (`git pull`); hasta entonces, y en las alertas viejas, se estima con
+    `track_age_s` (el clip arranca cuando apareció la persona, con 3 s de margen, nunca menos de 6) y, cuando la IA ya
+    analizó ese rato, se corrige buscando el recuadro de la persona de la alerta (`refine_offset`; `event_dict` trae
+    `bbox`, `frame_size` y `clip_offset_s`). Alarmas e importados: `video_ts` ya es el segundo del clip.
+  - Límites: en una PC sin placa de video la IA analiza más o menos al ritmo del video (un clip de 1 min ≈ 1 min); mientras
+    tanto el video se ve igual y lo no analizado va sin recuadros. Lo que se ve es la IA de esta PC, no exactamente lo
+    que vio la máquina (otro seguimiento: los números de persona no coinciden con los de la descripción). Probado con
+    clips sintéticos y con la IA de verdad sobre un clip de prueba en Xvfb. Pruebas: `tests/test_alertas_reproductor.py`.
 - **«Demora estándar» por sector en la web (10 nov, el dueño: «una opción que me permita saber cuánto demora la gente
   por promedio en cada lugar; marcar cuánto es una demora estándar y si demora más de eso, que marque "demora en el
   sector X"»).** Solo web + servidor, **display-only**: no toca el agente ni las máquinas (el tiempo promedio por zona

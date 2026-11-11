@@ -129,8 +129,11 @@ def test_la_lista_de_alertas_se_recarga_sin_cortar_el_clip():
         off.al_state, off.al_client = tk.StringVar(value="Sin revisar"), tk.StringVar(value="Todos")
         off.clients = []
         off.al_count, off.al_title, off.al_desc = ttk.Label(root), ttk.Label(root), ttk.Label(root)
-        stops: list = []
-        off.stop_clip = lambda: stops.append(1)
+        stops: list = []  # (cada vez que el reproductor cambia de alerta: lo que se estaba viendo se corta)
+        off.cameras = []
+        off.v = types.SimpleNamespace(root=root)
+        off.player = types.SimpleNamespace(select=lambda *a, **k: stops.append(1), clear=lambda *a, **k: None,
+                                           show_photo=lambda img: None)
         items = [_ev(1), _ev(2), _ev(3)]
         off.api = types.SimpleNamespace(get=lambda path, **k: {"items": list(items), "total": len(items)})
         off.bg = types.SimpleNamespace(run=lambda fn, done=None, fail=None: done(fn()))

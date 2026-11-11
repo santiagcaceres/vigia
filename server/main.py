@@ -741,6 +741,9 @@ class ManualClipIn(BaseModel):
 
 class ClipDoneIn(BaseModel):
     source: Literal["nvr", "buffer", "video"] = "buffer"
+    # en qué segundo del clip está la alerta (la app lo marca en la barra del reproductor); las máquinas viejas no
+    # lo mandan
+    offset_s: float | None = Field(None, ge=0, le=3600)
 
 
 class ProgressIn(BaseModel):
@@ -1310,6 +1313,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "snapshot_url": f"/api/events/{e.id}/snapshot" if e.snapshot_path else None,
             "clip_url": f"/api/events/{e.id}/clip" if e.clip_path else None, "clip_source": e.clip_source,
             "alarm": (e.meta or {}).get("alarm"),
+            # para ubicar la alerta en el clip (la barra del reproductor de la app): el segundo, si la máquina lo
+            # mandó, y si no, el recuadro de la persona en ese momento
+            "clip_offset_s": (e.meta or {}).get("clip_offset_s"),
+            "bbox": (e.meta or {}).get("bbox"), "frame_size": (e.meta or {}).get("frame_size"),
         }
 
     def import_dict(i: VideoImport, cam_name=None) -> dict:
@@ -3110,6 +3117,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not storage.exists(path):
             raise HTTPException(409, "El clip no llegó al almacenamiento")
         ev.clip_path, ev.clip_source = path, body.source
+        if body.offset_s is not None:
+            ev.meta = {**(ev.meta or {}), "clip_offset_s": round(body.offset_s, 2)}
         s.commit()
         return {"ok": True}
 

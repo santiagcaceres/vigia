@@ -75,10 +75,11 @@ def clip_uuid(path: str | Path) -> str:
 
 def analyze(path: str | Path, detector, pose, fps: float = FPS, detection: DetectionConfig | dict | None = None,
             stop: threading.Event | None = None, progress: Callable[[float, float], None] | None = None,
-            max_seconds: float | None = None) -> dict:
+            max_seconds: float | None = None, on_frame: Callable[[dict], None] | None = None) -> dict:
     """Analiza el video `path` en esta PC. `detector`: el YOLO compartido de la app (con `detection`, la sensibilidad
     y «Personas lejos» de la cámara, sin tocar el compartido); `pose`: el estimador de postura (None = sin
-    esqueletos). `stop`: frena (ClipError «se frenó»). `progress(parte_hecha, segundos)`.
+    esqueletos). `stop`: frena (ClipError «se frenó»). `progress(parte_hecha, segundos)`. `on_frame(registro)`: cada
+    cuadro apenas se analiza (el reproductor de «Alertas» dibuja lo que ya está, sin esperar al final).
 
     Devuelve `{"frames": [registros], "duration_s", "fps", "width", "height", "people", "video_fps", "truncated",
     "posed"}`: `people` = cuántas personas distintas se siguieron; `posed` = en cuántos registros de persona se vio la
@@ -134,6 +135,8 @@ def analyze(path: str | Path, detector, pose, fps: float = FPS, detection: Detec
                     t.kpts = None
             rec = frame_record(ts, (w, h), tracks, bags)
             frames.append(rec)
+            if on_frame is not None:
+                on_frame(rec)
             ids.update(p["id"] for p in rec["people"])
             posed += sum(1 for p in rec["people"] if p["kp"] is not None)
             if progress is not None:

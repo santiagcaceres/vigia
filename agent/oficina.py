@@ -2856,24 +2856,24 @@ class Oficina:
         self.al_tree.bind("<<TreeviewSelect>>", lambda e: self.show_alert())
         right = ttk.Frame(body, padding=(14, 0, 0, 0))
         right.pack(side="left", fill="both", expand=True)
-        self.al_title = ttk.Label(right, text="Elegí una alerta", style="Subtitulo.TLabel")
-        self.al_title.pack(anchor="w")
+        head = ttk.Frame(right)
+        head.pack(fill="x")
+        # (arriba a la derecha: abajo, con los botones de «¿Qué fue?», no entraba en 1366 de ancho)
+        ttk.Button(head, text="Avisar al cliente…", style="Primario.TButton", takefocus=False,
+                   command=self.report_dialog).pack(side="right")
+        self.al_title = ttk.Label(head, text="Elegí una alerta", style="Subtitulo.TLabel")
+        self.al_title.pack(side="left", anchor="w")
         self.al_desc = ttk.Label(right, text="", style="Suave.TLabel", wraplength=640, justify="left")
         self.al_desc.pack(anchor="w")
-        self.al_img = tk.Label(right, bg="#111", height=20)
-        self.al_img.pack(fill="both", expand=True, pady=6)
-        # (la primera alerta se elige sola, a veces antes de que la pestaña esté a la vista: cuando el lugar toma su
-        # tamaño, la foto se vuelve a dibujar a ese tamaño; antes quedaba chica en el medio)
-        self.al_img.bind("<Configure>", self._alert_resized)
+        # el reproductor, con lo que ve la IA de esta PC y una barra con el momento de la alerta (11 nov, el dueño:
+        # «que se muestre con la IA… una barra para ver por dónde va y dónde sería el hurto… iniciar y pausar…
+        # sacá la opción de ver en el reproductor»): agent/alerta_video.py
+        from .alerta_video import AlertPlayer
+        self.player = AlertPlayer(self, right)
+        self.player.frame.pack(fill="both", expand=True)
         # (10 nov: revisar de corrido con el teclado: la primera alerta queda elegida sola, espacio = ver el clip,
         # 1 a 4 = qué fue, y pasa a la siguiente. Los botones no se quedan con el foco: si no, la barra espaciadora
         # volvería a apretar el último botón tocado)
-        b = ttk.Frame(right)
-        b.pack(fill="x")
-        ttk.Button(b, text="▶ Reproducir clip (espacio)", takefocus=False, command=self.play_clip).pack(side="left")
-        ttk.Button(b, text="Abrir en el reproductor", takefocus=False, command=self.open_clip).pack(side="left", padx=6)
-        ttk.Button(b, text="Avisar al cliente…", style="Primario.TButton", takefocus=False,
-                   command=self.report_dialog).pack(side="right")
         lb = ttk.Frame(right)
         lb.pack(fill="x", pady=(6, 0))
         ttk.Label(lb, text="¿Qué fue? (1 a 4)", style="Subtitulo.TLabel").pack(side="left", padx=(0, 4))
@@ -2882,7 +2882,7 @@ class Oficina:
                        command=lambda l=lab: self.set_label(l)).pack(side="left", padx=3)
         self.v.root.bind("<Key>", self._on_key, add="+")
         self.alerts: list[dict] = []
-        self._play = {"cap": None, "job": None, "photo": None, "path": None, "last": None, "size": None}
+        self._clip_job = None
 
     def _fill_alert_filters(self) -> None:
         self.al_client_cb.configure(values=["Todos"] + [c["name"] for c in self.clients])
@@ -2921,124 +2921,98 @@ class Oficina:
 
     def _alerts_empty(self) -> None:
         """No hay alertas con ese filtro: lo dice (antes quedaba «Elegí una alerta» sobre un recuadro negro)."""
-        self.stop_clip()
         self._al_shown = None
         todo = self.al_state.get() == "Sin revisar"
         self.al_title.configure(text="No hay alertas sin revisar" if todo else "No hay alertas con ese filtro")
         self.al_desc.configure(text="Cuando una cámara que se analiza dé una alerta, aparece acá (y cuenta en «Por "
                                     "revisar» de la lista de clientes)." if todo else
                                     "Probá con otro cliente o con «Todas» en «Mostrar».")
-        img = getattr(self, "al_img", None)
-        if img is not None:
-            self._play.update(photo=None, last=None, size=None)
-            img.configure(image="")
+        player = getattr(self, "player", None)
+        if player is not None:
+            player.clear()
 
     def _sel_alert(self) -> dict | None:
         sel = self.al_tree.selection()
         return next((e for e in self.alerts if str(e["id"]) == (sel[0] if sel else "")), None)
 
     def show_alert(self) -> None:
+        """La alerta elegida: su foto ya, y el clip (con la IA de esta PC y la barra con el momento de la alerta) en
+        cuanto se baja. Si se pasa rápido por la lista, no se baja el clip de cada una (espera un momento)."""
         e = self._sel_alert()
         if e is None and time.monotonic() < getattr(self, "_al_refill_until", 0.0):
             return  # se está recargando la lista (llegó una alerta o otro usuario revisó una): no cortar el clip
         if e is not None and e["id"] == getattr(self, "_al_shown", None):
             return  # la misma alerta, otra vez elegida al recargar la lista
-        self.stop_clip()
         self._al_shown = e["id"] if e else None
+        if getattr(self, "_clip_job", None) is not None:
+            try:
+                self.v.root.after_cancel(self._clip_job)
+            except Exception:  # noqa: BLE001
+                pass
+        self._clip_job = None
         if not e:
-            return
-        self._play.update(last=None, size=None)  # (lo que se ve es de la alerta anterior, hasta que llegue su foto)
-        self.al_title.configure(text=f"{TYPE_NAMES.get(e['type'], e['type'])} · {e.get('client_name')} · {e.get('camera_name')}")
-        self.al_desc.configure(text=f"{fmt_date(e['occurred_at'])} · {e.get('description') or ''}"
-                               + ("" if e.get("clip_url") else "  (el clip todavía no llegó)"))
+            return self.player.clear()
+        title = TYPE_NAMES.get(e["type"], e["type"])
+        self.al_title.configure(text=f"{title} · {e.get('client_name')} · {e.get('camera_name')}")
+        self.al_desc.configure(text=f"{fmt_date(e['occurred_at'])} · {e.get('description') or ''}")
+        cam = next((c for c in self.cameras if c["id"] == e.get("camera_id")), None)
+        self.player.select(e, cam, title)
         if e.get("snapshot_url"):
             def done(data):
                 img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-                if img is not None and self._sel_alert() is e:
-                    self._show_frame(img)
+                if img is not None and self._al_shown == e["id"]:
+                    self.player.show_photo(img)
             self.bg.run(lambda: self.api.download(e["snapshot_url"]), done, lambda exc: None)
+        if e.get("clip_url"):
+            self._clip_job = self.v.root.after(350, lambda: self._fetch_clip(e))
 
-    def _show_frame(self, img: np.ndarray) -> None:
-        w, h = max(self.al_img.winfo_width(), 320), max(self.al_img.winfo_height(), 240)
-        photo = ppm_photo(self.tk, img, w, h)
-        if photo:
-            self._play.update(photo=photo, last=img, size=(w, h))
-            self.al_img.configure(image=photo)
-
-    def _alert_resized(self, ev) -> None:
-        """El lugar de la foto cambió de tamaño (se abrió la pestaña, se agrandó la ventana): la foto que se ve se
-        vuelve a dibujar a ese tamaño. Con el clip andando no hace falta: el próximo cuadro ya sale así."""
-        last, size = self._play.get("last"), self._play.get("size")
-        if last is None or self._play.get("cap") is not None or size is None:
+    def _fetch_clip(self, e: dict) -> None:
+        """Baja el clip de la alerta (queda en la carpeta temporal: volver a ella no lo baja de nuevo) y lo abre."""
+        self._clip_job = None
+        if self._al_shown != e["id"]:
             return
-        if abs(ev.width - size[0]) > 8 or abs(ev.height - size[1]) > 8:
-            self._show_frame(last)
-
-    def _clip_file(self, e: dict, then: Callable[[str], None]) -> None:
-        if not e.get("clip_url"):
-            return self.mb.showinfo(NOMBRE, "Esta alerta todavía no tiene clip.")
         path = Path(tempfile.gettempdir()) / f"vigia_clip_{e['id']}.mp4"
+
+        def ready(p: str) -> None:
+            if self._al_shown == e["id"]:
+                self.player.open(p)
+
+        def fail(exc: Exception) -> None:
+            if self._al_shown == e["id"]:
+                self.player.failed(f"No se pudo bajar el clip: {exc}")
         if path.exists() and path.stat().st_size > 0:
-            return then(str(path))
-        self.al_desc.configure(text="Bajando el clip…")
+            return ready(str(path))
 
         def fetch():
-            path.write_bytes(self.api.download(e["clip_url"]))
+            tmp = path.with_suffix(".part")
+            tmp.write_bytes(self.api.download(e["clip_url"]))
+            tmp.replace(path)
             return str(path)
-        self.bg.run(fetch, then, self.err)
+        self.bg.run(fetch, ready, fail)
 
     def play_clip(self) -> None:
-        e = self._sel_alert()
-        if not e:
-            return
-
-        def start(path: str) -> None:
-            self.stop_clip()
-            cap = cv2.VideoCapture(path)
-            if not cap.isOpened():
-                return self.mb.showwarning(NOMBRE, "No se pudo abrir el clip acá. Probá «Abrir en el reproductor».")
-            fps = cap.get(cv2.CAP_PROP_FPS) or 10
-            self._play.update(cap=cap, path=path)
-            self.al_desc.configure(text=f"{fmt_date(e['occurred_at'])} · {e.get('description') or ''}")
-            delay = max(20, int(1000 / min(fps, 25)))
-
-            def step() -> None:
-                c = self._play["cap"]
-                if c is None:
-                    return
-                ok, frame = c.read()
-                if not ok:
-                    self.stop_clip()
-                    return
-                self._show_frame(frame)
-                self._play["job"] = self.v.root.after(delay, step)
-            step()
-        self._clip_file(e, start)
+        """«▶ Reproducir» / «❚❚ Pausa» (y la barra espaciadora)."""
+        if self._sel_alert() is not None:
+            self.player.toggle()
 
     def stop_clip(self) -> None:
-        if self._play.get("job"):
-            try:
-                self.v.root.after_cancel(self._play["job"])
-            except Exception:
-                pass
-        if self._play.get("cap") is not None:
-            self._play["cap"].release()
-        self._play.update(cap=None, job=None)
-
-    def open_clip(self) -> None:
-        e = self._sel_alert()
-        if e:
-            self._clip_file(e, open_file)
+        player = getattr(self, "player", None)
+        if player is not None:
+            player.pause()
 
     def _on_key(self, ev) -> None:
-        """En «Alertas»: 1 a 4 etiquetan la alerta elegida y la barra espaciadora reproduce su clip."""
-        if (ev.char in LABEL_KEYS or ev.keysym == "space") and self.v.notebook.select() == str(self.tab_alerts):
+        """En «Alertas»: 1 a 4 etiquetan la alerta elegida, la barra espaciadora reproduce o pausa su clip y las flechas
+        izquierda y derecha lo mueven 5 s."""
+        keys = ("space", "Left", "Right")
+        if (ev.char in LABEL_KEYS or ev.keysym in keys) and self.v.notebook.select() == str(self.tab_alerts):
             if isinstance(ev.widget, (self.tk.Entry, self.ttk.Entry, self.tk.Text, self.ttk.Combobox)):
                 return
             if isinstance(ev.widget, str) or ev.widget.winfo_toplevel() is not self.v.root:
                 return  # (la lista desplegada de un selector, o se está escribiendo en otra ventana)
             if ev.keysym == "space":
                 return self.play_clip()
+            if ev.keysym in ("Left", "Right"):
+                return self.player.step(-5.0 if ev.keysym == "Left" else 5.0)
             self.set_label(LABEL_KEYS[ev.char])
 
     def set_label(self, label: str) -> None:

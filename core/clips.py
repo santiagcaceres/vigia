@@ -26,6 +26,22 @@ def _decode(f) -> np.ndarray | None:
     return f
 
 
+def clip_fps(frames: list[tuple[float, object]]) -> float:
+    """Los cuadros por segundo con que `write_mp4` escribe esos cuadros (los reparte parejo en el tiempo que cubren)."""
+    span = frames[-1][0] - frames[0][0] if len(frames) > 1 else 0.0
+    return max(1.0, min(30.0, (len(frames) - 1) / span)) if span > 0 else 5.0
+
+
+def video_offset(frames: list[tuple[float, object]], ts: float) -> float | None:
+    """En qué segundo del MP4 que arma `write_mp4` con `frames` queda el momento `ts` del stream (el de la alerta).
+    No es `ts` menos el primero: en los ratos quietos el buffer guarda 1 cuadro por segundo y el MP4 los pasa a la
+    misma velocidad que los demás. None si no hay cuadros."""
+    if not frames:
+        return None
+    idx = next((i for i, (t, _) in enumerate(frames) if t >= ts - 1e-6), len(frames) - 1)
+    return round(idx / clip_fps(frames), 2)
+
+
 def write_mp4(frames: list[tuple[float, np.ndarray | bytes]], path: str | Path) -> bool:
     """Escribe frames (ts, imagen BGR o JPEG en bytes) como MP4 H.264 reproducible en navegadores.
 
@@ -37,8 +53,7 @@ def write_mp4(frames: list[tuple[float, np.ndarray | bytes]], path: str | Path) 
     if len(frames) < 2:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    span = frames[-1][0] - frames[0][0]
-    fps = max(1.0, min(30.0, (len(frames) - 1) / span)) if span > 0 else 5.0
+    fps = clip_fps(frames)
     first = _decode(frames[0][1])
     if first is None:
         return False

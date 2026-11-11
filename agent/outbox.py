@@ -42,11 +42,11 @@ class Outbox:
     def clip_path(self, uuid: str) -> Path:
         return self.root / uuid / "clip.mp4"
 
-    def clip_done(self, uuid: str, source: str | None) -> None:
-        """source: 'nvr', 'buffer' o None si no hubo clip."""
+    def clip_done(self, uuid: str, source: str | None, offset: float | None = None) -> None:
+        """source: 'nvr', 'buffer' o None si no hubo clip. `offset`: en qué segundo del clip está la alerta."""
         d = self.root / uuid
         if d.exists():
-            _write_json(d / "clip.json", {"source": source})
+            _write_json(d / "clip.json", {"source": source, **({"offset_s": offset} if offset is not None else {})})
             self._wake.set()
 
     # ---- envío ----
@@ -98,7 +98,9 @@ class Outbox:
                 clip_info = {"source": None}
             clip = d / "clip.mp4"
             if clip_info.get("source") and clip.exists() and not state.get("clip_uploaded"):
-                self.client.put_clip(meta["uuid"], clip, clip_info["source"])
+                offset = clip_info.get("offset_s")
+                self.client.put_clip(meta["uuid"], clip, clip_info["source"],
+                                     **({"offset": offset} if isinstance(offset, (int, float)) else {}))
                 state["clip_uploaded"] = True
                 _write_json(d / "state.json", state)
             shutil.rmtree(d, ignore_errors=True)
@@ -251,13 +253,15 @@ class ServerClient:
             return {}
         return r.json()
 
-    def put_clip(self, uuid: str, path: Path, source: str) -> None:
+    def put_clip(self, uuid: str, path: Path, source: str, offset: float | None = None) -> None:
+        """Sube el clip. `offset`: en qué segundo del clip está la alerta (un servidor viejo lo ignora)."""
         r = self.http.post(f"/api/agent/events/{uuid}/clip-upload")
         if self._rejected(r, f"el clip {uuid}"):
             return
         info = r.json()
         self.upload(info["upload_url"], path, info.get("content_type", "video/mp4"))
-        r = self.http.post(f"/api/agent/events/{uuid}/clip-done", json={"source": source})
+        body = {"source": source, **({"offset_s": offset} if offset is not None else {})}
+        r = self.http.post(f"/api/agent/events/{uuid}/clip-done", json=body)
         self._rejected(r, f"el clip {uuid}")
 
     def upload(self, url: str, path: Path, content_type: str) -> None:

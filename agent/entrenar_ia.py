@@ -359,8 +359,9 @@ class FrameReader:
     cuadro listo, con píxeles cuadrados y al tamaño del reproductor (`take`). Para reproducir lee para adelante sin
     volver a buscar."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, box: tuple[int, int] = (PLAYER_W, PLAYER_H)):
         self.path = path
+        self.box = box  # el tamaño máximo del cuadro que entrega (el del reproductor)
         self.error: str | None = None
         self._cv = threading.Condition()
         self._want: float | None = None
@@ -424,7 +425,7 @@ class FrameReader:
                 if sar:
                     frame = square_pixels(frame, sar)
                 h, w = frame.shape[:2]
-                _k, dw, dh = fit(w, h)
+                _k, dw, dh = fit(w, h, *self.box)
                 small = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_AREA)
                 with self._cv:
                     self._result = (t, small)
