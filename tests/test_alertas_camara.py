@@ -145,6 +145,12 @@ def _find(widget, cls_name, text=None):
     return None
 
 
+def _walk(widget):
+    for w in widget.winfo_children():
+        yield w
+        yield from _walk(w)
+
+
 def test_que_alertas_da_solo_manda_lo_que_se_toco():
     tk, root = _tk()
     try:
@@ -157,7 +163,7 @@ def test_que_alertas_da_solo_manda_lo_que_se_toco():
         top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
         top.update_idletasks()
         assert top.winfo_reqwidth() <= 1366 and top.winfo_reqheight() <= 740
-        box = _find(top, "TCheckbutton", "Persona con el local cerrado")
+        box = _find(top, "TCheckbutton", "Fuera de horario (alguien con el local cerrado)")
         assert box is not None and "selected" not in box.state()  # la 2 no la tiene: no se marca
         box.invoke()  # se la prende a las dos; los gestos no se tocan
         _find(top, "TButton", "Guardar").invoke()
@@ -171,6 +177,23 @@ def test_que_alertas_da_solo_manda_lo_que_se_toco():
         o2 = _office(tk, root, [_cam(5, measures=["comercio"])], client, posts, gets)
         o2.alerts_dialog()
         assert posts and posts[0][0] == "info" and "no mide hurtos" in posts[0][1][1]
+
+        # sin ninguna elegida: todas las del cliente (las que no miden hurtos no se tocan, y lo dice)
+        posts.clear()
+        todas = [_cam(1), _cam(2), _cam(6, measures=["comercio"]), {**_cam(9), "client_id": 8}]
+        o3 = _office(tk, root, todas, client, posts, gets)
+        o3._sel_cameras = lambda: []
+        o3.alerts_dialog()
+        root.update()
+        top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+        labels = [str(w.cget("text")) for w in _walk(top) if w.winfo_class() == "TLabel"]
+        assert any("las 2 cámaras de Minas" in t and "no miden hurtos: Cámara 6" in t for t in labels), labels
+        # sin horario del cliente, «fuera de horario» no puede saltar: lo dice debajo de la casilla
+        assert any(t.startswith("Hoy no puede saltar en ninguna: el cliente no tiene horario") for t in labels), labels
+        _find(top, "TCheckbutton", "Fuera de horario (alguien con el local cerrado)").invoke()  # se apaga
+        _find(top, "TButton", "Guardar").invoke()
+        path, body = next(p for p in posts if p[0] == "/api/cameras/alerts")
+        assert body["camera_ids"] == [1, 2] and body["rules"] == ["salida_sin_pago", "zona_restringida"]
     finally:
         root.destroy()
 

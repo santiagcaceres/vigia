@@ -104,9 +104,13 @@ CAMERA_STEPS = ("Pasos:  1) ＋ Agregar cámaras   2) ✎ Marcar zonas   3) ▶ 
 # «Alertas que da…»: las reglas, con lo que hacen (los gestos van con GESTURE_NAMES)
 ALERT_RULES = (("salida_sin_pago", "Salida sin pagar", "tomó algo frente a una góndola y salió sin pasar por la caja"),
                ("zona_restringida", "Zona restringida", "alguien entra a una zona marcada «Restringida»"),
-               ("fuera_de_horario", "Persona con el local cerrado",
-                "solo si la cámara sigue mirando con el local cerrado («Con el local cerrado», en Editar); "
-                "no avisa en los 15 min de abrir y cerrar"))
+               ("fuera_de_horario", "Fuera de horario (alguien con el local cerrado)",
+                "alguien a la vista con el local cerrado, según el horario del cliente (la cámara tiene que seguir "
+                "mirando con el local cerrado); no avisa en los 15 min de abrir y de cerrar"))
+# columna «Avisa de» y el detalle de la cámara (pedido del dueño, 11 nov: «en cliente no tengo la opción para saber qué
+# se mide, qué alertas salen… tiene que quedar más a la vista»)
+ALERT_SHORT = {"salida_sin_pago": "Salida sin pagar", "zona_restringida": "Zona restringida",
+               "fuera_de_horario": "Fuera de horario"}
 
 
 def safe_name(name: str) -> str:
@@ -124,6 +128,75 @@ def camera_alerts(cam: dict) -> tuple[list[str], list[str]]:
     if gestures is None:
         gestures = cam.get("gestures_default") or []
     return [r for r in rules if r != "merodeo"], list(gestures)
+
+
+def rule_blocked(rule: str, cam: dict, client: dict | None) -> str:
+    """Por qué una regla prendida no puede saltar hoy en la cámara ("" = puede). Lo mismo que hace el servidor
+    (`camera_analysis`) y las reglas (core/rules.py): sin estas zonas, o sin horario, no hay cómo."""
+    types = {(z or {}).get("type") for z in cam.get("zones") or []}
+    if rule == "salida_sin_pago":
+        miss = [n for t, n in (("shelf", "Góndola"), ("exit", "Salida")) if t not in types]
+        return ("falta marcar " + " y ".join(f"«{n}»" for n in miss)) if miss else ""
+    if rule == "zona_restringida":
+        if "restricted" in types or (cam.get("profile") or "general") == "deposito":  # depósito: toda la imagen
+            return ""
+        return "falta marcar una zona «Restringida»"
+    if rule == "fuera_de_horario":
+        hours = (client or {}).get("hours")
+        if not hours:
+            return ("" if (cam.get("rules") or {}).get("opening_hours") else
+                    "el cliente no tiene horario cargado (para el sistema nunca está cerrado)")
+        off = cam.get("off_hours") or "apagada"
+        if off == "apagada":
+            return "con el local cerrado la cámara no mira; se cambia en «Editar» → «Con el local cerrado»"
+        if off == "alarmas" and cam.get("brand") == "hikconnect":
+            return "con el local cerrado solo escucha alarmas del grabador, y por Hik-Connect no llegan"
+    return ""
+
+
+def camera_warns(cam: dict, client: dict | None, short: bool = False) -> tuple[list[str], list[tuple[str, str]]]:
+    """De qué avisa la cámara de verdad y lo que tiene prendido pero hoy no puede saltar ((nombre, por qué)). Una
+    cámara que no mide hurtos no avisa de nada."""
+    if "hurto" not in camera_measures(cam, client):
+        return [], []
+    rules, gestures = camera_alerts(cam)
+    on, off = [], []
+    for r, _, _ in ALERT_RULES:
+        if r in rules:
+            why = rule_blocked(r, cam, client)
+            if why:
+                off.append((ALERT_SHORT[r], why))
+            else:
+                on.append(ALERT_SHORT[r])
+    if gestures:
+        names = ", ".join(GESTURE_SHORT.get(g, g) for g in gestures)
+        on.append("Gestos" if short and len(gestures) == len(GESTURE_NAMES) else f"Gestos ({names})")
+    return on, off
+
+
+def warns_text(cam: dict, client: dict | None) -> str:
+    """La columna «Avisa de»: lo que de verdad puede saltar en la cámara."""
+    measures = camera_measures(cam, client)
+    if not measures:
+        return "—"
+    if "hurto" not in measures:
+        return "Nada (solo cuenta)"
+    on, off = camera_warns(cam, client, short=True)
+    if on:
+        return ", ".join(on)
+    return "Nada por ahora (ver abajo)" if off else "Nada (solo cuenta)"
+
+
+def blocked_note(rule: str, cams: list[dict], client: dict | None) -> str:
+    """Para «Alertas que da…»: si la regla, en estas cámaras, hoy no puede saltar y por qué ("" = sí puede)."""
+    bad = [(c, w) for c in cams for w in [rule_blocked(rule, c, client)] if w]
+    if not bad:
+        return ""
+    why = bad[0][1] + (" (y otros motivos)" if len({w for _, w in bad}) > 1 else "")
+    if len(bad) == len(cams):
+        return f"Hoy no puede saltar{' en ninguna' if len(cams) > 1 else ''}: {why}."
+    names = ", ".join(c["name"] for c, _ in bad[:3]) + ("…" if len(bad) > 3 else "")
+    return f"Hoy no puede saltar en {len(bad)} de las {len(cams)} ({names}): {why}."
 
 
 TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_restringida": "Zona restringida",
@@ -264,8 +337,8 @@ NO_POSTS_TEXT = ("Sin datos de los puestos: hace falta la zona «Personal (emple
                  "reiniciarla). A los empleados se los reconoce por esa zona o porque llegan con el local cerrado.")
 
 
-NO_STAFF_CAMERA_TEXT = ("Ninguna cámara mide «Seguimiento de empleados»: elegilo en «Qué mide esta cámara» (Editar de la "
-                        "cámara, o «Más» → «Qué mide…» para varias).")
+NO_STAFF_CAMERA_TEXT = ("Ninguna cámara mide «Seguimiento de empleados»: elegilo con el botón «Qué mide…» de las cámaras "
+                        "(en «Clientes»; sin ninguna elegida, cambia todas las del cliente).")
 
 
 def overlapping_waits(zones: list[dict]) -> tuple[str, str] | None:
@@ -1191,14 +1264,15 @@ class Oficina:
         self.cam_title.pack(side="left")
         ttk.Button(kh, text="＋ Agregar cámaras", command=lambda: self.camera_dialog()).pack(side="right")
         # (10 nov, el dueño: «poco intuitiva… cómo poner a analizar; sacar el en vivo y clips de cada cámara»): una sola
-        # columna dice cómo está la cámara («No se analiza», «Analizando · 5 cuadros/s»…), otra si tiene zonas, y «Mide»
-        # solo aparece si el cliente contrató más de un plan
-        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "zonas", "mide", "alertas"),
+        # columna dice cómo está la cámara («No se analiza», «Analizando · 5 cuadros/s»…), otra si tiene zonas. (11 nov:
+        # «no tengo la opción para saber qué se mide, qué alertas salen»): «Mide» y «Avisa de» siempre a la vista
+        self.cam_tree = ttk.Treeview(right, columns=("nombre", "estado", "zonas", "mide", "avisa", "alertas"),
                                      show="headings", height=6, selectmode="extended")
-        # (los anchos suman lo de antes: con más, la pestaña pedía más ancho que una pantalla de 1366)
-        for col, txt, w, stretch in (("nombre", "Cámara", 160, True), ("estado", "Estado", 290, True),
-                                     ("zonas", "Zonas", 95, False), ("mide", "Mide", 130, True),
-                                     ("alertas", "Alertas hoy", 95, False)):
+        # (los anchos suman lo de antes: con más, la pestaña pedía más ancho que una pantalla de 1366; lo que sobre en
+        # la pantalla se reparte entre las que estiran)
+        for col, txt, w, stretch in (("nombre", "Cámara", 130, True), ("estado", "Estado", 200, True),
+                                     ("zonas", "Zonas", 90, False), ("mide", "Mide", 95, True),
+                                     ("avisa", "Avisa de", 160, True), ("alertas", "Alertas hoy", 95, False)):
             self.cam_tree.heading(col, text=txt, anchor="w")
             self.cam_tree.column(col, width=w, stretch=stretch, anchor="center" if col == "alertas" else "w")
         self.cam_tree.pack(fill="x")
@@ -1207,7 +1281,8 @@ class Oficina:
         self.cam_tree.bind("<Button-3>", self._camera_menu)
         self.cam_tree.bind("<Control-a>", lambda e: self.cam_tree.selection_set(self.cam_tree.get_children()))
         # UNA barra para la cámara elegida, con los dos pasos que importan a la vista: marcar las zonas y empezar a
-        # analizar (el botón cambia a «■ Dejar de analizar» si ya se analiza). Lo demás, en «Más» y con clic derecho.
+        # analizar (el botón cambia a «■ Dejar de analizar» si ya se analiza), y qué avisa y qué mide (sin ninguna
+        # elegida, de todas las del cliente). Lo demás, en «Más» y con clic derecho.
         # Mirar la cámara es la pestaña «En vivo»; enseñarle hurtos con clips, la pestaña «Entrenar IA hurtos».
         bar = ttk.Frame(right)
         bar.pack(fill="x", pady=(8, 0))
@@ -1217,6 +1292,8 @@ class Oficina:
                                  command=lambda: self.set_analyze(None))
         self.an_btn.pack(side="left", padx=6)
         ttk.Button(bar, text="Editar", command=lambda: self.camera_dialog(self._sel_camera())).pack(side="left")
+        ttk.Button(bar, text="Alertas que da…", command=self.alerts_dialog).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="Qué mide…", command=self.plans_dialog).pack(side="left", padx=(6, 0))
         cmore = ttk.Menubutton(bar, text="Más", width=6)
         self.cam_menu = tk.Menu(cmore, tearoff=False)
         self._fill_camera_menu(self.cam_menu, full=False)
@@ -1251,10 +1328,10 @@ class Oficina:
             menu.add_command(label="✎ Marcar zonas…", command=lambda: self.zones_dialog(sel()))
             menu.add_command(label=self._analyze_label(), command=lambda: self.set_analyze(None))
             menu.add_command(label="Editar…", command=lambda: self.camera_dialog(sel()))
+            menu.add_command(label="Alertas que da…", command=self.alerts_dialog)
+            menu.add_command(label="Qué mide…", command=self.plans_dialog)
             menu.add_separator()
         menu.add_command(label="Ver en la pestaña «En vivo»", command=lambda: self.watch_live(sel()))
-        menu.add_command(label="Alertas que da…", command=self.alerts_dialog)
-        menu.add_command(label="Qué mide…", command=self.plans_dialog)
         menu.add_command(label="Probar conexión", command=lambda: self.probe(sel()))
         menu.add_command(label="Bajar grabación…", command=self.recording_dialog)
         menu.add_command(label="Nombres e imágenes de todas…", command=self.names_dialog)
@@ -1279,6 +1356,15 @@ class Oficina:
     def _sel_cameras(self) -> list[dict]:
         sel = set(self.cam_tree.selection())
         return [c for c in self.cameras if str(c["id"]) in sel]
+
+    def _target_cameras(self) -> tuple[list[dict], bool]:
+        """Para «Alertas que da…» y «Qué mide…»: las cámaras elegidas o, sin ninguna elegida, todas las del cliente
+        (y si fueron todas)."""
+        cams = self._sel_cameras()
+        if cams:
+            return cams, False
+        client = self._sel_client()
+        return ([c for c in self.cameras if client and c["client_id"] == client["id"]], True)
 
     def _analyze_label(self) -> str:
         cams = self._sel_cameras()
@@ -1407,15 +1493,10 @@ class Oficina:
         self.cam_title.configure(text=f"Cámaras ({len(cams)})" + (
             f" · {analyzed} se {'analiza' if analyzed == 1 else 'analizan'}" if analyzed else
             " · ninguna se analiza todavía" if cams else ""))
-        # «Mide» solo si hay algo que elegir (el cliente contrató más de un plan)
-        several = len(client_plans(c)) > 1
-        self.cam_tree.configure(displaycolumns=("nombre", "estado", "zonas", "mide", "alertas") if several else
-                                ("nombre", "estado", "zonas", "alertas"))
-        self.cam_tree.column("estado", width=290 if several else 420)  # (sin «Mide», su lugar es del estado)
         counts = (getattr(self, "alert_counts", None) or {}).get("cameras") or {}
         for cam in cams:
             self.cam_tree.insert("", "end", iid=str(cam["id"]), values=(
-                cam["name"], self._cam_state(cam), self._zones_text(cam), measures_text(cam, c),
+                cam["name"], self._cam_state(cam), self._zones_text(cam), measures_text(cam, c), warns_text(cam, c),
                 (counts.get(str(cam["id"])) or {}).get("today", 0) or ""))
         if prev_cam and all(self.cam_tree.exists(i) for i in prev_cam):
             self.cam_tree.selection_set(prev_cam)  # sigue elegida (el detalle se actualiza solo si no hay otra cosa)
@@ -1425,7 +1506,9 @@ class Oficina:
                 self._set_info("Con «＋ Agregar cámaras» (arriba a la derecha) se cargan las cámaras de este cliente: "
                                "por Hik-Connect o con el link RTSP del grabador.", title="Este cliente no tiene cámaras")
             else:
-                self._set_info("Elegí una cámara de la lista para ver su imagen, qué le falta y sus datos.")
+                self._set_info("Elegí una cámara de la lista para ver su imagen, qué mide, de qué avisa y qué le "
+                               "falta. Sin ninguna elegida, «Alertas que da…» y «Qué mide…» cambian todas las cámaras "
+                               "del cliente.")
         self._show_analyze_button()
 
     def _show_analyze_button(self) -> None:
@@ -1442,8 +1525,9 @@ class Oficina:
             on = sum(1 for c in cams if c.get("analyzed"))
             return self._set_info(", ".join(c["name"] for c in cams[:8]) + ("…" if len(cams) > 8 else "")
                                   + f"\n{on} se {'analiza' if on == 1 else 'analizan'} y {len(cams) - on} no. Con varias "
-                                  "elegidas se puede empezar o dejar de analizar, y en «Más»: las alertas que dan, qué "
-                                  "miden, bajar grabación y eliminar.", title=f"{len(cams)} cámaras elegidas")
+                                  "elegidas se puede empezar o dejar de analizar, elegir las alertas que dan y qué "
+                                  "miden (los botones de arriba), y en «Más»: bajar grabación y eliminar.",
+                                  title=f"{len(cams)} cámaras elegidas")
         if not cam:
             return
         self._show_preview(cam)
@@ -1463,16 +1547,18 @@ class Oficina:
         state = self._cam_state(cam) + ((" · " + st["error"]) if st.get("error") else "")
         if cam.get("analyzed") and cam.get("analyzer_name"):
             state += f" · en {cam['analyzer_name']}"
-        lines = [f"Estado: {state}", f"Zonas: {zones}{staff_warn}"]
+        # primero qué mide y de qué avisa (11 nov: «tiene que quedar más a la vista»); se cambian con los botones
+        # «Qué mide…» y «Alertas que da…», justo arriba
         measures = camera_measures(cam, owner)
+        lines = [f"Mide: {measures_text(cam, owner, short=False)}"]
         if "hurto" in measures:
-            rules, gestures = camera_alerts(cam)
-            names = [n.lower() for r, n, _ in ALERT_RULES if r in rules]
-            if gestures:
-                names.append("gestos (" + ", ".join(GESTURE_SHORT.get(g, g) for g in gestures) + ")")
-            lines.append("Alertas que da: " + (", ".join(names) if names else "ninguna (solo métricas)"))
-        if not measures:
-            lines.append(f"Mide: {measures_text(cam, owner, short=False)}")
+            on, off = camera_warns(cam, owner)
+            lines.append("Avisa de: " + (", ".join(on) if on else "nada"))
+            if off:
+                lines.append("No avisa: " + "; ".join(f"{name.lower()} ({why})" for name, why in off))
+        elif measures:
+            lines.append("Avisa de: nada (no mide hurtos: solo cuenta)")
+        lines += [f"Estado: {state}", f"Zonas: {zones}{staff_warn}"]
         lines.append(f"Tipo: {PROFILE_NAMES.get(cam.get('profile') or 'general', '').split(' (')[0]} · "
                      f"{int(cam.get('process_fps') or 5)} cuadros por segundo · "
                      f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}"
@@ -2370,22 +2456,30 @@ class Oficina:
         horario en Minas, ¿cómo las desactivo?»): las reglas y los gestos, prendidos o apagados. Solo se cambia lo que
         se toca: si las cámaras dan distinto y no se toca una casilla, cada una sigue como estaba."""
         tk, ttk = self.tk, self.ttk
-        cams = self._sel_cameras()
+        cams, every = self._target_cameras()
         if not cams:
             return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
         if len({c["client_id"] for c in cams}) > 1:
             return self.mb.showinfo(NOMBRE, "Elegí cámaras de un solo cliente.")
         owner = self._client_of(cams[0])
         no_theft = [c["name"] for c in cams if "hurto" not in camera_measures(c, owner)]
-        if no_theft:
-            return self.mb.showinfo(NOMBRE, ", ".join(no_theft[:6]) + (" no mide" if len(no_theft) == 1 else " no miden")
-                                             + " hurtos: no da alertas, solo cuenta. Se cambia en «Más» → «Qué mide…».")
+        cams = [c for c in cams if "hurto" in camera_measures(c, owner)]  # las que no miden hurtos no avisan nada
+        if not cams:
+            return self.mb.showinfo(NOMBRE, ", ".join(no_theft[:6]) + ("…" if len(no_theft) > 6 else "")
+                                    + (" no mide" if len(no_theft) == 1 else " no miden")
+                                    + " hurtos: no da alertas, solo cuenta. Se cambia con «Qué mide…».")
         now = [camera_alerts(c) for c in cams]
-        what = f"«{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras"
-        top, frm = self._dialog(f"Alertas que da · {cams[0]['name'] if len(cams) == 1 else (owner or {}).get('name', '')}",
-                                width=520)
-        ttk.Label(frm, text=f"Qué {'avisa' if len(cams) == 1 else 'avisan'} {what}:", wraplength=490,
-                  justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
+        cname = (owner or {}).get("name", "")
+        what = (f"«{cams[0]['name']}»" if len(cams) == 1 else
+                f"las {len(cams)} cámaras de {cname}" if every else f"{len(cams)} cámaras")
+        top, frm = self._dialog(f"Alertas que da · {cams[0]['name'] if len(cams) == 1 else cname}", width=520)
+        head = f"Qué {'avisa' if len(cams) == 1 else 'avisan'} {what}:"
+        if every and len(cams) > 1:
+            head += "  (sin ninguna elegida, se cambian todas)"
+        if no_theft:
+            head += ("\nNo se tocan, porque no miden hurtos: " + ", ".join(no_theft[:6])
+                     + ("…" if len(no_theft) > 6 else "") + ".")
+        ttk.Label(frm, text=head, wraplength=490, justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
         rv = {r: tk.BooleanVar(value=all(r in n[0] for n in now)) for r, _, _ in ALERT_RULES}
         gv = {g: tk.BooleanVar(value=all(g in n[1] for n in now)) for g in GESTURE_NAMES}
         start_r = {k: v.get() for k, v in rv.items()}
@@ -2398,6 +2492,11 @@ class Oficina:
             row += 1
             ttk.Label(frm, text=help_, style="Suave.TLabel", wraplength=470, justify="left").grid(
                 row=row, column=0, columnspan=2, sticky="w", padx=(30, 0))
+            note = blocked_note(r, cams, owner)
+            if note:  # prendida o no, decir si en estas cámaras hoy no puede saltar (y por qué)
+                row += 1
+                ttk.Label(frm, text=note, style="Aviso.TLabel", wraplength=470, justify="left").grid(
+                    row=row, column=0, columnspan=2, sticky="w", padx=(30, 0))
         row += 1
         ttk.Label(frm, text="Gestos de ocultamiento (postura)", style="Subtitulo.TLabel").grid(row=row, column=0,
                                                                                               sticky="w", pady=(8, 0))
@@ -2443,7 +2542,7 @@ class Oficina:
         mide cada cámara (una de adentro, las métricas de comercio; una de afuera, la estación). Los números se siguen
         sumando por cliente. Todas marcadas = como el cliente."""
         tk, ttk = self.tk, self.ttk
-        cams = self._sel_cameras()
+        cams, every = self._target_cameras()
         if not cams:
             return self.mb.showinfo(NOMBRE, "Elegí una o varias cámaras (Ctrl o Mayús para varias).")
         if len({c["client_id"] for c in cams}) > 1:
@@ -2457,7 +2556,8 @@ class Oficina:
                                              "«Editar cliente».")
         now = [camera_measures(c, owner) for c in cams]
         common = [p for p in cplans if all(p in m for m in now)]  # (si miden distinto, lo de todas; puede ser nada)
-        what = f"«{cams[0]['name']}»" if len(cams) == 1 else f"{len(cams)} cámaras"
+        what = (f"«{cams[0]['name']}»" if len(cams) == 1 else
+                f"las {len(cams)} cámaras" if every else f"{len(cams)} cámaras")
         top, frm = self._dialog(f"Qué mide · {cams[0]['name'] if len(cams) == 1 else name}", width=460)
         ttk.Label(frm, text=f"Qué mide {what}, de lo que contrató {name}:", wraplength=430,
                   justify="left").grid(row=0, column=0, columnspan=2, sticky="w")

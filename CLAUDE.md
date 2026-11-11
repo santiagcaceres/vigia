@@ -389,6 +389,19 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     tanto el video se ve igual y lo no analizado va sin recuadros. Lo que se ve es la IA de esta PC, no exactamente lo
     que vio la máquina (otro seguimiento: los números de persona no coinciden con los de la descripción). Probado con
     clips sintéticos y con la IA de verdad sobre un clip de prueba en Xvfb. Pruebas: `tests/test_alertas_reproductor.py`.
+- **Qué mide y de qué avisa cada cámara, a la vista (11 nov, el dueño con la app 1.43.1: «en cliente no tengo la opción
+  para saber qué se mide, qué alertas salen… y dónde está lo que avisa cuando ve a alguien fuera de hora, ¿cómo lo
+  desactivo?»; app 1.46.0).** Solo la app. En «Clientes», la lista de cámaras tiene siempre **«Mide»** y **«Avisa de»**
+  (`warns_text`: lo que **de verdad** puede saltar; «Nada (solo cuenta)», «Nada por ahora (ver abajo)»). Una regla
+  prendida que no puede saltar no figura (`rule_blocked`): salida sin pagar sin «Góndola» y «Salida»; zona restringida
+  sin zona «Restringida» (salvo tipo depósito); **fuera de horario** sin horario del cliente, con «Con el local cerrado:
+  No mirar» (el servidor ni la manda, `camera_analysis`) o escuchando alarmas por Hik-Connect (no llegan). El detalle
+  arranca con «Mide», «Avisa de» y «No avisa: … (por qué)». **«Alertas que da…» y «Qué mide…» son botones de la barra**
+  (salieron de «Más»; con clic derecho siguen) y, **sin ninguna cámara elegida, cambian todas las del cliente**
+  (`_target_cameras`; en «Alertas que da…» las que no miden hurtos no se tocan y lo dice). La regla se llama «Fuera de
+  horario (alguien con el local cerrado)» (antes «Persona con el local cerrado»: no se la encontraba con el nombre de la
+  alerta) y debajo de cada casilla, en naranja, si en esas cámaras hoy no puede saltar y por qué (`blocked_note`).
+  Pruebas: `tests/test_app_facil.py`, `tests/test_alertas_camara.py`.
 - **«Demora estándar» por sector en la web (10 nov, el dueño: «una opción que me permita saber cuánto demora la gente
   por promedio en cada lugar; marcar cuánto es una demora estándar y si demora más de eso, que marque "demora en el
   sector X"»).** Solo web + servidor, **display-only**: no toca el agente ni las máquinas (el tiempo promedio por zona

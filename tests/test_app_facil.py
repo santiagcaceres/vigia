@@ -156,7 +156,9 @@ def test_ya_no_hay_en_vivo_ni_clips_por_camara():
         o._fill_camera_menu(m, full=full)
         text = " | ".join(m.labels)
         assert "Clips" not in text and "Subir" not in text and "con la IA" not in text, text
-        assert "Ver en la pestaña «En vivo»" in text and "Alertas que da…" in text and "Qué mide…" in text
+        assert "Ver en la pestaña «En vivo»" in text
+        # «Alertas que da…» y «Qué mide…» son botones de la barra: en «Más» no se repiten (con clic derecho, sí)
+        assert ("Alertas que da…" in text and "Qué mide…" in text) == full, text
     assert m.labels[:3] == ["✎ Marcar zonas…", "▶ Empezar a analizar", "Editar…"]
     # (un operador no borra cámaras)
     o.is_admin = False
@@ -307,11 +309,16 @@ def test_la_pestana_clientes_entra_y_muestra_los_pasos(tmp_path):
         assert "✎ Marcar zonas" in texts and of.ANALYZE_ON in texts
         assert not any("Clips" in t or t == "● En vivo" for t in texts), texts
         assert any(str(w.cget("text")) == of.CAMERA_STEPS for w in _walk(o.tab_clients) if w.winfo_class() == "TLabel")
-        # las columnas: con dos planes se ve «Mide»; con uno solo, no
-        assert o.cam_tree.cget("displaycolumns") == ("nombre", "estado", "zonas", "mide", "alertas")
+        # qué mide y de qué avisa cada cámara, siempre a la vista (11 nov: «no tengo la opción para saber qué se mide,
+        # qué alertas salen»), con sus botones en la barra (no escondidos en «Más»)
+        assert "Alertas que da…" in texts and "Qué mide…" in texts
+        assert o.cam_tree.cget("columns") == ("nombre", "estado", "zonas", "mide", "avisa", "alertas")
+        assert o.cam_tree.cget("displaycolumns") in (("#all",), "#all")
         row = o.cam_tree.item("2")["values"]
-        assert row[:4] == ["Caja", "Analizando · 5 cuadros/s", "✔ 1", "Hurto · Comercio"]
+        # (solo tiene una góndola: «salida sin pagar» y «zona restringida» no pueden saltar; los gestos sí)
+        assert row[:5] == ["Caja", "Analizando · 5 cuadros/s", "✔ 1", "Hurto · Comercio", "Gestos (bolsillo)"]
         assert o.cam_tree.item("1")["values"][1] == "No se analiza"
+        assert o.cam_tree.item("1")["values"][4] == "Nada por ahora (ver abajo)"
         # el botón dice lo que va a hacer con la elegida, y el detalle qué le falta
         o.cam_tree.selection_set("1")
         root.update()
@@ -324,11 +331,46 @@ def test_la_pestana_clientes_entra_y_muestra_los_pasos(tmp_path):
         info = o.cam_info.get("1.0", "end")
         assert info.startswith("Caja\nLista: se analiza en una máquina")
         assert "Estado: Analizando · 5 cuadros/s · en maquina-1" in info
-        assert "Alertas que da: salida sin pagar, zona restringida, gestos (bolsillo)" in info
+        assert "Mide: Detección de hurtos, Métricas de comercio (como el cliente)" in info
+        assert "Avisa de: Gestos (bolsillo)" in info
+        assert ("No avisa: salida sin pagar (falta marcar «Salida»); zona restringida (falta marcar una zona "
+                "«Restringida»)") in info
         o.cl_tree.selection_set("4")
         root.update()
-        assert o.cam_tree.cget("displaycolumns") == ("nombre", "estado", "zonas", "alertas")
+        assert o.cam_tree.item("3")["values"][3:5] == ["Comercio", "Nada (solo cuenta)"]
         assert "ninguna se analiza todavía" in o.cam_title.cget("text")
     finally:
         root.destroy()
 
+
+
+def test_de_que_avisa_cada_camara_y_por_que_no():
+    """«Avisa de» dice lo que de verdad puede saltar (11 nov, el dueño: «¿dónde está lo que avisa cuando ve a alguien
+    fuera de hora? ¿cómo lo desactivo?»): «fuera de horario» solo si el cliente tiene horario y la cámara sigue
+    mirando con el local cerrado (si no, el servidor ni la manda); las reglas de zonas, solo con sus zonas."""
+    zonas = [{"name": "Góndola", "type": "shelf"}, {"name": "Puerta", "type": "exit"}]
+    abierto = {"id": 3, "plans": ["hurto"], "hours": {"lun": "09:00-17:00"}}
+    cam = _cam(zones=zonas, rules={"enabled_rules": ["salida_sin_pago", "fuera_de_horario"]}, gestures={"enabled": []})
+    assert of.warns_text(cam, abierto) == "Salida sin pagar"
+    on, off = of.camera_warns(cam, abierto)
+    assert on == ["Salida sin pagar"] and off[0][0] == "Fuera de horario" and "no mira" in off[0][1]
+    assert of.warns_text({**cam, "off_hours": "vivo"}, abierto) == "Salida sin pagar, Fuera de horario"
+    assert "no tiene horario" in of.rule_blocked("fuera_de_horario", {**cam, "off_hours": "vivo"}, {"plans": ["hurto"]})
+    assert "Hik-Connect" in of.rule_blocked("fuera_de_horario", {**cam, "off_hours": "alarmas", "brand": "hikconnect"},
+                                            abierto)
+    # depósito: toda la imagen es restringida aunque no tenga zonas
+    assert of.rule_blocked("zona_restringida", _cam(profile="deposito"), abierto) == ""
+    assert "«Góndola» y «Salida»" in of.rule_blocked("salida_sin_pago", _cam(), abierto)
+    # los 3 gestos van como «Gestos» en la lista (en el detalle, con los nombres)
+    todos = _cam(rules={"enabled_rules": []}, gestures=None,
+                 gestures_default=["mano_bolsillo", "mano_ropa", "mano_bolsa"])
+    assert of.warns_text(todos, abierto) == "Gestos"
+    assert of.camera_warns(todos, abierto)[0] == ["Gestos (bolsillo, ropa, bolsa)"]
+    assert of.warns_text(_cam(rules={"enabled_rules": []}), abierto) == "Nada (solo cuenta)"
+    assert of.warns_text(_cam(measures=["comercio"]), abierto) == "Nada (solo cuenta)"
+    assert of.warns_text(_cam(measures=[]), abierto) == "—"
+    # en «Alertas que da…»: por qué no puede saltar en estas cámaras
+    dos = [{**cam, "name": "A"}, {**cam, "name": "B", "off_hours": "vivo"}]
+    assert of.blocked_note("fuera_de_horario", dos, abierto).startswith("Hoy no puede saltar en 1 de las 2 (A)")
+    assert of.blocked_note("fuera_de_horario", dos[:1], abierto).startswith("Hoy no puede saltar: con el local")
+    assert of.blocked_note("salida_sin_pago", dos, abierto) == ""
