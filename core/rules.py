@@ -26,9 +26,13 @@ from .tracker import Track
 # cuenta por separado los que entran y los que salen. pump/shop: estaciones de servicio (surtidor y tienda).
 # staff: lugar de empleados (detrás del mostrador, depósito): quien lo pisa no cuenta como cliente en las métricas.
 # aisle: pasillo (por donde se camina): solo métricas («a dónde van»); las reglas de hurto no lo miran.
-ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle")
+# table: una mesa con sus sillas (plan «gastronomía»): ocupación, tiempo en la mesa y visitas del mozo (core/metrics.py).
+ZONE_TYPES = ("shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle", "table")
 # tipos que un agente viejo no conoce: viajan aparte (`extra_zones`) para que no deje de usar las demás zonas
 NEW_ZONE_TYPES = ("staff", "aisle")
+# las mesas viajan en otra lista más (`table_zones`): un agente que ya lee `extra_zones` pero no conoce «mesa»
+# (una máquina sin reiniciar) rechazaría todas las zonas de la cámara
+TABLE_ZONE_TYPES = ("table",)
 # hacia dónde se mueve en la imagen una persona que ENTRA al local (zona entrance)
 DIRECTIONS = {"abajo": (0.0, 1.0), "arriba": (0.0, -1.0), "derecha": (1.0, 0.0), "izquierda": (-1.0, 0.0)}
 VEHICLE_LABEL = "vehiculo"
@@ -37,7 +41,7 @@ VEHICLE_LABEL = "vehiculo"
 # la señora pisaba en el 99 % y nunca «estuvo» en la zona)
 EDGE_SNAP = 0.03
 # tipos de zona donde no se mide espera: el personal no espera y en el surtidor esperan vehículos (ya se mide aparte)
-NO_WAIT_TYPES = ("staff", "pump")
+NO_WAIT_TYPES = ("staff", "pump", "table")  # (la mesa mide lo suyo: ocupación y visitas del mozo)
 
 SALIDA_SIN_PAGO = "salida_sin_pago"
 ZONA_RESTRINGIDA = "zona_restringida"
@@ -188,7 +192,7 @@ def parse_config(config: dict | None) -> tuple[list[Zone], RuleConfig]:
     # los gestos también (un agente viejo ignora la clave)
     cfg.gestures = GestureConfig.from_dict(config.get("gestures"), strict=False)
     # las zonas de tipos nuevos viajan aparte (un agente viejo no conoce el tipo y rechazaría todas las zonas)
-    extra = list(config.get("extra_zones") or config.get("staff_zones") or [])
+    extra = list(config.get("extra_zones") or config.get("staff_zones") or []) + list(config.get("table_zones") or [])
     return parse_zones(list(config.get("zones") or []) + extra), cfg
 
 

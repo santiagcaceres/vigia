@@ -36,6 +36,15 @@ Qué se mide por cubo:
   promedio de empleados a la vista = staff_s / staff_obs_s, sumando cámaras = promedio por cámara) y `staff_max`
   (máximo de empleados a la vez); `staff_dwell`: por zona, segundos que pasaron ahí los empleados (dónde trabajan), que
   se suman cuadro a cuadro (un turno de horas queda repartido en sus horas).
+- Plan «gastronomía»: `tables`, por zona «Mesa» (la mesa con sus sillas y el lugar donde se para el mozo). Una
+  **ocupación** empieza cuando un cliente lleva `TABLE_SEAT_SECONDS` en la mesa y termina cuando queda vacía
+  `TABLE_GRACE_SECONDS`; cuenta si duró `TABLE_MIN_SECONDS` o más (limpiar la mesa no es ocuparla): `n`, `sum_s`,
+  `max_s`, `party` (suma de comensales, el máximo sentados a la vez). Por cuadro: `obs_s` (segundos mirados) y `occ_s`
+  (segundos ocupada). **Visitas a la mesa** (el mozo): alguien del personal (pisó una zona «Personal»), o cualquiera que
+  llega caminando con la mesa ya ocupada, se queda entre `TABLE_VISIT_MIN` y `TABLE_VISIT_MAX` segundos y se va
+  mientras los demás siguen sentados. La primera visita es la **atención** (`attend_n`, `attend_s`, `attend_max_s`:
+  segundos desde que se sentaron); la segunda, la **entrega estimada** (`serve_n`, `serve_s`, `serve_max_s`);
+  `visits` = todas; `no_visit` = ocupaciones que terminaron sin ninguna visita.
 - `frames`: cuadros procesados (para saber si la cámara estuvo activa).
 
 Lo que NO mide (y hay que decirlo): gestos (lavar vidrios, guardar algo) ni caras. A los empleados los reconoce
@@ -43,7 +52,9 @@ solo si pisan su zona (2 s o más) o llegan con el local cerrado: no sabe quién
 cámara a otra. Quien pisa la zona de personal cuenta como «alguien en el puesto», sea o no empleado. La espera es el
 tiempo en la zona marcada: si la zona incluye el lugar donde se atiende, incluye la atención. En una fila apretada,
 quien queda tapado por otro no se ve. Una persona que el tracker pierde y vuelve a encontrar cuenta dos veces (salvo
-en la puerta con sentido, donde cuenta el cruce).
+en la puerta con sentido, donde cuenta el cruce). En las mesas no ve qué lleva el mozo en la mano: «entrega» es la
+segunda vez que alguien se acerca a la mesa (la primera se toma como el pedido); un cliente que se suma tarde, deja
+algo y se va cuenta como visita; y en un local donde se pide en el mostrador no hay visitas.
 """
 
 from __future__ import annotations
@@ -65,6 +76,14 @@ WAIT_EDGES = (60, 180, 300, 600)  # cortes del histograma de esperas: < 1 min, 1
 # entre dos cuadros cuenta como mucho esto (un corte del video no suma tiempo mirado). Más que el cuadro cada 2 s que
 # analiza el filtro de movimiento (core/motion.py) con la escena quieta y vacía: si no, ese rato contaría la mitad
 FRAME_GAP_MAX = 2.5
+# mesas (plan «gastronomía»)
+TABLE_SEAT_SECONDS = 10.0  # un cliente que lleva esto en la mesa se sentó (el que pasa entre las mesas no)
+TABLE_GRACE_SECONDS = 60.0  # vacía este rato = se fueron (al que el detector pierde un momento no lo da por ido)
+TABLE_MIN_SECONDS = 60.0  # una ocupación más corta no cuenta (limpiar o acomodar la mesa)
+TABLE_VISIT_MIN = 2.0  # una visita a la mesa (el mozo) dura por lo menos esto…
+TABLE_VISIT_MAX = 120.0  # …y, si no es del personal, como mucho esto (más es un comensal que llegó tarde)
+TABLE_VISIT_AFTER = 5.0  # no cuenta como visita quien llega junto con los que se sientan
+TABLE_VISIT_GAP = 45.0  # dos acercamientos más seguidos que esto son la misma visita
 POST_GRACE_SECONDS = 1.5  # en el puesto: quien el detector dejó de ver hace menos que esto (tapado por el cliente) sigue ahí
 
 
@@ -75,6 +94,11 @@ def new_wait() -> dict:
 
 def new_post() -> dict:
     return {"obs_s": 0.0, "covered_s": 0.0, "people_s": 0.0, "max": 0}
+
+
+def new_table() -> dict:
+    return {"n": 0, "sum_s": 0.0, "max_s": 0.0, "party": 0, "obs_s": 0.0, "occ_s": 0.0, "visits": 0, "no_visit": 0,
+            "attend_n": 0, "attend_s": 0.0, "attend_max_s": 0.0, "serve_n": 0, "serve_s": 0.0, "serve_max_s": 0.0}
 
 
 def wait_bin(secs: float) -> int:
@@ -91,10 +115,11 @@ def empty_bucket() -> dict:
             "vehicles": 0, "vehicles_dwell_s": 0.0, "vehicles_max": 0,
             "pump_vehicles": 0, "pump_wait_s": 0.0, "pump_wait_n": 0, "pump_unattended": 0,
             "shop_visits": 0, "frames": 0,
-            "waits": {}, "posts": {}, "staff_s": 0.0, "staff_obs_s": 0.0, "staff_max": 0, "staff_dwell": {}}
+            "waits": {}, "posts": {}, "staff_s": 0.0, "staff_obs_s": 0.0, "staff_max": 0, "staff_dwell": {},
+            "tables": {}}
 
 
-_MAX_KEYS = {"max_s", "queue_max", "staffed", "max"}  # dentro de waits/posts: se quedan con el mayor
+_MAX_KEYS = {"max_s", "queue_max", "staffed", "max", "attend_max_s", "serve_max_s"}  # dentro de waits/posts: se quedan con el mayor
 MAX_NAMES = 64  # zonas por cubo: más que esto no es una cámara de verdad (se descarta lo que sobra)
 MAX_VALUE = 1e9
 
@@ -129,11 +154,11 @@ def merge_bucket(a: dict, b: dict) -> dict:
     out = dict(empty_bucket())
     a, b = (a if isinstance(a, dict) else {}), (b if isinstance(b, dict) else {})
     for k in out:
-        if k in ("zones", "waits", "posts", "staff_dwell"):
+        if k in _DICT_KEYS:
             continue
         va, vb = _num(a.get(k, 0)), _num(b.get(k, 0))
         out[k] = max(va, vb) if k.endswith("_max") or k == "door" else va + vb
-    for key, blank in (("waits", new_wait()), ("posts", new_post())):
+    for key, blank in (("waits", new_wait()), ("posts", new_post()), ("tables", new_table())):
         merged: dict[str, dict] = {}
         for src in (_names(a.get(key)), _names(b.get(key))):
             for name, st in src.items():
@@ -171,7 +196,8 @@ STATION_KEYS = ("vehicles", "vehicles_dwell_s", "vehicles_max", "pump_vehicles",
                 "pump_unattended", "shop_visits")  # plan «estacion»
 STAFF_KEYS = ("posts", "staff_s", "staff_obs_s", "staff_max", "staff_dwell", "staff",
               "staff_entries")  # plan «empleados» (cuántos empleados y sus ingresos, también de «comercio»)
-_DICT_KEYS = ("zones", "waits", "posts", "staff_dwell")
+GASTRO_KEYS = ("tables",)  # plan «gastronomia»
+_DICT_KEYS = ("zones", "waits", "posts", "staff_dwell", "tables")
 
 
 def restrict_bucket(data: dict, client_plans, camera_plans) -> dict:
@@ -183,7 +209,8 @@ def restrict_bucket(data: dict, client_plans, camera_plans) -> dict:
     client_plans, camera_plans = set(client_plans or ()), set(camera_plans or ())
     blank = empty_bucket()
     owners: dict[str, set[str]] = {}  # dato -> planes del cliente que lo usan (`staff` es de «comercio» y «empleados»)
-    for plan, keys in (("comercio", PEOPLE_KEYS), ("estacion", STATION_KEYS), ("empleados", STAFF_KEYS)):
+    for plan, keys in (("comercio", PEOPLE_KEYS), ("estacion", STATION_KEYS), ("empleados", STAFF_KEYS),
+                       ("gastronomia", GASTRO_KEYS)):
         if plan in client_plans:
             for k in keys:
                 owners.setdefault(k, set()).add(plan)
@@ -218,6 +245,31 @@ def post_stats(p: dict | None) -> dict:
             "avg_people": (p["people_s"] / obs) if obs else None, "max": p["max"]}
 
 
+def table_stats(t: dict | None) -> dict:
+    """Resumen de una mesa (o de varias sumadas): cuántas veces se ocupó, el promedio y el máximo en la mesa (segundos),
+    qué parte del tiempo mirado estuvo ocupada (`occupied_pct`, 0-100), comensales por ocupación, cuánto tardó la
+    primera visita (la atención) y la segunda (la entrega estimada), y cuántas ocupaciones no tuvieron ninguna."""
+    t = _merge_stats(new_table(), t or {}, new_table())
+    n, obs = t["n"], t["obs_s"]
+    return {"n": n, "avg_s": (t["sum_s"] / n) if n else None, "max_s": t["max_s"] if n else None,
+            "obs_s": obs, "occ_s": t["occ_s"], "occupied_pct": (100.0 * min(t["occ_s"], obs) / obs) if obs else None,
+            "party_avg": (t["party"] / n) if n else None, "visits": t["visits"], "no_visit": t["no_visit"],
+            "attend_n": t["attend_n"], "attend_avg_s": (t["attend_s"] / t["attend_n"]) if t["attend_n"] else None,
+            "attend_max_s": t["attend_max_s"] if t["attend_n"] else None,
+            "serve_n": t["serve_n"], "serve_avg_s": (t["serve_s"] / t["serve_n"]) if t["serve_n"] else None,
+            "serve_max_s": t["serve_max_s"] if t["serve_n"] else None}
+
+
+@dataclass
+class _TableUse:
+    """Una ocupación de una mesa, mientras dura."""
+    start_ts: float
+    last_busy_ts: float
+    confirmed: bool = False
+    party: int = 0
+    visits: list[float] = field(default_factory=list)  # cuándo llegó cada visita (reloj del video)
+
+
 @dataclass
 class _Visit:
     label: str
@@ -232,6 +284,7 @@ class _Visit:
     crossings: list[int] = field(default_factory=list)  # +1 entró, -1 salió
     door_of: list[str] = field(default_factory=list)  # por qué puerta fue cada cruce (para contar cada puerta aparte)
     attended: set[str] = field(default_factory=set)  # zonas de espera donde, estando ahí, hubo alguien en el puesto
+    table_from: dict[str, float] = field(default_factory=dict)  # mesa -> cuándo llegó caminando (posible visita del mozo)
     dwell_booked: bool = False  # empleado: lo que lleva en cada zona ya se sumó a `staff_dwell` (de ahí en más, por cuadro)
 
 
@@ -277,6 +330,8 @@ class MetricsCollector:
         self._staff_names = {z.name for z in self.by_type.get("staff", [])}
         self._wait_names = [z.name for z in zones if z.wait]
         self._post_of = {z.name: nearest_post(z, self.by_type.get("staff", [])) for z in zones if z.wait}
+        self._table_names = [z.name for z in self.by_type.get("table", [])]
+        self._tables: dict[str, _TableUse] = {}  # mesa -> la ocupación en curso
         self._last_frame_ts: float | None = None
         self._waiting: dict[str, int] = {}  # zona de espera -> clientes esperando en el último cuadro
         self._visits: dict[int, _Visit] = {}
@@ -310,6 +365,10 @@ class MetricsCollector:
         waiting: dict[str, int] = {}  # zona de espera -> clientes esperando ahora
         waiting_visits: list[tuple[_Visit, set[str]]] = []
         staff_now = 0
+        seated: dict[str, int] = {}  # mesa -> clientes sentados ahora (llevan TABLE_SEAT_SECONDS)
+        at_table: dict[str, int] = {}  # mesa -> clientes en la mesa ahora (sentados o recién llegados)
+        longest: dict[str, float] = {}  # mesa -> lo que lleva el que más lleva
+        table_exits: list[tuple[str, float, float, bool]] = []  # (mesa, llegó, se quedó, ¿del personal?)
         for t in tracks:
             v = self._visits.get(t.id)
             if v is None:
@@ -345,6 +404,23 @@ class MetricsCollector:
                             v.door_of.append(z.name)
                 v.last_pos = (nx, ny)
             entered = now_in - v.inside
+            if self._table_names and t.label != VEHICLE_LABEL:
+                staff = self.is_staff(v)
+                for name in self._table_names:
+                    if name in entered and name not in v.table_from and ts - v.first_ts >= 1.0:
+                        v.table_from[name] = ts  # llegó caminando (ya se lo venía viendo afuera de la mesa)
+                    elif name in v.table_from and name not in now_in:
+                        since = v.table_from.pop(name)
+                        table_exits.append((name, since, ts - since, staff))
+                    elif name in v.table_from and staff and ts - v.table_from[name] >= TABLE_VISIT_MIN:
+                        since = v.table_from.pop(name)  # del personal: cuenta apenas se queda un momento
+                        table_exits.append((name, since, ts - since, True))
+                    if name in now_in and not staff:
+                        at_table[name] = at_table.get(name, 0) + 1
+                        secs = v.zone_dwell.get(name, 0.0)
+                        longest[name] = max(longest.get(name, 0.0), secs)
+                        if secs >= TABLE_SEAT_SECONDS:
+                            seated[name] = seated.get(name, 0) + 1
             v.inside = now_in
             for name in entered:
                 z = next(z for z in self.zones if z.name == name)
@@ -414,6 +490,7 @@ class MetricsCollector:
             p["max"] = max(p["max"], c)
             if c:
                 p["covered_s"] += frame_dt
+        self._update_tables(b, ts, frame_dt, open_now, at_table, seated, longest, table_exits)
         b["staff_s"] += frame_dt * staff_now
         b["staff_obs_s"] += frame_dt
         b["staff_max"] = max(b["staff_max"], staff_now)
@@ -423,6 +500,63 @@ class MetricsCollector:
         for tid in [k for k in self._visits if k not in live_ids]:
             self._finish(tid, self._visits.pop(tid))
         self._dirty.add(bucket_start(wall))
+
+    # ---------------- mesas (plan «gastronomía») ----------------
+    def _update_tables(self, b: dict, ts: float, frame_dt: float, open_now: bool, at_table: dict, seated: dict,
+                       longest: dict, exits: list) -> None:
+        for name in self._table_names:
+            st = b["tables"].setdefault(name, new_table())
+            use = self._tables.get(name)
+            n = at_table.get(name, 0)
+            if use is None and seated.get(name):
+                use = self._tables[name] = _TableUse(ts - longest.get(name, 0.0), ts)
+            if use is not None:
+                if n:
+                    use.last_busy_ts = ts
+                    use.party = max(use.party, seated.get(name, 0))
+                    if use.confirmed:
+                        st["occ_s"] += frame_dt
+                    elif seated.get(name) and ts - use.start_ts >= TABLE_MIN_SECONDS:  # (el que pasa no la confirma)
+                        use.confirmed = True
+                        st["occ_s"] += ts - use.start_ts  # lo que llevaba hasta confirmarse
+                elif ts - use.last_busy_ts > TABLE_GRACE_SECONDS:
+                    self._close_table(b, name, use)
+                    use = None
+            if open_now:
+                st["obs_s"] += frame_dt
+        for name, since, stay, staff in exits:
+            use = self._tables.get(name)
+            if use is None or since < use.start_ts + TABLE_VISIT_AFTER:
+                continue
+            if not staff and not (TABLE_VISIT_MIN <= stay <= TABLE_VISIT_MAX and at_table.get(name, 0)):
+                continue  # no es del personal: solo si se fue con los demás todavía sentados
+            if use.visits and since - max(use.visits) < TABLE_VISIT_GAP:
+                continue
+            use.visits.append(since)
+            st = b["tables"].setdefault(name, new_table())
+            st["visits"] += 1
+            wait = since - use.start_ts
+            if len(use.visits) == 1:  # la atención: la primera vez que alguien se acerca
+                st["attend_n"] += 1
+                st["attend_s"] += wait
+                st["attend_max_s"] = max(st["attend_max_s"], wait)
+            elif len(use.visits) == 2:  # la entrega (estimada): la segunda
+                st["serve_n"] += 1
+                st["serve_s"] += wait
+                st["serve_max_s"] = max(st["serve_max_s"], wait)
+
+    def _close_table(self, b: dict, name: str, use: _TableUse) -> None:
+        self._tables.pop(name, None)
+        dur = use.last_busy_ts - use.start_ts
+        if not use.confirmed or dur < TABLE_MIN_SECONDS:
+            return
+        st = b["tables"].setdefault(name, new_table())
+        st["n"] += 1
+        st["sum_s"] += dur
+        st["max_s"] = max(st["max_s"], dur)
+        st["party"] += max(1, use.party)
+        if not use.visits:
+            st["no_visit"] += 1
 
     def _finish(self, tid: int, v: _Visit) -> None:
         dur = v.last_ts - v.first_ts
@@ -544,6 +678,20 @@ class MetricsCollector:
                     n, total, longest = n + 1, total + secs, max(longest, secs)
             zones[name]["wait"] = {"n": n, "avg_s": total / n if n else None, "max_s": longest if n else None,
                                    "now": self._waiting.get(name, 0)}
+        # mesas: las ocupaciones terminadas más la que sigue (con lo que lleva), y si está ocupada ahora
+        for name in self._table_names:
+            agg = new_table()
+            for b in self._buckets.values():
+                agg = _merge_stats(agg, (b.get("tables") or {}).get(name) or {}, new_table())
+            use = self._tables.get(name)
+            busy = use is not None and use.confirmed
+            if busy:
+                agg["n"] += 1
+                agg["sum_s"] += use.last_busy_ts - use.start_ts
+            st = table_stats(agg)
+            zones[name]["table"] = {"busy": busy, "for_s": (use.last_busy_ts - use.start_ts) if busy else None,
+                                    "n": st["n"], "avg_s": st["avg_s"], "attend_avg_s": st["attend_avg_s"],
+                                    "serve_avg_s": st["serve_avg_s"], "occupied_pct": st["occupied_pct"]}
         # puestos (zonas de personal): qué parte del tiempo hubo alguien
         for name in self._staff_names:
             agg = new_post()
@@ -590,6 +738,11 @@ class MetricsCollector:
         for tid, v in list(self._visits.items()):
             self._finish(tid, v)
         self._visits.clear()
+        if self._tables and self._buckets:  # las mesas que seguían ocupadas: hasta donde se las vio
+            b = self._buckets[max(self._buckets)]
+            for name, use in list(self._tables.items()):
+                self._close_table(b, name, use)
+            self._dirty.add(max(self._buckets))
         return self.flush()
 
 

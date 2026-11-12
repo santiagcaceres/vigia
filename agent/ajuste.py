@@ -76,7 +76,7 @@ CLIP_BEFORE = 60.0  # «⚑ Marcar hurto» en vivo: el clip va de 1 minuto antes
 CLIP_AFTER = 30.0  # ...hasta 30 s después (lo que haya)
 ZONE_TEXT = {"shelf": "gondola", "checkout": "caja", "exit": "salida", "restricted": "restringida",
              "entrance": "entrada", "pump": "surtidor", "shop": "tienda", "staff": "personal",
-             "aisle": "pasillo"}
+             "aisle": "pasillo", "table": "mesa"}
 ALERT_TEXT = {"salida_sin_pago": "SALIDA SIN PAGO", "zona_restringida": "ZONA RESTRINGIDA",
               "fuera_de_horario": "FUERA DE HORARIO", MANO_BOLSILLO: "POSIBLE OCULTAMIENTO (BOLSILLO)",
               MANO_ROPA: "POSIBLE OCULTAMIENTO (ROPA)", MANO_BOLSA: "POSIBLE OCULTAMIENTO (BOLSA)",
@@ -1215,6 +1215,14 @@ def count_text(z: Zone, counts: dict | None) -> str | None:
     if z.type == "staff":
         pct = c.get("covered_pct")
         return f"personal {c.get('staff', 0)}" + (f"  cubierto {pct:.0f}%" if pct is not None else "")
+    if z.type == "table":  # la mesa: si está ocupada (y hace cuánto), y el promedio en la mesa y hasta la atención
+        tb = c.get("table") or {}
+        text = f"OCUPADA {wait_clock(tb.get('for_s'))}" if tb.get("busy") else "libre"
+        if tb.get("avg_s") is not None:
+            text += f"\nveces {tb.get('n', 0)}  prom {wait_clock(tb['avg_s'])}"
+            if tb.get("attend_avg_s") is not None:
+                text += f"  atencion {wait_clock(tb['attend_avg_s'])}"
+        return text
     if z.type == "entrance" and z.direction:
         text = f"entraron {c.get('entries', 0)}  salieron {c.get('exits', 0)}"
     else:

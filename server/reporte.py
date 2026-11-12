@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fpdf import FPDF
 
-from core.metrics import WAIT_MIN_SECONDS, post_stats, wait_stats
+from core.metrics import WAIT_MIN_SECONDS, new_table, post_stats, table_stats, wait_stats, _merge_stats
 
 MARCA = (1, 27, 93)  # azul del logo (#011b5d)
 SUAVE = (102, 112, 133)
@@ -22,9 +22,9 @@ FONDO = (243, 245, 249)
 CELESTE = (61, 107, 214)
 LOGO = Path(__file__).with_name("logo.png")  # el ojo en blanco (sobre la franja azul)
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
-              "empleados": "Seguimiento de empleados"}
+              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía"}
 ZONE_NAMES = {"shelf": "Góndola", "aisle": "Pasillo", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
-              "entrance": "Entrada", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal"}
+              "entrance": "Entrada", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal", "table": "Mesa"}
 LABELS = {"hurto": "Confirmadas como hurto", "sospechoso": "Sospechosas", "normal": "Normales",
           "falso_positivo": "Falsas alarmas", "sin_etiqueta": "Sin revisar"}
 DAYS_ES = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
@@ -95,6 +95,30 @@ def wait_total(zones: list[tuple[str, dict]]) -> dict:
 
 def avg(total: float, n: int) -> float | None:
     return total / n if n else None
+
+
+def table_zones(b: dict) -> list[tuple[str, dict]]:
+    """Las mesas de un cubo con algún dato, por nombre."""
+    out = [(name, table_stats(x)) for name, x in (b.get("tables") or {}).items()]
+    return sorted([(n, x) for n, x in out if x["n"] or x["obs_s"]], key=lambda kv: kv[0])
+
+
+def table_total(tables: list[tuple[str, dict]] | dict) -> dict:
+    """Todas las mesas juntas (de `table_zones` o el `tables` de un cubo)."""
+    raw = tables if isinstance(tables, dict) else None
+    agg = new_table()
+    if raw is not None:
+        for x in raw.values():
+            agg = _merge_stats(agg, x or {}, new_table())
+        return table_stats(agg)
+    n = sum(x["n"] for _, x in tables)
+    an, sn = sum(x["attend_n"] for _, x in tables), sum(x["serve_n"] for _, x in tables)
+    obs, occ = sum(x["obs_s"] for _, x in tables), sum(x["occ_s"] for _, x in tables)
+    return {"n": n, "avg_s": sum(x["avg_s"] * x["n"] for _, x in tables if x["n"]) / n if n else None,
+            "occupied_pct": 100.0 * min(occ, obs) / obs if obs else None,
+            "attend_avg_s": sum(x["attend_avg_s"] * x["attend_n"] for _, x in tables if x["attend_n"]) / an if an else None,
+            "serve_avg_s": sum(x["serve_avg_s"] * x["serve_n"] for _, x in tables if x["serve_n"]) / sn if sn else None,
+            "no_visit": sum(x["no_visit"] for _, x in tables)}
 
 
 def fmt_day(iso: str) -> str:
@@ -395,6 +419,25 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
         if dwell:
             pdf.multi_cell(0, 5, latin("Dónde pasan el tiempo: " + " · ".join(f"{n} {clock(v)}" for n, v in dwell)),
                            new_x="LMARGIN", new_y="NEXT")
+    tables = table_zones(t) if "gastronomia" in plans else []
+    if "gastronomia" in plans:
+        pdf.h2("Gastronomía: mesas")
+        if tables:
+            tot = table_total(tables)
+            pdf.tiles([(clock(tot["avg_s"]), "Tiempo en la mesa", f"promedio de {tot['n']} ocupaciones"),
+                       (f"{dec(tot['occupied_pct'], 0)} %" if tot["occupied_pct"] is not None else "-", "Ocupación",
+                        f"del tiempo mirado, {len(tables)} mesa{'s' if len(tables) != 1 else ''}"),
+                       (clock(tot["attend_avg_s"]), "Hasta la atención", "desde que se sientan hasta la primera visita"),
+                       (clock(tot["serve_avg_s"]), "Hasta la entrega (estimada)", "hasta la segunda visita a la mesa")])
+            pdf.table(["Mesa", "Veces", "En la mesa", "Ocupada", "Comensales", "Atención", "Entrega (est.)", "Sin atención"],
+                      [[name, str(x["n"]), clock(x["avg_s"]),
+                        f"{dec(x['occupied_pct'], 0)} %" if x["occupied_pct"] is not None else "-", dec(x["party_avg"]),
+                        clock(x["attend_avg_s"]), clock(x["serve_avg_s"]), str(x["no_visit"])] for name, x in tables],
+                      [40, 16, 22, 20, 23, 21, 25, 22])
+        else:
+            pdf.note("Sin datos de las mesas en este período. Hace falta marcar cada mesa con la zona «Mesa» (la mesa "
+                     "con sus sillas) en una cámara que mida «Gastronomía», y que la máquina que la analiza esté "
+                     "actualizada (se actualiza al reiniciarla).", size=9)
     if "hurto" in plans and alerts is not None:
         pdf.h2("Alertas de posible hurto")
         total = sum(alerts.values())
@@ -419,4 +462,9 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
         pdf.note("Empleados: se reconocen solo por su zona («Personal», pisada 2 s o más) o por estar con el local "
                  "cerrado; no se sabe quién es quién ni se los sigue de una cámara a otra, y quien pisa el puesto "
                  "cuenta como «alguien en el puesto», sea o no empleado.")
+    if tables:
+        pdf.note("Mesas: una ocupación cuenta desde que un cliente lleva 10 s en la mesa hasta que queda vacía un "
+                 "minuto, si duró un minuto o más. «Atención» es la primera vez que alguien se acerca a la mesa ya "
+                 "ocupada y se va (el mozo); «entrega» es la segunda: no se ve qué lleva en la mano, así que es una "
+                 "estimación. Donde se pide en el mostrador no hay visitas.")
     return bytes(pdf.output())

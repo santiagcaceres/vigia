@@ -46,7 +46,7 @@ REFINE_IOU = 0.35
 POLL_MS = 40
 CACHE = 6  # lo que vio la IA en las últimas alertas (volver a una no la vuelve a analizar)
 GREEN, RED, VIOLET, WHITE = (0, 200, 0), (40, 40, 230), (230, 80, 230), (255, 255, 255)
-ZONE_BGR = {"shelf": (0, 200, 255), "aisle": (255, 255, 120), "checkout": (0, 200, 0), "exit": (255, 150, 0),
+ZONE_BGR = {"shelf": (0, 200, 255), "aisle": (255, 255, 120), "table": (40, 110, 200), "checkout": (0, 200, 0), "exit": (255, 150, 0),
             "restricted": (48, 48, 255), "entrance": (255, 0, 200), "pump": (0, 120, 255), "shop": (200, 200, 0),
             "staff": (138, 138, 138)}
 SOURCES_IN_CLIP = ("alarma", "importado", "ajuste", "prueba")  # su `video_ts` ya es el segundo del clip

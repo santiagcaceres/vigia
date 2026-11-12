@@ -30,8 +30,9 @@ from sqlalchemy.orm import defer
 # core.deteccion es Python puro: el servidor no puede importar core.detectors (trae OpenCV, que Vercel no tiene)
 from core.deteccion import DetectionConfig
 from core.gestos import GESTURE_TYPES, GestureConfig
-from core.metrics import empty_bucket, merge_bucket, post_stats, restrict_bucket, wait_stats
+from core.metrics import empty_bucket, merge_bucket, post_stats, restrict_bucket, table_stats, wait_stats
 from core.rules import (EVENT_TYPES, FUERA_DE_HORARIO, NEW_ZONE_TYPES, NO_WAIT_TYPES, RETIRED_RULES, RULE_TYPES,
+                        TABLE_ZONE_TYPES,
                         SEVERITY, clean_rules, parse_config)
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
@@ -166,7 +167,7 @@ class Settings:
 
 # ---------------------------------------------------------------- esquemas
 # planes que contrata un cliente (y que cada cámara elige medir): los mismos que PLAN_NAMES, en ese orden
-PlanName = Literal["hurto", "comercio", "estacion", "empleados"]
+PlanName = Literal["hurto", "comercio", "estacion", "empleados", "gastronomia"]
 
 
 def _host(v: str | None) -> str | None:
@@ -237,7 +238,7 @@ class HikConnectKeyIn(BaseModel):
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
-              "empleados": "Seguimiento de empleados"}
+              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía"}
 PLAN_ORDER = tuple(PLAN_NAMES)  # hurto, comercio, estacion, empleados: así se devuelven siempre
 OLD_APP_PLANS = ("hurto", "comercio", "estacion")  # los que conocen las apps 1.38 y 1.39
 
@@ -324,6 +325,10 @@ def clean_camera_plans(plans: list[str] | None, client, camera: str | None = Non
 WAIT_CSV_HEAD = ("Esperas", "Espera promedio (min)", "Espera máxima (min)", "Esperaron más de 5 min", "Fila promedio",
                  "Esperando sin nadie en el puesto (min)")
 STAFF_CSV_HEAD = ("Puesto cubierto (%)", "Puesto sin nadie, el que más (min)", "Empleados a la vez (máx.)")
+# plan «gastronomia»: las mesas de la cámara juntas
+TABLE_CSV_HEAD = ("Mesas ocupadas (veces)", "Tiempo en la mesa promedio (min)", "Mesas ocupadas (% del tiempo)",
+                  "Comensales por mesa", "Atención promedio (min)", "Entrega estimada promedio (min)",
+                  "Mesas sin atención")
 
 
 NUMBER_CELL = re.compile(r"-?\d+(,\d+)?")
@@ -357,6 +362,22 @@ def wait_csv_cells(b: dict, num) -> list[str]:
     return [str(n), num(total / n / 60) if n else "", num(longest / 60) if longest is not None else "",
             str(sum(z["over"][300] for z in zones)), num(queue / obs) if obs else "",
             num(max(alone) / 60) if alone else ""]
+
+
+def table_csv_cells(b: dict, num) -> list[str]:
+    """Las columnas de gastronomía de una fila del Excel, con todas las mesas de la cámara sumadas. Vacío si la cámara
+    no tiene zonas «Mesa»."""
+    tables = list((b.get("tables") or {}).values())
+    if not tables:
+        return [""] * len(TABLE_CSV_HEAD)
+    total: dict = {}
+    for t in tables:
+        total = merge_bucket({"tables": {"t": total}}, {"tables": {"t": t}})["tables"]["t"]
+    st = table_stats(total)
+    mins = lambda v: num(v / 60) if v is not None else ""  # noqa: E731
+    return [str(st["n"]), mins(st["avg_s"]), num(st["occupied_pct"], 0) if st["occupied_pct"] is not None else "",
+            num(st["party_avg"]) if st["party_avg"] is not None else "", mins(st["attend_avg_s"]),
+            mins(st["serve_avg_s"]), str(st["no_visit"]) if st["n"] else ""]
 
 
 def staff_csv_cells(b: dict, num) -> list[str]:
@@ -633,7 +654,7 @@ class StreamUrlIn(BaseModel):
 
 class ZoneIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle"]
+    type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle", "table"]
     polygon: list[tuple[float, float]] = Field(min_length=3)
     # solo entrance: hacia dónde se mueve en la imagen quien ENTRA (cuenta ingresos y egresos por separado)
     direction: Literal["abajo", "arriba", "derecha", "izquierda"] | None = None
@@ -2688,7 +2709,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # zonas de tipos nuevos (personal, pasillo) aparte: un agente viejo no conoce el tipo y dejaría de usar todas
         # las zonas de la cámara
         extra = [z for z in zones if (z or {}).get("type") in NEW_ZONE_TYPES]
-        out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES], "rules": rules,
+        # las mesas (plan «gastronomía»), en otra lista más: una máquina sin reiniciar lee `extra_zones` y no conoce «mesa»
+        tables = [z for z in zones if (z or {}).get("type") in TABLE_ZONE_TYPES]
+        out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES + TABLE_ZONE_TYPES],
+               "rules": rules,
                "vehicles": vehicles, "plans": plans, "client_plans": plans_of(client), "profile": c.profile or "general",
                "metrics_only": metrics_only}
         if gestures.enabled:  # compacto: solo los gestos y lo que difiere de lo de siempre (una clave nueva viaja
@@ -2699,6 +2723,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         det = camera_detection(c)
         if not det.is_default:
             out["detection"] = det.to_dict(compact=True)
+        if tables:
+            out["table_zones"] = tables
         if extra:
             out["extra_zones"] = extra
             staff = [z for z in extra if z.get("type") == "staff"]
@@ -2719,7 +2745,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if any((z or {}).get("type") == "entrance" and (z or {}).get("direction") for z in zones):
                 return MIN_FPS  # puerta con sentido: a menos cuadros, quien cruza rápido pasa entre dos y no se cuenta
             counting = any((z or {}).get("type") in ("entrance", "pump") for z in zones)
-            return METRICS_COUNT_FPS if counting else METRICS_FPS
+            # con mesas también: la visita del mozo dura segundos
+            return METRICS_COUNT_FPS if counting or analysis.get("table_zones") else METRICS_FPS
         return max(MIN_FPS, c.process_fps or MIN_FPS)
 
     def model_spec(s, client_id: int) -> dict | None:
@@ -3749,7 +3776,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # (no en «Por cámara»), un nombre que está en más de una cámara va con el nombre de la cámara adelante
         seen: dict[str, set[int]] = {}
         for r, data in restricted:
-            for key in ("waits", "posts", "staff_dwell"):
+            for key in ("waits", "posts", "staff_dwell", "tables"):
                 for name in (data.get(key) or {}):
                     seen.setdefault(name, set()).add(r.camera_id)
         shared = {name for name, ids in seen.items() if len(ids) > 1}
@@ -3761,7 +3788,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 whole = dict(data)
                 cam = cams.get(r.camera_id, f"Cámara {r.camera_id}")
                 cam = f"{cam} (#{r.camera_id})" if cam in twin else cam
-                for key in ("waits", "posts", "staff_dwell"):
+                for key in ("waits", "posts", "staff_dwell", "tables"):
                     whole[key] = {(f"{cam} · {name}" if name in shared else name): v
                                   for name, v in (data.get(key) or {}).items()}
             total = merge_bucket(total, whole)
@@ -3903,7 +3930,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         head = ["Fecha"] + (["Hora"] if agrupar == "hora" else []) + [
             "Cliente", "Cámara", "Tiempo promedio en escena (min)", "Máximo a la vez", "Ingresos",
             "Egresos", "Empleados", "Vehículos", "Vehículos en surtidor", "Espera promedio en surtidor (min)", "Surtidor sin atender",
-            "Visitas a la tienda", "Zonas (visitas · minutos)", *WAIT_CSV_HEAD, *STAFF_CSV_HEAD]
+            "Visitas a la tienda", "Zonas (visitas · minutos)", *WAIT_CSV_HEAD, *STAFF_CSV_HEAD, *TABLE_CSV_HEAD]
         lines = [";".join(head)]
         for (when, cl_id, cam_id), b in sorted(groups.items(), key=lambda kv: (kv[0][0], cls.get(kv[0][1], ""),
                                                                                   cams.get(kv[0][2], ""))):
@@ -3920,7 +3947,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # la espera es de «comercio» y los puestos de «empleados»: vacío si el cliente no lo tiene (como en la
                 # app, la web y el PDF) o si la cámara no tiene zonas para eso
                 *(wait_csv_cells(b, num) if "comercio" in cl_plans else [""] * len(WAIT_CSV_HEAD)),
-                *(staff_csv_cells(b, num) if "empleados" in cl_plans else [""] * len(STAFF_CSV_HEAD))]
+                *(staff_csv_cells(b, num) if "empleados" in cl_plans else [""] * len(STAFF_CSV_HEAD)),
+                *(table_csv_cells(b, num) if "gastronomia" in cl_plans else [""] * len(TABLE_CSV_HEAD))]
             lines.append(";".join(csv_cell(c) for c in cells))
         name = file_safe(cls.get(client_id, "cliente"), "cliente") if client_id else "todos"
         fname = f"metricas_{name}_{d1:%Y-%m-%d}_a_{d2:%Y-%m-%d}.csv"

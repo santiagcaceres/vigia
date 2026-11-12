@@ -53,7 +53,7 @@ import numpy as np
 from core.deteccion import (DEFAULT_SENSITIVITY, FAR_PASSES, FAR_WEIGHT, MAX_SENSITIVITY, MIN_SENSITIVITY,
                             DetectionConfig)
 from core.gestos import GESTURE_NAMES, GestureConfig
-from core.metrics import WAIT_MIN_SECONDS, post_stats, wait_stats
+from core.metrics import WAIT_MIN_SECONDS, post_stats, table_stats, wait_stats
 from core.rules import NO_WAIT_TYPES, snap_edge
 from core.schedule import DAY_NAMES, DAYS, open_hours_per_week
 
@@ -65,9 +65,9 @@ from .version import VERSION
 log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
-              "empleados": "Seguimiento de empleados"}
+              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía"}
 PLAN_SHORT = {"hurto": "Hurto", "comercio": "Comercio", "estacion": "Estación",
-              "empleados": "Empleados"}  # (columna «Mide» de las cámaras)
+              "empleados": "Empleados", "gastronomia": "Gastronomía"}  # (columna «Mide» de las cámaras)
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cliente"}  # (operador = «entrenador» por dentro)
 ROLE_ORDER = {"admin": 0, "entrenador": 1, "cliente": 2}
 # filtro de «Administración» → Usuarios
@@ -211,9 +211,10 @@ TYPE_NAMES = {"salida_sin_pago": "Salida sin pago", "merodeo": "Merodeo", "zona_
 LABEL_NAMES = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falsa alarma"}
 LABEL_KEYS = {"1": "hurto", "2": "sospechoso", "3": "normal", "4": "falso_positivo"}
 ZONE_NAMES = {"shelf": "Góndola", "aisle": "Pasillo", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
-              "entrance": "Entrada (conteo)", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal (empleados)"}
+              "entrance": "Entrada (conteo)", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal (empleados)",
+              "table": "Mesa (gastronomía)"}
 ZONE_COLORS = {"shelf": "#ffc800", "aisle": "#78ffff", "checkout": "#00c800", "exit": "#0096ff", "restricted": "#ff3030",
-               "entrance": "#c800ff", "pump": "#ff7800", "shop": "#00c8c8", "staff": "#8a8a8a"}
+               "entrance": "#c800ff", "pump": "#ff7800", "shop": "#00c8c8", "staff": "#8a8a8a", "table": "#c86e28"}
 # zona Entrada: hacia dónde se mueve en la imagen quien ENTRA al local (así se cuentan aparte los que salen)
 DOOR_NAMES = {"abajo": "Entran hacia abajo ↓", "arriba": "Entran hacia arriba ↑", "derecha": "Entran hacia la derecha →",
               "izquierda": "Entran hacia la izquierda ←", "": "Sin sentido (cuenta a todos)"}
@@ -439,6 +440,14 @@ def zone_extra_text(z, zc: dict | None) -> str:
     if z.type == "staff":
         pct = zc.get("covered_pct")
         return f"cubierto {pct:.0f} %" if pct is not None else ""
+    if z.type == "table":
+        tb = zc.get("table") or {}
+        text = f"ocupada hace {fmt_clock(tb['for_s'])}" if tb.get("busy") else "libre"
+        if tb.get("avg_s") is not None:
+            text += f" · prom. {fmt_clock(tb['avg_s'])}"
+        if tb.get("attend_avg_s") is not None:
+            text += f" · atención {fmt_clock(tb['attend_avg_s'])}"
+        return text
     w = zc.get("wait") if getattr(z, "wait", False) else None
     if w is None:
         return ""
@@ -446,6 +455,60 @@ def zone_extra_text(z, zc: dict | None) -> str:
     if w.get("avg_s") is not None:
         text += f" · prom. {fmt_clock(w['avg_s'])}"
     return text
+
+
+NO_TABLES_TEXT = ("Sin datos de las mesas: hace falta marcar cada mesa con la zona «Mesa» (✎ Marcar zonas: la mesa con sus "
+                  "sillas) en una cámara que mida «Gastronomía», y que la máquina que la analiza esté actualizada (se "
+                  "actualiza al reiniciarla).")
+TABLES_LIMITS_TEXT = ("Mesas: una ocupación va desde que un cliente lleva 10 s en la mesa hasta que queda vacía un minuto "
+                      "(si duró un minuto o más). «Atención» es la primera vez que alguien se acerca a la mesa ya ocupada "
+                      "y se va; «entrega» es la segunda: no se ve qué lleva el mozo en la mano, es una estimación. Donde "
+                      "se pide en el mostrador no hay visitas.")
+
+
+def table_text(name: str, st: dict) -> str:
+    """Una mesa (`core.metrics.table_stats`): veces que se ocupó, promedio en la mesa, % ocupada, comensales, y cuánto
+    tardaron la atención y la entrega estimada."""
+    if not st["n"]:
+        pct = f" · ocupada {st['occupied_pct']:.0f} %" if st.get("occupied_pct") else ""
+        return f"{name}: sin ocupaciones{pct}"
+    text = (f"{name}: {st['n']} {'vez' if st['n'] == 1 else 'veces'} · en la mesa {fmt_clock(st['avg_s'])} en promedio "
+            f"(máx. {fmt_clock(st['max_s'])})")
+    if st.get("occupied_pct") is not None:
+        text += f" · ocupada {st['occupied_pct']:.0f} %"
+    if st.get("party_avg"):
+        text += f" · {fmt_dec(st['party_avg'])} comensales"
+    text += ("\n  atención " + (f"{fmt_clock(st['attend_avg_s'])} (máx. {fmt_clock(st['attend_max_s'])})"
+                                if st["attend_n"] else "—")
+             + " · entrega estimada " + (fmt_clock(st["serve_avg_s"]) if st["serve_n"] else "—")
+             + (f" · sin atención: {st['no_visit']}" if st["no_visit"] else ""))
+    return text
+
+
+def table_lines(b: dict | None) -> list[str]:
+    """Las mesas de un cubo (plan «Gastronomía»): primero todas juntas, después cada una."""
+    tables = sorted(((b or {}).get("tables") or {}).items())
+    tables = [(n, table_stats(x)) for n, x in tables]
+    tables = [(n, st) for n, st in tables if st["n"] or st["obs_s"]]
+    if not tables:
+        return []
+    out: list[str] = []
+    if len(tables) > 1:
+        from core.metrics import _merge_stats, new_table
+        agg = new_table()
+        for n, _ in tables:
+            agg = _merge_stats(agg, b["tables"][n] or {}, new_table())
+        first, *rest = table_text(f"Todas las mesas ({len(tables)})", table_stats(agg)).split("\n")
+        out += [first] + rest
+    for n, st in tables:
+        out += table_text(n, st).split("\n")
+    return out
+
+
+def table_zone_missing(cam: dict, client: dict | None) -> bool:
+    """La cámara mide gastronomía pero no tiene ninguna zona «Mesa»."""
+    return "gastronomia" in camera_measures(cam, client) and not any(
+        (z or {}).get("type") == "table" for z in cam.get("zones") or [])
 
 
 def staff_zone_missing(cam: dict, client: dict | None) -> bool:
@@ -501,6 +564,11 @@ def metrics_text(c: dict, today: dict, week: dict) -> str:
                     st = post_stats(p)
                     if st["covered_pct"] is not None:
                         parts.append(f"{pn} cubierto {st['covered_pct']:.0f} %")
+            if "gastronomia" in meas and "gastronomia" in own:
+                for tn, x in sorted((cam.get("tables") or {}).items()):
+                    st = table_stats(x)
+                    if st["n"]:
+                        parts.append(f"{tn} {st['n']} {'vez' if st['n'] == 1 else 'veces'}, {fmt_clock(st['avg_s'])}")
             mide = " · ".join(PLAN_SHORT.get(p, p) for p in meas) or "nada"
             lines.append(f"    {cam['name']} (mide {mide}): {', '.join(parts) or 'sin datos que sumar'}")
     lines += ["", "ÚLTIMOS 7 DÍAS"]
@@ -531,6 +599,12 @@ def metrics_text(c: dict, today: dict, week: dict) -> str:
             lines.append("  " + NO_STAFF_CAMERA_TEXT)  # el plan está, pero ninguna cámara lo mide
         elif not any(post_stats(p)["obs_s"] for p in (w.get("posts") or {}).values()):
             lines.append("  " + NO_POSTS_TEXT)  # (una sola vez, no en hoy y en la semana)
+    if "gastronomia" in plans:
+        lines += ["", "GASTRONOMÍA (MESAS)"]
+        for title, b in (("Hoy", t), ("Últimos 7 días", w)):
+            lines.append(f"  {title}:")
+            lines += ["    " + line for line in table_lines(b)] or ["    sin datos de las mesas"]
+        lines += ["", TABLES_LIMITS_TEXT if table_lines(w) else NO_TABLES_TEXT]
     if extra:
         lines += ["", LIMITS_TEXT]
     if not t.get("frames") and not w.get("frames"):
@@ -1543,7 +1617,9 @@ class Oficina:
         owner = self._client_of(cam)
         zones = ", ".join(f"{z['name']} ({ZONE_NAMES.get(z['type'], z['type'])}{' · espera' if z.get('wait') else ''})"
                           for z in cam.get("zones") or []) or "ninguna todavía"
-        staff_warn = ("\n⚠ Para medir empleados, marcá la zona «Personal (empleados)» con «✎ Marcar zonas» (detrás del "
+        table_warn = ("\n⚠ Para medir las mesas, marcá cada una con la zona «Mesa» (✎ Marcar zonas: la mesa con sus "
+                      "sillas)." if table_zone_missing(cam, owner) else "")
+        staff_warn = table_warn + ("\n⚠ Para medir empleados, marcá la zona «Personal (empleados)» con «✎ Marcar zonas» (detrás del "
                       "mostrador, la caja por dentro)." if staff_zone_missing(cam, owner) else "")
         conn = (f"Hik-Connect · grabador {cam.get('hpp_serial') or '—'} · canal {cam.get('channel')}"
                 if cam.get("brand") == "hikconnect" else
@@ -3786,7 +3862,9 @@ ZONE_HELP = {"shelf": "Góndola: el piso frente al estante, donde la gente se pa
              "entrance": "Entrada: la puerta; marcá hacia dónde caminan en la imagen los que entran.",
              "pump": "Surtidor: el lugar donde para el vehículo a cargar.",
              "shop": "Tienda: el piso de la tienda de la estación.",
-             "staff": "Personal: detrás del mostrador o depósito: quien lo pisa se toma como empleado."}
+             "staff": "Personal: detrás del mostrador o depósito: quien lo pisa se toma como empleado.",
+             "table": "Mesa: una zona por mesa, con sus sillas y el lugar donde se para el mozo. Mide cuándo está "
+                      "ocupada, cuánto se quedan y cuánto tarda en acercarse alguien a atender."}
 # la casilla «Medir el tiempo de espera acá» (cualquier zona de clientes: caja, mostrador, fila; no Personal ni Surtidor)
 WAIT_HELP = ("Espera: marcá el piso donde la gente hace la fila o espera. Si la zona incluye donde se atiende, el tiempo "
              "incluye la atención.")
