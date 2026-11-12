@@ -16,6 +16,7 @@ from server.main import (
     METRICS_FPS,
     Settings,
     create_app,
+    TABLE_CSV_HEAD,
     staff_csv_cells,
     wait_csv_cells,
 )
@@ -214,6 +215,7 @@ def test_el_excel_trae_la_espera_y_los_puestos(app):
     with admin(app) as a:
         cid, today = send_metrics(a)
         head, rows = csv_rows(a, cid, today.date().isoformat())
+        head = head[:-len(TABLE_CSV_HEAD)]  # (al final van las columnas de gastronomía)
         assert head[-len(NEW_COLS):] == NEW_COLS and head[-len(NEW_COLS) - 1] == "Zonas (visitas · minutos)"
         by_cam = {r["Cámara"]: r for r in rows}
         assert [by_cam["Caja"][k] for k in NEW_COLS] == ["4", num(307.5 / 60), num(700 / 60), "2", "0,5", "7,0",
@@ -221,7 +223,7 @@ def test_el_excel_trae_la_espera_y_los_puestos(app):
         assert all(by_cam["Calle"][k] == "" for k in NEW_COLS)  # mide solo hurto
         # por hora: cada hora con lo suyo
         head, rows = csv_rows(a, cid, today.date().isoformat(), "hora")
-        assert "Hora" in head and head[-len(NEW_COLS):] == NEW_COLS
+        assert "Hora" in head and head[-len(NEW_COLS) - len(TABLE_CSV_HEAD):-len(TABLE_CSV_HEAD)] == NEW_COLS
         caja = {r["Hora"]: r for r in rows if r["Cámara"] == "Caja"}
         assert [caja["10:00"][k] for k in NEW_COLS] == ["3", num(530 / 3 / 60), num(400 / 60), "1", "0,5", "2,0",
                                                         "75", "15,0", "2"]

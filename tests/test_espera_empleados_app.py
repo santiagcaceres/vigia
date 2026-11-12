@@ -66,7 +66,7 @@ def test_tiempos_como_reloj_y_decimales_con_coma():
 
 # ------------------------------------------------------------------ plan «Seguimiento de empleados»
 def test_el_plan_empleados_esta_en_la_app():
-    assert list(of.PLAN_NAMES) == ["hurto", "comercio", "estacion", "empleados"]
+    assert list(of.PLAN_NAMES) == ["hurto", "comercio", "estacion", "empleados", "gastronomia"]
     assert of.PLAN_NAMES["empleados"] == "Seguimiento de empleados" and of.PLAN_SHORT["empleados"] == "Empleados"
     client = {"id": 1, "plans": ["empleados", "comercio", "hurto"]}
     assert of.client_plans(client) == ["hurto", "comercio", "empleados"]

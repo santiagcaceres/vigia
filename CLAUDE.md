@@ -409,6 +409,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   pasó a guardarlas recuperables a propósito). En «Editar», «Generar» pone una clave nueva en claro (`make_password`) y al
   guardar sale con «Copiar» (`user_access_dialog`: para un cliente, el texto de la web; para el equipo, el de la app).
   Prueba: `test_usuarios_a_todo_el_alto_con_filtro_y_clave_nueva`.
+- **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
+  promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
+  `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en
+  `analysis["table_zones"]` (aparte de `extra_zones`: una máquina sin reiniciar no conoce «mesa»); cámara de solo métricas
+  con mesas → 3 cuadros/s. `core/metrics.py` (`tables` en el cubo, `table_stats`, `GASTRO_KEYS` en `restrict_bucket`):
+  **ocupación** = un cliente lleva `TABLE_SEAT_SECONDS` (10) en la mesa hasta que queda vacía `TABLE_GRACE_SECONDS` (60), si
+  duró `TABLE_MIN_SECONDS` (60); por cuadro `obs_s`/`occ_s` (% ocupada); comensales = máximo sentados. **Visita** (el
+  mozo) = alguien del personal (zona «Personal») o quien llega caminando con la mesa ocupada, se queda 2-120 s y se va con
+  los demás sentados (no la que llega junto con ellos, 5 s; dos acercamientos a menos de 45 s son uno). **Primera visita =
+  atención, segunda = entrega estimada** (no se ve qué lleva en la mano: un comensal que llega tarde y se va cuenta como
+  visita; donde se pide en el mostrador no hay). En vivo «OCUPADA 12:30 / libre» sobre la mesa. App (Métricas, detalle de
+  la cámara, editor de zonas), web (Resumen y Métricas: «Gastronomía: mesas»), PDF y Excel (7 columnas al final). Probado
+  con escenas simuladas (`tests/test_gastronomia.py`), **nunca con video de un restaurante**. Las máquinas lo miden recién
+  al reiniciarse (`git pull`).
+- **Datos de prueba en producción (12 nov, pedido del dueño):** métricas falsas de 7 días en todos los clientes con cámaras
+  (filas de `camera_metrics` con `data->>'demo' = '1'`, solo en horas que estaban vacías). Las de las cámaras de «Mayorista
+  Alberto» (14) se pasaron al cliente «Alberto Mayorista» (19, sin cámaras: «Por cámara» dice «Cámara 147»…), que es el
+  que mira el cliente. Borrarlas: `delete from camera_metrics where data->>'demo' = '1'`.
 - **«Demora estándar» por sector en la web (10 nov, el dueño: «una opción que me permita saber cuánto demora la gente
   por promedio en cada lugar; marcar cuánto es una demora estándar y si demora más de eso, que marque "demora en el
   sector X"»).** Solo web + servidor, **display-only**: no toca el agente ni las máquinas (el tiempo promedio por zona

@@ -13,10 +13,10 @@ const ALARM_TYPES = { VMD: "Movimiento", fielddetection: "Intrusión", linedetec
 const MODE_NAMES = { alarmas_equipo: "Alarmas del grabador", alarmas: "Alarmas HPP", vivo: "En vivo" };
 const alarmTypeName = (t) => String(t || "").split("+").map((x) => ALARM_TYPES[x] || x).join(" + ");
 const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal", falso_positivo: "Falso positivo" };
-const ZONE_NAMES = { shelf: "Góndola", aisle: "Pasillo", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)" };
-const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio", empleados: "Seguimiento de empleados" };
+const ZONE_NAMES = { shelf: "Góndola", aisle: "Pasillo", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)", table: "Mesa" };
+const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio", empleados: "Seguimiento de empleados", gastronomia: "Gastronomía" };
 const PLAN_KEYS = Object.keys(PLAN_NAMES);  // el orden de siempre (el mismo del servidor)
-const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación", empleados: "Empleados" };
+const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación", empleados: "Empleados", gastronomia: "Gastronomía" };
 const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida", fuera_de_horario: "Local cerrado" };
 
 const ROLE_NAMES = { admin: "Administrador", entrenador: "Operador", cliente: "Cliente" };
@@ -413,6 +413,26 @@ function postStats(p) {
   return { obs_s: obs, covered_s: covered, uncovered_s: Math.max(0, obs - covered), covered_pct: obs ? 100 * covered / obs : null,
     avg_people: obs ? num0(p.people_s) / obs : null, max: Math.max(0, num0(p.max)) };
 }
+/** Resumen de una mesa (plan «gastronomía»): lo mismo que core/metrics.py (table_stats): si cambia allá, cambiar acá. */
+function tableStats(t) {
+  t = t || {};
+  const n = num0(t.n), obs = num0(t.obs_s), an = num0(t.attend_n), sn = num0(t.serve_n);
+  return { n, avg_s: n ? num0(t.sum_s) / n : null, max_s: n ? num0(t.max_s) : null, obs_s: obs, occ_s: num0(t.occ_s),
+    occupied_pct: obs ? 100 * Math.min(num0(t.occ_s), obs) / obs : null, party_avg: n ? num0(t.party) / n : null,
+    visits: num0(t.visits), no_visit: num0(t.no_visit), attend_n: an, attend_avg_s: an ? num0(t.attend_s) / an : null,
+    attend_max_s: an ? num0(t.attend_max_s) : null, serve_n: sn, serve_avg_s: sn ? num0(t.serve_s) / sn : null };
+}
+/** Todas las mesas de un cubo juntas. */
+function tableTotal(b) {
+  const keys = ["n", "sum_s", "obs_s", "occ_s", "party", "visits", "no_visit", "attend_n", "attend_s", "serve_n", "serve_s"];
+  const agg = {};
+  for (const t of Object.values((b && b.tables) || {})) {
+    for (const k of keys) agg[k] = num0(agg[k]) + num0((t || {})[k]);
+    agg.max_s = Math.max(num0(agg.max_s), num0((t || {}).max_s));
+    agg.attend_max_s = Math.max(num0(agg.attend_max_s), num0((t || {}).attend_max_s));
+  }
+  return tableStats(agg);
+}
 const byName = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
 /** Las zonas de espera con algo medido de un cubo (total, día, hora o cámara), la de más esperas primero. */
 const waitZones = (b) => Object.entries((b && b.waits) || {}).map(([name, w]) => [name, waitStats(w)])
@@ -512,6 +532,24 @@ async function metricsView(v, clientId) {
         <tbody>${dwell.map(([name, secs]) => `<tr><td>${esc(name)}</td><td>${fmtClock(secs)}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(100 * secs / dwell[0][1])}%"></i></div></td></tr>`).join("")}</tbody></table></div></div>` : ""}
       <p class="muted note">Reconoce a los empleados solo por su zona «Personal» (pisada 2 s o más) o por el horario (con el local cerrado); no sabe quién es quién ni los sigue de una cámara a otra; quien pisa el puesto cuenta como «alguien en el puesto», sea o no empleado.</p>`;
   }
+  // gastronomía (plan «gastronomia»): las mesas
+  let tablesHtml = "";
+  if (plans.includes("gastronomia")) {
+    const tables = Object.entries(t.tables || {}).map(([name, x]) => [name, tableStats(x)]).filter(([, x]) => x.n || x.obs_s).sort(byName);
+    const tot = tableTotal(t);
+    tablesHtml = `
+      <h2>Gastronomía: mesas</h2>
+      ${tables.length ? `<div ${grid}>
+        ${tile(fmtClock(tot.avg_s), "Tiempo en la mesa", `promedio de ${tot.n} ocupaciones`)}
+        ${tile(tot.occupied_pct == null ? "—" : `${fmtDec(tot.occupied_pct, 0)} %`, "Ocupación", `del tiempo mirado, ${tables.length} mesa${tables.length === 1 ? "" : "s"}`)}
+        ${tile(fmtClock(tot.attend_avg_s), "Hasta la atención", "desde que se sientan hasta que se acerca el mozo")}
+        ${tile(fmtClock(tot.serve_avg_s), "Hasta la entrega (estimada)", "hasta la segunda visita a la mesa")}
+      </div>
+      <div class="panel" style="margin-top:12px"><b>Por mesa</b><div class="table-wrap"><table class="nums"><thead><tr><th>Mesa</th><th>Veces</th><th>En la mesa</th><th>Ocupada</th><th>Comensales</th><th>Atención</th><th>Entrega (est.)</th><th>Sin atención</th></tr></thead>
+        <tbody>${tables.map(([name, x]) => `<tr><td>${esc(name)}</td><td>${x.n}</td><td>${fmtClock(x.avg_s)}</td><td>${x.occupied_pct == null ? "—" : fmtDec(x.occupied_pct, 0) + " %"}</td><td>${fmtDec(x.party_avg)}</td><td>${fmtClock(x.attend_avg_s)}</td><td>${fmtClock(x.serve_avg_s)}</td><td>${x.no_visit}</td></tr>`).join("")}</tbody></table></div></div>`
+        : `<p class="warn-text note">Sin datos de las mesas en este período.${isAdmin() ? " Hace falta marcar cada mesa con la zona «Mesa» (en la app, «✎ Marcar zonas») en una cámara que mida «Gastronomía»." : ""}</p>`}
+      <p class="muted note">Una ocupación va desde que un cliente lleva 10 s en la mesa hasta que queda vacía un minuto. «Atención» es la primera vez que alguien se acerca a la mesa ya ocupada (el mozo); «entrega» es la segunda: no se ve qué lleva en la mano, es una estimación.</p>`;
+  }
   // «Por cámara»: la espera y los puestos de cada una, si hay (con «—» donde la cámara no mide ese plan)
   const camWait = (c) => { const w = waitTotal(waitZones(c)); return measures(c, "comercio") && w.n ? fmtClock(w.avg_s) : "—"; };
   const camPosts = (c) => { const ps = postZones(c); return !measures(c, "empleados") || !ps.length ? "—" : ps.length === 1 ? `${fmtDec(ps[0][1].covered_pct, 0)} %` : ps.map(([n, p]) => `${esc(n)} ${fmtDec(p.covered_pct, 0)} %`).join(" · "); };
@@ -554,6 +592,7 @@ async function metricsView(v, clientId) {
       <div class="panel" style="margin-top:12px"><b>${days === 1 ? "Vehículos por hora" : "Vehículos por día"}</b>${barChart(days === 1 ? m.by_hour : m.by_day, "vehicles", "vehículos")}</div>
       ${!plans.includes("comercio") ? `<div class="panel" style="margin-top:12px"><b>Personas</b> promedio ${fmtDur(avg(t.people_dwell_s, t.people))} en cámara · máximo ${t.people_max} al mismo tiempo</div>` : ""}` : ""}
     ${staffHtml}
+    ${tablesHtml}
     ${plans.includes("hurto") && stats ? `
       <h2>Alertas de hurto</h2>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
