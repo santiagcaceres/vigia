@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guía DDNS · Analítica Crítica</title>
+<style>
+  @page { size: A4; margin: 11mm 13mm 10mm 13mm; }
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d9dee5; --accent:#011b5d; --ok:#2f8f46; --warn:#b7791f; --bad:#c0392b; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Inter, Arial, sans-serif; color: var(--ink); font-size: 9.5pt; line-height: 1.36; margin: 0; }
+  h1 { font-size: 18pt; margin: 0 0 2px; letter-spacing: -0.3px; color: #fff; line-height: 1.15; }
+  h2 { font-size: 13pt; margin: 9px 0 4px; color: var(--accent); page-break-after: avoid; }
+  h3 { font-size: 10.8pt; margin: 7px 0 2px; color: var(--accent); page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ul { margin: 4px 0 4px 18px; padding: 0; }
+  li { margin: 2px 0; }
+  code { font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 9.2pt; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+  .hero { background: var(--accent); color: #fff; border-radius: 10px; padding: 10px 18px; display: flex; gap: 18px; align-items: center; margin-bottom: 12px; }
+  .hero img { width: 60px; height: 60px; }
+  .hero .brand { font-size: 10pt; letter-spacing: 2px; text-transform: uppercase; opacity: .85; font-weight: 700; }
+  .hero .sub { font-size: 12pt; opacity: .92; margin-top: 4px; }
+  .lead { font-size: 11pt; }
+  .flow { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 8px 0; page-break-inside: avoid; }
+  .flow div { border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 8px; padding: 8px 10px; font-size: 9.6pt; }
+  .flow b { display: block; color: var(--accent); font-size: 10.4pt; margin-bottom: 2px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; page-break-inside: avoid; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font-size: 9.8pt; }
+  .card h3 { margin-top: 0; }
+  .card.good { border-top: 4px solid var(--ok); }
+  .card.bad { border-top: 4px solid var(--bad); }
+  .box { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 7px 12px; margin: 8px 0; border-radius: 7px; page-break-inside: avoid; }
+  .box.warn { border-left-color: var(--warn); }
+  .steps { counter-reset: s; list-style: none; margin: 6px 0; padding: 0; }
+  .steps > li { counter-increment: s; position: relative; padding-left: 30px; margin: 4px 0; page-break-inside: avoid; }
+  .steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%;
+                        background: var(--accent); color: #fff; text-align: center; line-height: 24px; font-weight: 700; font-size: 10pt; }
+  .steps > li > b:first-child { color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; margin: 4px 0; font-size: 9.1pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 3px 7px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+  .muted { color: var(--muted); }
+  .small { font-size: 9pt; }
+  .pb { page-break-before: always; }
+  .foot { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 6px; font-size: 8.6pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <img src="../public/img/logo-blanco.png" alt="">
+  <div>
+    <div class="brand">Analítica Crítica · Guía interna</div>
+    <h1>DDNS: qué es, cuándo se usa y cómo se configura</h1>
+    <div class="sub">Para técnicos y operadores que conectan grabadores por IP y puertos</div>
+  </div>
+</div>
+
+<h2>Qué es un DDNS</h2>
+<p class="lead">Un DDNS es un <b>nombre fijo</b> (por ejemplo <code>vigia-local.ddns.net</code>) que siempre apunta a la
+<b>IP pública de ahora</b> del local, aunque el proveedor de internet se la cambie.</p>
+<p>Casi todos los locales tienen IP pública <b>que cambia</b>: Antel la cambia cuando se reinicia el router, cuando vuelve
+la luz o cada tanto. Si cargáramos la IP en la app, el día que cambia dejamos de ver las cámaras. Con el DDNS, el
+<b>grabador avisa solo</b> a No-IP cada vez que cambia la IP y el nombre se corrige en un minuto.</p>
+
+<div class="flow">
+  <div><b>1 · El grabador avisa</b>«Mi IP ahora es 203.0.113.25» (lo hace solo, cada pocos minutos).</div>
+  <div><b>2 · No-IP actualiza</b>El nombre <code>vigia-local.ddns.net</code> pasa a apuntar a esa IP.</div>
+  <div><b>3 · Nosotros nos conectamos</b>Nuestras máquinas y la app piden <code>vigia-local.ddns.net:21554</code> y llegan al local.</div>
+</div>
+
+<div class="box"><b>Nombre DDNS ≠ IP fija de nuestras máquinas.</b> El DDNS es la dirección <b>del local</b> (a dónde
+llegamos). Las IP fijas de AWS son <b>las nuestras</b> (desde dónde salimos). Una no reemplaza a la otra.</div>
+
+<h2>Cuándo lo usamos</h2>
+<div class="two">
+  <div class="card good">
+    <h3>Sí hace falta</h3>
+    <ul>
+      <li>Cliente conectado <b>por IP y puertos</b> (abrimos puertos en su router).</li>
+      <li>Y su internet <b>no tiene IP fija</b> (lo común en Antel hogar y pymes).</li>
+      <li>También con <b>doble router</b>: el DDNS va en el grabador, los puertos en los dos routers.</li>
+    </ul>
+  </div>
+  <div class="card bad">
+    <h3>No hace falta</h3>
+    <ul>
+      <li>Cliente por <b>Hik-Connect</b>: no se abren puertos.</li>
+      <li>Local con <b>IP fija contratada</b>: se carga la IP directo.</li>
+      <li>Local con <b>CG-NAT</b> (la IP de Internet del router empieza con 100.64 a 100.127, o es 10.x / 192.168.x):
+        ahí <b>no andan ni los puertos ni el DDNS</b> → Hik-Connect.</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Reglas</h3>
+<ul>
+  <li><b>Un nombre por local</b> (por conexión a internet), no por grabador. Un local con 3 grabadores usa un solo nombre y
+    cada grabador su puerto: <code>21554</code>, <code>22554</code>, <code>23554</code>.</li>
+  <li><b>Lo actualiza un solo aparato</b>: el grabador 1. Nunca dos grabadores con el mismo nombre (el nombre salta de uno
+    a otro) y nunca el router del cliente en un doble router (publicaría una IP privada).</li>
+  <li><b>Los nombres van en la cuenta de la empresa</b>, nunca en una personal ni en la del cliente.</li>
+</ul>
+
+<h3>Cuenta gratis (pruebas) y cuenta paga (clientes)</h3>
+<table>
+  <tr><th></th><th>Gratis</th><th>Paga (Enhanced)</th></tr>
+  <tr><td>Nombres</td><td>1</td><td>3, 5 o 25 (más: plan Pro)</td></tr>
+  <tr><td>Vence</td><td>Hay que confirmarlo <b>cada 30 días</b> por mail; si no, se borra y otro lo puede registrar</td>
+      <td>No vence mientras se pague</td></tr>
+  <tr><td>Qué lleva el grabador</td><td>El mail y la clave <b>de la cuenta entera</b></td>
+      <td>Una «DDNS Key» que solo sirve para actualizar ese nombre</td></tr>
+  <tr><td>Para qué</td><td><b>Solo pruebas</b></td><td>Clientes reales</td></tr>
+</table>
+
+<h2 class="pb">Guía paso a paso</h2>
+<ol class="steps">
+  <li><b>Antes de ir: confirmar que no es CG-NAT.</b> En el router de Antel (Internet → Estado), la IP de Internet tiene que
+    ser pública. Con el celular en el wifi del local, abrir <code>ipv4.icanhazip.com</code>: tiene que dar <b>la misma</b> IP.
+    Si es 100.64–100.127, 10.x o 192.168.x, o son distintas, no sigas: ese local va por Hik-Connect.</li>
+  <li><b>Crear el nombre en noip.com</b> (cuenta de la empresa): Dynamic DNS → No-IP Hostnames → Create Hostname, tipo
+    <b>DNS Host (A)</b>. Nombre: <code>vigia-&lt;local&gt;.ddns.net</code>, en minúsculas, sin tildes, con guiones. La IP que
+    pongas da igual: la corrige el grabador. Si se puede, TTL en 60 s.<br>
+    <span class="muted small">Cuenta paga: generar la «DDNS Key» de ese nombre (se ve una sola vez: al gestor de claves).</span></li>
+  <li><b>Cargar el DDNS en el grabador 1.</b>
+    <table>
+      <tr><th>Marca</th><th>Dónde</th></tr>
+      <tr><td>Hikvision</td><td>Configuración → Red → Configuración básica → DDNS → Habilitar · Tipo <b>NO-IP</b></td></tr>
+      <tr><td>Dahua</td><td>Red → DDNS → Habilitar · Tipo <b>NO-IP</b></td></tr>
+    </table>
+    Servidor <code>dynupdate.no-ip.com</code> · Dominio: el nombre · Usuario y clave: los de la cuenta (gratis) o la DDNS Key
+    (paga). Guardar y esperar a que el estado diga <b>«Normal»</b>. El menú puede variar según el modelo.</li>
+  <li><b>Abrir el puerto en el router.</b> Un puerto alto por grabador hacia su 554: grabador 1 →
+    <code>21554 → IP del grabador:554</code>. Con doble router: en el de adentro hacia el grabador y en el de Antel, el mismo
+    número hacia la WAN del router de adentro. Nunca abrir 554, 80, 8000 ni 37777 tal cual, ni DMZ al grabador.</li>
+  <li><b>Comprobar que el nombre apunta bien.</b> En noip.com, la IP del nombre tiene que ser la misma que da
+    <code>ipv4.icanhazip.com</code> desde el wifi del local, y la «última actualización» tiene que ser reciente.
+    Desde una PC: <code>nslookup vigia-&lt;local&gt;.ddns.net</code> da esa misma IP.</li>
+  <li><b>Probar desde afuera</b>, con el celular en <b>datos móviles</b> (no en el wifi del local), en VLC:<br>
+    <code>rtsp://vigia:CLAVE@vigia-&lt;local&gt;.ddns.net:21554/Streaming/Channels/102</code> (Hikvision, canal 1)<br>
+    <code>rtsp://vigia:CLAVE@vigia-&lt;local&gt;.ddns.net:21554/cam/realmonitor?channel=1&amp;subtype=1</code> (Dahua)<br>
+    Después <b>reiniciar el router</b> y volver a probar. Si anda las dos veces, está listo.</li>
+  <li><b>Cargar en la app</b> la cámara con el <b>nombre DDNS</b> y el <b>puerto de afuera</b> (21554), nunca con una IP
+    192.168.x. «Probar conexión» tiene que dar bien.</li>
+  <li><b>Anotar en la planilla</b> el nombre, qué grabador lo actualiza y las reglas del router (o de los dos routers).</li>
+</ol>
+
+<h3>Pasar el nombre de prueba a otro local</h3>
+<p>Primero <b>apagar el DDNS en el grabador del local anterior</b>; después cargarlo en el nuevo. Si no, los dos lo pisan y el
+nombre salta de un local al otro. El local anterior deja de andar por ese nombre: avisar.</p>
+
+<h3>Si algo no anda</h3>
+<table>
+  <tr><th>Síntoma</th><th>Qué mirar</th></tr>
+  <tr><td>El estado del DDNS en el grabador no queda «Normal»</td><td>Usuario y clave, servidor <code>dynupdate.no-ip.com</code>, que el grabador tenga
+      internet (puerta de enlace y DNS bien cargados).</td></tr>
+  <tr><td>El nombre da otra IP</td><td>Otro aparato lo está actualizando (otro grabador o el router), o el grabador todavía no avisó.</td></tr>
+  <tr><td>El nombre da bien y VLC no abre</td><td>Falta la regla en el router (o en uno de los dos), CG-NAT, o el usuario <code>vigia</code> o el canal.</td></tr>
+  <tr><td>Anda con la IP y no con el nombre</td><td>El DDNS tiene una IP vieja: forzar la actualización desde el grabador.</td></tr>
+</table>
+
+<div class="box warn"><b>Cuidado con la clave de la cuenta gratis.</b> El grabador lleva el mail y la clave de toda la
+cuenta: quien la tenga puede borrar o cambiar el nombre. Pasala solo por privado, nunca en un grupo, y cambiala al
+terminar las pruebas.</div>
+
+<div class="foot">Analítica Crítica · Guía DDNS · El detalle completo (doble router, CG-NAT, routers de Antel) está en el
+Manual del técnico (<i>manual-tecnico-conexion</i>), secciones 2, 4 y 5.</div>
+</body>
+</html>
