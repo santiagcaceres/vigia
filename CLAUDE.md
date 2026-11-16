@@ -409,6 +409,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   pasó a guardarlas recuperables a propósito). En «Editar», «Generar» pone una clave nueva en claro (`make_password`) y al
   guardar sale con «Copiar» (`user_access_dialog`: para un cliente, el texto de la web; para el equipo, el de la app).
   Prueba: `test_usuarios_a_todo_el_alto_con_filtro_y_clave_nueva`.
+- **Clave y link a la vista en «Editar cámara» (16 nov, el dueño: «dejá todo visible, contraseña, links»; app 1.48.0).**
+  `GET /api/cameras/{id}/secret` (staff) da la clave del grabador y el link RTSP guardados (descifrados); cada pedido
+  queda en `credential_access` (`what="edit"`, la PC del usuario) con el mismo freno de `MAX_CREDENTIAL_CAMERAS`. La app
+  los trae al abrir el formulario: la clave sin puntitos, el link guardado en «Link RTSP» y una fila «Para VLC» con el
+  link armado de los campos (`oficina.vlc_link`, como `live_url`) y «Copiar». Guardar sin tocarlos no cambia nada (la
+  clave igual a la guardada va como None; el link igual al guardado no cuenta como pegado: sigue `keep_source_url`). Las
+  claves de los **usuarios** siguen sin poder mostrarse (solo su huella). Prueba: `tests/test_clave_visible.py`.
 - **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
   promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
   `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en

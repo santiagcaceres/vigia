@@ -298,6 +298,22 @@ def parse_moment(text: str) -> float:
     return sec
 
 
+def vlc_link(brand: str, host: str, port: str | int, user: str, password: str, channel: str | int,
+             stream: str = "sub") -> str:
+    """El link RTSP (el que se pega en VLC) armado con los datos del formulario de la cámara, como lo arma la máquina
+    (agent/hikvision.py y agent/dahua.py). Usuario y clave van codificados: una «@» o «:» en la clave no rompe el link."""
+    from urllib.parse import quote
+    host, user = (host or "").strip(), (user or "").strip()
+    if not host:
+        return ""
+    auth = f"{quote(user, safe='')}:{quote(password or '', safe='')}@" if user else ""
+    ch = str(channel or "1").strip() or "1"
+    base = f"rtsp://{auth}{host}:{str(port or 554).strip() or 554}"
+    if brand == "dahua":
+        return f"{base}/cam/realmonitor?channel={ch}&subtype={0 if stream == 'main' else 1}"
+    return f"{base}/Streaming/Channels/{ch}{'01' if stream == 'main' else '02'}"
+
+
 def parse_channels(text: str) -> list[int]:
     """«4», «1-8» o «1, 2, 5» → [canales]. ValueError (en castellano) si no se entiende."""
     out: list[int] = []
@@ -2126,9 +2142,25 @@ class Oficina:
         link_note = tk.StringVar(value="Pegá el link y se completa todo lo de abajo." if not cam.get("id") else
                                  "Pegá un link nuevo solo si cambió." + (" Ahora usa un link tal cual."
                                                                         if cam.get("has_source_url") else ""))
-        link_lbl = ttk.Label(frm, textvariable=link_note, foreground="#666", justify="left", wraplength=560)
-        link_lbl.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        rows["ip"].append(link_lbl)
+        note_box = ttk.Frame(frm)
+        note_box.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        note_box.columnconfigure(1, weight=1)
+        ttk.Label(note_box, textvariable=link_note, foreground="#666", justify="left", wraplength=560).grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        # el link armado con los datos de abajo (clave incluida), para pegarlo en VLC y probar (pedido del dueño, 16 nov:
+        # «dejá todo visible, contraseña, links»)
+        vlc = tk.StringVar()
+        ttk.Label(note_box, text="Para VLC:").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Entry(note_box, textvariable=vlc, state="readonly").grid(row=1, column=1, sticky="ew", padx=(6, 6),
+                                                                     pady=(2, 0))
+
+        def copy_vlc() -> None:
+            self.v.root.clipboard_clear()
+            self.v.root.clipboard_append(vlc.get())
+        ttk.Button(note_box, text="Copiar", command=copy_vlc).grid(row=1, column=2, pady=(2, 0))
+        rows["ip"].append(note_box)
+        # la clave y el link guardados (los trae el servidor al abrir; queda registrado quién los vio)
+        stored: dict = {"password": None, "source_url": None}
         row("ip", 7, "IP o DDNS del grabador", ttk.Entry(frm, textvariable=v["host"]))
         row("ip", 8, "Puerto RTSP", ttk.Entry(frm, textvariable=v["rtsp_port"]))
         row("ip", 9, "Canal" if cam.get("id") else "Canal(es): 4 · 1-8 · 1, 2, 5", ttk.Entry(frm, textvariable=v["channel"]))
@@ -2136,7 +2168,7 @@ class Oficina:
         row("ip", 11, "Clave del grabador" + (" (vacía = sin cambios)" if cam.get("has_password") else
                                               " (vacía = la del cliente)" if from_client and own.get("ip_has_password")
                                               else ""),
-            ttk.Entry(frm, textvariable=v["password"], show="•"))
+            ttk.Entry(frm, textvariable=v["password"]))
         row("ip", 12, "Calidad del video", ttk.Combobox(frm, textvariable=v["stream"], values=list(STREAM_NAMES.values()),
                                                         state="readonly"))
         adv_open = tk.BooleanVar(value=(cam.get("mode") or "vivo") != "vivo")
@@ -2304,6 +2336,34 @@ class Oficina:
         v["brand"].trace_add("write", layout)
         layout()
 
+        def show_vlc(*_) -> None:
+            lines = links()
+            if lines:  # un link pegado (o el guardado, que se usa tal cual): ese es el de VLC
+                return vlc.set(lines[0])
+            vlc.set(vlc_link(inv(BRAND_SEL, v["brand"].get()) or "hikvision", v["host"].get(), v["rtsp_port"].get(),
+                             v["username"].get(), v["password"].get(), v["channel"].get(),
+                             inv(STREAM_NAMES, v["stream"].get()) or "sub"))
+        for key in ("host", "rtsp_port", "username", "password", "channel", "stream", "brand"):
+            v[key].trace_add("write", show_vlc)
+        link_txt.bind("<KeyRelease>", lambda e: show_vlc(), add="+")
+        link_txt.bind("<FocusOut>", lambda e: show_vlc(), add="+")
+        show_vlc()
+
+        def got_secret(res: dict) -> None:
+            if not top.winfo_exists():
+                return
+            stored.update(password=res.get("password"), source_url=res.get("source_url"))
+            if stored["password"] and not v["password"].get():
+                v["password"].set(stored["password"])
+            if stored["source_url"] and not links():
+                filled["line"] = stored["source_url"]  # que no pise lo que se corrija a mano abajo
+                link_txt.insert("1.0", stored["source_url"])
+                link_note.set("Este es el link guardado: la cámara lo usa tal cual. Cambialo solo si cambió.")
+            show_vlc()
+        if cam.get("id") and cam.get("brand") != "hikconnect" and (cam.get("has_password") or cam.get("has_source_url")):
+            self.bg.run(lambda: self.api.get(f"/api/cameras/{cam['id']}/secret"), got_secret,
+                        lambda e: log.warning("No se pudo traer la clave de la cámara: %s", e))
+
         def save() -> None:
             brand = inv(BRAND_SEL, v["brand"].get()) or "hikvision"
             try:
@@ -2340,7 +2400,8 @@ class Oficina:
                            "hpp_serial": x["serial"], "channel": int(x.get("channel") or 1),
                            "hc_resource_id": x.get("id")} for x in hc_sel]
             else:
-                lines = links()
+                # el link guardado que se mostró al abrir no es un link «nuevo»: si no se tocó, la cámara lo sigue usando
+                lines = [line for line in links() if not (cam.get("id") and line == stored["source_url"])]
                 parsed: list[tuple[str, dict]] = []
                 for line in lines:
                     try:
@@ -2358,7 +2419,10 @@ class Oficina:
                 try:
                     common.update(mode=inv(MODE_NAMES, v["mode"].get()) or "vivo", host=v["host"].get().strip(),
                                   rtsp_port=int(v["rtsp_port"].get()), http_port=int(v["http_port"].get() or 80),
-                                  username=v["username"].get().strip(), password=v["password"].get() or None,
+                                  username=v["username"].get().strip(),
+                                  # la clave guardada que se mostró al abrir, sin tocar = sin cambios
+                                  password=(None if cam.get("id") and v["password"].get() == stored["password"]
+                                            else v["password"].get() or None),
                                   nvr_clips=nvr.get(), hpp_serial=cam.get("hpp_serial"))
                 except ValueError:
                     return self.mb.showwarning(NOMBRE, "Los puertos tienen que ser números.", parent=top)

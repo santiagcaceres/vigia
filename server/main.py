@@ -2207,6 +2207,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         scope_client(user, c.client_id)
         return camera_dict(c, user, agent_status_map(s).get(c.id), operator_map(s))
 
+    @app.get("/api/cameras/{cam_id}/secret")
+    def camera_secret(cam_id: int, request: Request, user: User = Depends(staff), s=Depends(db)) -> dict:
+        """La clave del grabador y el link RTSP guardados de una cámara, para verlos en «Editar cámara» de la app
+        (pedido del dueño, 16 nov: «dejá todo visible»). Solo el equipo; queda registrado quién los vio, desde qué IP y
+        cuándo (como cuando su PC abre la cámara) y rige el mismo freno a quien pide las de muchas cámaras."""
+        c = get_or_404(s, Camera, cam_id, "Cámara")
+        log_credentials(s, user_agent(s, user), user, [c.id], "edit", request)
+        return {"password": box.decrypt(c.password_enc) if c.password_enc else None,
+                "source_url": box.decrypt(c.source_url_enc) if c.source_url_enc else None}
+
     def camera_fields(body: CameraIn) -> dict:
         # `detection` aparte: se valida y solo se toca si vino (la web no la manda; un setattr con None la borraría)
         f = body.model_dump(exclude={"password", "source_url", "operator_id", "client_password", "keep_source_url",
