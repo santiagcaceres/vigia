@@ -774,6 +774,72 @@ def gzip_json(body: Any) -> bytes:
     return gzip.compress(json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8"), 6)
 
 
+LABEL_DONE = {"hurto": "Hurto", "sospechoso": "Sospechoso", "normal": "Normal", "falso_positivo": "Falsa alarma"}
+CLOUD_DONE = {"start": "Prendiendo la máquina…", "stop": "Apagando la máquina…", "reset": "Reiniciando la máquina…",
+              "resume": "Prendiendo la máquina…"}
+
+
+def action_message(method: str, path: str, body: Any = None) -> str | None:
+    """El aviso «✔ …» de lo que el servidor acaba de confirmar (pedido del dueño, 17 nov: «avisos cuando guardo o
+    edito: creado con éxito, editado, eliminado, y así para cada cosa»). None = no se avisa (lo que la app pide sola:
+    latidos del vivo, pruebas de conexión, sesión)."""
+    import re
+
+    m, b = method.upper(), body if isinstance(body, dict) else {}
+    p = path.split("?")[0].rstrip("/")
+
+    def n_cams(word: str) -> str:
+        k = len(b.get("camera_ids") or [])
+        return f"{k} cámaras {word}s" if k > 1 else f"Cámara {word}"
+
+    rules: list[tuple[str, str, Any]] = [
+        ("POST", r"/api/clients", "Cliente creado"),
+        ("PUT", r"/api/clients/\d+", "Cliente guardado"),
+        ("DELETE", r"/api/clients/\d+", "Cliente eliminado"),
+        ("PUT", r"/api/clients/\d+/hikconnect", "Clave de Hik-Connect guardada"),
+        ("POST", r"/api/cameras", "Cámara creada"),
+        ("PUT", r"/api/cameras/\d+", "Cámara guardada"),
+        ("DELETE", r"/api/cameras/\d+", "Cámara eliminada"),
+        ("PUT", r"/api/cameras/\d+/analysis", "Zonas y reglas guardadas"),
+        ("POST", r"/api/cameras/delete", lambda: n_cams("eliminada")),
+        ("POST", r"/api/cameras/analyze",
+         lambda: (n_cams("puesta") + " a analizar") if b.get("analyze") else "Se dejó de analizar"),
+        ("POST", r"/api/cameras/plans", "Qué mide: guardado"),
+        ("POST", r"/api/cameras/alerts", "Alertas de la cámara guardadas"),
+        ("POST", r"/api/cameras/names", "Nombres guardados"),
+        ("POST", r"/api/cameras/\d+/tuning",
+         lambda: "Cámara aprobada" if b.get("status") == "aprobada" else "Ajustes de la cámara guardados"),
+        ("POST", r"/api/users", "Usuario creado"),
+        ("PUT", r"/api/users/\d+", "Usuario guardado"),
+        ("DELETE", r"/api/users/\d+", "Usuario eliminado"),
+        ("PUT", r"/api/users/\d+/cameras", "Cámaras del usuario guardadas"),
+        ("DELETE", r"/api/agents/\d+", "Máquina o PC quitada"),
+        ("PATCH", r"/api/events/\d+",
+         lambda: (f"Alerta marcada: {LABEL_DONE.get(b['label'], b['label'])}" if b.get("label")
+                  else "Etiqueta de la alerta quitada") if "label" in b else "Alerta guardada"),
+        ("POST", r"/api/events/\d+/report", "Aviso al cliente creado"),
+        ("POST", r"/api/training/run", "Filtro de alertas entrenado"),
+        ("POST", r"/api/training/ia/run", "IA de movimientos entrenada"),
+        ("POST", r"/api/(training/ia/)?models/\d+/activate", "Modelo activado"),
+        ("POST", r"/api/(training/ia/)?models/\d+/deactivate", "Modelo apagado"),
+        ("POST", r"/api/training/clips", "Clip subido"),
+        ("PUT", r"/api/training/clips/\d+", "Marcas del clip guardadas"),
+        ("DELETE", r"/api/training/clips/\d+", "Clip eliminado"),
+        ("POST", r"/api/training/samples", "Mandado al entrenamiento"),
+        ("PUT", r"/api/analysis", "Ajuste guardado"),
+        ("POST", r"/api/analysis/pool-key", "Clave para máquinas nuevas creada"),
+        ("PUT", r"/api/cloud/credentials", "Google Cloud conectado"),
+        ("DELETE", r"/api/cloud/credentials", "Google Cloud desconectado"),
+        ("POST", r"/api/cloud/action", lambda: CLOUD_DONE.get(str(b.get("action")), "Pedido a la nube hecho")),
+        ("PUT", r"/api/me/password", "Clave cambiada"),
+        ("POST", r"/api/me/password", "Clave cambiada"),
+    ]
+    for meth, pattern, text in rules:
+        if meth == m and re.fullmatch(pattern, p):
+            return text() if callable(text) else text
+    return None
+
+
 class ApiError(Exception):
     def __init__(self, msg: str, status: int = 0):
         super().__init__(msg)
@@ -789,6 +855,8 @@ class Api:
         self.verify = verify
         self.token = token
         self.user: dict | None = None
+        # avisos de lo que se guardó (`action_message`): los pone el hilo que hizo el pedido y la ventana los muestra
+        self.done: queue.Queue = queue.Queue()
 
     def set_token(self, token: str | None) -> None:
         self.token = token
@@ -813,9 +881,17 @@ class Api:
 
     def call(self, method: str, path: str, **kw) -> Any:
         try:
-            return self._check(self.http.request(method, path, **kw))
+            res = self._check(self.http.request(method, path, **kw))
         except httpx.HTTPError as exc:
             raise ApiError(f"Sin conexión con el servidor ({type(exc).__name__})") from exc
+        if method.upper() != "GET":
+            try:
+                msg = action_message(method, path, kw.get("json"))
+            except Exception:  # noqa: BLE001 - un aviso nunca rompe lo que se guardó
+                msg = None
+            if msg:
+                self.done.put(msg)
+        return res
 
     def get(self, path: str, **params) -> Any:
         return self.call("GET", path, params={k: v for k, v in params.items() if v is not None})
@@ -910,6 +986,80 @@ class Bg:
                     cb(arg)
                 except Exception:
                     log.exception("Error en la ventana")
+
+
+class Toasts:
+    """Carteles verdes abajo a la derecha («✔ Cliente guardado») que se van solos: no piden clic ni toman el foco.
+    Si llega el mismo aviso mientras se ve (agregar varias cámaras), suma «(×3)» en vez de apilar."""
+
+    LIFE_MS = 3200
+    MAX = 4
+
+    def __init__(self, tk, root):
+        self.tk, self.root = tk, root
+        self.items: list[dict] = []  # {win, text, count, job}
+
+    def show(self, text: str) -> None:
+        for it in self.items:
+            if it["text"] == text:
+                it["count"] += 1
+                it["label"].configure(text=f"✔  {text}  (×{it['count']})")
+                self.root.after_cancel(it["job"])
+                it["job"] = self.root.after(self.LIFE_MS, lambda i=it: self._close(i))
+                return
+        while len(self.items) >= self.MAX:
+            self._close(self.items[0])
+        tk = self.tk
+        try:
+            win = tk.Toplevel(self.root)
+            win.withdraw()
+            win.overrideredirect(True)
+            try:
+                win.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            lab = tk.Label(win, text=f"✔  {text}", bg="#1a7f43", fg="white", padx=16, pady=10,
+                           font=("Segoe UI", 10, "bold"))
+            lab.pack()
+            it = {"win": win, "label": lab, "text": text, "count": 1}
+            lab.bind("<Button-1>", lambda _e, i=it: self._close(i))  # clic = se va antes
+            it["job"] = self.root.after(self.LIFE_MS, lambda i=it: self._close(i))
+            self.items.append(it)
+            self._place()
+            win.deiconify()
+        except tk.TclError:
+            log.info("Aviso: %s", text)
+
+    def _place(self) -> None:
+        """Apilados de abajo hacia arriba en la esquina de abajo a la derecha de la ventana principal."""
+        try:
+            self.root.update_idletasks()
+            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            if rw < 200 or rh < 200:  # (ventana minimizada o sin dibujar: la pantalla)
+                rx, ry, rw, rh = 0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight() - 40
+            y = ry + rh - 24
+            for it in reversed(self.items):
+                w = it["win"]
+                w.update_idletasks()
+                y -= w.winfo_reqheight()
+                w.geometry(f"+{rx + rw - w.winfo_reqwidth() - 24}+{y}")
+                y -= 8
+        except self.tk.TclError:
+            pass
+
+    def _close(self, it: dict) -> None:
+        if it in self.items:
+            self.items.remove(it)
+            try:
+                self.root.after_cancel(it["job"])
+            except (self.tk.TclError, ValueError):
+                pass
+            try:
+                it["win"].destroy()
+            except self.tk.TclError:
+                pass
+            self._place()
 
 
 def ppm_photo(tk, img: np.ndarray, max_w: int, max_h: int):
@@ -1041,6 +1191,22 @@ class Oficina:
         self.cameras: list[dict] = []
         self.agents: list[dict] = []
         self.is_admin = (api.user or {}).get("role") == "admin"
+        # «✔ Cliente guardado», «✔ Cámara eliminada»…: lo que el servidor confirmó (`action_message`)
+        self.toasts = Toasts(self.tk, ventana.root) if getattr(ventana, "root", None) is not None else None
+        hooks = getattr(ventana, "hooks", None)
+        if hooks is not None:
+            hooks.append(self.show_done)
+
+    def show_done(self) -> None:
+        """En el hilo de la ventana: muestra los avisos que dejó la API (`Api.done`)."""
+        q = getattr(self.api, "done", None)
+        while q is not None:
+            try:
+                text = q.get_nowait()
+            except queue.Empty:
+                return
+            if self.toasts is not None:
+                self.toasts.show(text)
 
     # ---------- utilidades ----------
     def err(self, exc: Exception) -> None:

@@ -886,7 +886,83 @@ def setup_logging(data_dir: Path, verbose: bool) -> None:
         root.addHandler(sh)
 
 
+CRASH_FILE = "cierres-inesperados.txt"  # lo que escribe faulthandler si el programa se cae sin aviso
+AI_MARK = "cargando-ia.txt"  # existe mientras se carga la IA al abrir: si quedó, la vez anterior se cerró ahí
+AI_CPU_FLAG = "ia-en-procesador.txt"  # la IA de esta PC va en el procesador (la placa de video la cerraba)
+
+
+def watch_crashes(data_dir: Path) -> None:
+    """Que un cierre «de la nada» deje rastro (pedido del dueño, 17 nov: «cuando hago doble clic se cierra de la
+    nada»): un error de Python queda en vigia.log y en un mensaje; una caída de una librería (la placa de video,
+    OpenCV) no pasa por Python, así que faulthandler escribe dónde fue en `cierres-inesperados.txt`."""
+    import faulthandler
+
+    try:
+        f = open(data_dir / CRASH_FILE, "a", encoding="utf-8")  # noqa: SIM115 - queda abierto mientras corre
+        f.write(f"--- arranque {datetime.now():%Y-%m-%d %H:%M:%S} (versión {actualizar.VERSION})\n")
+        f.flush()
+        faulthandler.enable(file=f, all_threads=True)
+    except (OSError, RuntimeError, ValueError):
+        pass
+
+    def on_thread_error(args) -> None:
+        log.error("Error en el hilo %s", getattr(args.thread, "name", "?"),
+                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    threading.excepthook = on_thread_error
+
+
+def ai_on_cpu_if_it_crashed(data_dir: Path) -> None:
+    """Si la vez anterior el programa se cerró mientras cargaba la IA (en Windows, DirectML con algunos drivers de
+    placa de video tira abajo el proceso sin ningún mensaje), desde ahora la IA de esta PC va en el procesador:
+    anda más lento pero abre. Para volver a probar la placa de video, borrar `ia-en-procesador.txt`."""
+    mark, flag = data_dir / AI_MARK, data_dir / AI_CPU_FLAG
+    try:
+        if mark.exists():
+            flag.write_text("La IA se carga en el procesador: la placa de video cerraba el programa al abrir.\n"
+                            "Para volver a probar con la placa de video, borrar este archivo.\n", encoding="utf-8")
+            mark.unlink()
+            log.warning("La vez anterior el programa se cerró cargando la IA: desde ahora usa el procesador")
+        if flag.exists():
+            os.environ["VIGIA_DISPOSITIVO"] = "procesador"
+    except OSError:
+        pass
+
+
+def show_fatal(exc: BaseException, data_dir: Path | None) -> None:
+    """Un error que cierra el programa al abrir: se dice en pantalla (sin consola no se ve nada) y dónde está el
+    detalle."""
+    where = f"\n\nEl detalle quedó en {data_dir / 'vigia.log'}" if data_dir else ""
+    text = f"{NOMBRE} no pudo abrir:\n\n{type(exc).__name__}: {exc}{where}"
+    try:
+        arranque.cerrar()
+    except Exception:  # noqa: BLE001
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, text, NOMBRE, 0x10)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    print(text, file=sys.stderr or sys.stdout)
+
+
 def main() -> None:
+    data_dir: Path | None = None
+    try:
+        data_dir = Path(os.getenv("VIGIA_AGENT_DATA") or read_env_file(Path(os.getenv(
+            "VIGIA_AGENT_CONFIG", base_dir() / ARCHIVO_CONFIG))).get("VIGIA_AGENT_DATA") or base_dir() / "agent_data")
+        _main()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        log.exception("El programa se cerró por un error")
+        show_fatal(exc, data_dir)
+        raise SystemExit(1) from exc
+
+
+def _main() -> None:
     base = base_dir()
     cfg_path = Path(os.getenv("VIGIA_AGENT_CONFIG", base / ARCHIVO_CONFIG))
     env = {**read_env_file(cfg_path), **{k: v for k, v in os.environ.items() if k.startswith("VIGIA_")}}
@@ -919,6 +995,7 @@ def main() -> None:
         a.ventana = env.get("VIGIA_VENTANA", "1" if getattr(sys, "frozen", False) else "0") not in ("0", "no", "false")
     data_dir = Path(a.data)
     setup_logging(data_dir, a.verbose)
+    watch_crashes(data_dir)
     renamed = actualizar.adopt_name()  # VigiaAgente.exe → «Analítica Crítica.exe» (una sola vez)
     if renamed is not None:
         arranque.cerrar()  # la copia nueva muestra la suya
@@ -930,7 +1007,14 @@ def main() -> None:
     verify = not a.insecure
     if a.ventana:
         arranque.aviso("Cargando la inteligencia artificial…", 77)
+        ai_on_cpu_if_it_crashed(data_dir)
+        mark = data_dir / AI_MARK
+        try:
+            mark.write_text("cargando la IA\n", encoding="utf-8")
+        except OSError:
+            pass
         preload_ai(a.model)
+        mark.unlink(missing_ok=True)
         arranque.aviso("Abriendo la ventana…", 80)
         ventana = Ventana(data_dir / "ventana.json")
         if not ventana.failed:

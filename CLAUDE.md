@@ -416,6 +416,16 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   link armado de los campos (`oficina.vlc_link`, como `live_url`) y «Copiar». Guardar sin tocarlos no cambia nada (la
   clave igual a la guardada va como None; el link igual al guardado no cuenta como pegado: sigue `keep_source_url`). Las
   claves de los **usuarios** siguen sin poder mostrarse (solo su huella). Prueba: `tests/test_clave_visible.py`.
+- **Avisos «✔ guardado» y cierres al abrir (17 nov, el dueño: «cuando hago doble clic se cierra de la nada; quiero
+  avisos cuando guardo o edito: creado con éxito, editado, eliminado»; app 1.48.1).** Solo la app. `Api.call` deja en
+  `Api.done` el texto de lo que el servidor confirmó (`oficina.action_message`: método + ruta + cuerpo → «Cliente
+  guardado», «3 cámaras eliminadas», «Alerta marcada: Falsa alarma»…; latidos, pruebas y sesión no avisan) y
+  `Oficina.show_done` (un hook de la ventana) lo muestra con `Toasts`: carteles verdes abajo a la derecha, 3 s, sin
+  tomar el foco, el mismo aviso repetido suma «(×N)». **Cierres:** no se sabe la causa (sin el registro de esa PC);
+  `main` ahora atrapa el error, lo deja en vigia.log y lo muestra (MessageBox), `faulthandler` escribe las caídas de
+  librerías en `agent_data/cierres-inesperados.txt`, y si la vez anterior se cerró **cargando la IA** (marca
+  `cargando-ia.txt` que quedó) desde ahí la IA va en el procesador (`ia-en-procesador.txt`, borrarlo para volver a
+  probar la placa). Prueba: `tests/test_avisos.py`.
 - **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
   promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
   `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en
