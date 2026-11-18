@@ -14,9 +14,9 @@ const MODE_NAMES = { alarmas_equipo: "Alarmas del grabador", alarmas: "Alarmas H
 const alarmTypeName = (t) => String(t || "").split("+").map((x) => ALARM_TYPES[x] || x).join(" + ");
 const LABEL_NAMES = { hurto: "Hurto", sospechoso: "Sospechoso", normal: "Normal", falso_positivo: "Falso positivo" };
 const ZONE_NAMES = { shelf: "Góndola", aisle: "Pasillo", checkout: "Caja", exit: "Salida", restricted: "Restringida", entrance: "Entrada (conteo)", pump: "Surtidor", shop: "Tienda", staff: "Personal (empleados)", table: "Mesa" };
-const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio", empleados: "Seguimiento de empleados", gastronomia: "Gastronomía" };
+const PLAN_NAMES = { hurto: "Detección de hurtos", comercio: "Métricas de comercio", estacion: "Estación de servicio", empleados: "Seguimiento de empleados", gastronomia: "Gastronomía", objetos: "Conteo de objetos" };
 const PLAN_KEYS = Object.keys(PLAN_NAMES);  // el orden de siempre (el mismo del servidor)
-const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación", empleados: "Empleados", gastronomia: "Gastronomía" };
+const PLAN_SHORT = { hurto: "Hurtos", comercio: "Comercio", estacion: "Estación", empleados: "Empleados", gastronomia: "Gastronomía", objetos: "Objetos" };
 const STATE_NAMES = { escuchando: "Escuchando alarmas", en_linea: "En línea", sin_conexion: "Sin conexión", reconectando: "Reconectando", error: "Error", iniciando: "Iniciando", detenida: "Detenida", fuera_de_horario: "Local cerrado" };
 
 const ROLE_NAMES = { admin: "Administrador", entrenador: "Operador", cliente: "Cliente" };

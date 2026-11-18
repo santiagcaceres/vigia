@@ -22,6 +22,9 @@ repitan»); el aspecto (colores de la marca, botones) está en agent/estilo.py.
 - Entrenar IA hurtos (admin y operador; agent/entrenar_ia.py): clips analizados en esta PC con YOLO y la postura (el
   video no sale de la PC), marcar quién roba y cuándo, y entrenar las dos IA: la de movimientos de hurto
   (core/hurto_ia.py) y el filtro de alertas (server/training.py). Todo lo de entrenar está ahí.
+- Entrenar objetos (admin y operador; agent/entrenar_objetos.py): objetos propios (pallets, cajas…) en 5 pasos con su
+  guía: el objeto, sus clases y su plan; juntar fotos (subidas, de un video en esta PC o en una máquina virtual, de una
+  cámara); marcar recuadros; entrenar en una máquina con Ultralytics (agent/objetos_maquina.py); probar y activar.
 - Máquinas (solo admin): cada máquina de análisis, si está prendida en Google Cloud (`/api/cloud`, server/nube.py) y si
   el sistema la ve en línea, con qué analiza (máquina → cliente → cámara); «Prender», «Apagar» y «Reiniciar»; el
   reparto (qué se analiza y cuántas cámaras por máquina). Google Cloud se conecta con la clave de una cuenta de servicio.
@@ -65,9 +68,10 @@ from .version import VERSION
 log = logging.getLogger("vigia.oficina")
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
-              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía"}
+              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía",
+              "objetos": "Conteo de objetos"}  # (objetos propios: pestaña «Entrenar objetos»)
 PLAN_SHORT = {"hurto": "Hurto", "comercio": "Comercio", "estacion": "Estación",
-              "empleados": "Empleados", "gastronomia": "Gastronomía"}  # (columna «Mide» de las cámaras)
+              "empleados": "Empleados", "gastronomia": "Gastronomía", "objetos": "Objetos"}  # (columna «Mide» de las cámaras)
 ROLE_NAMES = {"admin": "Administrador", "entrenador": "Operador", "cliente": "Cliente"}  # (operador = «entrenador» por dentro)
 ROLE_ORDER = {"admin": 0, "entrenador": 1, "cliente": 2}
 # filtro de «Administración» → Usuarios
@@ -826,6 +830,17 @@ def action_message(method: str, path: str, body: Any = None) -> str | None:
         ("PUT", r"/api/training/clips/\d+", "Marcas del clip guardadas"),
         ("DELETE", r"/api/training/clips/\d+", "Clip eliminado"),
         ("POST", r"/api/training/samples", "Mandado al entrenamiento"),
+        # «Entrenar objetos» (marcar cada foto no avisa: se marcan decenas seguidas y el renglón de abajo lo dice)
+        ("POST", r"/api/objects", "Objeto creado"),
+        ("PUT", r"/api/objects/\d+", "Objeto guardado"),
+        ("DELETE", r"/api/objects/\d+", "Objeto eliminado"),
+        ("DELETE", r"/api/objects/images/\d+", "Foto eliminada"),
+        ("POST", r"/api/objects/\d+/train", "Entrenamiento pedido"),
+        ("POST", r"/api/objects/\d+/prelabel", "Pre-marcado pedido"),
+        ("POST", r"/api/objects/jobs/\d+/uploaded", "Video subido: lo toma una máquina"),
+        ("POST", r"/api/objects/jobs/\d+/cancel", "Trabajo cancelado"),
+        ("POST", r"/api/objects/versions/\d+/activate", "Versión activada"),
+        ("POST", r"/api/objects/versions/\d+/deactivate", "Versión apagada"),
         ("PUT", r"/api/analysis", "Ajuste guardado"),
         ("POST", r"/api/analysis/pool-key", "Clave para máquinas nuevas creada"),
         ("PUT", r"/api/cloud/credentials", "Google Cloud conectado"),
@@ -1225,10 +1240,15 @@ class Oficina:
         # todo lo de entrenar (pedido del dueño, 9 nov: «en la app todo lo de entrenamiento»), admin y operador
         self.tab_train = ttk.Frame(notebook, padding=8)
         notebook.add(self.tab_train, text="  Entrenar IA hurtos  ")
+        # objetos propios (pallets, cajas…): pedido del dueño, 18 nov
+        self.tab_objects = ttk.Frame(notebook, padding=8)
+        notebook.add(self.tab_objects, text="  Entrenar objetos  ")
         self._build_clients()
         self._build_alerts()
         from .entrenar_ia import EntrenarIA
         self.trainer = EntrenarIA(self, self.tab_train)
+        from .entrenar_objetos import EntrenarObjetos
+        self.objects_tab = EntrenarObjetos(self, self.tab_objects)
         if self.is_admin:
             self.tab_mq = ttk.Frame(notebook, padding=8)
             notebook.add(self.tab_mq, text="  Máquinas  ")
@@ -1643,6 +1663,8 @@ class Oficina:
             self.load_alerts()
         elif tab == str(getattr(self, "tab_train", "")):
             self.trainer.on_show()
+        elif tab == str(getattr(self, "tab_objects", "")):
+            self.objects_tab.on_show()
         elif self.is_admin and tab == str(getattr(self, "tab_admin", "")):
             self.load_users()
         elif self.is_admin and tab == str(getattr(self, "tab_mq", "")):

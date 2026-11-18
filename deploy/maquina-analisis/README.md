@@ -144,6 +144,28 @@ Oracle puede recuperar una máquina gratis que pase una semana casi sin usar el 
 - En la máquina, `top`: si el procesador está al 100 % y los fps bajan de 5, sacale cámaras o usá una más grande.
 - Una alerta de punta a punta: foto, clip dentro de la app, etiqueta y «Avisar al cliente».
 
+## Entrenar objetos propios (pallets, cajas…): `ENTRENAR=si`
+
+La pestaña «Entrenar objetos» de la app junta fotos, las marca y pide el entrenamiento; lo hace una máquina de análisis.
+Cualquier máquina con la versión nueva saca las fotos de un video subido desde la app. **Pre-marcar con la IA y entrenar**
+solo lo hacen las instaladas con `ENTRENAR=si`:
+
+```bash
+sudo VIGIA_POOL_KEY=vgm_... ENTRENAR=si bash instalar.sh
+```
+
+- Instala Ultralytics y torch en **otro entorno** (`/opt/vigia/.venv-entrenar`, unos 3 GB con placa y 1 GB sin): si algo de
+  torch choca, el análisis de las cámaras ni se entera. torch se elige según el driver (CUDA 13, CUDA 12 o solo procesador).
+- Entrena en otro proceso (`agent/objetos_ia.py`), de a un trabajo por máquina (solo el proceso 1). Cancelar desde la app
+  lo corta en segundos.
+- **Mejor en la máquina con placa de video** (la fija de Tigo ya lo trae: parámetro `EntrenarObjetos`). Unas 800 fotos:
+  minutos en una T4; en una máquina sin placa, horas (y le saca procesador a las cámaras: corre con prioridad baja y la
+  mitad de los núcleos). Si hay una con placa en línea, las demás no toman entrenamientos.
+- La primera vez baja de GitHub el YOLO11n de base (5 MB) y, para pre-marcar con palabras, YOLOE (27 MB) y su modelo de
+  texto. Quedan en `/var/lib/vigia/proceso-1/objetos/`.
+- Para apagarlo en una máquina sin desinstalar: `VIGIA_ENTRENAR=no` en `/etc/vigia/maquina.env`.
+- En una máquina ya instalada: volver a correr `instalar.sh` con `ENTRENAR=si` (no toca lo demás) y reiniciar.
+
 ## AWS (Tigo) u otra nube
 
 **En AWS, lo armado es `deploy/aws/`**: una plantilla de CloudFormation crea el grupo de máquinas Spot Graviton, el

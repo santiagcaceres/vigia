@@ -358,6 +358,98 @@ class TheftModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ObjectModel(Base):
+    """Un objeto que se le enseña a la IA (pestaña «Entrenar objetos», 18 nov): «Pallets» con sus clases (core/objetos.py,
+    `clean_classes`), el plan de métricas donde se va a medir y, si es de un cliente, cuál (NULL = para todos).
+    `active_version_id`: la versión entrenada que se usa (pre-marca las fotos nuevas y, más adelante, mide en las
+    cámaras)."""
+    __tablename__ = "object_models"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    classes: Mapped[list] = mapped_column(JSON, default=list)
+    plan: Mapped[str] = mapped_column(String(20), default="objetos")
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"), nullable=True,
+                                                  index=True)
+    notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    active_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ObjectImage(Base):
+    """Una foto para entrenar un objeto. Está en el Storage (`path`, JPEG de hasta 1280 px); `boxes` = lo que marcó una
+    persona, `proposed` = lo que propone la IA (con `p`), `status` subiendo | sin_marcar | marcada | descartada (una
+    marcada sin recuadros = «no hay ninguno»: también enseña). `split`: prueba | entrenar (fijo por foto)."""
+    __tablename__ = "object_images"
+    __table_args__ = (UniqueConstraint("model_id", "uuid", name="uq_object_image"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model_id: Mapped[int] = mapped_column(ForeignKey("object_models.id", ondelete="CASCADE"), index=True)
+    uuid: Mapped[str] = mapped_column(String(40))
+    path: Mapped[str] = mapped_column(String(500))
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(12), default="foto")  # foto | video | camara
+    source_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    camera_id: Mapped[int | None] = mapped_column(ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # el video del que salió
+    video_ts: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="subiendo", index=True)
+    split: Mapped[str] = mapped_column(String(10), default="entrenar")
+    boxes: Mapped[list] = mapped_column(JSON, default=list)
+    proposed: Mapped[list] = mapped_column(JSON, default=list)
+    proposed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    doubt: Mapped[float] = mapped_column(Float, default=0.0)
+    labeled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    labeled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ObjectJob(Base):
+    """Un trabajo para las máquinas de análisis: `kind` video (sacar fotos de un video subido) | premarcar (que la IA
+    proponga recuadros en las fotos sin marcar) | entrenar. `status` subiendo | en_cola | procesando | listo | error |
+    cancelado. Los toma una máquina que pueda hacerlo (`/api/agent/objects/next`)."""
+    __tablename__ = "object_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model_id: Mapped[int] = mapped_column(ForeignKey("object_models.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(12))
+    status: Mapped[str] = mapped_column(String(12), default="en_cola", index=True)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # el video subido
+    camera_id: Mapped[int | None] = mapped_column(ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
+    claimed_by: Mapped[int | None] = mapped_column(ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ObjectVersion(Base):
+    """Un modelo entrenado de un objeto (versión 1, 2…): el .onnx (lo que usan las PCs y máquinas) y el .pt (para seguir
+    entrenando desde ahí), las clases en el orden en que se entrenó y qué tan bien anduvo con las fotos de prueba."""
+    __tablename__ = "object_versions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model_id: Mapped[int] = mapped_column(ForeignKey("object_models.id", ondelete="CASCADE"), index=True)
+    number: Mapped[int] = mapped_column(Integer, default=1)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    classes: Mapped[list] = mapped_column(JSON, default=list)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    n_images: Mapped[int] = mapped_column(Integer, default=0)
+    n_boxes: Mapped[int] = mapped_column(Integer, default=0)
+    onnx_path: Mapped[str] = mapped_column(String(500))
+    pt_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    trained_on: Mapped[str | None] = mapped_column(String(120), nullable=True)  # máquina y placa
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 def add_missing_columns(engine) -> list[str]:
     """create_all no agrega columnas nuevas a tablas que ya existen: las agrega acá (solo columnas
     que admiten NULL o tienen valor por defecto simple). Así no hace falta migrar a mano."""
@@ -417,7 +509,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-10.1"
+SCHEMA_VERSION = "2026-11-18.1"
 
 
 class CameraMetric(Base):

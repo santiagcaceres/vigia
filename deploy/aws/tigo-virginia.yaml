@@ -15,7 +15,7 @@ Metadata:
       - Label: {default: "Analítica Crítica"}
         Parameters: [ClaveMaquinasParametro, ServidorVigia, Repositorio]
       - Label: {default: "Máquinas de análisis"}
-        Parameters: [TipoFija, SegundaMaquina, TipoSegunda, TopeCamaras, HoraActualizar, Imagen, DiscoGB]
+        Parameters: [TipoFija, SegundaMaquina, TipoSegunda, TopeCamaras, HoraActualizar, EntrenarObjetos, Imagen, DiscoGB]
       - Label: {default: "Red (vacío = la crea esta plantilla)"}
         Parameters: [VpcId, SubredId, Zona, RedCidr]
     ParameterLabels:
@@ -25,6 +25,7 @@ Metadata:
       TipoSegunda: {default: "Segunda máquina (se prende según el horario)"}
       TopeCamaras: {default: "Tope de cámaras por máquina (hasta comprobarlo)"}
       HoraActualizar: {default: "Hora (UTC) de la actualización de cada noche"}
+      EntrenarObjetos: {default: "La máquina fija entrena objetos propios (pallets…)"}
       DiscoGB: {default: "Disco en GB (0 = el de la imagen)"}
       VpcId: {default: "VPC que ya existe"}
       SubredId: {default: "Subred pública que ya existe"}
@@ -71,6 +72,14 @@ Parameters:
     Description: >-
       Cada máquina mide al instalarse cuántas cámaras aguanta, pero no anota más que esto hasta comprobarlo con
       cámaras de verdad. Vale solo al crear la máquina (después se cambia en /etc/vigia/maquina.env).
+  EntrenarObjetos:
+    Type: String
+    Default: "si"
+    AllowedValues: ["si", "no"]
+    Description: >-
+      «Entrenar objetos» de la app (pallets, cajas…): la máquina fija, que tiene placa de video, entrena los modelos
+      propios y pre-marca las fotos con la IA. Instala Ultralytics y torch en un entorno aparte (unos 3 GB más de
+      disco); el análisis de las cámaras no se toca.
   HoraActualizar:
     Type: String
     Default: "07:30"
@@ -336,7 +345,7 @@ Resources:
           for i in $(seq 1 60); do curl -fsSL "$URL" -o /root/instalar.sh && break; sleep 10; done
           if VIGIA_POOL_KEY_SSM='${ClaveMaquinasParametro}' VIGIA_SERVER='${ServidorVigia}' VIGIA_REPO='${Repositorio}' \
              AWS_REGION='${AWS::Region}' VIGIA_GPU=si VIGIA_FIJA=si CAPACIDAD_TOPE='${TopeCamaras}' \
-             ACTUALIZAR_DIARIO=si ACTUALIZAR_HORA='${HoraActualizar}' \
+             ACTUALIZAR_DIARIO=si ACTUALIZAR_HORA='${HoraActualizar}' ENTRENAR='${EntrenarObjetos}' \
              ENCENDEDOR=si VIGIA_NUBE=aws VIGIA_GRUPO=analisis VIGIA_MAX_MAQUINAS=1 VIGIA_RESPALDO=no \
              bash /root/instalar.sh; then
             echo "INSTALACIÓN TERMINADA BIEN: $(date -u)"

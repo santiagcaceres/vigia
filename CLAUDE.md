@@ -426,6 +426,52 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   librerías en `agent_data/cierres-inesperados.txt`, y si la vez anterior se cerró **cargando la IA** (marca
   `cargando-ia.txt` que quedó) desde ahí la IA va en el procesador (`ia-en-procesador.txt`, borrarlo para volver a
   probar la placa). Prueba: `tests/test_avisos.py`.
+- **Pestaña «Entrenar objetos» y plan «Conteo de objetos» (18 nov, el dueño: «hacé otra pestaña… primero añadir el nuevo
+  objeto y ponerle para qué plan de métricas sería… hacelo completo con una guía de qué hacer y para qué en cada paso…
+  ¿podemos subir los videos y fotos desde la app y que los analicen las máquinas virtuales?»; app 1.49.0).** Para
+  enseñarle a la IA objetos propios (pallets, cajas…) con Ultralytics (decisión del 18 nov). **Todavía sin video real:**
+  el dueño no tiene videos del cliente; se probó con fotos inventadas.
+  - **App** (`agent/entrenar_objetos.py`, admin y operador): arriba el objeto elegido y una frase de qué sigue
+    (`guide_text`); 5 pasos en pestañas, cada uno con «Qué hacer» y «Para qué» (`STEP_GUIDE`): **1 · El objeto**
+    (nombre, hasta 8 clases = los estados a distinguir, cada una con una palabra en inglés opcional para YOLOE, el plan
+    de métricas con su explicación `PLAN_HELP` y el cliente o «Todos»), **2 · Juntar fotos** («⬆ Subir fotos…»,
+    «🎞 Sacar fotos de un video…» en esta PC —sube solo las fotos— o en una máquina virtual —sube el video entero, hasta
+    1 GB—, «📷 Foto de una cámara…»; fotos achicadas a 1280 px, una cada 2 s salteando las casi iguales, la misma foto
+    no se repite), **3 · Marcar** (editor de recuadros sobre la foto: arrastrar = nuevo, clic = elegir, mover y agrandar
+    desde las esquinas, clic derecho = borrar, teclas 1-8 clase, Enter guardar y seguir, N no hay ninguno, D descartar,
+    A aceptar lo de la IA; lo propuesto en naranja punteado; filtro «dudosas primero»), **4 · Entrenar** (lo que falta,
+    qué máquina puede, avance y cancelar), **5 · Probar y activar** (resultado en palabras, «Probar con una foto / una
+    cámara» corre el .onnx en esta PC, activar o apagar). Avisos verdes de crear, guardar, entrenar y activar (marcar
+    cada foto no avisa). Entra en 1366x768 (la guía de «Marcar» va a la derecha para que la foto tenga alto).
+  - **Plan nuevo `objetos`** («Conteo de objetos»): en `PlanName`, la app, la web y el PDF. Un objeto también puede ir en
+    un plan existente (comercio, estación, empleados, gastronomía, hurto). **Las cámaras todavía no miden objetos**: una
+    cámara con solo este plan hace lo de «solo métricas» (cuenta gente que no se muestra). Medir en producción (conteo
+    estable por zona, terminados por hora, en la app, la web y el PDF) queda para cuando haya un modelo entrenado con
+    video real del cliente.
+  - **Servidor** (`server/objetos.py`, `install(app, …)` desde main.py): tablas `object_models`, `object_images`,
+    `object_jobs`, `object_versions` (`SCHEMA_VERSION` 2026-11-18.1). Fotos al Storage con URLs firmadas
+    (`training/objects/<id>/img/<sha1>.jpg`; firma en lote, `signed_download_urls`). 1 de cada 5 fotos queda «de
+    prueba» para siempre (`split_of`, por la huella). Mínimo para entrenar 30 fotos marcadas y 20 recuadros de alguna
+    clase (`train_check`; recomendado 300 y 100). Trabajos `video` | `premarcar` | `entrenar` en cola; los toma una
+    máquina por `/api/agent/objects/next` según lo que informa en su estado (`objects: {video, ultra, gpu, device}`):
+    video cualquiera con la versión nueva, pre-marcar y entrenar solo con Ultralytics; entrenar va primero a las de placa.
+    Un trabajo sin noticias 20 min vuelve a la cola. Versión nueva al terminar (con .onnx y .pt; la siguiente sigue desde
+    el .pt si las clases son las mismas). Borrar un cliente borra sus objetos y las fotos de sus cámaras; la limpieza
+    diaria borra subidas a medias. Un operador hace todo menos borrar un objeto. Pruebas: `tests/test_objetos_servidor.py`.
+  - **Máquinas** (`agent/objetos_maquina.py`, `ObjectJobRunner`, solo el proceso 1): un hilo pregunta cada minuto. Lo
+    de torch corre en otro proceso (`agent/objetos_ia.py`: `train` afina YOLO11n o la versión anterior, mide con las
+    fotos de prueba y exporta a ONNX 640 opset 12; `predict` con la versión o con YOLOE `yoloe-11s-seg.pt` + CLIP), así
+    una falla o la memoria de torch no tocan las cámaras; cancelar lo corta. **`instalar.sh ENTRENAR=si`** arma
+    `/opt/vigia/.venv-entrenar` (torch según el driver + `requirements-entrenar.txt`) y `VIGIA_PY_ENTRENAR`; en la fija
+    de Tigo, parámetro `EntrenarObjetos` (por defecto sí). Sin placa entrena con la mitad de los núcleos y prioridad baja.
+    **Hoy ninguna máquina tiene Ultralytics** (la de Google no se instaló con ENTRENAR=si): los entrenamientos quedan en
+    cola y la app lo dice.
+  - **Probado acá** (procesador, Ultralytics 8.4.215): 60 fotos inventadas, 3 vueltas en ~1 min, mAP50 0,88 en las de
+    prueba, el .onnx lo lee `core.objetos.ObjectDetector` (el mismo detector ONNX de siempre, con las clases del objeto y
+    un objeto = una clase, `one_class_each`). YOLOE encontró el ómnibus y las personas de `bus.jpg` por palabra. **Sin
+    probar en una placa de video** (no hay ninguna todavía). Pruebas: `tests/test_objetos_maquina.py` (con un Ultralytics
+    de mentira; `VIGIA_ULTRA_PY=<python con ultralytics>` entrena de verdad) y `tests/test_entrenar_objetos_app.py` (la
+    pestaña de punta a punta en Xvfb con el servidor de verdad).
 - **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
   promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
   `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en

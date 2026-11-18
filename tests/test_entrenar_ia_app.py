@@ -602,9 +602,9 @@ def _click_person(tab, pid):
 
 
 def test_la_pestana_esta_entre_alertas_y_maquinas_y_entra_en_1366x768(tmp_path):
-    for role, tabs in (("admin", ["En vivo", "Clientes", "Alertas", "Entrenar IA hurtos", "Máquinas",
+    for role, tabs in (("admin", ["En vivo", "Clientes", "Alertas", "Entrenar IA hurtos", "Entrenar objetos", "Máquinas",
                                   "Administración"]),
-                       ("entrenador", ["En vivo", "Clientes", "Alertas", "Entrenar IA hurtos"])):
+                       ("entrenador", ["En vivo", "Clientes", "Alertas", "Entrenar IA hurtos", "Entrenar objetos"])):
         v, off, tab, server = _app(tmp_path / role, role=role)
         try:
             names = [v.notebook.tab(t, "text").strip() for t in v.notebook.tabs()]

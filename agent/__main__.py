@@ -114,6 +114,8 @@ class Agent:
         self._stats_at = time.monotonic()
         self.process_imports = process_imports
         self.imports: ImportJobRunner | None = None
+        self.objects = None  # «Entrenar objetos»: fotos de videos, pre-marcar y entrenar (solo máquinas de análisis)
+        self._object_caps: dict | None = None
         self.alarms: AlarmRunner | None = None
         self.alarm_workers = alarm_workers
         self.data_dir = Path(data_dir)
@@ -186,6 +188,16 @@ class Agent:
             self.imports = ImportJobRunner(self.client, self.model_path, self.data_dir / "imports")
             self.imports.start()
             log.info("Procesamiento de videos importados: activado")
+        # (en una máquina con varios procesos, solo el primero: si no, dos entrenamientos a la vez en la misma placa)
+        if self.machine and self.objects is None and os.getenv("VIGIA_PROCESO", "1") == "1":
+            from .objetos_maquina import ObjectJobRunner
+
+            self.objects = ObjectJobRunner(self.client, self.data_dir / "objetos", self.object_caps())
+            self.objects.start()
+            caps = self.objects.caps
+            log.info("Entrenar objetos: saca fotos de videos%s", (
+                f", pre-marca y entrena en {caps.get('device')}" if caps.get("ultra") else
+                " (sin Ultralytics: no entrena; instalar con ENTRENAR=si)"))
         model = cfg.get("filter_model")
         if (model or {}).get("id") != self._scorer_id:
             self.scorer = Scorer.maybe(model)
@@ -602,8 +614,17 @@ class Agent:
         fresh, self._fresh = self._fresh, False
         return {"capacity": self.machine.get("capacity"), "instance_id": self.machine.get("instance_id"),
                 "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2),
+                # qué trabajos de «Entrenar objetos» puede hacer (solo el proceso que los toma)
+                **({"objects": self.objects.caps} if self.objects else {}),
                 **({"fixed": True} if self.machine.get("fixed") else {}),  # siempre prendida: no se vacía ni se apaga
                 **({"fresh": True} if fresh else {})}
+
+    def object_caps(self) -> dict:
+        if self._object_caps is None:
+            from .objetos_maquina import capabilities
+
+            self._object_caps = capabilities()
+        return self._object_caps
 
     def leave(self, reason: str, drain_s: float = 60.0) -> None:
         """La nube va a sacar esta máquina: el servidor pasa sus cámaras a las otras ya (sin esperar los 90 s que
@@ -755,6 +776,8 @@ class Agent:
                 pass
         if self.imports:
             self.imports.stop()
+        if self.objects:
+            self.objects.stop()
         if self.alarms:
             self.alarms.stop()
         for lst in self.listeners.values():

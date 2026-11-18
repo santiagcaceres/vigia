@@ -1,0 +1,8 @@
+# «Entrenar objetos» (pallets, cajas…): solo en las máquinas instaladas con ENTRENAR=si, en un entorno APARTE
+# (/opt/vigia/.venv-entrenar) para que torch no toque el del análisis de las cámaras. torch lo instala instalar.sh
+# según la placa (CUDA 12 o 13, o solo procesador). Lo usa agent/objetos_ia.py (otro proceso).
+ultralytics>=8.3.100
+onnx>=1.16
+onnxslim>=0.1.40
+# YOLOE (pre-marcar con palabras en inglés antes de tener un modelo propio) entiende el texto con CLIP
+clip @ git+https://github.com/ultralytics/CLIP.git

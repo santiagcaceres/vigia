@@ -13,4 +13,6 @@ EnvironmentFile=-/etc/vigia/actualizar.env
 # La máquina se prende cada mañana: arranca siempre con la última versión. Si falla (sin internet), sigue con la que tiene.
 ExecStart=-/usr/bin/git pull --ff-only -q
 ExecStart=-/opt/vigia/.venv/bin/pip install -q -r ${VIGIA_REQ}
+# lo de entrenar objetos (solo si se instaló con ENTRENAR=si)
+ExecStart=-/bin/sh -c '[ ! -x /opt/vigia/.venv-entrenar/bin/pip ] || /opt/vigia/.venv-entrenar/bin/pip install -q -r /opt/vigia/requirements-entrenar.txt'
 TimeoutStartSec=600

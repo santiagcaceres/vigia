@@ -37,6 +37,11 @@ class Storage:
         """(último cambio, tamaño en bytes o None si no se sabe), o None si no existe."""
         mtime = self.modified_at(path)
         return None if mtime is None else (mtime, None)
+
+    def signed_download_urls(self, paths: list[str], expires_in: int = 3600) -> dict[str, str]:
+        """Varias URLs firmadas de una vez (path → URL). Supabase lo hace en un solo pedido."""
+        return {p: self.signed_download_url(p, expires_in) for p in paths}
+
     def remove(self, paths: list[str]) -> None: ...
 
 
@@ -89,6 +94,18 @@ class SupabaseStorage(Storage):
         if not signed:
             raise StorageError("Supabase no devolvió signedURL")
         return self.base + signed
+
+    def signed_download_urls(self, paths: list[str], expires_in: int = 3600) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for i in range(0, len(paths), 500):
+            part = [p.lstrip("/") for p in paths[i:i + 500]]
+            r = self.http.post(f"{self.base}/object/sign/{self.bucket}", json={"expiresIn": expires_in, "paths": part})
+            data = self._check(r, "firmar descargas")
+            for item in data if isinstance(data, list) else []:
+                signed = item.get("signedURL") or item.get("signedUrl")
+                if signed and item.get("path"):
+                    out[item["path"]] = self.base + signed
+        return out
 
     def signed_upload_url(self, path: str) -> str:
         """URL para subir (con x-upsert) sin credenciales; Supabase la da válida por 2 horas."""

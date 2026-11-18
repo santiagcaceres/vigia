@@ -37,10 +37,10 @@ from core.rules import (EVENT_TYPES, FUERA_DE_HORARIO, NEW_ZONE_TYPES, NO_WAIT_T
 from core.schedule import DEFAULT_MARGIN_MIN, normalize_hours
 from core.scorer import FEATURE_NAMES, LABELS
 
-from . import hikconnect, hpp, nube, pool, probe, training
+from . import hikconnect, hpp, nube, objetos, pool, probe, training
 from .db import (ROLES, Agent, Alarm, AppSetting, Camera, CameraMetric, Client, ClientReport, CredentialAccess, Event,
-                 FilterModel, Incident, LoginFailure, SessionToken, TheftModel, TrainingClip, User,
-                 VideoImport, iso, make_session_factory, utcnow)
+                 FilterModel, Incident, LoginFailure, ObjectImage, ObjectJob, ObjectModel, ObjectVersion, SessionToken,
+                 TheftModel, TrainingClip, User, VideoImport, iso, make_session_factory, utcnow)
 from .security import SecretBox, hash_password, needs_rehash, new_token, password_problem, token_hash, verify_password
 from .services import ClientNotifier, OperatorAlerts, active_model, parse_occurred_at
 from .storage import LocalStorage, Storage, StorageError, SupabaseStorage
@@ -167,7 +167,7 @@ class Settings:
 
 # ---------------------------------------------------------------- esquemas
 # planes que contrata un cliente (y que cada cámara elige medir): los mismos que PLAN_NAMES, en ese orden
-PlanName = Literal["hurto", "comercio", "estacion", "empleados", "gastronomia"]
+PlanName = Literal["hurto", "comercio", "estacion", "empleados", "gastronomia", "objetos"]
 
 
 def _host(v: str | None) -> str | None:
@@ -238,7 +238,9 @@ class HikConnectKeyIn(BaseModel):
 
 
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
-              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía"}
+              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía",
+              # objetos propios que se le enseñan a la IA (pallets…: «Entrenar objetos» de la app, 18 nov)
+              "objetos": "Conteo de objetos"}
 PLAN_ORDER = tuple(PLAN_NAMES)  # hurto, comercio, estacion, empleados: así se devuelven siempre
 OLD_APP_PLANS = ("hurto", "comercio", "estacion")  # los que conocen las apps 1.38 y 1.39
 
@@ -1753,6 +1755,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.query(TheftModel).filter_by(client_id=cid).delete(synchronize_session=False)
         files += [p for (p,) in s.query(TrainingClip.data_path).filter(TrainingClip.client_id == cid) if p]
         s.query(TrainingClip).filter_by(client_id=cid).delete(synchronize_session=False)
+        # los objetos de «Entrenar objetos» de este cliente (sus fotos son de sus cámaras); los de todos quedan, sin las
+        # fotos de sus cámaras
+        obj_ids = [m for (m,) in s.query(ObjectModel.id).filter(ObjectModel.client_id == cid)]
+        cam_q = s.query(ObjectImage).filter(or_(ObjectImage.model_id.in_(obj_ids),
+                                                ObjectImage.camera_id.in_(cam_ids)))
+        files += [i.path for i in cam_q]
+        cam_q.delete(synchronize_session=False)
+        if obj_ids:
+            for v in s.query(ObjectVersion).filter(ObjectVersion.model_id.in_(obj_ids)):
+                files += [p for p in (v.onnx_path, v.pt_path) if p]
+            files += [j.storage_path for j in s.query(ObjectJob).filter(ObjectJob.model_id.in_(obj_ids))
+                      if j.storage_path]
+            for tbl in (ObjectJob, ObjectVersion):
+                s.query(tbl).filter(tbl.model_id.in_(obj_ids)).delete(synchronize_session=False)
+            s.query(ObjectModel).filter(ObjectModel.id.in_(obj_ids)).delete(synchronize_session=False)
+        s.query(ObjectJob).filter(ObjectJob.camera_id.in_(cam_ids)).update({"camera_id": None},
+                                                                           synchronize_session=False)
         for cam in s.query(Camera).filter_by(client_id=cid):
             files += ([cam.preview_path] if cam.preview_path else []) + [live_path(cam)]
         s.query(Camera).filter_by(client_id=cid).delete(synchronize_session=False)
@@ -1828,6 +1847,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s.query(VideoImport).filter(VideoImport.claimed_by.in_(pcs)).update({"claimed_by": None},
                                                                               synchronize_session=False)
             s.query(Alarm).filter(Alarm.claimed_by.in_(pcs)).update({"claimed_by": None}, synchronize_session=False)
+            s.query(ObjectJob).filter(ObjectJob.claimed_by.in_(pcs)).update({"claimed_by": None},
+                                                                           synchronize_session=False)
             s.query(Agent).filter(Agent.id.in_(pcs)).delete(synchronize_session=False)
         s.query(Camera).filter(Camera.operator_id == uid).update({"operator_id": None}, synchronize_session=False)
         s.query(VideoImport).filter(VideoImport.created_by == uid).update({"created_by": None}, synchronize_session=False)
@@ -1837,6 +1858,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                                           synchronize_session=False)
         s.query(TrainingClip).filter(TrainingClip.created_by == uid).update({"created_by": None},
                                                                             synchronize_session=False)
+        for tbl in (ObjectModel, ObjectImage, ObjectJob, ObjectVersion):
+            s.query(tbl).filter(tbl.created_by == uid).update({"created_by": None}, synchronize_session=False)
+        s.query(ObjectImage).filter(ObjectImage.labeled_by == uid).update({"labeled_by": None},
+                                                                          synchronize_session=False)
         s.query(TheftModel).filter(TheftModel.created_by == uid).update({"created_by": None},
                                                                         synchronize_session=False)
         s.query(SessionToken).filter(SessionToken.user_id == uid).delete(synchronize_session=False)
@@ -2116,6 +2141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         a = get_or_404(s, Agent, aid, "Agente")
         s.query(Camera).filter_by(agent_id=aid).update({"agent_id": None})
         s.query(VideoImport).filter_by(claimed_by=aid).update({"claimed_by": None})
+        s.query(ObjectJob).filter_by(claimed_by=aid).update({"claimed_by": None})
         s.delete(a)
         bump_rev(s)
         s.commit()
@@ -3021,6 +3047,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for k in ("batch_avg", "frames_per_s"):
                 if isinstance(payload.get(k), (int, float)):
                     a.last_status = {**a.last_status, k: payload[k]}
+            caps = payload.get("objects")
+            if isinstance(caps, dict):  # «Entrenar objetos»: si saca fotos de videos y si tiene Ultralytics (y placa)
+                a.last_status = {**a.last_status, "objects": {
+                    "video": caps.get("video") is True, "ultra": caps.get("ultra") is True,
+                    "gpu": caps.get("gpu") is True,
+                    "device": str(caps.get("device"))[:60] if isinstance(caps.get("device"), str) else None}}
             if payload.get("fixed") is True:  # máquina fija: siempre prendida, no se vacía ni se apaga (pool.py)
                 a.last_status = {**a.last_status, "fixed": True}
                 a.draining = False
@@ -4636,6 +4668,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": "attachment; filename=etiquetas.csv"})
 
+    # ------------------------------------------------------------ «Entrenar objetos» (server/objetos.py)
+    objetos.install(app, db=db, staff=staff, admin_only=admin_only, current_agent=current_agent, storage=storage,
+                    get_or_404=get_or_404, plan_names=PLAN_NAMES, max_video_bytes=st.max_import_bytes)
+
     # ------------------------------------------------------------ limpieza diaria (Vercel Cron)
     @app.get("/api/cron/cleanup")
     def cron_cleanup(authorization: str = Header(""), s=Depends(db)) -> dict:
@@ -4667,6 +4703,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             i.storage_path = ""
         s.query(CredentialAccess).filter(CredentialAccess.at < utcnow() - timedelta(days=90)).delete(
             synchronize_session=False)
+        # «Entrenar objetos»: fotos y videos que empezaron a subir y no terminaron (la app se cerró a mitad)
+        day = utcnow() - timedelta(days=1)
+        half = s.query(ObjectImage).filter(ObjectImage.status == "subiendo", ObjectImage.created_at < day).limit(2000).all()
+        half_paths = [i.path for i in half]
+        if half:
+            s.query(ObjectImage).filter(ObjectImage.id.in_([i.id for i in half])).delete(synchronize_session=False)
+        for j in s.query(ObjectJob).filter(ObjectJob.status == "subiendo", ObjectJob.created_at < day):
+            half_paths.append(j.storage_path)
+            j.status, j.error, j.storage_path = "error", "El video no terminó de subir", None
+        if half_paths:
+            storage.remove([p for p in half_paths if p])
         s.query(SessionToken).filter(SessionToken.expires_at < utcnow()).delete()
         # intentos fallidos viejos (y las IPs conocidas vencidas): la tabla no crece sin fin
         s.query(LoginFailure).filter(LoginFailure.first_at < utcnow() - timedelta(days=1),
@@ -4678,6 +4725,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for a in gone:
             s.query(Camera).filter_by(agent_id=a.id).update({"agent_id": None})
             s.query(VideoImport).filter_by(claimed_by=a.id).update({"claimed_by": None})
+            s.query(ObjectJob).filter_by(claimed_by=a.id).update({"claimed_by": None})
             s.delete(a)
         if gone:
             bump_rev(s)

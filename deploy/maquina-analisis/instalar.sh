@@ -15,6 +15,9 @@
 #   VIGIA_FIJA=si         máquina fija: siempre prendida (la de la reserva); el servidor no la vacía ni se apaga
 #   ENCENDEDOR=si         además de analizar, esta máquina prende y apaga las otras (VIGIA_NUBE, VIGIA_GRUPO…)
 #   CAPACIDAD_TOPE=60     no decir que aguanta más que esto (por máquina), mida lo que mida
+#   ENTRENAR=si           además puede entrenar objetos propios (pestaña «Entrenar objetos» de la app: pallets…) y
+#                         pre-marcar fotos con la IA: instala Ultralytics y torch en otro entorno (/opt/vigia/.venv-entrenar,
+#                         unos 3 GB con placa, 1 GB sin). Mejor en la máquina con placa de video (sin placa tarda horas)
 #   ACTUALIZAR_DIARIO=si  bajar la última versión cada noche (una máquina que no se apaga nunca no se actualiza sola);
 #                         ACTUALIZAR_HORA=07:30 es la hora UTC (04:30 en Uruguay)
 set -euo pipefail
@@ -144,6 +147,28 @@ VIGIA_POOL_KEY=$VIGIA_POOL_KEY
 VIGIA_CAPACIDAD=$CAPACIDAD
 CFG
 [ "${VIGIA_FIJA:-no}" = "si" ] && echo "VIGIA_FIJA=si" >> /etc/vigia/maquina.env
+if [ "${ENTRENAR:-no}" = "si" ]; then
+  # «Entrenar objetos»: Ultralytics y torch en un entorno aparte (si algo de torch choca, el análisis ni se entera).
+  # torch según la placa: CUDA 13 (driver 580 o más) va con el de PyPI; CUDA 12, con el de pytorch.org; sin placa, el
+  # de procesador (mucho más liviano)
+  echo "Instalando lo de entrenar objetos (Ultralytics y torch; tarda unos minutos)…"
+  sudo -u vigia python3 -m venv /opt/vigia/.venv-entrenar
+  sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q -U pip
+  CUDA=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9]*\).*/\1/p' | head -1 || true)
+  if [ "$GPU" = "si" ] && [ "${CUDA:-0}" -ge 13 ]; then
+    sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q torch torchvision
+  elif [ "$GPU" = "si" ]; then
+    sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q torch torchvision \
+      --index-url https://download.pytorch.org/whl/cu126
+  else
+    sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q torch torchvision \
+      --index-url https://download.pytorch.org/whl/cpu
+  fi
+  sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q -r /opt/vigia/requirements-entrenar.txt
+  echo "VIGIA_PY_ENTRENAR=/opt/vigia/.venv-entrenar/bin/python" >> /etc/vigia/maquina.env
+  sudo -u vigia /opt/vigia/.venv-entrenar/bin/python -c \
+    'import torch, ultralytics; print("Entrenar objetos: Ultralytics", ultralytics.__version__, "· placa:", torch.cuda.is_available())'
+fi
 # sin placa de video: un modelo por núcleo, repartidos entre los procesos
 HILOS=$(( $(nproc) / PROCESOS )); [ "$HILOS" -ge 1 ] || HILOS=1
 [ "$GPU" = "no" ] && echo "VIGIA_HILOS=$HILOS" >> /etc/vigia/maquina.env

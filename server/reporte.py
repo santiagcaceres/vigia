@@ -22,7 +22,7 @@ FONDO = (243, 245, 249)
 CELESTE = (61, 107, 214)
 LOGO = Path(__file__).with_name("logo.png")  # el ojo en blanco (sobre la franja azul)
 PLAN_NAMES = {"hurto": "Detección de hurtos", "comercio": "Métricas de comercio", "estacion": "Estación de servicio",
-              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía"}
+              "empleados": "Seguimiento de empleados", "gastronomia": "Gastronomía", "objetos": "Conteo de objetos"}
 ZONE_NAMES = {"shelf": "Góndola", "aisle": "Pasillo", "checkout": "Caja", "exit": "Salida", "restricted": "Restringida",
               "entrance": "Entrada", "pump": "Surtidor", "shop": "Tienda", "staff": "Personal", "table": "Mesa"}
 LABELS = {"hurto": "Confirmadas como hurto", "sospechoso": "Sospechosas", "normal": "Normales",
