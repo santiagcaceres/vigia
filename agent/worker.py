@@ -35,6 +35,13 @@ NVR_WRITE_DELAY_SECONDS = float(os.getenv("VIGIA_NVR_DELAY", "15"))
 
 
 DISPLAY_INTERVAL = 0.1  # la ventana de la PC central no necesita más de 10 cuadros por segundo
+# Ponerse al día (18 nov, la farmacia: los clips de la máquina salían en cámara lenta, «como fotos»): si analizar un
+# cuadro tarda más que lo que tarda la cámara en mandar el siguiente, los cuadros se apilan; antes se analizaban todos
+# en orden, cada vez más atrasados y con la hora de la PC (un clip de 3 s quedaba de 17 s y los gestos se medían
+# lentos). Ahora, después de un cuadro lento, se saltean sin analizar los que ya estaban esperando (salen al instante:
+# solo se decodifican) hasta llegar al vivo. Solo con RTSP: Hik-Connect y los HLS llegan en ráfagas y van con el reloj
+# del video (`MediaClock`).
+CATCHUP_MAX_S = 5.0  # (por las dudas, como mucho 5 s seguidos salteando: después se analiza igual)
 # filtro de movimiento (core/motion.py): qué parte de la imagen chica (96x54) tiene que cambiar para mirar el cuadro.
 # Con «Personas lejos» se baja: alguien al fondo de un depósito (menos del ~8 % del alto) mueve menos puntos que eso y,
 # con la escena quieta, se analizaría un cuadro cada 2 s hasta que el detector lo viera
@@ -219,6 +226,7 @@ class CameraWorker:
         if not self.detection.is_default:
             log.info("[%s] detección de personas: %s", self.name, self.detection.describe())
         self.idle_pct: float | None = None  # parte de los cuadros salteados por quietud (último minuto)
+        self.skipped_pct: float | None = None  # parte salteada por atraso: la máquina no da abasto (último minuto)
         self.metrics_queue = metrics_queue
         self.outbox = outbox
         self.client = client
@@ -327,6 +335,8 @@ class CameraWorker:
                 "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
                 **({"protocol": self.hik.protocol} if self.hik.brand == "hikconnect" else {}),
                 "metrics_only": self.metrics_only, "gestures": self.analyzer.gestures,
+                # qué parte de los cuadros se salteó en el último minuto para no atrasarse (la máquina no da abasto)
+                **({"skipped_pct": round(self.skipped_pct * 100)} if self.skipped_pct else {}),
                 # la IA de movimientos de hurto está mirando (hay modelo activo, la postura cargada y mide hurtos)
                 "ia_hurto": self.analyzer.theft_ai,
                 # («normal», «sensibilidad 8 de 10 · personas lejos»): para saber si la máquina ya la aplica
@@ -403,6 +413,13 @@ class CameraWorker:
         last_metrics = last_idle = time.monotonic()
         window: list[float] = []
         fails = 0
+        # un cuadro que «sale al instante» ya estaba esperando: el vivo tarda lo que tarda la cámara en mandarlo
+        vfps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        frame_s = 1.0 / vfps if 1.0 <= vfps <= 60.0 else 1.0 / 25
+        waiting_grab = 0.5 * frame_s
+        behind_since: float | None = None  # desde cuándo se está poniendo al día (None = al día)
+        skipped = grabbed = 0
+        last_skip_log = time.monotonic()
         while not self._stop.is_set():
             if self._pending_analysis is not None:
                 # se saca antes de aplicarlo: si falla, no se reintenta en cada cuadro
@@ -410,6 +427,7 @@ class CameraWorker:
                 self._apply_analysis(pending)
             # tomar todos los cuadros evita acumular retraso; solo se convierten a imagen los que se usan
             # (analizar o mostrar en la ventana), que es lo que más procesador gasta
+            g0 = time.monotonic()
             ok = cap.grab()
             if not ok:
                 fails += 1
@@ -419,9 +437,24 @@ class CameraWorker:
                 continue
             fails = 0
             now = time.monotonic()
+            grabbed += 1
             ts = base + (clock.tick() if clock else now - t0)  # segundos del video (o de la PC)
             self._last_ts, self._last_ts_at = ts, now
             self.last_frame_at = time.time()
+            if behind_since is not None:
+                if now - g0 < waiting_grab and now - behind_since < CATCHUP_MAX_S:
+                    skipped += 1
+                    continue  # todavía es de los que se apilaron mientras se analizaba: no sirve (es viejo)
+                behind_since = None
+            if now - last_skip_log > 60:
+                if skipped:
+                    self.skipped_pct = skipped / max(1, grabbed)
+                    log.info("[%s] la máquina no da abasto: se saltearon %d de %d cuadros (%.0f %%) para no atrasarse",
+                             self.name, skipped, grabbed, 100 * self.skipped_pct)
+                else:
+                    self.skipped_pct = 0.0
+                skipped = grabbed = 0
+                last_skip_log = now
             analyze = ts - last_proc >= 1.0 / self.process_fps - 1e-3
             show = self.show_window and now - last_show >= DISPLAY_INTERVAL
             if not (analyze or show):
@@ -463,6 +496,8 @@ class CameraWorker:
                 ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 if ok:
                     self.clip_pool.submit(self._send_preview, jpg.tobytes())
+            if clock is None and time.monotonic() - now > frame_s:
+                behind_since = time.monotonic()  # este cuadro tardó más que uno de la cámara: se apilaron cuadros
 
     def _on_finding(self, f: Finding) -> None:
         self.events += 1

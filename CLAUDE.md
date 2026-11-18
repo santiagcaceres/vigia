@@ -481,6 +481,17 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     corta ahí), una foto borrada a mitad se saltea, y en la placa el lote es fijo (16: la comparte con las cámaras).
     Queda: el reinicio de cada noche (07:30 UTC) corta un entrenamiento en marcha (vuelve a la cola a los 20 min y empieza
     de cero).
+- **Clips en cámara lenta, «como fotos» (18 nov, la farmacia: «va muy lento, es como varias fotos más que video»).**
+  No era la cámara ni el H.265: la máquina de Google (capacidad 4) tenía 12 cámaras (las 8 de la farmacia a 2-4
+  cuadros/s de 5). Con gente a la vista, analizar un cuadro tardaba más que lo que la cámara tarda en mandar el
+  siguiente; el `CameraWorker` los analizaba todos en orden, cada vez más atrasados y con la hora de la PC: el clip del
+  buffer juntaba cuadros seguidos de la cámara como si estuvieran a 0,4 s (en la grabación del dueño, 3 s del reloj de la
+  cámara duraban 17) y los gestos se medían más largos. Ahora, con RTSP, después de un cuadro que tardó más que uno de
+  la cámara se saltean los que se apilaron (salen al instante: solo se decodifican) hasta llegar al vivo
+  (`CATCHUP_MAX_S`, `skipped_pct` en el estado y una línea por minuto en el registro: «la máquina no da abasto…»).
+  Hik-Connect y HLS siguen con `MediaClock`. Los clips viejos quedan lentos; **la máquina lo toma al reiniciarse**. Lo
+  de fondo sigue: con la máquina llena analiza 2-3 cuadros/s por cámara cuando hay gente (los gestos aciertan menos):
+  hace falta otra máquina o analizar menos cámaras. Prueba: `tests/test_ponerse_al_dia.py`.
 - **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
   promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
   `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en
