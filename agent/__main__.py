@@ -615,7 +615,7 @@ class Agent:
         return {"capacity": self.machine.get("capacity"), "instance_id": self.machine.get("instance_id"),
                 "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2),
                 # qué trabajos de «Entrenar objetos» puede hacer (solo el proceso que los toma)
-                **({"objects": self.objects.caps} if self.objects else {}),
+                **({"objects": self.objects.caps} if getattr(self, "objects", None) else {}),
                 **({"fixed": True} if self.machine.get("fixed") else {}),  # siempre prendida: no se vacía ni se apaga
                 **({"fresh": True} if fresh else {})}
 
