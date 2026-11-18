@@ -38,6 +38,8 @@ from .outbox import ServerClient
 log = logging.getLogger("vigia.objetos")
 IDLE_POLL_SECONDS = 60
 PROGRESS_EVERY_S = 10.0
+ALIVE_EVERY_S = 45.0  # mientras el otro proceso trabaja sin decir nada (una vuelta larga): «sigo» y ¿lo cancelaron?
+PROPOSALS_BATCH = 50
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -143,7 +145,14 @@ class ObjectJobRunner:
         self._last_progress = 0.0
         try:
             result = {"video": self._video, "premarcar": self._prelabel, "entrenar": self._train}[kind](job, tmp)
-            self._post(f"/api/agent/objects/jobs/{jid}/done", {"result": result})
+            for attempt in range(4):  # (un 502 pasajero no tira un entrenamiento terminado)
+                try:
+                    self._post(f"/api/agent/objects/jobs/{jid}/done", {"result": result})
+                    break
+                except httpx.HTTPError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(5 * (attempt + 1))
             log.info("Trabajo de objetos %s listo: %s", jid, {k: v for k, v in result.items() if k != "metrics"})
         except Cancelled:
             log.info("El trabajo de objetos %s se canceló o pasó a otra máquina", jid)
@@ -224,7 +233,8 @@ class ObjectJobRunner:
         kept = []
         for n, it in enumerate(todo):
             path = tmp / f"{it['id']}.jpg"
-            self.client.download(it["url"], path)
+            if not self._fetch(it["url"], path):
+                continue
             kept.append((it["id"], path))
             self.progress(jid, 0.3 * (n + 1) / max(1, len(todo)), f"Bajando fotos ({n + 1} de {len(todo)})")
         proposed = self._propose(job, spec, kept, tmp, 0.3) if kept else 0
@@ -244,37 +254,62 @@ class ObjectJobRunner:
             by = "IA de palabras (YOLOE)"
         self.run_ia("predict", cfg, tmp, jid, start, 0.95)
         found = json.loads(Path(cfg["out"]).read_text())
-        items = [{"id": int(k), "boxes": v} for k, v in found.items()]
+        items = [{"id": int(k), "boxes": [{**b, **{c: round(float(b[c]), 4) for c in ("x1", "y1", "x2", "y2")}}
+                                          for b in v]} for k, v in found.items()]
         n = 0
-        for i in range(0, len(items), 200):
-            n += self._post(f"/api/agent/objects/jobs/{jid}/proposals", {"by": by, "items": items[i:i + 200]})["ok"]
+        for i in range(0, len(items), PROPOSALS_BATCH):  # (cada pedido a Vercel, de menos de 4,5 MB)
+            n += self._post(f"/api/agent/objects/jobs/{jid}/proposals",
+                            {"by": by, "items": items[i:i + PROPOSALS_BATCH]})["ok"]
         return n
+
+    def _fetch(self, url: str | None, dest: Path) -> bool:
+        """Baja una foto; si ya no está (la borraron mientras tanto), sigue sin ella."""
+        if not url:
+            return False
+        try:
+            self.client.download(url, dest)
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                raise
+            log.warning("Una foto ya no está en la nube (%s): sigo sin ella", exc.response.status_code)
+            dest.unlink(missing_ok=True)
+            return False
 
     # ------------------------------------------------------------ entrenar
     def _train(self, job: dict, tmp: Path) -> dict:
         jid, p = job["job_id"], job.get("params") or {}
         self.progress(jid, 0.01, "Bajando las fotos marcadas", force=True)
         ds = self._get(f"/api/agent/objects/jobs/{jid}/dataset")
+        items = list(ds["items"])
+        while ds.get("next") is not None:  # (de a partes: Vercel no devuelve más de 4,5 MB)
+            ds = {**self._get(f"/api/agent/objects/jobs/{jid}/dataset?offset={ds['next']}"), "classes": ds["classes"]}
+            items += ds["items"]
         keys = [c["key"] for c in ds["classes"]]
         root = tmp / "datos"
-        items = ds["items"]
         val = [it for it in items if it["split"] == "prueba"]
         if not val:  # sin fotos de prueba marcadas: se aparta una de cada cinco para medir algo
             val = sorted(items, key=lambda it: it["uuid"])[::5]
         val_ids = {it["id"] for it in val}
-        n_boxes = 0
+        n_boxes = n_images = 0
         for n, it in enumerate(items):
             split = "val" if it["id"] in val_ids else "train"
             (root / "images" / split).mkdir(parents=True, exist_ok=True)
             (root / "labels" / split).mkdir(parents=True, exist_ok=True)
-            self.client.download(it["url"], root / "images" / split / f"{it['uuid']}.jpg")
+            if not self._fetch(it["url"], root / "images" / split / f"{it['uuid']}.jpg"):
+                val_ids.discard(it["id"])
+                continue
+            n_images += 1
             lines = ob.yolo_lines(it["boxes"], keys)
             n_boxes += len(lines)
             (root / "labels" / split / f"{it['uuid']}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
             self.progress(jid, 0.05 * (n + 1) / max(1, len(items)), f"Bajando fotos ({n + 1} de {len(items)})")
-        if not (root / "images" / "train").exists():  # todas quedaron de prueba (pocas fotos): se entrena con ellas
-            shutil.copytree(root / "images" / "val", root / "images" / "train")
-            shutil.copytree(root / "labels" / "val", root / "labels" / "train")
+        if not n_images:
+            raise RuntimeError("No se pudo bajar ninguna foto marcada")
+        for a, b in (("val", "train"), ("train", "val")):  # todas de un lado (pocas fotos): se usan las mismas
+            if not (root / "images" / b).exists():
+                shutil.copytree(root / "images" / a, root / "images" / b)
+                shutil.copytree(root / "labels" / a, root / "labels" / b)
         data = root / "data.yaml"
         data.write_text(json.dumps({"path": str(root), "train": "images/train", "val": "images/val",
                                     "names": {i: k for i, k in enumerate(keys)}}))  # (JSON es YAML válido)
@@ -286,14 +321,14 @@ class ObjectJobRunner:
             weights = self.work_dir / str(p.get("base") or "yolo11n.pt")  # Ultralytics lo baja la primera vez
         cfg = {"data": str(data), "out": str(tmp / "corrida"), "base": str(weights), "keys": keys,
                "epochs": int(p.get("epochs") or ob.auto_epochs(len(items))), "imgsz": int(p.get("imgsz") or ob.IMGSZ),
-               "patience": int(p.get("patience") or 25), "test_images": len(val)}
+               "patience": int(p.get("patience") or 25), "test_images": len(val_ids)}
         res = self.run_ia("train", cfg, tmp, jid, 0.06, 0.96)
         files = self._post(f"/api/agent/objects/jobs/{jid}/files")
         self.progress(jid, 0.97, "Subiendo el modelo", force=True)
         self.client.upload(files["onnx_url"], Path(res["onnx"]), "application/octet-stream")
         if res.get("pt") and Path(res["pt"]).exists():
             self.client.upload(files["pt_url"], Path(res["pt"]), "application/octet-stream")
-        return {"metrics": res.get("metrics") or {}, "n_images": len(items), "n_boxes": n_boxes,
+        return {"metrics": res.get("metrics") or {}, "n_images": n_images, "n_boxes": n_boxes,
                 "device": res.get("device"), "epochs_run": res.get("epochs_run"), "minutes": res.get("minutes")}
 
     # ------------------------------------------------------------ el otro proceso
@@ -308,6 +343,24 @@ class ObjectJobRunner:
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         tail: deque[str] = deque(maxlen=25)
         done, error = None, None
+        state = {"value": lo, "message": None, "cancel": False}
+
+        def alive() -> None:
+            # una vuelta de entrenamiento en el procesador puede tardar más que lo que el servidor espera noticias
+            # (20 min): cada 45 s avisa que sigue y, si una persona lo canceló, corta el otro proceso ya
+            while True:
+                try:
+                    proc.wait(timeout=ALIVE_EVERY_S)
+                    return  # (terminó)
+                except subprocess.TimeoutExpired:
+                    pass
+                try:
+                    self.progress(jid, state["value"], state["message"], force=True)
+                except Cancelled:
+                    state["cancel"] = True
+                    proc.terminate()
+                    return
+        threading.Thread(target=alive, daemon=True, name="objetos-latido").start()
         try:
             for line in proc.stdout:  # type: ignore[union-attr]
                 if not line.startswith("@@VIGIA "):
@@ -323,8 +376,10 @@ class ObjectJobRunner:
                 elif "error" in msg:
                     error = msg["error"]
                 elif "progress" in msg:
-                    self.progress(jid, lo + (hi - lo) * float(msg["progress"]), msg.get("message"))
-                if self._stop.is_set():
+                    state["value"] = lo + (hi - lo) * float(msg["progress"])
+                    state["message"] = msg.get("message")
+                    self.progress(jid, state["value"], state["message"])
+                if self._stop.is_set() or state["cancel"]:
                     raise Cancelled()
         except Cancelled:
             proc.terminate()
@@ -334,6 +389,8 @@ class ObjectJobRunner:
                 proc.kill()
             raise
         proc.wait()
+        if state["cancel"]:
+            raise Cancelled()
         if done is None:
             detail = error or (tail[-1] if tail else f"terminó con código {proc.returncode}")
             log.error("Lo último que escribió Ultralytics:\n%s", "\n".join(tail))

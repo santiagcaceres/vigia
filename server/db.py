@@ -368,6 +368,7 @@ class ObjectModel(Base):
     name: Mapped[str] = mapped_column(String(80))
     classes: Mapped[list] = mapped_column(JSON, default=list)
     plan: Mapped[str] = mapped_column(String(20), default="objetos")
+    key_max: Mapped[int] = mapped_column(Integer, default=0)  # la clave de clase más alta que se usó (no se reusa)
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"), nullable=True,
                                                   index=True)
     notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)

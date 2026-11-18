@@ -472,6 +472,15 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     probar en una placa de video** (no hay ninguna todavía). Pruebas: `tests/test_objetos_maquina.py` (con un Ultralytics
     de mentira; `VIGIA_ULTRA_PY=<python con ultralytics>` entrena de verdad) y `tests/test_entrenar_objetos_app.py` (la
     pestaña de punta a punta en Xvfb con el servidor de verdad).
+  - **Revisión (un agente aparte, 10 hallazgos, todos arreglados):** la versión guarda las clases con que se entrenó
+    (quedan en el trabajo al pedir el dataset), una clave de clase nunca se reusa (`object_models.key_max`), el dataset
+    va por partes de 1000 (Vercel no devuelve más de 4,5 MB) y las propuestas de a 50 y redondeadas, una propuesta de una
+    clase que ya no está queda como «objeto», un video que falla y lo subido por un entrenamiento que no terminó se
+    borran, borrar un cliente cancela sus videos en cola, `instalar.sh` instala lo de entrenar después de prender el
+    análisis y sin cortar si falla, la máquina avisa que sigue cada 45 s aunque el otro proceso no diga nada (y cancelar
+    corta ahí), una foto borrada a mitad se saltea, y en la placa el lote es fijo (16: la comparte con las cámaras).
+    Queda: el reinicio de cada noche (07:30 UTC) corta un entrenamiento en marcha (vuelve a la cola a los 20 min y empieza
+    de cero).
 - **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
   promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
   `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en

@@ -46,6 +46,8 @@ else:
     root = Path(cfg["data"]).parent
     labels = sorted((root / "labels" / "train").glob("*.txt")) + sorted((root / "labels" / "val").glob("*.txt"))
     n = 200 if "lento" in mode else 3
+    if "callado" in mode:  # una vuelta larguísima sin decir nada (el procesador con miles de fotos)
+        time.sleep(60)
     for e in range(1, n + 1):
         say(progress=e / n, message=f"Vuelta {e} de {n}")
         time.sleep(0.05)
@@ -98,7 +100,7 @@ def _put(client, url, data):
     assert client.put(u.path + "?" + u.query, content=data).status_code < 300
 
 
-def test_video_premarcar_y_entrenar(setup):
+def test_video_premarcar_y_entrenar(setup, monkeypatch):
     app, admin, runner, tmp = setup
     mid = admin.post("/api/objects", json={"name": "Cajas", "classes": [{"name": "Caja", "prompt": "box"},
                                                                          {"name": "Caja abierta"}]}).json()["id"]
@@ -133,16 +135,24 @@ def test_video_premarcar_y_entrenar(setup):
         admin.put(f"/api/objects/images/{g['id']}", json={"boxes": []})  # «no hay ninguno»
     r = admin.post(f"/api/objects/{mid}/train", json={})
     assert r.status_code == 201, r.text
+    # el dataset llega por partes (acá de a 7) y una foto que borraron mientras tanto no tira abajo el entrenamiento
+    import server.objetos as so
+    monkeypatch.setattr(so, "DATASET_PAGE", 7)
+    gone = admin.get(f"/api/objects/{mid}/images?status=marcada&limit=1").json()["items"][0]
+    with app.state.Session() as s:
+        from server.db import ObjectImage
+        app.state.storage.remove([s.get(ObjectImage, gone["id"]).path])
     assert runner.run_once()
     d = admin.get(f"/api/objects/{mid}").json()
     assert d["jobs"][0]["status"] == "listo", d["jobs"][0]
     v = d["version_list"][0]
-    assert v["number"] == 1 and v["n_images"] == 30 and v["n_boxes"] == 3 * n and v["trained_on"] == "placa de mentira"
+    assert v["number"] == 1 and v["n_images"] == 29 and v["trained_on"] == "placa de mentira"
+    assert v["n_boxes"] in (3 * n, 3 * (n - 1))
     assert v["grade"] == "Bien"
     with app.state.Session() as s:
         from server.db import ObjectVersion
         ver = s.get(ObjectVersion, v["id"])
-        assert app.state.storage.get(ver.onnx_path) == b"onnx-30" and app.state.storage.get(ver.pt_path) == b"pt"
+        assert app.state.storage.get(ver.onnx_path) == b"onnx-29" and app.state.storage.get(ver.pt_path) == b"pt"
     # la versión activa pre-marca lo nuevo (con su .pt)
     admin.post(f"/api/objects/versions/{v['id']}/activate")
     admin.put(f"/api/objects/images/{imgs[0]['id']}", json={"status": "sin_marcar"})
@@ -152,7 +162,7 @@ def test_video_premarcar_y_entrenar(setup):
     assert first["proposed_by"] == "Versión 1"
 
 
-def test_cancelar_a_mitad_corta_el_otro_proceso(setup):
+def test_cancelar_a_mitad_corta_el_otro_proceso(setup, monkeypatch):
     app, admin, runner, tmp = setup
     mid = admin.post("/api/objects", json={"name": "Pallets", "classes": [{"name": "Pallet"}]}).json()["id"]
     items = []
@@ -180,6 +190,21 @@ def test_cancelar_a_mitad_corta_el_otro_proceso(setup):
     assert not t.is_alive()
     job = admin.get(f"/api/objects/{mid}/jobs").json()[0]
     assert job["status"] == "cancelado" and not admin.get(f"/api/objects/{mid}").json()["version_list"]
+    # una vuelta larga sin noticias: el latido avisa que sigue y, al cancelar, corta el otro proceso enseguida
+    monkeypatch.setattr(om, "ALIVE_EVERY_S", 0.3)
+    (runner.work_dir / "modo.txt").write_text("callado")
+    jid = admin.post(f"/api/objects/{mid}/train", json={}).json()["id"]
+    t = threading.Thread(target=runner.run_once)
+    t.start()
+    t0 = time.monotonic()
+    while admin.get(f"/api/objects/{mid}/jobs").json()[0]["status"] != "procesando":
+        assert time.monotonic() - t0 < 30
+        time.sleep(0.1)
+    time.sleep(1.5)
+    admin.post(f"/api/objects/jobs/{jid}/cancel")
+    t.join(10)
+    assert not t.is_alive()  # (sin el latido esperaba los 60 s del otro proceso)
+    assert admin.get(f"/api/objects/{mid}/jobs").json()[0]["status"] == "cancelado"
     # una falla de la IA queda con el motivo
     (runner.work_dir / "modo.txt").write_text("falla")
     admin.post(f"/api/objects/{mid}/train", json={})

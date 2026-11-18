@@ -90,7 +90,7 @@ def train(cfg: dict) -> None:
     out = Path(cfg["out"])
     model.train(data=cfg["data"], epochs=epochs, imgsz=int(cfg.get("imgsz") or 640),
                 patience=int(cfg.get("patience") or 25), project=str(out), name="run", exist_ok=True, device=dev,
-                batch=int(cfg.get("batch") or (-1 if gpu else 8)), workers=int(cfg.get("workers") or 2), plots=False,
+                batch=int(cfg.get("batch") or (16 if gpu else 8)), workers=int(cfg.get("workers") or 2), plots=False,
                 verbose=False, amp=gpu, cache=False, seed=0, deterministic=False)
     trainer = model.trainer
     best = Path(getattr(trainer, "best", "") or out / "run" / "weights" / "best.pt")
@@ -144,7 +144,8 @@ def predict(cfg: dict) -> None:
                 for xy, c, p in zip(b.xyxyn.tolist(), b.cls.tolist(), b.conf.tolist()):
                     ci = int(c)
                     k = key_of[ci] if 0 <= ci < len(key_of) else None
-                    boxes.append({"k": k, "x1": xy[0], "y1": xy[1], "x2": xy[2], "y2": xy[3], "p": round(float(p), 3)})
+                    boxes.append({"k": k, "x1": round(xy[0], 4), "y1": round(xy[1], 4), "x2": round(xy[2], 4),
+                                  "y2": round(xy[3], 4), "p": round(float(p), 3)})
             out[str(x["id"])] = boxes
         emit(progress=round(0.1 + 0.85 * min(len(images), i + step) / max(1, len(images)), 3),
              message=f"Pre-marcadas {min(len(images), i + step)} de {len(images)} fotos")

@@ -64,17 +64,26 @@ def _plain(text: str) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower().strip()
 
 
-def clean_classes(raw, old: list[dict] | None = None) -> list[dict]:
+def key_number(key: str) -> int:
+    return int(key[1:]) if re.fullmatch(r"c\d+", key or "") else 0
+
+
+def max_key(classes: list[dict] | None) -> int:
+    return max((key_number(c.get("key", "")) for c in classes or []), default=0)
+
+
+def clean_classes(raw, old: list[dict] | None = None, key_max: int = 0) -> list[dict]:
     """Las clases de un objeto. Cada una trae `name` (y opcional `prompt` y la `key` que ya tenía): las nuevas reciben
-    la siguiente key libre («c1», «c2»…, nunca se reusa una). Lanza ObjectDataError con el motivo."""
+    la siguiente key libre («c1», «c2»…). `key_max` = la más alta que se usó alguna vez (también las de clases que se
+    sacaron): una clave nunca se reusa, si no lo propuesto y las versiones viejas con «c2» = «Con film» se leerían como
+    la clase nueva. Lanza ObjectDataError con el motivo."""
     if not isinstance(raw, list) or not raw:
         raise ObjectDataError("Poné al menos una clase (por ejemplo «Pallet»)")
     if len(raw) > MAX_CLASSES:
         raise ObjectDataError(f"Hasta {MAX_CLASSES} clases por objeto: si son más, conviene separarlo en dos objetos")
     old = old or []
     old_keys = {c["key"] for c in old}
-    used = [int(k[1:]) for k in old_keys if re.fullmatch(r"c\d+", k)]
-    nxt = max(used, default=0) + 1
+    nxt = max(max_key(old), key_max) + 1
     out, seen, keys = [], set(), set()
     for c in raw:
         if not isinstance(c, dict):

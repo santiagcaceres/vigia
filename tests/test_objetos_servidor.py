@@ -251,3 +251,76 @@ def test_video_a_la_maquina(app):
     with app.state.Session() as s:
         from server.db import ObjectJob
         assert s.get(ObjectJob, p["job_id"]).storage_path is None
+
+
+def test_lo_que_encontro_la_revision(app):
+    """Editar el objeto mientras entrena, sacar y agregar clases, propuestas de una clase que ya no está, y un video que
+    falla (revisión del 18 nov)."""
+    admin = login(app)
+    mid = admin.post("/api/objects", json={"name": "Pallets", "classes": [
+        {"name": "Pallet"}, {"name": "Con film"}]}).json()["id"]
+    items = photos(31)
+    got = upload(admin, mid, items)
+    for g in got:
+        admin.put(f"/api/objects/images/{g['id']}", json={"boxes": [BOX]})
+    job = admin.post(f"/api/objects/{mid}/train", json={}).json()
+    mq = machine(app, admin, "tigo")
+    assert mq.get("/api/agent/objects/next").json()["job_id"] == job["id"]
+    # el dataset viene por partes y guarda las clases con que se entrena
+    part = mq.get(f"/api/agent/objects/jobs/{job['id']}/dataset?limit=10").json()
+    assert len(part["items"]) == 10 and part["next"] == 10 and part["total"] == 31
+    rest = mq.get(f"/api/agent/objects/jobs/{job['id']}/dataset?offset=30&limit=10").json()
+    assert len(rest["items"]) == 1 and rest["next"] is None
+    # mientras entrena sacan «Con film» y agregan «Vacío»: la clave c2 no se reusa
+    r = admin.put(f"/api/objects/{mid}", json={"name": "Pallets", "classes": [
+        {"key": "c1", "name": "Pallet"}, {"name": "Vacío"}]})
+    assert [c["key"] for c in r.json()["classes"]] == ["c1", "c3"]
+    r = admin.put(f"/api/objects/{mid}", json={"name": "Pallets", "classes": [
+        {"key": "c1", "name": "Pallet"}, {"key": "c3", "name": "Vacío"}, {"name": "Roto"}]})
+    assert [c["key"] for c in r.json()["classes"]] == ["c1", "c3", "c4"]
+    f = mq.post(f"/api/agent/objects/jobs/{job['id']}/files").json()
+    put(mq, f["onnx_url"], b"onnx", "application/octet-stream")
+    mq.post(f"/api/agent/objects/jobs/{job['id']}/done", json={"result": {
+        "metrics": {"map50": 0.8, "per_class": {"c2": {"recall": 0.5}}}}})
+    v = admin.get(f"/api/objects/{mid}").json()["version_list"][0]
+    assert [c["key"] for c in v["classes"]] == ["c1", "c2"] and "c2" in v["metrics"]["per_class"]
+    # pre-marcar con esa versión: un recuadro de «c2» (ya no existe) queda como «objeto», no tira el lote
+    with app.state.Session() as s:
+        from server.db import ObjectVersion
+        s.get(ObjectVersion, v["id"]).pt_path = "x.pt"
+        s.commit()
+    admin.post(f"/api/objects/versions/{v['id']}/activate")
+    admin.put(f"/api/objects/images/{got[0]['id']}", json={"status": "sin_marcar"})
+    p = admin.post(f"/api/objects/{mid}/prelabel").json()
+    assert mq.get("/api/agent/objects/next").json()["job_id"] == p["id"]
+    r = mq.post(f"/api/agent/objects/jobs/{p['id']}/proposals", json={"by": "Versión 1", "items": [
+        {"id": got[0]["id"], "boxes": [{**BOX, "k": "c2", "p": 0.7}, {**BOX, "p": 0.9}]}]})
+    assert r.status_code == 200 and r.json()["ok"] == 1
+    img = next(i for i in admin.get(f"/api/objects/{mid}/images?status=sin_marcar").json()["items"]
+               if i["id"] == got[0]["id"])
+    assert [b["k"] for b in img["proposed"]] == [None, "c1"]
+    mq.post(f"/api/agent/objects/jobs/{p['id']}/done", json={"result": {}})
+    # un video que falla: se borra de la nube
+    j = admin.post(f"/api/objects/{mid}/videos", json={"filename": "v.mp4"}).json()
+    put(admin, j["upload_url"], b"video", "video/mp4")
+    admin.post(f"/api/objects/jobs/{j['id']}/uploaded")
+    assert mq.get("/api/agent/objects/next").json()["job_id"] == j["id"]
+    with app.state.Session() as s:
+        from server.db import ObjectJob
+        path = s.get(ObjectJob, j["id"]).storage_path
+    assert app.state.storage.exists(path)
+    mq.post(f"/api/agent/objects/jobs/{j['id']}/fail", json={"error": "no abre"})
+    assert not app.state.storage.exists(path)
+    # borrar un cliente cancela sus videos en cola (y los borra)
+    cl = admin.post("/api/clients", json={"name": "Otro", "plans": ["objetos"]}).json()
+    cam = admin.post("/api/cameras", json={"client_id": cl["id"], "name": "Depósito", "brand": "hikvision",
+                                           "host": "local.ddns.net", "password": "x"}).json()
+    j = admin.post(f"/api/objects/{mid}/videos", json={"filename": "w.mp4", "camera_id": cam["id"]}).json()
+    put(admin, j["upload_url"], b"video", "video/mp4")
+    admin.post(f"/api/objects/jobs/{j['id']}/uploaded")
+    with app.state.Session() as s:
+        path = s.get(ObjectJob, j["id"]).storage_path
+    assert admin.delete(f"/api/clients/{cl['id']}").status_code == 204
+    job = next(x for x in admin.get(f"/api/objects/{mid}/jobs").json() if x["id"] == j["id"])
+    assert job["status"] == "cancelado" and not app.state.storage.exists(path)
+    assert mq.get("/api/agent/objects/next").status_code == 204

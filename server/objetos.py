@@ -28,6 +28,7 @@ MACHINE_ONLINE = timedelta(minutes=3)
 STALE_JOB = timedelta(minutes=20)  # una máquina que dejó de avisar: el trabajo vuelve a la cola
 MAX_IMAGES_PER_MODEL = 20000
 MAX_BATCH = 50
+DATASET_PAGE = 1000  # fotos por parte del dataset (unos 0,5 MB con 10 recuadros cada una)
 VIDEO_EXT = {".mp4", ".avi", ".mkv", ".mov", ".m4v", ".ts", ".webm", ".dav", ".264", ".h264"}
 PHOTO_SOURCES = ("foto", "video", "camara")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -224,13 +225,21 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
             bad("Ese plan de métricas no existe")
         if body.client_id is not None:
             get_or_404(s, Client, body.client_id, "Cliente")
-        classes = data_error(ob.clean_classes, [c.model_dump() for c in body.classes], old.classes if old else None)
+        used = 0
+        if old is not None:
+            used = max([old.key_max or 0] + [ob.max_key(v) for (v,) in s.query(ObjectVersion.classes).filter(
+                ObjectVersion.model_id == old.id)])
+        classes = data_error(ob.clean_classes, [c.model_dump() for c in body.classes], old.classes if old else None,
+                             used)
         q = s.query(ObjectModel).filter(func.lower(ObjectModel.name) == name.lower())
         if old is not None:
             q = q.filter(ObjectModel.id != old.id)
         if q.first():
             bad(f"Ya hay un objeto que se llama «{name}»", 409)
         return name, classes
+
+    def job_base(j: ObjectJob) -> str:
+        return f"training/objects/{j.model_id}/versiones/job{j.id}"
 
     def remove_files(paths: list[str]) -> None:
         paths = [p for p in paths if p]
@@ -249,7 +258,7 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
     @app.post("/api/objects", status_code=201)
     def create_object(body: ObjectIn, user: User = Depends(staff), s=Depends(db)) -> dict:
         name, classes = clean_model_body(s, body, None)
-        m = ObjectModel(name=name, classes=classes, plan=body.plan, client_id=body.client_id,
+        m = ObjectModel(name=name, classes=classes, plan=body.plan, client_id=body.client_id, key_max=ob.max_key(classes),
                         notes=(body.notes or "").strip() or None, created_by=user.id)
         s.add(m)
         s.commit()
@@ -272,6 +281,7 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
                 bad("No se puede sacar " + ", ".join(f"«{names[k]}» ({n} recuadros marcados)" for k, n in used.items())
                     + ": primero borrá esos recuadros (o renombrala en vez de sacarla)", 409)
         m.name, m.classes, m.plan, m.client_id = name, classes, body.plan, body.client_id
+        m.key_max = max(m.key_max or 0, ob.max_key(classes), ob.max_key(m.classes))
         m.notes, m.updated_at = (body.notes or "").strip() or None, utcnow()
         s.commit()
         log.info("Objeto «%s» (%s) editado por %s", name, m.id, user.username)
@@ -285,7 +295,10 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
         paths = [p for (p,) in s.query(ObjectImage.path).filter(ObjectImage.model_id == mid)]
         for v in s.query(ObjectVersion).filter(ObjectVersion.model_id == mid):
             paths += [v.onnx_path, v.pt_path]
-        paths += [j.storage_path for j in s.query(ObjectJob).filter(ObjectJob.model_id == mid) if j.storage_path]
+        for j in s.query(ObjectJob).filter(ObjectJob.model_id == mid):
+            paths.append(j.storage_path)
+            if j.kind == "entrenar":  # (lo subido por un entrenamiento que falló o se canceló después de subir)
+                paths += [f"{job_base(j)}.onnx", f"{job_base(j)}.pt"]
         for tbl in (ObjectImage, ObjectJob, ObjectVersion):
             s.query(tbl).filter(tbl.model_id == mid).delete(synchronize_session=False)
         s.delete(m)
@@ -537,6 +550,8 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
         s.commit()
         if j.kind == "video" and j.storage_path:
             remove_files([j.storage_path])
+            j.storage_path = None
+            s.commit()
         return job_dict(j)
 
     # ---------------------------------------------------------------- versiones
@@ -664,7 +679,13 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
     def agent_job_fail(jid: int, body: FailIn, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
         j = claimed(s, ag, jid)
         j.status, j.error, j.finished_at = "error", body.error[:500], utcnow()
+        gone = [j.storage_path] if j.kind == "video" and j.storage_path else []
+        if j.kind == "entrenar":
+            gone += [f"{job_base(j)}.onnx", f"{job_base(j)}.pt"]
+        if j.kind == "video":
+            j.storage_path = None  # (el video ya no sirve: se sube otra vez si hace falta)
         s.commit()
+        remove_files(gone)
         log.warning("Trabajo de objetos %s (%s) falló en %s: %s", jid, j.kind, ag.name, body.error[:200])
         return {"ok": True}
 
@@ -711,25 +732,38 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
         for i in s.query(ObjectImage).filter(ObjectImage.model_id == m.id, ObjectImage.id.in_(list(by_id))):
             if i.status == "marcada":
                 continue
-            boxes = data_error(ob.clean_boxes, by_id[i.id].get("boxes") or [], keys, with_conf=True)
+            raw = [{**b, "k": b.get("k") if b.get("k") in keys else None} for b in by_id[i.id].get("boxes") or []
+                   if isinstance(b, dict)]
+            boxes = data_error(ob.clean_boxes, raw, keys, with_conf=True)
             i.proposed, i.proposed_by, i.doubt = boxes, body.by[:80], ob.doubt_of(boxes)
             n += 1
         s.commit()
         return {"ok": n}
 
     @app.get("/api/agent/objects/jobs/{jid}/dataset")
-    def agent_dataset(jid: int, ag: Agent = Depends(current_agent), s=Depends(db)) -> dict:
-        """Entrenar: las fotos marcadas con sus recuadros, si son de prueba o de entrenar, y el link de cada una."""
+    def agent_dataset(jid: int, offset: int = 0, limit: int = DATASET_PAGE, ag: Agent = Depends(current_agent),
+                      s=Depends(db)) -> dict:
+        """Entrenar: las fotos marcadas con sus recuadros, si son de prueba o de entrenar, y el link de cada una, de a
+        `limit` (Vercel no devuelve más de 4,5 MB: la máquina pide hasta que `next` es None). Las clases con que se
+        entrena quedan en el trabajo al pedir la primera parte (si editan el objeto mientras tanto, la versión sale con
+        las que se usaron)."""
         j = claimed(s, ag, jid)
         if j.kind != "entrenar":
             bad("Este trabajo no entrena", 409)
         m = s.get(ObjectModel, j.model_id)
-        rows = s.query(ObjectImage).filter(ObjectImage.model_id == m.id, ObjectImage.status == "marcada").all()
+        if offset == 0 or not (j.params or {}).get("classes"):
+            j.params = {**(j.params or {}), "classes": m.classes or []}
+            s.commit()
+        limit = max(1, min(limit, DATASET_PAGE))
+        q = s.query(ObjectImage).filter(ObjectImage.model_id == m.id, ObjectImage.status == "marcada")
+        total = q.count()
+        rows = q.order_by(ObjectImage.id).offset(max(0, offset)).limit(limit).all()
         try:
             urls = storage.signed_download_urls([i.path for i in rows], 6 * 3600)
         except StorageError as exc:
             raise HTTPException(502, str(exc)) from exc
-        return {"classes": m.classes or [], "items": [
+        nxt = offset + len(rows) if offset + len(rows) < total else None
+        return {"classes": j.params["classes"], "total": total, "next": nxt, "items": [
             {"id": i.id, "uuid": i.uuid, "url": urls.get(i.path), "split": i.split, "boxes": i.boxes or []}
             for i in rows if urls.get(i.path)]}
 
@@ -739,7 +773,7 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
         j = claimed(s, ag, jid)
         if j.kind != "entrenar":
             bad("Este trabajo no entrena", 409)
-        base = f"training/objects/{j.model_id}/versiones/job{j.id}"
+        base = job_base(j)
         try:
             return {"onnx_url": storage.signed_upload_url(base + ".onnx"),
                     "pt_url": storage.signed_upload_url(base + ".pt")}
@@ -753,16 +787,17 @@ def install(app, *, db, staff, admin_only, current_agent, storage, get_or_404, p
         res = body.result if isinstance(body.result, dict) else {}
         out: dict = {"ok": True}
         if j.kind == "entrenar":
-            base = f"training/objects/{j.model_id}/versiones/job{j.id}"
+            base = job_base(j)
             try:
                 if not storage.exists(base + ".onnx"):
                     bad("El modelo entrenado (.onnx) no llegó a la nube: subilo antes de avisar", 409)
                 has_pt = storage.exists(base + ".pt")
             except StorageError as exc:
                 raise HTTPException(502, str(exc)) from exc
-            metrics = clean_metrics(res.get("metrics"), keys_of(m))
+            trained = (j.params or {}).get("classes") or m.classes or []  # las que se usaron, no las de ahora
+            metrics = clean_metrics(res.get("metrics"), [c["key"] for c in trained])
             number = (s.query(func.max(ObjectVersion.number)).filter(ObjectVersion.model_id == m.id).scalar() or 0) + 1
-            v = ObjectVersion(model_id=m.id, number=number, job_id=j.id, classes=m.classes or [], metrics=metrics,
+            v = ObjectVersion(model_id=m.id, number=number, job_id=j.id, classes=trained, metrics=metrics,
                               n_images=int(res.get("n_images") or 0), n_boxes=int(res.get("n_boxes") or 0),
                               onnx_path=base + ".onnx", pt_path=base + ".pt" if has_pt else None,
                               trained_on=str(res.get("device") or ag.name)[:120], created_by=j.created_by)

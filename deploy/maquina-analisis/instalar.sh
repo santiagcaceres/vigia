@@ -97,6 +97,28 @@ CFG
   echo "Encendedor andando. Registro: journalctl -u vigia-escalador -f"
 }
 
+# «Entrenar objetos»: Ultralytics y torch en un entorno aparte (si algo de torch choca, el análisis ni se entera). torch
+# según la placa: CUDA 13 (driver 580 o más) va con el de PyPI; CUDA 12, con el de pytorch.org; sin placa, el de
+# procesador (mucho más liviano). Cada paso devuelve error en vez de cortar la instalación (set -e no rige adentro de un
+# «if»): la máquina tiene que quedar analizando aunque esto falle.
+instalar_entrenar() {
+  local PIP=/opt/vigia/.venv-entrenar/bin/pip CUDA
+  sudo -u vigia python3 -m venv /opt/vigia/.venv-entrenar || return 1
+  sudo -u vigia "$PIP" install -q -U pip || return 1
+  CUDA=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9]*\).*/\1/p' | head -1 || true)
+  if [ "$GPU" = "si" ] && [ "${CUDA:-0}" -ge 13 ]; then
+    sudo -u vigia "$PIP" install -q torch torchvision || return 1
+  elif [ "$GPU" = "si" ]; then
+    sudo -u vigia "$PIP" install -q torch torchvision --index-url https://download.pytorch.org/whl/cu126 || return 1
+  else
+    sudo -u vigia "$PIP" install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu || return 1
+  fi
+  sudo -u vigia "$PIP" install -q -r /opt/vigia/requirements-entrenar.txt || return 1
+  sudo -u vigia /opt/vigia/.venv-entrenar/bin/python -c \
+    'import torch, ultralytics; print("Entrenar objetos: Ultralytics", ultralytics.__version__, "· placa:", torch.cuda.is_available())' \
+    || return 1
+}
+
 if [ "$MODO" = "escalador" ]; then
   instalar_encendedor
   exit 0
@@ -147,28 +169,6 @@ VIGIA_POOL_KEY=$VIGIA_POOL_KEY
 VIGIA_CAPACIDAD=$CAPACIDAD
 CFG
 [ "${VIGIA_FIJA:-no}" = "si" ] && echo "VIGIA_FIJA=si" >> /etc/vigia/maquina.env
-if [ "${ENTRENAR:-no}" = "si" ]; then
-  # «Entrenar objetos»: Ultralytics y torch en un entorno aparte (si algo de torch choca, el análisis ni se entera).
-  # torch según la placa: CUDA 13 (driver 580 o más) va con el de PyPI; CUDA 12, con el de pytorch.org; sin placa, el
-  # de procesador (mucho más liviano)
-  echo "Instalando lo de entrenar objetos (Ultralytics y torch; tarda unos minutos)…"
-  sudo -u vigia python3 -m venv /opt/vigia/.venv-entrenar
-  sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q -U pip
-  CUDA=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9]*\).*/\1/p' | head -1 || true)
-  if [ "$GPU" = "si" ] && [ "${CUDA:-0}" -ge 13 ]; then
-    sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q torch torchvision
-  elif [ "$GPU" = "si" ]; then
-    sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q torch torchvision \
-      --index-url https://download.pytorch.org/whl/cu126
-  else
-    sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q torch torchvision \
-      --index-url https://download.pytorch.org/whl/cpu
-  fi
-  sudo -u vigia /opt/vigia/.venv-entrenar/bin/pip install -q -r /opt/vigia/requirements-entrenar.txt
-  echo "VIGIA_PY_ENTRENAR=/opt/vigia/.venv-entrenar/bin/python" >> /etc/vigia/maquina.env
-  sudo -u vigia /opt/vigia/.venv-entrenar/bin/python -c \
-    'import torch, ultralytics; print("Entrenar objetos: Ultralytics", ultralytics.__version__, "· placa:", torch.cuda.is_available())'
-fi
 # sin placa de video: un modelo por núcleo, repartidos entre los procesos
 HILOS=$(( $(nproc) / PROCESOS )); [ "$HILOS" -ge 1 ] || HILOS=1
 [ "$GPU" = "no" ] && echo "VIGIA_HILOS=$HILOS" >> /etc/vigia/maquina.env
@@ -191,6 +191,16 @@ systemctl daemon-reload
 systemctl enable vigia-actualizar
 [ "${ACTUALIZAR_DIARIO:-no}" = "si" ] && systemctl enable --now vigia-actualizar-diario.timer
 for i in $(seq 1 "$PROCESOS"); do systemctl enable --now "vigia-maquina@$i"; done
+if [ "${ENTRENAR:-no}" = "si" ]; then
+  echo "Instalando lo de entrenar objetos (Ultralytics y torch; tarda unos minutos; el análisis ya está andando)…"
+  if instalar_entrenar; then
+    echo "VIGIA_PY_ENTRENAR=/opt/vigia/.venv-entrenar/bin/python" >> /etc/vigia/maquina.env
+    systemctl restart vigia-maquina@1
+  else
+    echo "AVISO: no se pudo instalar lo de entrenar objetos (ver arriba). La máquina analiza igual; para reintentar," \
+         "volver a correr este instalador con ENTRENAR=si." >&2
+  fi
+fi
 if [ "$GPU" = "si" ]; then
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
   echo "Con placa de video: $PROCESOS procesos de $CAPACIDAD cámaras de hurto cada uno."

@@ -1770,8 +1770,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for tbl in (ObjectJob, ObjectVersion):
                 s.query(tbl).filter(tbl.model_id.in_(obj_ids)).delete(synchronize_session=False)
             s.query(ObjectModel).filter(ObjectModel.id.in_(obj_ids)).delete(synchronize_session=False)
-        s.query(ObjectJob).filter(ObjectJob.camera_id.in_(cam_ids)).update({"camera_id": None},
-                                                                           synchronize_session=False)
+        for j in s.query(ObjectJob).filter(ObjectJob.camera_id.in_(cam_ids)):
+            if j.status in ("subiendo", "en_cola", "procesando"):  # (un video suyo para un objeto de todos: no)
+                j.status, j.message, j.finished_at = "cancelado", "Se borró el cliente", utcnow()
+            if j.storage_path and j.status != "listo":
+                files.append(j.storage_path)
+                j.storage_path = None
+            j.camera_id = None
         for cam in s.query(Camera).filter_by(client_id=cid):
             files += ([cam.preview_path] if cam.preview_path else []) + [live_path(cam)]
         s.query(Camera).filter_by(client_id=cid).delete(synchronize_session=False)
