@@ -1442,8 +1442,9 @@ La alerta automática de "hay clip para revisar" va al **operador**, no al clien
   quedó como pestaña **Prueba** (puente para probar, no servicio). Descartadas por ahora: Tailscale
   en PC del local, RTMP saliente, FTP de clips, foto de alarma de HPP. La definitiva para Hikvision
   sigue siendo la clave VSaaS/HPNetSDK (pendiente de pedir).
-- El detector es **YOLO11n, licencia AGPL-3.0**. Para vender hay que comprar licencia
-  Enterprise de Ultralytics o cambiar a un modelo Apache-2.0 (YOLOX, RT-DETR). **Pendiente.**
+- El detector es **YOLO11n, licencia AGPL-3.0**. **Decisión del dueño (18 nov): se usa Ultralytics sin vueltas
+  («usemos Ultralytics si hace falta, no importan las licencias»)**, también para entrenar modelos propios (pallets,
+  etc.). No volver a proponer cambiar de modelo por la licencia.
 
 ## Limitaciones honestas (decirlas siempre, no prometer de más)
 
@@ -1547,7 +1548,7 @@ seguirla en la pantalla Alarmas. Verificar la hora de la grabación (`playback_t
 6. **Gestos (hecho el 29 oct con postura + reglas, ver arriba): medirlos.** Juntar 30–50 clips por gesto (y normales)
    en la biblioteca de videos de prueba, ajustar los umbrales y después entrenar un clasificador de esqueletos o sumar
    «producto en la mano». Falta: mano a la caja registradora → bolsillo (empleados), lavado de vidrios en estaciones.
-7. **Licencia del detector** (AGPL) antes de cobrar.
+7. ~~Licencia del detector~~: decidido el 18 nov, se usa Ultralytics.
 8. Antes de cobrar: Vercel Pro (el plan gratis es no comercial) y Supabase Pro (el gratis limita
    los archivos a 50 MB).
 
