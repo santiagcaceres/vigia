@@ -18,6 +18,8 @@ Metadata:
         Parameters: [TipoFija, SegundaMaquina, TipoSegunda, TopeCamaras, HoraActualizar, EntrenarObjetos, Imagen, DiscoGB]
       - Label: {default: "Red (vacío = la crea esta plantilla)"}
         Parameters: [VpcId, SubredId, Zona, RedCidr]
+      - Label: {default: "Costos (acta de riesgo con Tigo: los costos son nuestros)"}
+        Parameters: [PresupuestoMensualUSD, MailAvisos]
     ParameterLabels:
       ClaveMaquinasParametro: {default: "Parámetro (SecureString) con la clave de máquinas"}
       TipoFija: {default: "Máquina fija (siempre prendida)"}
@@ -30,6 +32,8 @@ Metadata:
       VpcId: {default: "VPC que ya existe"}
       SubredId: {default: "Subred pública que ya existe"}
       Zona: {default: "Zona (solo si la red la crea la plantilla)"}
+      PresupuestoMensualUSD: {default: "Aviso si el mes pasa de (US$, 0 = sin aviso)"}
+      MailAvisos: {default: "Mail para los avisos de costo"}
 
 Parameters:
   ClaveMaquinasParametro:
@@ -120,6 +124,19 @@ Parameters:
     Default: 10.77.0.0/24
     AllowedPattern: "^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/(1[6-9]|2[0-8])$"
     Description: Direcciones internas de la red nueva (no se usa si la red ya existe).
+  PresupuestoMensualUSD:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 20000
+    Description: >-
+      Lo que se espera gastar por mes en esta cuenta, a precios de lista de AWS. Manda un mail al llegar al 80 % y al
+      100 %, y otro si el pronóstico del mes pasa del 100 %. Es solo un aviso: no apaga nada. 0 = sin aviso.
+  MailAvisos:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    Description: Adónde llegan los avisos de costo. Vacío = sin aviso.
 
 Rules:
   RedCompleta:
@@ -132,6 +149,9 @@ Conditions:
   CrearRed: !Equals [!Ref VpcId, ""]
   HaySegunda: !Equals [!Ref SegundaMaquina, "si"]
   DiscoPropio: !Not [!Equals [!Ref DiscoGB, 0]]
+  HayPresupuesto: !And
+    - !Not [!Equals [!Ref PresupuestoMensualUSD, 0]]
+    - !Not [!Equals [!Ref MailAvisos, ""]]
 
 Resources:
   # ------------------------------------------------------------------ red (solo si no existe)
@@ -420,6 +440,24 @@ Resources:
           else
             echo "LA INSTALACIÓN FALLÓ (ver el motivo arriba): $(date -u)"
           fi
+
+  # Acta de riesgo con Tigo (19 nov 2026), ítem 1: los aumentos de costo son nuestros. Aviso por mail (no corta nada).
+  AvisoDeCostos:
+    Type: AWS::Budgets::Budget
+    Condition: HayPresupuesto
+    Properties:
+      Budget:
+        BudgetName: analitica-critica-mensual
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: {Amount: !Ref PresupuestoMensualUSD, Unit: USD}
+      NotificationsWithSubscribers:
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref MailAvisos}]
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref MailAvisos}]
+        - Notification: {NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref MailAvisos}]
 
 Outputs:
   IpDeLaMaquinaFija:

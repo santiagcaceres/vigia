@@ -32,6 +32,56 @@ Todo lo crea una plantilla de CloudFormation: [`tigo-virginia.yaml`](tigo-virgin
 - La plantilla pasa la validación (`cfn-lint`) pero **no se creó nunca en una cuenta**. La primera vez puede pedir
   algún ajuste.
 
+## Lo que firmamos con Tigo: el acta de riesgo (19 nov 2026)
+
+Como la cuenta es de **co-administración** (nosotros administradores, Tigo solo la infraestructura), la empresa firmó
+que asume tres riesgos y que Tigo no responde por ellos:
+
+1. **Los aumentos de costo** por lo que despleguemos.
+2. **Las brechas de seguridad** por desplegar sin buenas prácticas.
+3. **La gestión de identidad** (usuarios, roles, políticas): lo que hagamos ahí no lo supervisa el equipo de AWS de Tigo.
+
+O sea: los costos, la seguridad y los accesos de la cuenta son **nuestros**. Estas son las reglas para trabajar en
+ella (valen para personas y para las sesiones de Claude):
+
+**Costos**
+- **Todo lo crea la plantilla** ([`tigo-virginia.yaml`](tigo-virginia.yaml)). A mano en la consola solo lo que dice
+  esta guía (cupo, cifrado por defecto, el parámetro con la clave). Así todo tiene dueño y «Delete» de la pila borra
+  todo.
+- **Crear, agrandar o sumar una máquina lo aprueba el dueño sabiendo el costo** (punto 10). Solo en `us-east-1` y
+  solo g4dn: la reserva cubre esa familia; cualquier otra se paga a precio de lista.
+- **Aviso de costo desde el día 1:** parámetros «Aviso si el mes pasa de» y «Mail para los avisos de costo» de la
+  plantilla (mail al 80 %, al 100 % y si el pronóstico pasa del 100 %; no apaga nada). Además, Billing → **Cost
+  Anomaly Detection** (sin cargo) con aviso por mail.
+- **Revisar los gastos** cada semana el primer mes y después cada mes: Billing → Bills, y en EC2 lo que quedó suelto
+  y se sigue pagando: Elastic IPs sin máquina, Volumes «available», Snapshots. Lo que no es de la pila se borra.
+- El encendedor **no crea máquinas**: solo prende y detiene la segunda de la pila.
+
+**Seguridad**
+- **Ningún puerto de entrada** (grupo `vigia-sin-entrada`), sin SSH ni archivos .pem: se entra con **Session
+  Manager**. Sin S3, sin balanceador, discos cifrados, IMDSv2 (todo ya en la plantilla).
+- **La clave de máquinas vive solo en Parameter Store** (SecureString): nunca en la plantilla, el repo (es público),
+  un mail o un chat.
+- **Quién hizo qué:** CloudTrail → **Event history** guarda 90 días de lo que se hace en la cuenta, sin cargo y sin
+  armar nada. Preguntarle a Tigo si además guardan un registro más largo de la organización.
+- **Parches:** el programa se actualiza solo cada noche; los parches de seguridad de Ubuntu los instala
+  `unattended-upgrades`. Comprobarlo una vez en cada máquina: `systemctl status unattended-upgrades`.
+- **Cambiar la plantilla:** antes, `cfn-lint` y que la lea otra persona. Nada de cambios a mano que la pila no sepa.
+
+**Accesos (identidad)**
+- **Usuario raíz (root) de la cuenta:** con MFA, sin claves de acceso, guardado por el dueño y sin usar en el día a
+  día. Si la cuenta quedó dentro de la organización de Tigo, preguntarles quién tiene el root.
+- **Cada persona con su propio acceso y MFA obligatorio** (IAM Identity Center si Tigo lo habilita, o un usuario de
+  IAM). Nada de usuarios compartidos.
+- **Sin claves de acceso (access keys) para personas.** Las máquinas usan roles con el mínimo permiso (ya está: solo
+  leer la clave y prender o detener la segunda). Si algún día un programa necesita claves: de mínimo permiso, con
+  dueño y fecha anotados, y nunca pegadas en un chat.
+- **Administradores, solo quienes manejan AWS.** Para mirar costos alcanza un permiso de solo lectura de facturación.
+- **Bajas el mismo día:** quien deja de trabajar con nosotros pierde el acceso ese día.
+- **Cada 3 meses:** IAM → usuarios, claves (último uso) y roles; **IAM Access Analyzer** de acceso externo (sin cargo)
+  para ver si algo quedó abierto hacia afuera. Lo que no se usa, se borra.
+- **El acceso de Tigo** es para la infraestructura: sin entrar a las máquinas ni copiar sus discos (punto 1.4).
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.
@@ -41,7 +91,8 @@ Todo lo crea una plantilla de CloudFormation: [`tigo-virginia.yaml`](tigo-virgin
    Internet Gateway). Si no armaron nada, la plantilla crea una red chica propia.
 4. Pedirles que su acceso de cogestión **no incluya entrar a las máquinas** (Session Manager) ni copiar sus discos.
 5. EC2 → Settings → **EBS encryption → «Always encrypt new EBS volumes»** (la plantilla igual cifra los discos).
-6. Billing → **Budgets**: un aviso por mail si el mes pasa de lo esperado.
+6. **Avisos de costo:** completar en la plantilla «Aviso si el mes pasa de» y el mail (punto 3), y prender Billing →
+   **Cost Anomaly Detection**. Antes de crear la pila: MFA en el root y un acceso propio con MFA para cada uno.
 
 ## 2. La clave de máquinas
 
@@ -62,6 +113,7 @@ CloudFormation (Virginia) → **Create stack** → Upload a template file → `t
 | Tope de cámaras por máquina | 60 |
 | VPC y subred que ya existen | los de Tigo, o **vacíos** para que la plantilla cree la red |
 | Zona | `us-east-1a` (solo si la red la crea la plantilla) |
+| Aviso si el mes pasa de · Mail | lo esperado por mes (punto 10) · el mail del dueño |
 
 Tildar «I acknowledge that AWS CloudFormation might create IAM resources» → Create stack. La pila tarda unos 3
 minutos; la máquina, **entre 10 y 15 más** en instalarse (baja las librerías de la placa, mide y se da de alta).

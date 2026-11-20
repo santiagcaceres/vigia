@@ -1279,6 +1279,18 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     es la misma en xlarge y 2xlarge: la 2xlarge solo suma procesador para decodificar), la plantilla en una cuenta real.
     **Falta:** la pestaña «Máquinas» de la app no ve ni maneja AWS (solo Google); si la fija se cae no hay encendedor
     (prender la segunda a mano). Pruebas: `tests/test_maquina_fija.py` (el instalador, con programas de mentira).
+  - **Acta de riesgo con Tigo (firmada el 19 nov; arrancamos en AWS el 20 nov). RESPETARLA siempre que se trabaje en
+    la cuenta de AWS.** Por ser co-administración, la empresa asume y libera a Tigo de: (1) los **aumentos de costo**
+    por lo que despleguemos, (2) las **brechas de seguridad** por desplegar sin buenas prácticas y (3) la **gestión de
+    identidad** (usuarios, roles, políticas: Tigo no la supervisa). Las reglas están en `deploy/aws/TIGO.md` («Lo que
+    firmamos con Tigo»). Para una sesión de Claude, lo esencial: **nada que cueste** (crear, agrandar, prender o sumar
+    máquinas, IPs, discos, servicios) **sin el OK explícito del dueño con el costo estimado**; todo por la plantilla
+    (`cfn-lint` antes), solo `us-east-1` y solo g4dn (la reserva no cubre otras familias); **ningún puerto de entrada**
+    ni SSH (Session Manager); **nunca pedir, recibir ni guardar claves de acceso de AWS** (ni del root) ni la clave de
+    máquinas en un chat, el repo o un archivo; no tocar usuarios, roles ni políticas de IAM sin pedido del dueño, y si
+    se tocan, con el mínimo permiso. La plantilla tiene un aviso de costo opcional (`PresupuestoMensualUSD` +
+    `MailAvisos`: mail al 80 %, al 100 % y por pronóstico; no apaga nada). El acta (con datos de la empresa) **no va al
+    repo**.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
