@@ -329,8 +329,20 @@ class CameraWorker:
     def stop(self) -> None:
         self._stop.set()
 
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        # desde cuándo está así: la pestaña «Inicio» de la app dice «sin conexión hace 40 min» aunque se haya abierto
+        # después (y avisa recién cuando una caída dura; las reconexiones de un momento no cuentan)
+        if value != getattr(self, "_state", None):
+            self._state, self._state_at = value, time.time()
+
     def status(self) -> dict:
         return {"camera_id": self.id, "state": self.state, "error": self.error, "fps": round(self.fps, 2),
+                "state_age_s": round(max(0.0, time.time() - self._state_at)),
                 "events": self.events, "live": self.live.active,
                 "idle_pct": None if self.idle_pct is None else round(self.idle_pct * 100),
                 **({"protocol": self.hik.protocol} if self.hik.brand == "hikconnect" else {}),

@@ -1005,22 +1005,28 @@ class Bg:
 
 class Toasts:
     """Carteles verdes abajo a la derecha («✔ Cliente guardado») que se van solos: no piden clic ni toman el foco.
-    Si llega el mismo aviso mientras se ve (agregar varias cámaras), suma «(×3)» en vez de apilar."""
+    Si llega el mismo aviso mientras se ve (agregar varias cámaras), suma «(×3)» en vez de apilar. Los rojos
+    (`kind="error"`: «⚠ Minas · Entrada: sin conexión», de la pestaña «Inicio») duran más y un clic lleva a ver qué
+    pasa (`on_click`)."""
 
     LIFE_MS = 3200
+    ERROR_LIFE_MS = 20000
     MAX = 4
+    KINDS = {"ok": ("✔", "#1a7f43"), "error": ("⚠", "#b42318")}
 
     def __init__(self, tk, root):
         self.tk, self.root = tk, root
         self.items: list[dict] = []  # {win, text, count, job}
 
-    def show(self, text: str) -> None:
+    def show(self, text: str, kind: str = "ok", on_click: Callable[[], None] | None = None) -> None:
+        icon, color = self.KINDS.get(kind, self.KINDS["ok"])
+        life = self.ERROR_LIFE_MS if kind == "error" else self.LIFE_MS
         for it in self.items:
             if it["text"] == text:
                 it["count"] += 1
-                it["label"].configure(text=f"✔  {text}  (×{it['count']})")
+                it["label"].configure(text=f"{icon}  {text}  (×{it['count']})")
                 self.root.after_cancel(it["job"])
-                it["job"] = self.root.after(self.LIFE_MS, lambda i=it: self._close(i))
+                it["job"] = self.root.after(life, lambda i=it: self._close(i))
                 return
         while len(self.items) >= self.MAX:
             self._close(self.items[0])
@@ -1033,12 +1039,18 @@ class Toasts:
                 win.attributes("-topmost", True)
             except tk.TclError:
                 pass
-            lab = tk.Label(win, text=f"✔  {text}", bg="#1a7f43", fg="white", padx=16, pady=10,
-                           font=("Segoe UI", 10, "bold"))
+            lab = tk.Label(win, text=f"{icon}  {text}", bg=color, fg="white", padx=16, pady=10,
+                           font=("Segoe UI", 10, "bold"), wraplength=520, justify="left",
+                           cursor="hand2" if on_click else "")
             lab.pack()
-            it = {"win": win, "label": lab, "text": text, "count": 1}
-            lab.bind("<Button-1>", lambda _e, i=it: self._close(i))  # clic = se va antes
-            it["job"] = self.root.after(self.LIFE_MS, lambda i=it: self._close(i))
+            it = {"win": win, "label": lab, "text": text, "count": 1, "kind": kind}
+
+            def clicked(_e, i=it):  # clic = se va antes (y, si es un problema, lleva a verlo)
+                self._close(i)
+                if on_click is not None:
+                    on_click()
+            lab.bind("<Button-1>", clicked)
+            it["job"] = self.root.after(life, lambda i=it: self._close(i))
             self.items.append(it)
             self._place()
             win.deiconify()
@@ -1256,6 +1268,11 @@ class Oficina:
             notebook.add(self.tab_admin, text="  Administración  ")
             self._build_machines(self.tab_mq)
             self._build_admin()
+        # «Inicio» (20 nov, pedido del dueño): el resumen de alertas, clientes y cámaras con problemas, primera y elegida
+        # al abrir; avisa con un cartel rojo cuando una cámara que se analiza deja de andar (agent/inicio.py)
+        from .inicio import install as install_home
+        self.home = install_home(self, notebook)
+        notebook.select(self.tab_home)
         self.refresh_all()
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
         self.v.on_zones = self.zones_from_live  # «✎ Marcar zonas» de la pestaña «En vivo»
@@ -1371,8 +1388,9 @@ class Oficina:
         self.bg.run(work, done, fail)
 
     def _auto_refresh(self) -> None:
-        """Estado de cámaras cada 30 s (sin tocar lo que se está editando). Solo con la pestaña «Clientes y
-        cámaras» a la vista y la ventana abierta: si nadie la mira, no se gastan pedidos al servidor."""
+        """Estado de las cámaras cada 30 s (sin tocar lo que se está editando). Se pide siempre, también minimizada o en
+        otra pestaña: «Inicio» avisa cuando una cámara deja de andar (antes solo con «Clientes» a la vista). Las alertas
+        por cliente, solo si se muestran («Inicio» o «Clientes»)."""
         if not self.v.open:
             return
         try:
@@ -1383,19 +1401,74 @@ class Oficina:
         if not iconic and self.is_admin and tab == str(getattr(self, "tab_mq", "")):
             if time.monotonic() > self._mq_fast_until:  # (después de prender o apagar ya se mira cada 5 s)
                 self.load_machines(settings=False)
-            self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
-            return
-        visible = not iconic and tab == str(self.tab_clients)
-        if not visible:
-            self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
-            return
+        clients_visible = not iconic and tab == str(self.tab_clients)
+        home = getattr(self, "home", None)
+        home_visible = home is not None and not iconic and tab == str(getattr(self, "tab_home", ""))
+        counts = clients_visible or home_visible
 
         def done(res):
-            self.cameras, self.agents, self.alert_counts = res
-            self._fill_clients(keep_info=True)
+            self.cameras, self.agents = res[0], res[1]
+            if res[2] is not None:
+                self.alert_counts = res[2]
+            if home is not None:
+                home.health_tick()
+            if clients_visible:
+                self._fill_clients(keep_info=True)
+            if home_visible:
+                home.refresh()
+
+        def fail(exc):
+            if home is not None:
+                home.net_failed(exc)
         self.bg.run(lambda: (self.api.get("/api/cameras"), self.api.get("/api/agents"),
-                             self.api.get("/api/stats/alerts")), done, lambda e: None)
+                             self.api.get("/api/stats/alerts") if counts else None), done, fail)
         self.v.root.after(AUTO_REFRESH_MS, self._auto_refresh)
+
+    # ---------- ir a cada cosa (desde «Inicio» y sus carteles) ----------
+    def goto_home(self, cam_id: int | None = None) -> None:
+        """El cartel rojo de una cámara: «Inicio», con esa cámara elegida en «Cámaras con problemas»."""
+        home = getattr(self, "home", None)
+        if home is None:
+            return
+        try:
+            self.v.root.deiconify()
+            self.v.root.lift()
+        except Exception:  # noqa: BLE001
+            pass
+        self.notebook.select(self.tab_home)
+        home.select_problem(cam_id)
+
+    def goto_alert(self, event_id: int | None) -> None:
+        """«Alertas» con las sin revisar de todos los clientes y esa alerta elegida (si sigue sin revisar)."""
+        self._al_goto = str(event_id) if event_id is not None else None
+        for var, value in ((self.al_state, "Sin revisar"), (self.al_client, "Todos")):
+            if var.get() != value:  # (cambiarlo ya recarga la lista)
+                var.set(value)
+        if self.notebook.select() == str(self.tab_alerts):
+            self.load_alerts()
+        else:
+            self.notebook.select(self.tab_alerts)  # (al cambiar de pestaña se cargan)
+
+    def goto_client(self, client_id: int) -> bool:
+        if not self.cl_tree.exists(str(client_id)):
+            return False
+        self.notebook.select(self.tab_clients)
+        self.cl_tree.selection_set(str(client_id))
+        self.cl_tree.see(str(client_id))
+        self._fill_cameras()
+        return True
+
+    def goto_camera(self, cam_id: int) -> bool:
+        """«Clientes» con el cliente y la cámara elegidos (su imagen, el estado y qué le falta, a la vista)."""
+        cam = next((c for c in self.cameras if c.get("id") == cam_id), None)
+        if cam is None or not self.goto_client(cam["client_id"]):
+            return False
+        if self.cam_tree.exists(str(cam_id)):
+            self.cam_tree.selection_set(str(cam_id))
+            self.cam_tree.see(str(cam_id))
+            self.cam_tree.focus(str(cam_id))
+            self._show_camera()
+        return True
 
     def library(self):
         """Videos de prueba guardados de cada cámara (un solo archivo para toda la app: varias ventanas de cámara
@@ -1447,6 +1520,7 @@ class Oficina:
                 self._fill_alert_filters()
                 if getattr(self, "trainer", None) is not None:
                     self.trainer.clients_changed()
+                self._home_changed()
             self.bg.run(lambda: (self.api.get("/api/clients"), self.api.get("/api/cameras"),
                                  self.api.get("/api/agents"), self.api.get("/api/stats/alerts")),
                         done, lambda e: log.debug("No se pudo poner al día la lista de clientes: %s", e))
@@ -1454,6 +1528,20 @@ class Oficina:
                 log.info("Hubo cambios en clientes o cámaras (de otro usuario o de la web): lista al día")
         if "alerts" in kinds and tab == str(self.tab_alerts):
             self.load_alerts(remote=True)
+        if "alerts" in kinds and getattr(self, "home", None) is not None and tab == str(self.tab_home):
+            self.home.load_alerts()
+
+    def _home_changed(self) -> None:
+        """Llegaron clientes y cámaras nuevos: «Inicio» anota (y avisa) y, si se la está mirando, se redibuja."""
+        home = getattr(self, "home", None)
+        if home is None:
+            return
+        home.health_tick()
+        try:
+            if self.notebook.select() == str(self.tab_home):
+                home.refresh()
+        except Exception:  # noqa: BLE001
+            pass
 
     def refresh_all(self, on_done: Callable[[], None] | None = None,
                     on_fail: Callable[[Exception], None] | None = None) -> None:
@@ -1469,6 +1557,7 @@ class Oficina:
             self._fill_alert_filters()
             if getattr(self, "trainer", None) is not None:
                 self.trainer.clients_changed()
+            self._home_changed()
             if self.is_admin:  # después de los clientes: muestran sus nombres (antes salía «—» si llegaban primero)
                 self.load_users()
                 try:
@@ -1657,7 +1746,9 @@ class Oficina:
             tab = self.notebook.select()
         except Exception:  # noqa: BLE001
             return
-        if tab == str(self.tab_clients) and self.clients:
+        if tab == str(getattr(self, "tab_home", "")):
+            self.home.on_show()
+        elif tab == str(self.tab_clients) and self.clients:
             self.refresh_all()
         elif tab == str(self.tab_alerts):
             self.load_alerts()
@@ -3364,6 +3455,10 @@ class Oficina:
                     fmt_date(e["occurred_at"]), e.get("client_name") or "", e.get("camera_name") or "",
                     TYPE_NAMES.get(e["type"], e["type"]), LABEL_NAMES.get(e.get("label"), "Sin revisar")))
             self.al_count.configure(text=f"{res['total']} en total")
+            goto, self._al_goto = getattr(self, "_al_goto", None), None
+            if goto and self.al_tree.exists(goto):  # la que se abrió desde «Inicio»
+                prev = (goto,)
+                self.al_tree.focus(goto)
             keep = [i for i in prev if self.al_tree.exists(i)]
             if keep:  # sigue elegida la misma (si otro usuario la revisó y ya no entra en el filtro, queda a la vista)
                 self.al_tree.selection_set(keep)

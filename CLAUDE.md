@@ -492,6 +492,35 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Hik-Connect y HLS siguen con `MediaClock`. Los clips viejos quedan lentos; **la máquina lo toma al reiniciarse**. Lo
   de fondo sigue: con la máquina llena analiza 2-3 cuadros/s por cámara cuando hay gente (los gestos aciertan menos):
   hace falta otra máquina o analizar menos cámaras. Prueba: `tests/test_ponerse_al_dia.py`.
+- **Pestaña «Inicio» y aviso de cámaras caídas (20 nov, el dueño: «que la pantalla de inicio sea como un resumen, con las
+  alertas por un lado, clientes en otra, y otro que salen las cámaras que se desconectan o pasa algo; si una cámara deja
+  de estar en verde, que mande un aviso»; app 1.50.0).** Elegido con el dueño: **en la app** (primera pestaña, elegida al
+  abrir; la web no cambió) y el aviso **solo en la app** (sin Telegram ni mail: avisa si alguien tiene la app abierta,
+  minimizada o en otra pestaña también). `agent/inicio.py` (`install` la pone antes de «En vivo»):
+  - Arriba, números que llevan a cada lugar: alertas sin revisar, alertas hoy, cámaras andando («N de M»), con
+    problemas, máquinas en línea (admin). Tres columnas: **alertas sin revisar** de todos los clientes (`/api/events`
+    `label=sin_etiqueta`, 60; doble clic → «Alertas» con esa elegida, `Oficina.goto_alert` / `_al_goto`), **clientes**
+    (cámaras bien de las analizadas, alertas hoy y sin revisar; con problemas en rojo y primero; → `goto_client`) y
+    **cámaras con problemas** (rojo: caída; amarillo: «No da abasto (saltea N %)»; hace cuánto; el motivo entero y «Qué
+    hacer» (`hint`); «Ir a la cámara» / «Probar conexión» → `goto_camera` + `probe`) con «Lo que pasó (desde que abriste
+    la app)». La pestaña dice «Inicio · ⚠ N».
+  - **Qué es «verde»** (`camera_health`, el mismo criterio que la columna «Estado»): analizando, escuchando alarmas o
+    local cerrado. Solo se miran las cámaras que se analizan. Problema: sin conexión, reconectando, error, detenida,
+    conectando, la máquina no responde (`agent_online` falso: el servidor la da por caída a los 3 min), «en línea» sin
+    cuadros nuevos hace 2 min (`last_frame_age_s`), o marcada para analizar sin máquina.
+  - **Cuándo avisa** (`HealthWatch`, sin ventana): si dura `GRACE_S` (2 min; 5 si recién arranca, `START_GRACE_S`);
+    «volvió» cuando anda `RECOVER_S` (1 min) seguido (una que corta y vuelve cada rato sigue caída); lo que ya estaba mal
+    al abrir la app no avisa (se ve en la lista); una máquina caída = un solo aviso para todas sus cámaras; más de 3 a la
+    vez, un solo cartel. Aviso = cartel rojo (`Toasts.show(kind="error")`, 20 s, clic → «Inicio» con esa cámara,
+    `goto_home`), `bell()` y la barra de tareas de Windows parpadea (`FlashWindowEx`, sin probar en Windows). Casilla
+    «Avisarme con un cartel y un sonido…» (se guarda en `<datos>/inicio.json`).
+  - **Consultas:** el estado de las cámaras (`/api/cameras` + `/api/agents`) se pide cada 30 s **siempre** (antes solo
+    con «Clientes» a la vista); las alertas por cliente, solo con «Inicio» o «Clientes» a la vista. El servidor no cambió.
+  - **Máquina:** cada cámara manda `state_age_s` (hace cuánto está en ese estado; `CameraWorker.state` es una propiedad):
+    «sin conexión hace 40 min» aunque la app se haya abierto después. Las máquinas lo mandan al reiniciarse (`git pull`);
+    sin eso, la app cuenta desde que lo vio.
+  - Pruebas: `tests/test_inicio.py` (las reglas, la pestaña en 1366x768 y de punta a punta con el servidor y una máquina
+    que informa la caída y la vuelta: cartel rojo con la app en «Clientes», clic → «Inicio», «Ir a la cámara», verde).
 - **Plan «Gastronomía» y zona «Mesa» (12 nov, el dueño: «cuánto demora un mozo en ir a atenderlos, cuánto tiempo
   promedio están las personas en las mesas, cuánto demora hasta que les llega la comida»; app 1.47.0).** Plan
   `gastronomia` (clientes y cámaras) y zona `table` (una por mesa, con sus sillas y donde se para el mozo). Viaja en
