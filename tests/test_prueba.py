@@ -1,6 +1,7 @@
 """Pestaña Prueba (eventos creados desde el navegador) y arranque rápido del esquema."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,7 +36,8 @@ def test_evento_manual_con_clip(app):
         cid = c.post("/api/clients", json={"name": "Almacén"}).json()["id"]
         cam = c.post("/api/cameras", json={"client_id": cid, "name": "Góndola", "host": "h", "mode": "alarmas_equipo"}).json()
         meta = {"camera_id": cam["id"], "type": "zona_restringida", "description": "Persona 20+ s en gondola", "zone": "gondola",
-                "occurred_at": "2026-10-20T10:00:00-03:00", "features": {"shelf_total_s": 22.5, "people_in_scene": 1, "x": 9},
+                # (ayer: una fecha fija queda fuera de los 30 días de /api/stats con el tiempo; pasó el 20 nov)
+                "occurred_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(), "features": {"shelf_total_s": 22.5, "people_in_scene": 1, "x": 9},
                 "ext": "webm"}
         r = c.post("/api/events/manual", data={"meta": json.dumps(meta)},
                    files={"snapshot": ("s.jpg", b"\xff\xd8fake", "image/jpeg")})
