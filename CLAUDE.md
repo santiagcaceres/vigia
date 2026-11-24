@@ -1228,7 +1228,9 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   darse de alta. Sin Google conectado dice «sin conexión desde…» (no «apagada»: no se sabe). **App 1.50.1 (24 nov, el
   dueño: «quiero solamente las máquinas virtuales; las PC nuestras no nos interesan»):** la lista ya no muestra las PCs
   de los usuarios ni «Sin máquina ni PC» (lo que no se analiza se ve en «Clientes»); «Quitar del sistema…» es solo para
-  máquinas (una PC se va al borrar a su usuario).
+  máquinas (una PC se va al borrar a su usuario). **App 1.50.2:** los títulos de las columnas van a la izquierda, como
+  los datos (centrados quedaban corridos con la lista a todo el ancho); lo mismo en Alertas, «Entrenar objetos» y la
+  lista de «En vivo».
   - **Google Cloud** se conecta con la clave (.json) de una **cuenta de servicio** del proyecto con un **rol propio**
     que solo tiene compute.instances.list/get/start/stop/reset/resume («Visualizador de Compute» solo para ver; NO
     «Administrador de instancias»: si la clave se filtrara podrían borrar máquinas y discos): Máquinas → «Google Cloud ▾»

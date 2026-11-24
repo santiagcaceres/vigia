@@ -416,7 +416,7 @@ class EntrenarObjetos:
                                  height=7, selectmode="browse")
         for col, title, w in (("que", "Qué", 170), ("archivo", "Archivo", 200), ("estado", "Cómo va", 520),
                               ("maquina", "Máquina", 130), ("cuando", "Pedido", 120)):
-            self.jobs.heading(col, text=title)
+            self.jobs.heading(col, text=title, anchor="w")
             self.jobs.column(col, width=w, stretch=col == "estado")
         sb = ttk.Scrollbar(tf, orient="vertical", command=self.jobs.yview)
         self.jobs.configure(yscrollcommand=sb.set)
@@ -451,7 +451,7 @@ class EntrenarObjetos:
         self.img_list = ttk.Treeview(lf, columns=("n", "estado", "rec"), show="headings", selectmode="browse",
                                      height=14)
         for col, title, w in (("n", "Foto", 118), ("estado", "Estado", 92), ("rec", "Rec", 42)):
-            self.img_list.heading(col, text=title)
+            self.img_list.heading(col, text=title, anchor="w")
             self.img_list.column(col, width=w, stretch=col == "n")
         sb = ttk.Scrollbar(lf, orient="vertical", command=self.img_list.yview)
         self.img_list.configure(yscrollcommand=sb.set)
@@ -522,7 +522,7 @@ class EntrenarObjetos:
                                      height=4, selectmode="browse")
         for col, title, w in (("v", "Versión", 70), ("fecha", "Fecha", 150), ("fotos", "Fotos", 70),
                               ("nota", "Resultado", 160), ("activa", "Estado", 90), ("donde", "Dónde se entrenó", 260)):
-            self.ver_list.heading(col, text=title)
+            self.ver_list.heading(col, text=title, anchor="w")
             self.ver_list.column(col, width=w, stretch=col == "donde")
         self.ver_list.pack(fill="x")
         self.ver_list.bind("<<TreeviewSelect>>", lambda _e: self._show_version())

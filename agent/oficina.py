@@ -3401,7 +3401,7 @@ class Oficina:
                                     selectmode="browse")
         for col, txt, w in (("fecha", "Fecha", 95), ("cliente", "Cliente", 130), ("camara", "Cámara", 120),
                             ("tipo", "Tipo", 120), ("etiqueta", "Etiqueta", 100)):
-            self.al_tree.heading(col, text=txt)
+            self.al_tree.heading(col, text=txt, anchor="w")
             self.al_tree.column(col, width=w)
         self.al_tree.pack(side="left", fill="y")
         self.al_tree.bind("<<TreeviewSelect>>", lambda e: self.show_alert())
@@ -3683,12 +3683,14 @@ class Oficina:
             anchor="w", pady=(2, 4))
         self.mq_tree = ttk.Treeview(f, columns=("estado", "camaras", "carga", "tipo", "desde"),
                                     show="tree headings", height=8, selectmode="browse")
-        self.mq_tree.heading("#0", text="Máquina")
-        self.mq_tree.column("#0", width=250)
-        for col, txt, w in (("estado", "Estado", 330), ("camaras", "Cámaras", 70), ("carga", "Carga / capacidad", 120),
-                            ("tipo", "Tipo", 150), ("desde", "Desde", 130)):
-            self.mq_tree.heading(col, text=txt)
-            self.mq_tree.column(col, width=w)
+        # títulos a la izquierda, como los datos (centrados quedaban corridos de lo suyo con la lista a todo el ancho);
+        # lo que sobra de ancho va a «Máquina» y «Estado», así los números quedan cerca de su título
+        self.mq_tree.heading("#0", text="Máquina", anchor="w")
+        self.mq_tree.column("#0", width=300)
+        for col, txt, w in (("estado", "Estado", 380), ("camaras", "Cámaras", 80), ("carga", "Carga / capacidad", 155),
+                            ("tipo", "Tipo", 150), ("desde", "Desde", 170)):
+            self.mq_tree.heading(col, text=txt, anchor="w")
+            self.mq_tree.column(col, width=w, anchor="w", stretch=col == "estado")
         for tag, color in (("ok", "#1b7d3a"), ("warn", "#a35c00"), ("bad", "#b3261e"), ("busy", "#0b5cad"),
                            ("off", "#6b6b6b")):
             self.mq_tree.tag_configure(tag, foreground=color)
