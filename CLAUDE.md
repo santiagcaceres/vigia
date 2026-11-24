@@ -492,6 +492,14 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   Hik-Connect y HLS siguen con `MediaClock`. Los clips viejos quedan lentos; **la máquina lo toma al reiniciarse**. Lo
   de fondo sigue: con la máquina llena analiza 2-3 cuadros/s por cámara cuando hay gente (los gestos aciertan menos):
   hace falta otra máquina o analizar menos cámaras. Prueba: `tests/test_ponerse_al_dia.py`.
+  **Velocidad real (24 nov, el dueño: «se sigue viendo trancado» en la farmacia, ya en AWS):** el clip del buffer
+  tiene solo los cuadros analizados (5 por segundo con gente, 1 en los ratos quietos) y `write_mp4` los repartía
+  parejo: lo que tenía gente se veía en cámara lenta (un 35 % con 20 s quietos de 60) y lo quieto pasaba rápido.
+  Ahora `core.clips.clip_timeline` escribe el MP4 al ritmo de los ratos con gente (`clip_fps`: el cuarto de
+  intervalos más cortos, 1-15) y repite cada cuadro hasta que llega el siguiente (un hueco de más de 2,5 s,
+  `MAX_HOLD_S`, se acorta); `video_offset` (el segundo de la alerta) usa la misma cuenta. Sigue teniendo ~4-5
+  imágenes por segundo (más fluido = guardar más cuadros = más procesador: recién con más máquina). Las máquinas lo
+  toman en la actualización de la noche. Prueba: `test_el_clip_se_ve_a_la_velocidad_real`.
 - **Pestaña «Inicio» y aviso de cámaras caídas (20 nov, el dueño: «que la pantalla de inicio sea como un resumen, con las
   alertas por un lado, clientes en otra, y otro que salen las cámaras que se desconectan o pasa algo; si una cámara deja
   de estar en verde, que mande un aviso»; app 1.50.0).** Elegido con el dueño: **en la app** (primera pestaña, elegida al

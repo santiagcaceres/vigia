@@ -19,13 +19,45 @@ from core.clips import clip_fps, video_offset
 
 # ---------------------------------------------------------------- sin ventana
 def test_en_que_segundo_del_clip_queda_la_alerta():
-    # el MP4 reparte los cuadros parejo: 3 s quietos (1 cuadro por segundo) y después 5 por segundo
+    # el MP4 va a la velocidad real (24 nov): 3 s quietos (1 cuadro por segundo) y después 5 por segundo
     frames = [(float(t), b"") for t in (0, 1, 2)] + [(3 + i * 0.2, b"") for i in range(21)]
-    fps = clip_fps(frames)
-    assert fps == pytest.approx(23 / 7)
-    assert video_offset(frames, 5.0) == round(13 / fps, 2)  # el cuadro 13 (no 5 s: los quietos pasan más rápido)
+    assert clip_fps(frames) == 5.0  # el ritmo de los ratos con gente, no el promedio
+    assert video_offset(frames, 5.0) == 5.0  # (antes 3,96: lo quieto pasaba rápido y la alerta quedaba antes)
     assert video_offset(frames, 0.0) == 0.0 and video_offset([], 1.0) is None
-    assert video_offset(frames, 99.0) == round(23 / fps, 2)  # (después del último: el final)
+    assert video_offset(frames, 99.0) == 7.0  # (después del último: el final)
+    # un corte de la cámara dentro del clip no queda entero: la imagen quieta dura 2,5 s y sigue
+    cut = [(0.0, b""), (0.2, b""), (60.2, b""), (60.4, b"")]
+    assert video_offset(cut, 60.2) == 2.8
+
+
+def test_el_clip_se_ve_a_la_velocidad_real(tmp_path):
+    """La farmacia (24 nov): «se sigue viendo trancado». Con 10 s quietos (1 cuadro por segundo) y 10 s con gente (5
+    por segundo), el MP4 viejo repartía los 61 cuadros parejo: lo que tenía gente duraba 16 s (cámara lenta) y lo
+    quieto 4. Ahora cada parte dura lo que duró."""
+    from core.clips import write_mp4
+
+    frames = []
+    for t in range(10):
+        frames.append((float(t), np.full((72, 128, 3), 10, np.uint8)))  # quieto: gris oscuro
+    for i in range(51):
+        frames.append((10 + i * 0.2, np.full((72, 128, 3), 200, np.uint8)))  # con gente: gris claro
+    out = tmp_path / "clip.mp4"
+    assert write_mp4(frames, out)
+    cap = cv2.VideoCapture(str(out))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    shades = []
+    while True:
+        ok, img = cap.read()
+        if not ok:
+            break
+        shades.append(int(img.mean()))
+    cap.release()
+    assert fps == pytest.approx(5.0, abs=0.01)
+    assert len(shades) / fps == pytest.approx(20.0, abs=0.3)  # dura lo mismo que lo que pasó
+    dark = sum(1 for v in shades if v < 100)
+    assert dark / fps == pytest.approx(10.0, abs=0.3)  # lo quieto, 10 s (antes 2 s)
+    assert (len(shades) - dark) / fps == pytest.approx(10.0, abs=0.3)  # lo que tiene gente, 10 s (antes 18 s)
+    assert video_offset(frames, 10.0) == 10.0
 
 
 def test_donde_esta_la_alerta():
