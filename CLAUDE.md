@@ -1340,6 +1340,11 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     ACTUALIZAR_DIARIO=si` por Session Manager (pasos en `deploy/aws/TIGO.md`, «Cómo quedó de verdad»). **Midió 17 cámaras
     de hurto** (2 procesos de 8; limita el procesador de 4 vCPU, no la T4) y a los minutos tenía 22 asignadas; la de
     Google quedó con 6 (de respaldo). La consola por defecto abre en Ohio: todo está en Norte de Virginia.
+    **En qué se va el procesador:** `tools/medir_maquina.py` (se baja con curl y se corre en la máquina con
+    `sudo python3`, 30 s, sin instalar nada ni frenar las cámaras): por proceso, cuánto gastan los hilos que
+    decodifican el video («av:h264:df…») y cuánto los de Python (leer, achicar, clips, seguimiento), más el sistema
+    y la placa. Sirve para decidir si conviene el «video dormido» (decodificar poco con la imagen quieta: las
+    cámaras pasan ~68 % del tiempo quietas), más procesos o decodificar en la placa.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
