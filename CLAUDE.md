@@ -1345,13 +1345,26 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     decodifican el video («av:h264:df…») y cuánto los de Python (leer, achicar, clips, seguimiento), más el sistema
     y la placa. Sirve para decidir si conviene el «video dormido» (decodificar poco con la imagen quieta: las
     cámaras pasan ~68 % del tiempo quietas), más procesos o decodificar en la placa.
-    **Medido el 24 nov (20 cámaras andando, casi todas de hurto con gestos, 14:30 de Uruguay):** el sistema tenía
-    **37 % del procesador libre** y la placa al 30-40 % (911 MB), y aun así ~14 cámaras salteaban algún cuadro por
-    minuto (4,0-4,7 de 5 cuadros/s). El análisis usaba 2,42 de 4 procesadores: 64 % los hilos de Python y 36 %
-    decodificar (**0,75 en H.265 contra 0,13 en H.264**: varios grabadores mandan H.265). Los hilos de Python de
-    cada proceso sumaban 83 % y 71 % de un procesador: lo más probable es que el tope sea el de un proceso de
-    Python (2 procesos en 4 procesadores), no la máquina. A probar, gratis: 4 procesos (`vigia-maquina@3` y `@4`,
-    `VIGIA_CAPACIDAD` por proceso) y pedir la segunda calidad en H.264; volver a medir antes de agrandar la máquina.
+    **Medido el 24 nov (20 cámaras andando, casi todas de hurto con gestos, 14:30 de Uruguay), dos veces:** con 2
+    procesos el sistema tenía **37 % del procesador libre** y la placa al 30-40 % (911 MB); el análisis usaba 2,42 de 4
+    procesadores: 64 % los hilos de Python y 36 % decodificar (**0,75 en H.265 contra 0,13 en H.264**: varios
+    grabadores mandan H.265). Los hilos de Python sumaban 83 % y 71 % de un procesador por proceso y se pensó que el
+    tope era ese; se pasó a **4 procesos** (`vigia-maquina@3` y `@4`, 7 cámaras cada uno; quedó así; deshacer:
+    `sudo systemctl disable --now vigia-maquina@3 vigia-maquina@4`) y **no cambió nada**: 2,53 procesadores, 32 %
+    libre, placa 10-22 %, 203 avisos de «no da abasto» en 15 min contra 216. **La hipótesis estaba mal: el que
+    exageraba era el aviso.** Contaba los cuadros que se saltean al ponerse al día, y eso pasa cada vez que un
+    análisis tarda más que UN cuadro del video (40 ms: normal con gente), con cuadros que igual no tocaba analizar.
+    **Arreglado (las máquinas lo toman a la noche):** `skipped_pct` y la línea del registro son ahora la parte de los
+    cuadros que tocaba analizar y no se analizó porque los análisis tardaron más que el tiempo entre uno y otro
+    (`step_s`: 200 ms a 5 cuadros/s; 250 ms si el video viene a 8); el registro avisa desde el 10 % y la app
+    («Inicio», amarillo) desde el 25 %, como antes. De paso, `WAITING_GRAB_MAX_S` (20 ms): con video de pocos cuadros
+    por segundo se tiraba por «viejo» un cuadro que acababa de llegar (a 8 cuadros/s, un tercio menos de análisis si
+    cada uno tardaba ~200 ms). **Conclusión:** la máquina no está llena. 20 cámaras ≈ 2,5 procesadores (0,125 cada
+    una) → unas 27 de este tipo al 85 % (estimado con una hora de datos, no en la hora pico); el «17» de
+    `agent.medir` es el peor caso (gente todo el tiempo en todas). No hace falta la 2xlarge todavía. Lo que más
+    rinde, gratis: pedir la segunda calidad en **H.264** 640×360 a 8 cuadros/s (decodificar H.265 se lleva 0,77 de los
+    2,5 procesadores) y cargar el horario de cada local (solo Mayorista Alberto lo tiene). Después, el «video dormido».
+    Pruebas: `tests/test_ponerse_al_dia.py`.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`
