@@ -4,6 +4,7 @@ mande un aviso»). El aviso es solo en la app (elegido con el dueño): cartel ro
 
 import os
 import queue
+import time as _time
 import types
 
 import pytest
@@ -167,7 +168,8 @@ def test_la_pestana_inicio_va_primera_muestra_todo_y_avisa(tmp_path, monkeypatch
         nb.add(ttk.Frame(nb), text="  En vivo  ")
         shown, went, bells = [], [], []
         root.bell = lambda: bells.append(1)
-        clock = types.SimpleNamespace(t=1795176000.0)
+        # hoy al mediodía: el registro de «Lo que pasó» muestra solo lo de hoy (con una fecha fija, dejaba de andar)
+        clock = types.SimpleNamespace(t=_time.mktime(_time.localtime()[:3] + (12, 0, 0, 0, 0, -1)))
         events = {"items": [{"id": 51, "occurred_at": "2026-11-20T13:05:00Z", "client_name": "Minas",
                              "camera_name": "Pasillo", "type": "mano_bolsa"}], "total": 9}
         counts = {"clients": {"3": {"today": 4, "week": 9, "unreviewed": 9}}, "cameras": {}}

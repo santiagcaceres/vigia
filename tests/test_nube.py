@@ -273,3 +273,45 @@ def test_una_clave_nueva_de_la_misma_cuenta_se_prueba_con_google_y_una_rota_no_d
     # desconectar olvida el token también
     admin.delete("/api/cloud/credentials")
     assert not nube._tokens
+
+
+def test_la_lista_de_maquinas_muestra_solo_maquinas_virtuales():
+    """Pedido del dueño (24 nov): en «Máquinas» solo las máquinas virtuales; las PCs de los usuarios (admin y los
+    demás) y las cámaras que no se analizan no van."""
+    import os
+    import types
+    tk = pytest.importorskip("tkinter")
+    if os.name != "nt" and not os.environ.get("DISPLAY"):
+        pytest.skip("sin pantalla (correr con xvfb-run)")
+    from tkinter import ttk
+
+    from agent.oficina import Oficina
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"sin Tk: {exc}")
+    try:
+        tree = ttk.Treeview(root, columns=("estado", "camaras", "carga", "tipo", "desde"), show="tree headings")
+        off = types.SimpleNamespace(mq_tree=tree, _mq_rows={}, client_name=lambda cid: {1: "Minas", 2: "Sanfer"}[cid],
+                                    _cam_state=lambda c: "En línea", _mq_buttons=lambda: None,
+                                    _mq_state=lambda key, vm, m, now, listed: ("● En línea · analizando", "ok", ""))
+        machine = {"key": "m:i-0abc", "names": ["maquina-i-0abc-1", "maquina-i-0abc-2"], "agent_ids": [18, 19],
+                   "instance_id": "i-0abc", "load": 3.0, "capacity": 16, "online": True}
+        cameras = [{"id": 1, "name": "Caja", "client_id": 1, "agent_id": 18},
+                   {"id": 2, "name": "Puerta", "client_id": 2, "agent_id": 19},
+                   {"id": 3, "name": "Depósito", "client_id": 1, "agent_id": None},  # no se analiza
+                   {"id": 4, "name": "Vieja", "client_id": 2, "agent_id": 7}]  # quedó en la PC de un usuario
+        agents = [{"id": 18, "kind": "servidor", "online": True}, {"id": 19, "kind": "servidor", "online": True},
+                  {"id": 7, "kind": "pc", "name": "PC de admin", "online": True},
+                  {"id": 8, "kind": "pc", "name": "PC de GonzaloD", "online": False}]
+        Oficina._fill_machine_tree(off, {"machines": [machine]}, cameras, agents, {})
+        assert tree.get_children() == ("m:i-0abc",)
+        row = tree.item("m:i-0abc")
+        assert row["text"] == "maquina-i-0abc (2 procesos)" and row["values"][1] == 2
+        assert row["values"][3] == "otra nube"
+        assert [tree.item(c, "text") for c in tree.get_children("m:i-0abc")] == ["Minas", "Sanfer"]
+        # una máquina sin cámaras igual figura (con 0)
+        Oficina._fill_machine_tree(off, {"machines": [{**machine, "agent_ids": [20]}]}, cameras, agents, {})
+        assert tree.get_children() == ("m:i-0abc",) and tree.item("m:i-0abc")["values"][1] == 0
+    finally:
+        root.destroy()

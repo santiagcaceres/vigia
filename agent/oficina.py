@@ -3724,7 +3724,7 @@ class Oficina:
         more = ttk.Menubutton(b, text="Más")
         mmenu = tk.Menu(more, tearoff=False)
         mmenu.add_command(label="Clave para máquinas nuevas…", command=self.pool_key_dialog)
-        mmenu.add_command(label="Quitar del sistema (máquina o PC)…", command=self.remove_machine)
+        mmenu.add_command(label="Quitar del sistema…", command=self.remove_machine)
         more["menu"] = mmenu
         more.pack(side="right")
         self.mq_hint = tk.StringVar(value="")
@@ -3806,7 +3806,9 @@ class Oficina:
         self.bg.run(load, done, self._net_fail)
 
     def _fill_machine_tree(self, a: dict, cameras: list[dict], agents: list[dict], cloud: dict | None = None) -> None:
-        """Cada máquina (de Google Cloud y/o del sistema) con su estado, y lo que analiza: cliente → cámara."""
+        """Cada máquina virtual (de Google Cloud y/o del sistema) con su estado, y lo que analiza: cliente → cámara.
+        Solo máquinas: las PCs de los usuarios y las cámaras que no se analizan no van (no interesan acá; lo que no se
+        analiza se ve en «Clientes»)."""
         tree = self.mq_tree
         prev = tree.selection()
         opened = set()  # lo desplegado (máquinas y clientes) sigue desplegado después de refrescar
@@ -3821,11 +3823,9 @@ class Oficina:
         now = datetime.now().astimezone()
         cloud = cloud or {}
         listed = bool(cloud.get("connected")) and not cloud.get("error")
-        by_agent = {x["id"]: x for x in agents}
         machines = list(a.get("machines") or [])
         by_instance = {m["instance_id"]: m for m in machines if m.get("instance_id")}
         groups: list[tuple[str, str, tuple, str, set]] = []  # (fila, nombre, columnas, color, agentes)
-        used: set[int] = set()
         matched: set[str] = set()
         # las prendidas primero: si hubiera dos con el mismo nombre en zonas distintas, la del sistema es la prendida
         vms = sorted(cloud.get("instances") or [], key=lambda v: (v.get("status") != "RUNNING", v.get("name") or ""))
@@ -3846,7 +3846,6 @@ class Oficina:
             carga = f"{m['load']} / {m['capacity']:.0f}" if m else "—"
             groups.append((key, vm["name"], (text, "", carga, tipo, since), tag, set(m["agent_ids"]) if m else set()))
             self._mq_rows[key] = {"vm": vm, "m": m}
-            used |= set(m["agent_ids"]) if m else set()
         for m in machines:  # las del sistema que no están en Google Cloud (otra nube, o Google sin conectar)
             if m["key"] in matched:
                 continue
@@ -3858,20 +3857,9 @@ class Oficina:
                                             ("visto " + hace(m.get("last_seen"), now)) if m.get("last_seen") else ""),
                            tag, set(m["agent_ids"])))
             self._mq_rows[m["key"]] = {"vm": None, "m": m}
-            used |= set(m["agent_ids"])
-        pcs = {c["agent_id"] for c in cameras if c.get("agent_id") and c["agent_id"] not in used}
-        pcs |= {x["id"] for x in agents if (x.get("kind") or "pc") == "pc" and x["id"] not in used}
-        for aid in sorted(pcs, key=lambda i: ((by_agent.get(i) or {}).get("name") or "", i)):
-            ag = by_agent.get(aid) or {}
-            online = ag.get("online")
-            groups.append((f"pc-{aid}", ag.get("name") or f"PC {aid}",
-                           ("En línea" if online else "Desconectada", "", "—", "PC", ""), "ok" if online else "off",
-                           {aid}))
-        if any(not c.get("agent_id") for c in cameras):
-            groups.append(("ninguna", "Sin máquina ni PC", ("No se analizan", "", "—", "—", ""), "off", {None}))
         for key, name, values, tag, ids in groups:
             cams = [c for c in cameras if c.get("agent_id") in ids]
-            values = (values[0], len(cams) if cams or key in self._mq_rows else "", *values[2:])
+            values = (values[0], len(cams), *values[2:])
             node = tree.insert("", "end", iid=key, text=name, values=values, open=key in opened, tags=(tag,))
             by_client: dict[int, list[dict]] = {}
             for c in cams:
@@ -4095,19 +4083,12 @@ class Oficina:
         key = sel[0] if sel else ""
         while key and self.mq_tree.parent(key):
             key = self.mq_tree.parent(key)
-        if key.startswith("pc-"):
-            name = self.mq_tree.item(key, "text")
-            if not self.mb.askyesno(NOMBRE, f"¿Quitar la PC «{name}»? Deja de analizar y las cámaras que tenga abiertas "
-                                             "se cierran. Si alguien vuelve a entrar en esa PC con su usuario, aparece de "
-                                             "nuevo (sin cámaras)."):
-                return
-            return self.bg.run(lambda: self.api.delete(f"/api/agents/{key[3:]}"), lambda _: self.load_machines(), self.err)
         m = next((x for x in (self.analysis.get("machines") or []) if x["key"] == key), None)
         if not m and key.startswith("vm:"):
             return self.mb.showinfo(NOMBRE, "Esa máquina no está dada de alta en el sistema: solo existe en Google "
                                              "Cloud. Si no la usás, apagala o borrala desde la consola de Google Cloud.")
         if not m:
-            return self.mb.showinfo(NOMBRE, "Elegí una máquina o una PC de la lista.")
+            return self.mb.showinfo(NOMBRE, "Elegí una máquina de la lista.")
         if not self.mb.askyesno(NOMBRE, f"¿Quitar «{', '.join(m['names'])}»? Sus cámaras pasan a las otras máquinas. "
                                          "Si la máquina sigue prendida, se vuelve a dar de alta sola."):
             return

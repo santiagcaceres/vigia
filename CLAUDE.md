@@ -1225,7 +1225,10 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   cámara), con «▶ Prender», «■ Apagar» y «⟳ Reiniciar» (confirman; avisa si apagarla deja cámaras sin analizar). Abajo, el
   reparto (antes en Administración, que quedó solo con usuarios). Consejos por estado (`vm_estado` en agent/oficina.py):
   «prendida pero sin conexión» → reiniciar (al arrancar hace `git pull`); «prendida · no analiza» = gasta créditos sin
-  darse de alta. Sin Google conectado dice «sin conexión desde…» (no «apagada»: no se sabe).
+  darse de alta. Sin Google conectado dice «sin conexión desde…» (no «apagada»: no se sabe). **App 1.50.1 (24 nov, el
+  dueño: «quiero solamente las máquinas virtuales; las PC nuestras no nos interesan»):** la lista ya no muestra las PCs
+  de los usuarios ni «Sin máquina ni PC» (lo que no se analiza se ve en «Clientes»); «Quitar del sistema…» es solo para
+  máquinas (una PC se va al borrar a su usuario).
   - **Google Cloud** se conecta con la clave (.json) de una **cuenta de servicio** del proyecto con un **rol propio**
     que solo tiene compute.instances.list/get/start/stop/reset/resume («Visualizador de Compute» solo para ver; NO
     «Administrador de instancias»: si la clave se filtrara podrían borrar máquinas y discos): Máquinas → «Google Cloud ▾»
