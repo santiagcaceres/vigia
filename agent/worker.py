@@ -172,6 +172,32 @@ def bursty(brand: str | None, url: str | None) -> bool:
     return brand == "hikconnect" or (u.startswith(("http://", "https://")) and ".m3u8" in u)
 
 
+CODEC_NAMES = {"h264": "H.264", "avc1": "H.264", "x264": "H.264", "hevc": "H.265", "hev1": "H.265", "hvc1": "H.265",
+               "h265": "H.265", "mjpg": "MJPEG", "jpeg": "MJPEG"}
+
+
+def video_info(cap) -> dict:
+    """Qué video manda la cámara: códec, tamaño y cuadros por segundo (24 nov: decodificar se lleva un tercio del
+    procesador de la máquina y lo que pesa es el tamaño por los cuadros por segundo; con esto la app marca cuáles
+    conviene pasar a la segunda calidad chica). Solo datos simples, para el estado."""
+    out: dict = {}
+    try:
+        four = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    except Exception:  # noqa: BLE001 - es solo para informar
+        return out
+    code = "".join(chr((four >> 8 * i) & 0xFF) for i in range(4)).strip("\x00 ").lower()
+    name = CODEC_NAMES.get(code) or (code.upper() if code.isalnum() else "")
+    if name:
+        out["video_codec"] = name
+    if 0 < w <= 20000 and 0 < h <= 20000:
+        out["video_w"], out["video_h"] = w, h
+    if 1.0 <= fps <= 120.0:
+        out["video_fps"] = round(fps, 1)
+    return out
+
+
 class MediaClock:
     """Segundos de video transcurridos según las marcas de tiempo del stream. Si el stream no las trae
     (o vuelven atrás), cuenta cuadros a los fps que declara. Nunca retrocede."""
@@ -234,6 +260,7 @@ class CameraWorker:
             log.info("[%s] detección de personas: %s", self.name, self.detection.describe())
         self.idle_pct: float | None = None  # parte de los cuadros salteados por quietud (último minuto)
         self.skipped_pct: float | None = None  # parte de lo que tocaba analizar y no se llegó (último minuto)
+        self.video: dict = {}  # qué video manda la cámara (`video_info`): códec, tamaño y cuadros por segundo
         self.metrics_queue = metrics_queue
         self.outbox = outbox
         self.client = client
@@ -359,6 +386,8 @@ class CameraWorker:
                 **({"skipped_pct": round(self.skipped_pct * 100)} if self.skipped_pct else {}),
                 # la IA de movimientos de hurto está mirando (hay modelo activo, la postura cargada y mide hurtos)
                 "ia_hurto": self.analyzer.theft_ai,
+                # el video que llega (códec, tamaño, cuadros por segundo): la app marca los que pesan de más
+                **self.video,
                 # («normal», «sensibilidad 8 de 10 · personas lejos»): para saber si la máquina ya la aplica
                 "detection": self.detection.describe(), "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
@@ -423,6 +452,7 @@ class CameraWorker:
         clock = MediaClock(cap) if getattr(self, "_bursty", self.hik.brand == "hikconnect") else None
         # «1080p lite» (960x1080 con píxeles 2:1): se analiza con píxeles cuadrados (960x540), igual que en
         # «Configurar…» y en las alarmas; si no, las personas quedan flacas y los gestos no andan
+        self.video = video_info(cap)
         sar = pixel_aspect(cap)
         if sar and sar != self._sar_logged:
             self._sar_logged = sar
@@ -446,7 +476,7 @@ class CameraWorker:
         step_s = 1.0 / self.process_fps
         if clock is None:
             step_s = max(step_s, math.ceil((step_s - 1e-3) / frame_s - 1e-6) * frame_s)
-        analyzed = slow = 0
+        analyzed = slow = grabbed = 0
         late_s = span_s = 0.0  # lo que los análisis se pasaron de step_s / lo que ocupó cada uno (o step_s si fue menos)
         last_skip_log = time.monotonic()
         while not self._stop.is_set():
@@ -466,6 +496,7 @@ class CameraWorker:
                 continue
             fails = 0
             now = time.monotonic()
+            grabbed += 1
             ts = base + (clock.tick() if clock else now - t0)  # segundos del video (o de la PC)
             self._last_ts, self._last_ts_at = ts, now
             self.last_frame_at = time.time()
@@ -474,6 +505,9 @@ class CameraWorker:
                     continue  # todavía es de los que se apilaron mientras se analizaba: no sirve (es viejo)
                 behind_since = None
             if now - last_skip_log > 60:
+                # los cuadros por segundo de verdad (lo que dice el video al abrir a veces no es cierto)
+                self.video = {**self.video, "video_fps": round(grabbed / (now - last_skip_log), 1)}
+                grabbed = 0
                 self.skipped_pct = late_s / span_s if span_s else 0.0
                 if self.skipped_pct >= SLOW_LOG_FRACTION:
                     log.info("[%s] la máquina no da abasto: analizó %d cuadros en el último minuto, un %.0f %% menos de "

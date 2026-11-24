@@ -1125,8 +1125,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def is_online(a: Agent, now: datetime) -> bool:
         return bool(a.last_seen and now - a.last_seen < pool.ONLINE)
 
-    def camera_weights(s, times: list[datetime]) -> tuple[list[Camera], list[dict[int, float]]]:
-        """Peso de cada cámara habilitada que se analiza en las máquinas, en cada momento pedido (server/pool.py)."""
+    def camera_weights(s, times: list[datetime | None]) -> tuple[list[Camera], list[dict[int, float]]]:
+        """Peso de cada cámara habilitada que se analiza en las máquinas, en cada momento pedido (server/pool.py). Un
+        momento None = con el local abierto: es el lugar que **reserva** en su máquina (el tope se cuenta con eso: una
+        cámara con el local cerrado no le deja su lugar a otra, porque mañana lo vuelve a necesitar)."""
         locs = locations(s)
         cams = [c for c in s.query(Camera).filter(Camera.enabled.is_(True)).order_by(Camera.id)
                 if locs.get(c.id) == "servidores"]
@@ -1143,10 +1145,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # «Personas lejos»: el detector pasa 5 veces por cuadro (el de movimiento no tiene partes: no cambia)
             far = c.detector != "motion" and bool((analysis.get("detection") or {}).get("far"))
             for i, t in enumerate(times):
-                out[i][c.id] = pool.camera_weight(fps=fps, mode=c.mode or "vivo", brand=c.brand, hours=cl.hours,
-                                                  tz=cl.timezone, off_hours=c.off_hours or "apagada", now=t,
-                                                  pose=pose, far=far)
+                out[i][c.id] = pool.camera_weight(fps=fps, mode=c.mode or "vivo", brand=c.brand,
+                                                  hours=cl.hours if t is not None else None,
+                                                  tz=cl.timezone, off_hours=c.off_hours or "apagada",
+                                                  now=t or utcnow(), pose=pose, far=far)
         return cams, out
+
+    def pool_servers(s, now: datetime) -> tuple[dict[int, float], dict[int, str]]:
+        """Los procesos de las máquinas de análisis que pueden recibir cámaras (en línea y sin vaciar) con lo que
+        aguanta cada uno, y a qué máquina pertenece cada proceso."""
+        cap = pool_capacity(s)
+        agents = server_agents(s)
+        return ({a.id: capacity_of(a, cap) for a in agents if is_online(a, now) and not a.draining},
+                {a.id: a.instance_id or f"agente-{a.id}" for a in agents})
+
+    def image_age(c: Camera, now: datetime) -> float | None:
+        return (now - c.preview_at).total_seconds() if c.preview_at else None
+
+    def holds_place(c: Camera, now: datetime) -> bool:
+        """La cámara ocupa lugar en las máquinas: dio imagen en los últimos 3 días, o se la marcó para analizar hace
+        menos de eso (todavía puede no haber conectado). Una que no da imagen hace días sigue asignada (si el
+        grabador vuelve, arranca sola) pero no le saca el lugar a otra."""
+        age = image_age(c, now)
+        if age is not None and age < pool.ALIVE_S:
+            return True
+        return bool(c.analyze_since and (now - c.analyze_since).total_seconds() < pool.ALIVE_S)
+
+    def pool_room(s) -> dict:
+        """Cuánto lugar hay en las máquinas en línea: el tope de todas y lo que ocupan las cámaras marcadas para
+        analizar (con el local abierto: una cámara con el local cerrado no le deja su lugar a otra)."""
+        now = utcnow()
+        servers, groups = pool_servers(s, now)
+        cams, (w_open,) = camera_weights(s, [None])
+        held = {c.id: w_open.get(c.id, 0.0) for c in cams if holds_place(c, now)}
+        return {"capacity": sum(pool.machine_caps(servers, groups, pool_capacity(s)).values()),
+                "reserved": sum(held.values()), "held": held, "weights": w_open, "cameras": cams,
+                "idle": [c for c in cams if c.id not in held]}  # marcadas que no dan imagen hace días
 
     def machines_of(s, now: datetime, weights: dict[int, float]) -> list[pool.Machine]:
         agents = server_agents(s)
@@ -1169,6 +1203,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             m.load += load.get(a.id, 0.0)
         for m in groups.values():
             m.online = m.online and not m.leaving  # se va: el plan pide otra si hace falta
+            m.capacity = min(m.capacity, cap)  # el tope por máquina (todos sus procesos juntos)
         return list(groups.values())
 
     def is_leaving(a: Agent) -> bool:
@@ -1201,7 +1236,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_setting(s, "balance_at", now.isoformat())
         cap = pool_capacity(s)
         agents = server_agents(s)
-        cams, (w_now, w_soon) = camera_weights(s, [now, pool.soon(now)])
+        cams, (w_now, w_soon, w_open) = camera_weights(s, [now, pool.soon(now), None])
         if any(a.draining for a in agents):
             # Una máquina marcada para vaciar que vuelve a hacer falta (la otra se cayó o la apagaron) recibe cámaras
             # de nuevo acá, sin esperar al encendedor. Marcar para vaciar lo hace solo el encendedor
@@ -1215,11 +1250,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if a.draining and a.id in needed:
                     a.draining = False
                     log.info("Máquina %r vuelve a recibir cámaras (hace falta de nuevo)", a.name)
-        servers = {a.id: capacity_of(a, cap) for a in agents if is_online(a, now) and not a.draining}
+        servers, groups = pool_servers(s, now)
         if not servers:
             s.commit()
             return False
-        result = pool.assign([(c.id, w_now.get(c.id, 0.0), c.agent_id) for c in cams], servers)
+        # Se reparte por lo que cada cámara ocupa con el local abierto (no cambia con la hora: no se mueven cámaras
+        # cada vez que un local abre o cierra) y contando la máquina entera (sus procesos comparten el lugar). Las que
+        # dieron imagen hace poco se acomodan primero (`pool.life_rank`: dato guardado, no depende de reinicios)
+        ranks = {c.id: pool.life_rank(image_age(c, now)) for c in cams}
+        result = pool.assign([(c.id, w_open.get(c.id, 0.0), c.agent_id) for c in cams], servers, groups, ranks, cap)
         moved = 0
         for c in cams:
             new = result.get(c.id)
@@ -1228,7 +1267,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 moved += 1
         if moved:
             bump_rev(s)
-            log.info("Reparto de cámaras: %d movidas entre %d máquinas", moved, len(servers))
+            log.info("Reparto de cámaras: %d movidas entre %d procesos", moved, len(servers))
         s.commit()
         return moved > 0
 
@@ -1249,8 +1288,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def analysis_overview(s, apply_draining: bool = False) -> dict:
         now = utcnow()
-        cams, (w_now, w_soon) = camera_weights(s, [now, pool.soon(now)])
+        cams, (w_now, w_soon, w_open) = camera_weights(s, [now, pool.soon(now), None])
         ms = machines_of(s, now, w_now)
+        # lo que ocupan sus cámaras para el tope: con el local abierto, y solo las que dan imagen o son nuevas
+        w_held = {c.id: w_open.get(c.id, 0.0) for c in cams if holds_place(c, now)}
+        held = {m.key: m.load for m in machines_of(s, now, w_held)}
         spare = int(setting(s, "pool_spare", "0") or 0)
         mode = analysis_mode(s)
         # solo cuentan las cámaras que se analizan en máquinas (en general, por cliente o por cámara)
@@ -1274,9 +1316,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             key = a.instance_id or f"agente-{a.id}"
             if a.last_seen and iso(a.last_seen) > (seen.get(key) or ""):
                 seen[key] = iso(a.last_seen)
+        up = [m for m in ms if m.online and not m.draining]
         return {"mode": mode, "capacity": pool_capacity(s), "spare": spare, "clients_on_servers": clients_on,
                 "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
                 "cameras": len(cams), "cameras_active": open_now,
+                # el tope: lo que aguantan las máquinas en línea, lo que ocupan las cámaras marcadas para analizar
+                # y cuántas de las marcadas no dan imagen hace días (esas no ocupan lugar)
+                "room": {"capacity": round(sum(m.capacity for m in up), 2), "reserved": round(sum(w_held.values()), 2),
+                         "idle": len(cams) - len(w_held)},
                 "online_instances": [m.instance_id for m in ms if m.online and m.instance_id],
                 "leaving_instances": [m.instance_id for m in ms if m.leaving and m.instance_id],
                 # las fijas en línea: el encendedor las descuenta de las que tiene que prender y nunca las toca
@@ -1284,7 +1331,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "machines": [{"key": m.key, "instance_id": m.instance_id, "names": m.names, "agent_ids": m.agent_ids,
                               "online": m.online, "draining": m.draining, "leaving": m.leaving, "fixed": m.fixed,
                               "capacity": m.capacity, "last_seen": seen.get(m.key),
-                              "load": round(m.load, 2), "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
+                              "load": round(m.load, 2), "reserved": round(held.get(m.key, 0.0), 2),
+                              "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
                              for m in ms]}
 
     def camera_dict(c: Camera, user: User, status: dict | None = None, ops: dict | None = None) -> dict:
@@ -2474,12 +2522,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("No se pudieron borrar %d archivos de cámaras borradas", len(files))
         log.info("Cámaras borradas: %s (%d alertas)", ids, n_events)
 
+    def fmt_load(x: float) -> str:
+        return f"{x:.1f}".replace(".", ",").removesuffix(",0")
+
+    def check_room(s, new: list[Camera]) -> None:
+        """Tope de las máquinas (24 nov, decisión del dueño: «meterle cámaras para que las analice mal no tiene
+        sentido»): no se marca para analizar una cámara que no entra. Se llama con el cambio ya hecho en la sesión
+        (sin confirmar); si no entra, se deshace y se explica qué hacer. Sin ninguna máquina en línea no se frena
+        nada (como siempre: empieza sola cuando se prenda una)."""
+        room = pool_room(s)
+        if not new or room["capacity"] <= 0 or room["reserved"] <= room["capacity"] + 1e-6:
+            return
+        need = sum(room["weights"].get(c.id, 0.0) for c in new)
+        if need <= 1e-9:  # (deshabilitada: no ocupa nada)
+            return
+        before = room["reserved"] - need
+        free = max(0.0, room["capacity"] - before)
+        statuses = agent_status_map(s)
+        names = dict(s.query(Client.id, Client.name).all())
+        now = utcnow()
+        down = [c for c in room["cameras"] if c.id in room["held"] and c not in new
+                and (statuses.get(c.id) or {}).get("state") in ("sin_conexion", "reconectando", "error", "detenida")
+                and (image_age(c, now) or pool.ALIVE_S) > 3600]
+        msg = (f"No hay lugar en las máquinas de análisis: el tope es {fmt_load(room['capacity'])} y ya hay "
+               f"{fmt_load(before)} ocupado (queda {fmt_load(free)}); "
+               + (f"esta cámara ocupa {fmt_load(need)}" if len(new) == 1
+                  else f"estas {len(new)} cámaras ocupan {fmt_load(need)}")
+               + ". No se marcó para analizar: con la máquina llena analizaría mal todas.\n\nPara hacer lugar: dejá "
+                 "de analizar otra cámara, sacale los gestos a las que no los necesitan, o subí el tope o sumá una "
+                 "máquina (pestaña «Máquinas»).")
+        if down:
+            down.sort(key=lambda c: -(image_age(c, now) or 0.0))
+            msg += ("\n\nEstas ocupan lugar y ahora no andan: "
+                    + "; ".join(f"«{names.get(c.client_id, '—')} · {c.name}» (sin imagen hace "
+                                + human_age(image_age(c, now) or 0.0) + f", ocupa {fmt_load(room['held'][c.id])})"
+                                for c in down[:8]) + ("…" if len(down) > 8 else "") + ".")
+        s.rollback()
+        raise HTTPException(409, msg)
+
+    def human_age(sec: float) -> str:
+        sec = int(sec)
+        if sec < 3600:
+            return f"{max(1, sec // 60)} min"
+        if sec < 86400:
+            return f"{sec // 3600} h"
+        return f"{sec // 86400} día" + ("s" if sec >= 2 * 86400 else "")
+
     def set_analyzed(s, cams: list[Camera], analyze: bool) -> None:
         """Las marcadas van a las máquinas de análisis; las demás solo se miran en «En vivo» de la app."""
         before = locations(s)
         for c in cams:
             c.analysis_location = "servidores" if analyze else "pcs"
+        now = utcnow()
+        new = [c for c in cams if analyze and before.get(c.id) != "servidores"]
+        for c in cams:  # desde cuándo ocupa lugar (las que ya se analizaban siguen con su fecha)
+            c.analyze_since = None if not analyze else now if c in new else c.analyze_since
         s.flush()
+        check_room(s, new)  # (las que ya se analizaban no suman: no se les niega lo que ya tienen)
         sync_locations(s, before)
         if not analyze:
             for c in cams:  # sin analizar: no la tiene ninguna PC ni máquina

@@ -182,6 +182,9 @@ class Camera(Base):
     # vista en vivo: el panel marca que alguien la está mirando; la PC central sube cuadros mientras dure
     live_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     preview_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # desde cuándo está marcada para analizar (tope de las máquinas, 24 nov): una recién marcada ocupa su lugar aunque
+    # todavía no haya dado imagen; una que no da imagen hace días deja de ocuparlo. None = de antes, o no se analiza
+    analyze_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -510,7 +513,7 @@ def make_session_factory(url: str, create_schema: bool = True):
 # Subir este número cada vez que cambie el esquema (tabla o columna nueva): el servidor solo
 # vuelve a correr create_all / ALTER cuando la versión guardada en la base no coincide. Así un
 # arranque en frío en Vercel hace una sola consulta en vez de inspeccionar todas las tablas.
-SCHEMA_VERSION = "2026-11-18.1"
+SCHEMA_VERSION = "2026-11-24.1"
 
 
 class CameraMetric(Base):

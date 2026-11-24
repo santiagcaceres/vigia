@@ -4,8 +4,11 @@ máquinas hacen falta prendidas. Solo funciones puras: la base de datos la manej
 - **Peso** de una cámara = cuánto de una máquina ocupa ahora (1,0 = cámara de hurto a 5 fps; con gestos o con la IA
   de movimientos de hurto, un 30 % más por la postura; con «Personas lejos», 4 veces: la imagen entera más 4 partes).
   Con el local cerrado y «No mirar», pesa 0: no hace falta ninguna máquina para ella.
-- **Reparto**: cada cámara se queda en su máquina mientras esa máquina esté en línea y le entre; las demás
-  van a la menos cargada. Si una máquina se cae (90 s sin noticias), sus cámaras pasan a las otras.
+- **Reparto**: cada cámara se queda en su máquina mientras esa máquina esté en línea y le entre (los procesos de una
+  máquina comparten su lugar); las demás van a la menos cargada. Si una máquina se cae (90 s sin noticias), sus
+  cámaras pasan a las otras.
+- **Tope**: lo que aguanta cada máquina (lo que midió, y no más que «Tope de cámaras por máquina»). Al marcar una
+  cámara para analizar, si no entra no se la marca (server/main.py, `check_room`).
 - **Plan**: cuántas máquinas tienen que estar prendidas (mirando también los próximos 20 min, para
   prenderlas antes de que abran los locales) y cuáles se pueden apagar (ya sin cámaras).
 - **Máquina fija** (`Machine.fixed`, la avisa la máquina con `VIGIA_FIJA=si`): siempre prendida (la de la reserva
@@ -62,25 +65,80 @@ def camera_weight(*, fps: float, mode: str, brand: str, hours: dict | None, tz: 
     return base
 
 
-def assign(cameras: list[tuple[int, float, int | None]], servers: dict[int, float]) -> dict[int, int]:
-    """`cameras`: (id, peso, máquina actual). `servers`: máquina en línea → capacidad. Devuelve id → máquina.
-    Las cámaras se quedan donde están si entran; si no hay lugar en ninguna, van igual a la menos cargada
-    (mejor una máquina apretada que una cámara sin mirar: el plan pide otra máquina)."""
+# Tope de las máquinas (24 nov, decisión del dueño: «meterle cámaras para que las analice mal no tiene sentido»). El tope
+# se aplica **al marcar una cámara para analizar** (server/main.py, `check_room`): si no entra, no se la marca y se
+# explica. El reparto nunca le saca la máquina a una cámara que ya se analiza (un reinicio o un corte no pueden dejar
+# afuera a las que andan): si igual quedara pasada (bajaron el tope, o volvió una cámara que no andaba), se ve en la app.
+ALIVE_S = 72 * 3600.0  # una cámara que dio imagen en los últimos 3 días ocupa su lugar (aguanta un fin de semana cerrado)
+RECENT_S = 30 * 60.0  # dio imagen hace menos de media hora: se la está analizando
+OVERFILL = 1.25  # un proceso puede pasarse un 25 % de su parte si la máquina entera tiene lugar (no mover cámaras)
+
+
+def life_rank(image_age_s: float | None) -> int:
+    """Qué tan viva está una cámara por su última imagen (dato que queda guardado: no se pierde si la máquina se
+    reinicia): 0 = se la está analizando, 1 = anduvo en los últimos días (local cerrado, un corte), 2 = no anda hace
+    días o nunca dio imagen. En un proceso muy cargado, las que no andan son las primeras en pasar a otro."""
+    if image_age_s is None:
+        return 2
+    return 0 if image_age_s < RECENT_S else 1 if image_age_s < ALIVE_S else 2
+
+
+def machine_caps(servers: dict[int, float], groups: dict[int, str] | None = None,
+                 cap: float | None = None) -> dict[str, float]:
+    """Lo que aguanta cada máquina: la suma de sus procesos (comparten el procesador y la placa), con el tope `cap`
+    («Tope de cámaras por máquina») si es menor."""
+    out: dict[str, float] = {}
+    for a, c in servers.items():
+        key = (groups or {}).get(a) or f"agente-{a}"
+        out[key] = out.get(key, 0.0) + c
+    return {k: (min(v, cap) if cap else v) for k, v in out.items()}
+
+
+def assign(cameras: list[tuple[int, float, int | None]], servers: dict[int, float],
+           groups: dict[int, str] | None = None, rank: dict[int, int] | None = None,
+           cap: float | None = None) -> dict[int, int]:
+    """`cameras`: (id, peso, proceso actual). `servers`: proceso en línea → capacidad. `groups`: proceso → máquina
+    (sin eso, cada proceso es una máquina). `rank`: id → `life_rank` (las que andan se acomodan primero). `cap`: tope
+    por máquina. Devuelve id → proceso, para todas.
+    Las cámaras se quedan donde están mientras su máquina tenga lugar (no se reconecta nada); las demás van a una
+    máquina donde entren y, si no entran en ninguna, igual a la menos cargada (el reparto no deja a ninguna sin
+    mirar: de que no se marquen de más se ocupa el tope, al marcarlas)."""
     if not servers:
         return {}
+    rank = rank or {}
+    key = {a: (groups or {}).get(a) or f"agente-{a}" for a in servers}
+    room = machine_caps(servers, groups, cap)
+    used = dict.fromkeys(room, 0.0)
     load = dict.fromkeys(servers, 0.0)
     out: dict[int, int] = {}
+
+    def fits(a: int, w: float) -> bool:
+        return used[key[a]] + w <= room[key[a]] + 1e-9
+
+    def take(cid: int, a: int, w: float) -> None:
+        used[key[a]] += w
+        load[a] += w
+        out[cid] = a
+
+    def lightest(agents, w: float) -> int:
+        return min(agents, key=lambda a: ((load[a] + w) / max(servers[a], 0.1), a))
+
     pending = []
-    for cid, w, cur in sorted(cameras, key=lambda c: (-c[1], c[0])):
-        if cur in servers and load[cur] + w <= servers[cur] + 1e-9:
-            load[cur] += w
-            out[cid] = cur
+    for cid, w, cur in sorted(cameras, key=lambda c: (rank.get(c[0], 1), c[0])):
+        if cur not in servers or not fits(cur, w):
+            pending.append((cid, w, cur))
+        elif load[cur] + w <= servers[cur] * OVERFILL + 1e-9:
+            take(cid, cur, w)
+        else:  # su máquina tiene lugar pero su proceso quedó muy cargado: pasa a otro proceso de la misma máquina
+            take(cid, lightest([a for a in servers if key[a] == key[cur]], w), w)
+    for cid, w, cur in pending:
+        free = [a for a in servers if fits(a, w)]
+        if free:
+            take(cid, lightest(free, w), w)
+        elif cur in servers and load[cur] + w <= servers[cur] * OVERFILL + 1e-9:
+            take(cid, cur, w)  # no entra en ninguna: se queda donde está (sin reconectar)
         else:
-            pending.append((cid, w))
-    for cid, w in pending:
-        best = min(servers, key=lambda a: ((load[a] + w) / max(servers[a], 0.1), a))
-        load[best] += w
-        out[cid] = best
+            take(cid, lightest(servers, w), w)
     return out
 
 

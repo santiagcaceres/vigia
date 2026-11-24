@@ -1138,6 +1138,67 @@ VM_STATUS = {"PROVISIONING": "Arrancando…", "STAGING": "Arrancando…", "STOPP
 BOOT_MINUTES = 6  # lo que tarda en arrancar, actualizarse (git pull) y conectarse
 
 
+LIGHT_VIDEO = 640 * 360 * 8  # la segunda calidad que se pide en los grabadores (puntos de imagen por segundo)
+HEAVY_VIDEO = 4  # veces eso: desde ahí decodificarlo ya pesa en la máquina
+
+
+def video_text(st: dict | None) -> tuple[str, int]:
+    """El video que le llega a la máquina («H.265 1920×1080 · 25 cuadros/s») y cuántas veces más cuesta decodificarlo
+    que la calidad recomendada (0 = bien, o no se sabe). Lo informa la máquina en el estado de la cámara."""
+    st = st or {}
+    w, h, fps = st.get("video_w"), st.get("video_h"), st.get("video_fps")
+    if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in (w, h)):
+        return "", 0
+    txt = f"{st['video_codec']} " if isinstance(st.get("video_codec"), str) else ""
+    txt += f"{int(w)}×{int(h)}"
+    times = 0
+    if isinstance(fps, (int, float)) and not isinstance(fps, bool) and fps > 0:
+        txt += f" · {fps:.0f} cuadros/s"
+        ratio = w * h * fps / LIGHT_VIDEO
+        times = round(ratio) if ratio >= HEAVY_VIDEO else 0
+    return txt, times
+
+
+def num_es(x: float) -> str:
+    """«31,2», «30» (con coma y sin decimales de más)."""
+    return f"{float(x):.1f}".replace(".", ",").removesuffix(",0")
+
+
+def machine_load(m: dict) -> str:
+    """«Ocupado / tope» de una máquina: lo que ocupan sus cámaras para el tope (con el local abierto; las que no dan
+    imagen hace días no cuentan). Un servidor sin actualizar manda solo lo que pesan ahora."""
+    used = float(m.get("reserved", m.get("load", 0)) or 0)
+    cap = float(m.get("capacity") or 0)
+    mark = ""
+    if "reserved" in m and cap:
+        mark = " · pasada" if used > cap + 0.05 else " · al tope" if cap - used < 0.5 else ""
+    return f"{num_es(used)} / {num_es(cap)}{mark}"
+
+
+def room_text(a: dict) -> str:
+    """El tope de las máquinas, en una línea: cuánto aguantan las que están en línea, cuánto hay ocupado y cuánto
+    queda. Vacío si el servidor todavía no lo manda."""
+    r = a.get("room")
+    if not r:
+        return ""
+    if not r.get("capacity"):
+        return "No hay ninguna máquina de análisis en línea: las cámaras marcadas para analizar esperan."
+    cap, used = float(r["capacity"]), float(r.get("reserved") or 0)
+    txt = f"Tope: las máquinas en línea aguantan {num_es(cap)} · ocupado {num_es(used)} · "
+    if used > cap + 0.05:
+        txt = ("⚠ " + txt + f"pasadas por {num_es(used - cap)}: no se agregan cámaras hasta bajar de ahí (dejá de "
+               "analizar alguna o subí el tope).")
+    else:
+        txt += (f"libre {num_es(cap - used)}. Con las máquinas al tope no se agregan cámaras (analizarían mal todas): "
+                "«Empezar a analizar» avisa.")
+    txt += "  Cuenta 1 una cámara de hurto; con gestos 1,3; solo métricas 0,5."
+    n = r.get("idle") or 0
+    if n:
+        txt += (f"  {n} cámara{'s' if n != 1 else ''} marcada{'s' if n != 1 else ''} para analizar no "
+                f"{'dan' if n != 1 else 'da'} imagen hace más de 3 días: no {'ocupan' if n != 1 else 'ocupa'} lugar.")
+    return txt
+
+
 def vm_estado(vm: dict | None, m: dict | None, now: datetime, listed: bool = False) -> tuple[str, str, str]:
     """Estado de una máquina para la pestaña «Máquinas»: lo que dice Google Cloud (`vm`, None si no está ahí o
     Google no está conectado) y lo que dice el sistema (`m`, None si nunca se dio de alta). `listed`: Google está
@@ -1940,6 +2001,13 @@ class Oficina:
                      f"{MODE_NAMES.get(cam.get('mode'), cam.get('mode'))}"
                      + ((" · detección: " + detection_text(cam) + detection_pending(cam)) if detection_text(cam) else ""))
         lines.append(f"Conexión: {conn}")
+        video, times = video_text(st)
+        if video:
+            lines.append(f"Video que llega: {video}" + (
+                f" — pesado: decodificarlo le cuesta a la máquina unas {times} veces más que la calidad recomendada "
+                "(640×360 a 8 cuadros por segundo). "
+                + ("Está en calidad principal: probá la secundaria en «Editar»." if cam.get("detect_stream") == "main"
+                   else "Pedí que bajen la segunda calidad en el grabador.") if times else ""))
         self._set_info("\n".join(lines), title=cam["name"], step=self._next_step(cam, owner))
 
     def _show_preview(self, cam: dict | None) -> None:
@@ -3686,9 +3754,9 @@ class Oficina:
         # títulos a la izquierda, como los datos (centrados quedaban corridos de lo suyo con la lista a todo el ancho);
         # lo que sobra de ancho va a «Máquina» y «Estado», así los números quedan cerca de su título
         self.mq_tree.heading("#0", text="Máquina", anchor="w")
-        self.mq_tree.column("#0", width=300)
-        for col, txt, w in (("estado", "Estado", 380), ("camaras", "Cámaras", 80), ("carga", "Carga / capacidad", 155),
-                            ("tipo", "Tipo", 150), ("desde", "Desde", 170)):
+        self.mq_tree.column("#0", width=250)
+        for col, txt, w in (("estado", "Estado", 300), ("camaras", "Cámaras", 80), ("carga", "Ocupado / tope", 140),
+                            ("tipo", "Tipo", 110), ("desde", "Desde · video que llega", 340)):
             self.mq_tree.heading(col, text=txt, anchor="w")
             self.mq_tree.column(col, width=w, anchor="w", stretch=col == "estado")
         for tag, color in (("ok", "#1b7d3a"), ("warn", "#a35c00"), ("bad", "#b3261e"), ("busy", "#0b5cad"),
@@ -3707,11 +3775,13 @@ class Oficina:
         ttk.Label(top, text="Se analizan").pack(side="left", padx=(0, 6))
         ttk.Combobox(top, textvariable=self.an_mode, values=list(ANALYSIS_MODES.values()), state="readonly",
                      width=34).pack(side="left")
-        ttk.Label(top, text="  Cámaras por máquina").pack(side="left")
+        ttk.Label(top, text="  Tope de cámaras por máquina").pack(side="left")
         ttk.Spinbox(top, from_=5, to=500, textvariable=self.an_cap, width=5).pack(side="left", padx=4)
         ttk.Label(top, text="Máquinas de reserva").pack(side="left")
         ttk.Spinbox(top, from_=0, to=5, textvariable=self.an_spare, width=3).pack(side="left", padx=4)
         ttk.Button(top, text="Guardar", command=self.save_analysis).pack(side="left", padx=6)
+        self.an_room = tk.StringVar(value="")  # el tope: cuánto hay ocupado y cuántas cámaras esperan lugar
+        ttk.Label(an, textvariable=self.an_room, wraplength=1100, justify="left").pack(anchor="w", pady=(4, 0))
         self.an_info = tk.StringVar(value="")
         ttk.Label(an, textvariable=self.an_info, style="Suave.TLabel", wraplength=1100, justify="left").pack(
             anchor="w", pady=(2, 0))
@@ -3779,18 +3849,21 @@ class Oficina:
                 self.an_spare.set(server[2])
             self._an_server = server
             p = a.get("plan") or {}
+            self.an_room.set(room_text(a))
+            # (con el tope a la vista —renglón de arriba— no se repite la cuenta del encendedor, que deja un 15 % libre
+            # y diría «hacen falta 2 máquinas» con lugar todavía)
+            need = ("" if a.get("room") else f" · carga {p.get('units', 0)} · hacen falta {p.get('desired', 0)} "
+                                             "máquina(s)") + f" · {p.get('online', 0)} en línea."
             if a.get("mode") == "servidores":
                 info = (f"Ahora: {a.get('cameras_active', 0)} de {a.get('cameras', 0)} cámaras para analizar "
-                        f"(las demás con el local cerrado) · carga {p.get('units', 0)} · hacen falta "
-                        f"{p.get('desired', 0)} máquina(s) · {p.get('online', 0)} en línea.")
+                        f"(las demás con el local cerrado)" + need)
                 if not a.get("has_pool_key"):
                     info += "  Falta crear la clave para máquinas («Más»)."
             else:
                 info = ("Las máquinas analizan las cámaras a las que se les dio «▶ Empezar a analizar» en Clientes; las "
                         "demás solo se miran en «En vivo». Cómo instalar una máquina: deploy/maquina-analisis/README.md.")
                 if a.get("cameras"):
-                    info += (f"  Ahora {a['cameras']} cámara(s) van a máquinas · carga {p.get('units', 0)} · hacen "
-                             f"falta {p.get('desired', 0)} máquina(s) · {p.get('online', 0)} en línea.")
+                    info += f"  Ahora {a['cameras']} cámara(s) van a máquinas" + need
             self.an_info.set(info)
             if cloud.get("unsupported"):
                 gi = ("El servidor todavía no tiene esta función (falta actualizarlo): se ve solo si el sistema tiene "
@@ -3845,7 +3918,7 @@ class Oficina:
                     "STOPPED": ("apagada ", vm.get("last_stop")),
                     "SUSPENDED": ("suspendida ", vm.get("last_suspend"))}.get(status)
             since = (when[0] + hace(when[1], now)) if when and when[1] else ""
-            carga = f"{m['load']} / {m['capacity']:.0f}" if m else "—"
+            carga = machine_load(m) if m else "—"
             groups.append((key, vm["name"], (text, "", carga, tipo, since), tag, set(m["agent_ids"]) if m else set()))
             self._mq_rows[key] = {"vm": vm, "m": m}
         for m in machines:  # las del sistema que no están en Google Cloud (otra nube, o Google sin conectar)
@@ -3855,7 +3928,7 @@ class Oficina:
                 m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
             text, tag, _hint = self._mq_state(m["key"], None, m, now, listed)
             tipo = "otra nube" if (m.get("instance_id") or "").startswith("i-") else "—"
-            groups.append((m["key"], name, (text, "", f"{m['load']} / {m['capacity']:.0f}", tipo,
+            groups.append((m["key"], name, (text, "", machine_load(m), tipo,
                                             ("visto " + hace(m.get("last_seen"), now)) if m.get("last_seen") else ""),
                            tag, set(m["agent_ids"])))
             self._mq_rows[m["key"]] = {"vm": None, "m": m}
@@ -3871,8 +3944,10 @@ class Oficina:
                 cnode = tree.insert(node, "end", iid=cid, text=self.client_name(cl_id),
                                     values=("", len(lst), "", "", ""), open=cid in opened)
                 for c in sorted(lst, key=lambda x: x["name"]):
+                    video, times = video_text(c.get("status"))  # el video que llega: los pesados, a la vista
                     tree.insert(cnode, "end", iid=f"{key}/k{c['id']}", text=c["name"],
-                                values=(self._cam_state(c), "", "", "", ""))
+                                values=(self._cam_state(c), "", "", "", (f"⚠ pesado ×{times} · " if times else "")
+                                        + video.replace(" cuadros/s", "/s")))
         if prev and tree.exists(prev[0]):
             tree.selection_set(prev[0])
         elif not prev and self._mq_rows:  # la primera máquina elegida: así se ve su consejo y sus botones
@@ -4044,7 +4119,7 @@ class Oficina:
         try:
             body = {"mode": mode, "capacity": float(self.an_cap.get()), "spare": int(self.an_spare.get())}
         except ValueError:
-            return self.mb.showwarning(NOMBRE, "Cámaras por máquina y reserva tienen que ser números.")
+            return self.mb.showwarning(NOMBRE, "El tope por máquina y la reserva tienen que ser números.")
         if mode != (self.analysis.get("mode") or "pcs"):
             msg = ("Las cámaras pasan a analizarse en las máquinas de análisis. Mientras no haya ninguna en línea, "
                    "siguen en la PC de cada usuario.") if mode == "servidores" else (

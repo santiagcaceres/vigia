@@ -1361,10 +1361,42 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     por segundo se tiraba por «viejo» un cuadro que acababa de llegar (a 8 cuadros/s, un tercio menos de análisis si
     cada uno tardaba ~200 ms). **Conclusión:** la máquina no está llena. 20 cámaras ≈ 2,5 procesadores (0,125 cada
     una) → unas 27 de este tipo al 85 % (estimado con una hora de datos, no en la hora pico); el «17» de
-    `agent.medir` es el peor caso (gente todo el tiempo en todas). No hace falta la 2xlarge todavía. Lo que más
-    rinde, gratis: pedir la segunda calidad en **H.264** 640×360 a 8 cuadros/s (decodificar H.265 se lleva 0,77 de los
-    2,5 procesadores) y cargar el horario de cada local (solo Mayorista Alberto lo tiene). Después, el «video dormido».
+    `agent.medir` es el peor caso (gente todo el tiempo en todas). No hace falta la 2xlarge todavía.
+    **Corrección (mismo día, mirando proceso por proceso):** H.264 y H.265 cuestan parecido a igual tamaño (~0,03
+    procesadores por cámara en segunda calidad); lo que pesa es el **tamaño por los cuadros por segundo**: las 8 de
+    Cristino entran en **calidad principal** (`detect_stream = main`) y cuestan el doble de decodificar (~0,065). Lo
+    que rinde, gratis: segunda calidad a 640×360 y 8 cuadros/s (en Cristino, activarla en el grabador y pasar las
+    cámaras a «secundaria») y cargar el horario de cada local (solo Mayorista Alberto lo tiene). Después, el «video
+    dormido» (decodificar solo los cuadros clave con la imagen quieta: pide leer el video sin OpenCV; sin hacer).
     Pruebas: `tests/test_ponerse_al_dia.py`.
+  - **Tope de las máquinas (24 nov, el dueño: «para mí lo mejor es poner un tope a las máquinas; meterle cámaras para
+    que las analice mal no tiene sentido»; app 1.50.3).** «Cámaras por máquina» (Máquinas, 30) pasó a ser el **«Tope
+    de cámaras por máquina»**: lo que aguanta una máquina = lo que midieron sus procesos sumados y no más que el tope
+    (`pool.machine_caps`; la de AWS: 4×8 = 32 → 30). **Se aplica al marcar una cámara para analizar** (`check_room` en
+    `set_analyzed`: «▶ Empezar a analizar» y «Aprobar»): si no entra, 409 con la cuenta («el tope es 30 y ya hay 29,6
+    ocupado; esta cámara ocupa 1,3»), qué hacer y las que ocupan lugar y ahora no andan; no queda marcada. Sin
+    ninguna máquina en línea no frena nada. Cuenta 1 una cámara de hurto, 1,3 con gestos, 0,5 solo métricas (los
+    pesos de siempre), **con el local abierto** (`camera_weights(…, [None])`: un local cerrado no le deja su lugar a
+    otro). Ocupa lugar la cámara que dio imagen en los últimos 3 días (`preview_at`, dato guardado: no depende de
+    reinicios) o que se marcó hace menos de eso (`cameras.analyze_since`, `SCHEMA_VERSION` 2026-11-24.1); una que no
+    da imagen hace días sigue asignada (si el grabador vuelve, arranca sola) pero no ocupa lugar (`holds_place`).
+    **El reparto nunca le saca la máquina a una cámara** (se descartó la primera versión, que dejaba «sin lugar» a las
+    que no entraban: al simularla con los datos de producción, después de un reinicio podía dejar afuera a cámaras que
+    andan): si la máquina queda pasada (bajaron el tope, volvió una que no andaba, se le prendieron gestos a varias),
+    la app lo muestra («31,2 / 30 · pasada») y no se agregan más. `pool.assign` reparte por lo que ocupa cada cámara
+    con el local abierto (antes, por lo que pesaba en ese momento: 3 cámaras cambiaban de proceso cada vez que
+    Mayorista abría o cerraba) y cuenta la máquina entera (los procesos comparten el lugar; uno puede pasarse un 25 %
+    de su parte). `/api/analysis` trae `room` {capacity, reserved, idle} y `reserved` por máquina; la app, el renglón
+    del tope y «Ocupado / tope». Simulado con una copia de producción antes de publicar: ninguna cámara que anda
+    cambia de proceso; ocupado 28,3 de 30 (20 andando = 26; 3 con imagen de ayer; 5 sin imagen hace días no cuentan).
+    Límites: no frena al prenderle gestos o «Personas lejos» a una cámara ya marcada, ni a las de un cliente con
+    «Todas sus cámaras»; con dos máquinas, si se cae una sus cámaras van igual a la otra. El 30 no está medido en la
+    hora pico: con el aviso de «no da abasto» ya corregido, bajarlo o subirlo según lo que muestre. Pruebas:
+    `tests/test_tope_maquinas.py`.
+  - **Qué video manda cada cámara (app 1.50.3):** la máquina informa códec, tamaño y cuadros por segundo contados
+    (`video_info`, `video_codec/w/h/fps` en el estado; las máquinas, desde la actualización de la noche). La app lo
+    muestra en el detalle de la cámara («Video que llega») y en «Máquinas» (última columna), y marca «⚠ pesado ×N» si
+    decodificarlo cuesta 4 veces o más que la calidad recomendada (640×360 a 8 cuadros/s; `video_text`).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

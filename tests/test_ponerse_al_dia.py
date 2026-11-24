@@ -153,6 +153,8 @@ def test_con_el_video_a_8_cuadros_toca_analizar_uno_de_cada_dos(tmp_path, monkey
     w, cam = _minute(tmp_path, monkeypatch, 0.22, video_fps=8.0)
     assert 3.9 <= len(cam.seen) / 125 <= 4.1  # uno de cada dos
     assert w.skipped_pct == 0.0 and "no da abasto" not in caplog.text
+    # y la máquina informa los cuadros por segundo que de verdad llegan (contados, no lo que dice el video)
+    assert 7.8 <= w.status()["video_fps"] <= 8.2
 
 
 def test_una_camara_al_dia_no_saltea_nada(tmp_path, monkeypatch):
