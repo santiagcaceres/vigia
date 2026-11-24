@@ -1320,6 +1320,13 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     se tocan, con el mínimo permiso. La plantilla tiene un aviso de costo opcional (`PresupuestoMensualUSD` +
     `MailAvisos`: mail al 80 %, al 100 % y por pronóstico; no apaga nada). El acta (con datos de la empresa) **no va al
     repo**.
+  - **En marcha desde el 24 nov:** Tigo entregó un usuario IAM administrador y **su propia g4dn.xlarge** (Ubuntu 24.04
+    común, subred privada, salida por un NAT Gateway suyo con Elastic IP: la IP que ven los grabadores es la del NAT; el
+    NAT cobra por GB de video, se les pidió lo acordado: subred pública + Elastic IP por máquina). No se usó la plantilla:
+    driver `nvidia:580-server-open` a mano + `instalar.sh` con `VIGIA_GPU=si VIGIA_FIJA=si ENTRENAR=si
+    ACTUALIZAR_DIARIO=si` por Session Manager (pasos en `deploy/aws/TIGO.md`, «Cómo quedó de verdad»). **Midió 17 cámaras
+    de hurto** (2 procesos de 8; limita el procesador de 4 vCPU, no la T4) y a los minutos tenía 22 asignadas; la de
+    Google quedó con 6 (de respaldo). La consola por defecto abre en Ohio: todo está en Norte de Virginia.
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

@@ -82,6 +82,35 @@ ella (valen para personas y para las sesiones de Claude):
   para ver si algo quedó abierto hacia afuera. Lo que no se usa, se borra.
 - **El acceso de Tigo** es para la infraestructura: sin entrar a las máquinas ni copiar sus discos (punto 1.4).
 
+## Cómo quedó de verdad (24 nov 2026)
+
+Tigo no usó nuestra plantilla: entregó **un usuario de IAM administrador** y **una g4dn.xlarge ya creada** por ellos
+(Ubuntu 24.04 común, sin el driver de NVIDIA), en una **subred privada sin IP pública**, que sale a internet por **un NAT
+Gateway** suyo con una Elastic IP. Esa IP del NAT es la que ven los grabadores (la que se autoriza en los routers de los
+clientes). Ojo con el costo: el NAT cobra por hora y **por GB** (todo el video de las cámaras pasa por ahí); lo acordado
+era subred pública con una Elastic IP por máquina y sin NAT (se lo pedimos a Tigo el 24 nov).
+
+Se instaló a mano, por **Session Manager** (Conectar → «Administrador de sesiones de SSM»; el rol de la máquina ya lo
+permite):
+
+```bash
+# 1. el driver de la placa (la imagen común no lo trae; nuestro instalador no lo instala)
+sudo apt-get update && sudo apt-get install -y ubuntu-drivers-common
+sudo ubuntu-drivers install --gpgpu nvidia:580-server-open && sudo apt-get install -y nvidia-utils-580-server
+sudo reboot            # y después: nvidia-smi → «Tesla T4», driver 580, CUDA 13
+# 2. nuestro programa (la clave de máquinas sale de la app: Máquinas → Más → Clave para máquinas nuevas)
+curl -fsSL https://raw.githubusercontent.com/santiagcaceres/vigia/main/deploy/maquina-analisis/instalar.sh -o /tmp/instalar.sh
+sudo nohup sh -c 'VIGIA_POOL_KEY=vgm_… VIGIA_GPU=si VIGIA_FIJA=si CAPACIDAD_TOPE=60 ACTUALIZAR_DIARIO=si ENTRENAR=si \
+  bash /tmp/instalar.sh; echo "== TERMINO, codigo $?"' > /tmp/instalar.log 2>&1 &
+tail -f /tmp/instalar.log
+```
+
+(En segundo plano con `nohup`: si se corta la sesión, la instalación sigue.) Resultado: **midió 17 cámaras de hurto**
+(GPU CUDA, 122 cuadros/s analizados con 4 vCPU: el límite es el procesador, no la placa), 2 procesos de 8, Ultralytics
+para entrenar objetos con la placa. A los minutos el reparto le pasó solo 22 cámaras desde la máquina de Google (la fija
+va primero): la farmacia pasó de 2-3 cuadros/s salteando a ~4 sin saltear. Sin encendedor (no hay segunda máquina).
+Si con todas las cámaras saltea mucho, pasar a g4dn.2xlarge (el doble de procesador; la reserva cubre la familia).
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.
