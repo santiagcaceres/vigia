@@ -104,7 +104,9 @@ class OnnxSession:
     """
 
     def __init__(self, model_path: str | Path, threads: int = 2, max_batch: int | None = None,
-                 max_wait: float = 0.008):
+                 max_wait: float = 0.008, all_outputs: bool = False):
+        """`all_outputs`: en lotes, la salida entera en vez de solo las clases que usa el detector (el modelo de
+        postura: core/pose.py)."""
         import onnxruntime as ort
 
         if hasattr(ort, "preload_dlls") and "CUDAExecutionProvider" in ort.get_available_providers():
@@ -114,6 +116,8 @@ class OnnxSession:
                 pass
         providers = _providers(ort)
         nvidia = any(p in providers for p in ("TensorrtExecutionProvider", "CUDAExecutionProvider"))
+        if nvidia:
+            gpu_wait_mode()
         if max_batch is None:
             max_batch = int(os.getenv("VIGIA_LOTE") or (16 if nvidia else 1))
         self.max_batch = max(1, max_batch)
@@ -121,12 +125,14 @@ class OnnxSession:
         self.uint8 = False
         self.col_of = {c: 4 + c for c in range(80)}
         model: str | bytes = str(model_path)
+        batch_size = (640, 640)
         if self.max_batch > 1:
             try:
                 from .lotes import make_batch_model
 
-                bm = make_batch_model(model_path)
+                bm = make_batch_model(model_path, None) if all_outputs else make_batch_model(model_path)
                 model, self.uint8, self.col_of = bm.data, True, bm.col_of
+                batch_size = bm.size
             except Exception as exc:  # noqa: BLE001 - sin el paquete onnx o modelo raro: de a un cuadro
                 log.warning("No se pudo preparar el modelo para lotes (%s): se analiza de a un cuadro", exc)
                 self.max_batch = 1
@@ -136,7 +142,7 @@ class OnnxSession:
             opts.enable_mem_pattern = False
             opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         if "TensorrtExecutionProvider" in providers:
-            providers = [_tensorrt(self.max_batch, "imagenes" if self.uint8 else None)
+            providers = [_tensorrt(self.max_batch, "imagenes" if self.uint8 else None, batch_size)
                          if p == "TensorrtExecutionProvider" else p for p in providers]
         try:
             self.session = ort.InferenceSession(model, opts, providers=providers)
@@ -155,7 +161,8 @@ class OnnxSession:
         self.batches = self.frames = 0  # para medir el tamaño promedio del lote
         if self.max_batch > 1:
             self._queue: queue.Queue = queue.Queue()
-            threading.Thread(target=self._loop, name="detector-lotes", daemon=True).start()
+            threading.Thread(target=self._loop, name="postura-lotes" if all_outputs else "detector-lotes",
+                             daemon=True).start()
 
     def run(self, canvas: np.ndarray) -> np.ndarray:
         """`canvas`: imagen BGR ya llevada al tamaño del modelo. Devuelve (4+clases, N) de ese cuadro."""
@@ -444,6 +451,44 @@ class OnnxYoloDetector:
         return dets
 
 
+_wait_mode_done = False
+CUDA_BLOCKING_SYNC = 0x04  # cudaDeviceScheduleBlockingSync (driver_types.h)
+
+
+def gpu_wait_mode(lib=None) -> str | None:
+    """`VIGIA_PLACA_ESPERA=dormir` (a prueba, apagado de fábrica): mientras la placa NVIDIA calcula, el hilo que espera
+    el resultado duerme en vez de quedarse dando vueltas. De fábrica CUDA da vueltas (gasta un procesador entero
+    mientras espera, para enterarse unos microsegundos antes); con la placa trabajando para 20 cámaras eso es
+    procesador que no hace nada. Hay que pedirlo antes de que la placa se use por primera vez en el proceso; si no se
+    puede (otra versión de CUDA, sin la librería), queda como siempre y lo dice. Devuelve lo que hizo (para el
+    registro y las pruebas). Sin probar todavía en una placa de verdad: por eso hay que prenderlo a mano."""
+    global _wait_mode_done
+    if _wait_mode_done or (os.getenv("VIGIA_PLACA_ESPERA") or "").strip().lower() not in ("dormir", "bloquear"):
+        return None
+    _wait_mode_done = True
+    try:
+        if lib is None:
+            import ctypes
+
+            for name in ("libcudart.so.12", "libcudart.so.13", "libcudart.so.11.0", "libcudart.so"):
+                try:
+                    lib = ctypes.CDLL(name)
+                    break
+                except OSError:
+                    continue
+        if lib is None:
+            raise OSError("no está la librería de CUDA (libcudart)")
+        dev = int(os.getenv("VIGIA_PLACA") or 0)
+        err = lib.cudaSetDevice(dev) or lib.cudaSetDeviceFlags(CUDA_BLOCKING_SYNC)
+        if err:
+            raise OSError(f"CUDA respondió el error {err}")
+        log.info("Placa de video: el hilo que espera el resultado duerme (VIGIA_PLACA_ESPERA)")
+        return "dormir"
+    except Exception as exc:  # noqa: BLE001 - es una mejora: si no se puede, como siempre
+        log.warning("No se pudo cambiar cómo se espera a la placa de video (%s): queda como siempre", exc)
+        return "error"
+
+
 def _providers(ort) -> list[str]:
     available = ort.get_available_providers()
     preferred = ["CUDAExecutionProvider", "DmlExecutionProvider", "OpenVINOExecutionProvider", "CPUExecutionProvider"]
@@ -454,14 +499,16 @@ def _providers(ort) -> list[str]:
     return [p for p in preferred if p in available] or available
 
 
-def _tensorrt(max_batch: int, input_name: str | None):
-    """TensorRT en media precisión, guardando el motor compilado (la primera vez tarda unos minutos)."""
+def _tensorrt(max_batch: int, input_name: str | None, size: tuple[int, int] = (640, 640)):
+    """TensorRT en media precisión, guardando el motor compilado (la primera vez tarda unos minutos). `size`: ancho y
+    alto de entrada del modelo (640x640 el detector, 256x256 la postura)."""
     cache = os.getenv("VIGIA_TRT_CACHE") or str(Path.home() / ".cache" / "vigia-tensorrt")
     opts = {"trt_fp16_enable": True, "trt_engine_cache_enable": True, "trt_engine_cache_path": cache}
     if input_name and max_batch > 1:
-        opts.update(trt_profile_min_shapes=f"{input_name}:1x640x640x3",
-                    trt_profile_opt_shapes=f"{input_name}:{max_batch // 2 or 1}x640x640x3",
-                    trt_profile_max_shapes=f"{input_name}:{max_batch}x640x640x3")
+        dims = f"{size[1]}x{size[0]}x3"
+        opts.update(trt_profile_min_shapes=f"{input_name}:1x{dims}",
+                    trt_profile_opt_shapes=f"{input_name}:{max_batch // 2 or 1}x{dims}",
+                    trt_profile_max_shapes=f"{input_name}:{max_batch}x{dims}")
     return ("TensorrtExecutionProvider", opts)
 
 

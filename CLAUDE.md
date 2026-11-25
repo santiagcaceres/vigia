@@ -13,7 +13,7 @@ genera `agent/recursos/` (íconos de la app y el .ico del .exe) y `public/img/` 
 
 | Pieza | Dónde |
 |---|---|
-| Panel + API | https://analitica-critica.vercel.app (proyecto Vercel `vigia`, región iad1 desde el 22 oct; hasta el 29 oct era vigia-three-ashy.vercel.app, que el dueño borró) |
+| Panel + API | https://analitica-critica.vercel.app (proyecto Vercel **`analitica-critica`**, región iad1 desde el 22 oct; hasta el 29 oct era vigia-three-ashy.vercel.app, que el dueño borró) |
 | Base + archivos | Supabase proyecto **CAMARAS**, ref `cnwhpaqvdjabntteacrj` (sa-east-1 no: us-east-1) |
 | Repo | github.com/santiagcaceres/vigia (**público**, verificado el 23 oct: nada de claves ni IPs reales) |
 | Dueño | Santiago Cáceres, Uruguay (America/Montevideo) |
@@ -25,7 +25,10 @@ actualizarse: bajar el .zip de GitHub Releases a mano o cambiar `VIGIA_SERVER` e
 toman al reiniciar (`git pull`). Los links de avisos mandados antes con la dirección vieja ya no abren.
 **Publicado:** ver `git log origin/main` (el último deploy de producción apunta a `main`). El proyecto Vercel
 **no** tiene auto-deploy: después de `git push` hay que lanzar el deploy a mano (MCP de Vercel
-con `gitSource` = rama + sha, o desde el panel de Vercel) y verificar `/api/health`.
+con `gitSource` = rama + sha, o desde el panel de Vercel) y verificar `/api/health`. **Ojo (24 nov):** el proyecto
+de producción se llama `analitica-critica`; al lanzar el deploy hay que indicar **ese proyecto por su id** (se ve con
+la lista de proyectos del MCP). Con `project: "vigia"` Vercel creó un proyecto nuevo «vigia» que no es el de
+producción (quedó pausado; el dueño lo puede borrar desde el panel).
 **Arranque en frío:** `ensure_schema` (server/db.py) guarda `SCHEMA_VERSION` en la tabla
 `schema_meta` y solo corre `create_all`/`ALTER` cuando cambia. **Subir `SCHEMA_VERSION` al agregar
 tablas o columnas**, si no, en producción no se crean.
@@ -1397,6 +1400,57 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     (`video_info`, `video_codec/w/h/fps` en el estado; las máquinas, desde la actualización de la noche). La app lo
     muestra en el detalle de la cámara («Video que llega») y en «Máquinas» (última columna), y marca «⚠ pesado ×N» si
     decodificarlo cuesta 4 veces o más que la calidad recomendada (640×360 a 8 cuadros/s; `video_text`).
+  - **Más cámaras por máquina sin perder calidad (25 nov, el dueño: «hacé lo que tengas que hacer para que entren más
+    cámaras por PC sin perder calidad»; app 1.50.4).** Punto de partida (producción, 20 cámaras): 2,5 de 4
+    procesadores; 0,9 decodificando y 1,6 en los hilos «python»; la placa al 10-22 %; el detector corre **lotes de 1**
+    (`batch_avg` 1,0-1,06, unas 29 imágenes por segundo entre los 4 procesos: no coinciden dos cuadros en 8 ms) y cada
+    cámara analiza 4,0-4,4 cuadros/s. Lo que se cambió da **el mismo resultado** que antes (comprobado en cada caso):
+    - **Postura de todas las personas de un cuadro en una sola llamada** (`PoseEstimator.estimate_many`, `look`): en
+      la placa NVIDIA la postura usa un modelo por lotes (`core/lotes.make_batch_model(…, None)` = la salida entera;
+      `OnnxSession(all_outputs=True)`, hilo «postura-lotes», espera 2 ms). Al armarla se comprueba sola contra el
+      modelo original en el procesador con lotes de 1 a 8 (de paso quedan «en caliente»); si no da lo mismo, falla o
+      no quedó en la placa, sigue de a una persona como siempre (`pose._session`). `VIGIA_LOTE_POSTURA=1` lo apaga.
+      Medido acá (procesador): diferencia máxima 1,5e-4 en la salida del modelo y < 0,5 píxeles en los puntos.
+      **Sin probar en una placa de verdad** (acá no hay): por eso la comprobación al arrancar.
+    - **Un hilo para decodificar cada cámara** (`worker.open_video`, `CAP_PROP_N_THREADS`; `VIGIA_HILOS_VIDEO`: otro
+      número o «auto» = como antes). FFmpeg usaba un hilo por procesador para cada video (80 hilos con 20 cámaras).
+      Los cuadros salen **idénticos** (comparados byte a byte). Lo que ahorra: a toda velocidad 15-35 % del
+      decodificado; en vivo bastante menos (prueba de carga: de 0,70 a 0,66 procesadores). Video de más de 1080p a 30
+      cuadros/s, o que se lleve más del 60 % de un procesador durante un minuto (`DECODE_BUSY`): esa cámara se
+      reconecta una vez con varios hilos. Si con la opción no abre ninguna cámara del proceso y sin ella sí, el
+      proceso deja de usarla (`_threads_ok`). Con un hilo, decodificar pasa al hilo de la cámara (ya no hay hilos
+      «av:…»): `tools/medir_maquina.py` lo suma en «python».
+    - **OpenCV sin su grupo de hilos en las máquinas** (`worker.lean_opencv`, en `run_machine`;
+      `VIGIA_HILOS_OPENCV=0` = como antes): achicar y pasar a gris repartía cada imagen entre los procesadores y
+      dejaba esos hilos dando vueltas. La app de escritorio no cambia.
+    - **Prueba de carga acá** (10 cámaras en vivo por TCP con ffmpeg `-re` pasando por el `CameraWorker` de verdad,
+      detector de mentira que tarda 10 ms sin gastar): antes 1,00 procesador (video 0,70 · cámaras 0,16 · hilos de
+      OpenCV 0,15); ahora 0,85 (video 0,66 · cámaras 0,19): **15 % menos, sin contar el modelo**. Con el reloj de
+      la PC y video a 15 o 25 cuadros/s, la cámara analiza 4,2-4,5 por segundo y no 5: el cuadro que toca llega unos
+      milisegundos antes de los 200 ms la mitad de las veces y se espera al siguiente (en producción ya pasa:
+      4,0-4,4). **No se tocó**: arreglarlo sube la carga un 10-19 % en esas cámaras (es más calidad, no más cámaras);
+      decidirlo con el dueño.
+    - **Cada proceso informa en qué se le va el procesador** (`agent/consumo.py`, `CpuMeter`: lee `/proc/self/task`
+      cada 20 s o más): `cpu` en el estado = procesadores por grupo (`video`, `camaras`, `modelo` = los hilos que le
+      dan el trabajo a la placa, `clips`, `nativos` = hilos de las librerías, `otros`, `total`, `cores`). Cada cámara
+      suma `cpu`, `cpu_video`, `cpu_ia` (% de un procesador de su hilo: todo, leer el video, analizar). El servidor
+      lo guarda limpio (`agents.last_status->'cpu'`), `/api/analysis` lo suma por máquina (`machines[].cpu`) y la app
+      lo muestra en «Máquinas» («28,3 / 30 · proc. 62 %» y, al elegirla, en qué se va). Para mirarlo sin la app:
+      `select name, last_status->'cpu' from agents where kind = 'servidor'`.
+    - **A prueba, apagado:** `VIGIA_PLACA_ESPERA=dormir` (`detectors.gpu_wait_mode`: `cudaSetDeviceFlags` con
+      «blocking sync» antes de usar la placa, por ctypes): mientras la placa calcula, el hilo que espera duerme en vez
+      de dar vueltas. Según los foros de NVIDIA a veces no cambia nada: prenderlo en un proceso y comparar su `cpu`.
+    - **Lo que falta saber y lo que sigue:** la sospecha es que buena parte de los 1,6 procesadores «python» es el
+      lado del procesador de cada llamada a la placa (onnxruntime con CUDA lanza cientos de operaciones chicas por
+      imagen y espera dando vueltas); lo confirma `tools/perfil_maquina.py` (py-spy, no frena las cámaras) o el `cpu`
+      de cada proceso desde la actualización de la noche. Si es eso: **TensorRT** (`VIGIA_TENSORRT=1`, ya está en el
+      código, nunca probado en una placa; pide instalar `tensorrt` en la máquina, unos minutos de armado la primera
+      vez y, con media precisión, números apenas distintos: hoy `_tensorrt` la prende, revisar antes). Para el video:
+      pasar las 8 de Cristino a la segunda calidad (≈ 0,5 procesadores, lo más grande y gratis; hay que activarla en
+      ese grabador) y el «video dormido» (decodificar solo los cuadros clave con la imagen quieta; pide leer el video
+      con PyAV y mirar el tamaño de los paquetes para no perder a quien cruza entre dos cuadros clave: sin hacer).
+    - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
+      `tests/test_mas_camaras.py`. La carga local: `carga.py` de la sesión (no está en el repo).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

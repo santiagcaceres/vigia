@@ -1175,6 +1175,30 @@ def machine_load(m: dict) -> str:
     return f"{num_es(used)} / {num_es(cap)}{mark}"
 
 
+CPU_GROUPS = (("video", "decodificar el video"), ("camaras", "trabajo de cada cámara"),
+              ("modelo", "darle el trabajo a la placa"), ("clips", "armar clips"), ("nativos", "librerías"),
+              ("otros", "otros"))
+
+
+def cpu_text(m: dict | None, short: bool = False) -> str:
+    """El procesador que gasta el análisis en una máquina (lo informa ella: la suma de sus procesos). Corto: «proc.
+    62 %»; largo, con en qué se va. Vacío si la máquina todavía no lo manda (se actualiza a la noche)."""
+    cpu = (m or {}).get("cpu") or {}
+    try:
+        total, cores = float(cpu.get("total") or 0), float(cpu.get("cores") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if total <= 0 or cores <= 0:
+        return ""
+    pct = round(100 * total / cores)
+    if short:
+        return f"proc. {pct} %"
+    parts = [f"{label} {num_es(round(float(cpu[k]), 1))}" for k, label in CPU_GROUPS
+             if type(cpu.get(k)) in (int, float) and cpu[k] >= 0.05]
+    return (f"El análisis usa el {pct} % del procesador ({num_es(round(total, 1))} de {num_es(cores)})"
+            + (": " + " · ".join(parts) if parts else "") + ".")
+
+
 def room_text(a: dict) -> str:
     """El tope de las máquinas, en una línea: cuánto aguantan las que están en línea, cuánto hay ocupado y cuánto
     queda. Vacío si el servidor todavía no lo manda."""
@@ -3755,7 +3779,7 @@ class Oficina:
         # lo que sobra de ancho va a «Máquina» y «Estado», así los números quedan cerca de su título
         self.mq_tree.heading("#0", text="Máquina", anchor="w")
         self.mq_tree.column("#0", width=250)
-        for col, txt, w in (("estado", "Estado", 300), ("camaras", "Cámaras", 80), ("carga", "Ocupado / tope", 140),
+        for col, txt, w in (("estado", "Estado", 300), ("camaras", "Cámaras", 80), ("carga", "Ocupado / tope", 200),
                             ("tipo", "Tipo", 110), ("desde", "Desde · video que llega", 340)):
             self.mq_tree.heading(col, text=txt, anchor="w")
             self.mq_tree.column(col, width=w, anchor="w", stretch=col == "estado")
@@ -3802,6 +3826,9 @@ class Oficina:
         self.mq_hint = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.mq_hint, style="Aviso.TLabel", wraplength=1100, justify="left").pack(
             side="bottom", anchor="w", pady=(4, 0))
+        self.mq_cpu = tk.StringVar(value="")  # en qué se va el procesador de la máquina elegida (lo informa ella)
+        ttk.Label(f, textvariable=self.mq_cpu, style="Suave.TLabel", wraplength=1100, justify="left").pack(
+            side="bottom", anchor="w", pady=(2, 0))
         self.mq_tree.pack(fill="both", expand=True)
         self.analysis: dict = {}
         self._mq_rows: dict[str, dict] = {}  # fila de máquina → {"vm": instancia de Google, "m": máquina del sistema}
@@ -3918,7 +3945,7 @@ class Oficina:
                     "STOPPED": ("apagada ", vm.get("last_stop")),
                     "SUSPENDED": ("suspendida ", vm.get("last_suspend"))}.get(status)
             since = (when[0] + hace(when[1], now)) if when and when[1] else ""
-            carga = machine_load(m) if m else "—"
+            carga = " · ".join(x for x in (machine_load(m), cpu_text(m, short=True)) if x) if m else "—"
             groups.append((key, vm["name"], (text, "", carga, tipo, since), tag, set(m["agent_ids"]) if m else set()))
             self._mq_rows[key] = {"vm": vm, "m": m}
         for m in machines:  # las del sistema que no están en Google Cloud (otra nube, o Google sin conectar)
@@ -3928,7 +3955,8 @@ class Oficina:
                 m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
             text, tag, _hint = self._mq_state(m["key"], None, m, now, listed)
             tipo = "otra nube" if (m.get("instance_id") or "").startswith("i-") else "—"
-            groups.append((m["key"], name, (text, "", machine_load(m), tipo,
+            groups.append((m["key"], name, (text, "", " · ".join(x for x in (machine_load(m), cpu_text(m, short=True))
+                                                                  if x), tipo,
                                             ("visto " + hace(m.get("last_seen"), now)) if m.get("last_seen") else ""),
                            tag, set(m["agent_ids"])))
             self._mq_rows[m["key"]] = {"vm": None, "m": m}
@@ -3986,6 +4014,7 @@ class Oficina:
             listed = bool(self.cloud.get("connected")) and not self.cloud.get("error")
             hint = self._mq_state(key, vm, row.get("m"), datetime.now().astimezone(), listed)[2]
         self.mq_hint.set(hint)
+        self.mq_cpu.set(cpu_text((row or {}).get("m")))
 
     def cloud_action(self, action: str) -> None:
         key, row = self._mq_selected()

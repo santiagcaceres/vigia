@@ -72,7 +72,21 @@ class PoseEstimator:
                     self.device, self.on_gpu = "procesador", False
             return self.runner.run(canvas)  # (otra cámara ya la pasó al procesador: reintentar ahí)
 
-    def estimate(self, frame: np.ndarray, bbox: BBox) -> np.ndarray | None:
+    def _run_many(self, canvases: list[np.ndarray]) -> list[np.ndarray]:
+        """Varios recortes en una tanda: en la placa NVIDIA van juntos a la cola de lotes (una sola llamada al modelo
+        para todas las personas del cuadro, y las de otras cámaras que lleguen en ese instante); si no, de a uno."""
+        runner = self.runner
+        many = getattr(runner, "run_many", None)
+        if many is None or len(canvases) == 1:
+            return [self._run(c) for c in canvases]
+        try:
+            return many(canvases)
+        except Exception:  # noqa: BLE001 - falló el lote: de a uno, que tiene su propio plan B (pasar al procesador)
+            return [self._run(c) for c in canvases]
+
+    def _prepare(self, frame: np.ndarray, bbox: BBox):
+        """El recorte de la persona llevado al tamaño del modelo y cómo volver a las coordenadas del cuadro (None si
+        el recuadro no sirve)."""
         fh, fw = frame.shape[:2]
         x1, y1, x2, y2 = bbox
         bw, bh = x2 - x1, y2 - y1
@@ -92,7 +106,12 @@ class PoseEstimator:
         canvas = np.full((th, tw, 3), 114, np.uint8)
         ox, oy = (tw - nw) // 2, (th - nh) // 2
         canvas[oy:oy + nh, ox:ox + nw] = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        out = self._run(canvas)  # (56, N): cx, cy, w, h, puntaje, 17 x (x, y, conf)
+        return canvas, (bbox, cx1, cy1, r, ox, oy)
+
+    def _keypoints(self, out: np.ndarray, geo: tuple) -> np.ndarray | None:
+        """De la salida del modelo (56, N: cx, cy, w, h, puntaje, 17 x (x, y, conf)), los puntos de la persona del
+        recuadro, en píxeles del cuadro."""
+        (x1, y1, x2, y2), cx1, cy1, r, ox, oy = geo
         if out.shape[0] > out.shape[1]:
             out = out.T
         scores = out[4]
@@ -114,6 +133,24 @@ class PoseEstimator:
         kp[:, 0] = (kp[:, 0] - ox) / r + cx1
         kp[:, 1] = (kp[:, 1] - oy) / r + cy1
         return kp
+
+    def estimate(self, frame: np.ndarray, bbox: BBox) -> np.ndarray | None:
+        ready = self._prepare(frame, bbox)
+        if ready is None:
+            return None
+        return self._keypoints(self._run(ready[0]), ready[1])
+
+    def estimate_many(self, frame: np.ndarray, bboxes: list[BBox]) -> list[np.ndarray | None]:
+        """La postura de varias personas del mismo cuadro: lo mismo que `estimate` de a una, pero con una sola tanda
+        del modelo (25 nov: en la máquina de AWS cada llamada al modelo cuesta procesador aunque el trabajo lo haga la
+        placa; con 3 personas a la vista eran 3 llamadas por cuadro)."""
+        ready = [self._prepare(frame, b) for b in bboxes]
+        idx = [i for i, r in enumerate(ready) if r is not None]
+        out: list[np.ndarray | None] = [None] * len(bboxes)
+        if idx:
+            for i, res in zip(idx, self._run_many([ready[i][0] for i in idx])):
+                out[i] = self._keypoints(res, ready[i][1])
+        return out
 
 
 class _CpuRunner:
@@ -145,12 +182,15 @@ def pick(tracks: list, limit: int = MAX_PER_FRAME, min_px: float = MIN_PERSON_PX
 
 def look(estimator: PoseEstimator | None, frame: np.ndarray, tracks: list, min_px: float = MIN_PERSON_PX) -> int:
     """Postura de las personas elegidas (`pick`) en `t.kpts`; a las demás, None. Devuelve a cuántas se les miró."""
-    chosen = {t.id for t in pick(tracks, min_px=min_px)} if estimator is not None else set()
-    n = 0
+    chosen = pick(tracks, min_px=min_px) if estimator is not None else []
     for t in tracks:
-        t.kpts = estimator.estimate(frame, t.bbox) if t.id in chosen else None
-        n += t.kpts is not None
-    return n
+        t.kpts = None
+    many = getattr(estimator, "estimate_many", None)  # (un estimador de prueba puede tener solo `estimate`)
+    found = (many(frame, [t.bbox for t in chosen]) if many is not None and len(chosen) > 1
+             else [estimator.estimate(frame, t.bbox) for t in chosen])
+    for t, kp in zip(chosen, found):
+        t.kpts = kp
+    return sum(kp is not None for kp in found)
 
 
 def detect_with_bags(detector, frame: np.ndarray, bags: bool) -> tuple[list, list]:
@@ -181,6 +221,44 @@ def default_model() -> Path | None:
     return None
 
 
+CHECK_TOLERANCE = 1.5  # el lote tiene que dar lo mismo que de a una persona (en píxeles del recorte de 256 y puntaje)
+POSE_WAIT_S = 0.002  # cuánto espera el lote por más personas: las de un cuadro llegan juntas, no hace falta esperar
+
+
+def _session(path: Path) -> OnnxSession:
+    """La sesión del modelo de postura. En la placa NVIDIA, por lotes (`VIGIA_LOTE_POSTURA`, por defecto el mismo
+    tamaño que el detector; 1 = de a una persona como antes): todas las personas de un cuadro en una sola llamada. Antes
+    de usarla se comprueba contra el modelo original en el procesador, con recortes de prueba: si el lote no da lo
+    mismo (o falla), se sigue de a una persona como siempre. De paso quedan «en caliente» los tamaños de lote más
+    comunes (la placa elige cómo calcular cada tamaño la primera vez que lo ve, y eso tarda)."""
+    env = os.getenv("VIGIA_LOTE_POSTURA")
+    sess = OnnxSession(path, threads=2, max_batch=int(env) if env else None, max_wait=POSE_WAIT_S, all_outputs=True)
+    if sess.max_batch <= 1:
+        return sess
+    if not env and not sess.on_gpu:  # la placa no quiso el modelo por lotes: con el de siempre, que quizá sí
+        log.warning("La postura por lotes no quedó en la placa de video: se calcula de a una persona")
+        return OnnxSession(path, threads=2, max_batch=1)
+    try:
+        ref = _CpuRunner(path, threads=1)
+        rng = np.random.default_rng(7)
+        canvases = [cv2.GaussianBlur(rng.integers(0, 255, (sess.size[1], sess.size[0], 3), dtype=np.uint8), (0, 0), 6)
+                    for _ in range(min(sess.max_batch, MAX_PER_FRAME))]
+        want = [ref.run(c) for c in canvases[:2]]
+        worst = 0.0
+        for n in range(1, len(canvases) + 1):
+            got = sess.run_many(canvases[:n])
+            for w, g in zip(want, got):
+                if g.shape != w.shape:
+                    raise ValueError(f"el lote devuelve otra forma ({g.shape} en vez de {w.shape})")
+                worst = max(worst, float(np.abs(g - w).max()))
+        if worst > CHECK_TOLERANCE:
+            raise ValueError(f"el lote da distinto que de a una (diferencia {worst:.2f})")
+        return sess
+    except Exception as exc:  # noqa: BLE001 - ante la duda, como siempre
+        log.warning("La postura por lotes no pasó la comprobación (%s): se calcula de a una persona", exc)
+        return OnnxSession(path, threads=2, max_batch=1)
+
+
 def build_pose(model_path: str | Path | None = None) -> PoseEstimator | None:
     """Un estimador compartido por todas las cámaras del proceso (como el detector). Sin el archivo del modelo
     devuelve None (y los gestos quedan apagados en esa máquina)."""
@@ -192,10 +270,11 @@ def build_pose(model_path: str | Path | None = None) -> PoseEstimator | None:
     with _lock:
         if key not in _estimators:
             hilos = int(os.getenv("VIGIA_HILOS") or 0)
-            runner = SessionPool(path, hilos) if hilos > 1 else OnnxSession(path, threads=2, max_batch=1)
-            est = PoseEstimator(path, runner=runner)
+            est = PoseEstimator(path, runner=SessionPool(path, hilos) if hilos > 1 else _session(path))
             _estimators[key] = est
-            log.info("Postura de las personas (%s) en %s", est.name, est.device)
+            lote = getattr(est.runner, "max_batch", 1)
+            log.info("Postura de las personas (%s) en %s%s", est.name, est.device,
+                     f" (lotes de hasta {lote} personas)" if lote > 1 else "")
         return _estimators[key]
 
 

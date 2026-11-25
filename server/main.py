@@ -1317,6 +1317,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if a.last_seen and iso(a.last_seen) > (seen.get(key) or ""):
                 seen[key] = iso(a.last_seen)
         up = [m for m in ms if m.online and not m.draining]
+        # procesador que gasta cada máquina (lo informa cada proceso, agent/consumo.py): la suma de sus procesos en
+        # línea, por grupo, y cuántos procesadores tiene
+        used: dict[str, dict[str, float]] = {}
+        for a in server_agents(s):
+            cpu = (a.last_status or {}).get("cpu")
+            if isinstance(cpu, dict) and is_online(a, now):
+                tot = used.setdefault(a.instance_id or f"agente-{a.id}", {})
+                for k, v in cpu.items():
+                    if type(v) in (int, float):
+                        tot[k] = max(tot.get(k, 0.0), v) if k == "cores" else round(tot.get(k, 0.0) + v, 2)
         return {"mode": mode, "capacity": pool_capacity(s), "spare": spare, "clients_on_servers": clients_on,
                 "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
                 "cameras": len(cams), "cameras_active": open_now,
@@ -1332,6 +1342,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                               "online": m.online, "draining": m.draining, "leaving": m.leaving, "fixed": m.fixed,
                               "capacity": m.capacity, "last_seen": seen.get(m.key),
                               "load": round(m.load, 2), "reserved": round(held.get(m.key, 0.0), 2),
+                              "cpu": used.get(m.key),
                               "cameras": sum(cam_count.get(a, 0) for a in m.agent_ids)}
                              for m in ms]}
 
@@ -3151,6 +3162,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for k in ("batch_avg", "frames_per_s"):
                 if isinstance(payload.get(k), (int, float)):
                     a.last_status = {**a.last_status, k: payload[k]}
+            cpu = payload.get("cpu")
+            if isinstance(cpu, dict):  # en qué se va el procesador del proceso (agent/consumo.py): solo números
+                a.last_status = {**a.last_status, "cpu": {
+                    k: round(float(v), 2) for k, v in list(cpu.items())[:12]
+                    if isinstance(k, str) and STATUS_KEY.match(k) and type(v) in (int, float) and 0 <= v <= 1000}}
             caps = payload.get("objects")
             if isinstance(caps, dict):  # «Entrenar objetos»: si saca fotos de videos y si tiene Ultralytics (y placa)
                 a.last_status = {**a.last_status, "objects": {

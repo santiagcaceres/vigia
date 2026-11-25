@@ -36,7 +36,9 @@ class BatchModel:
     col_of: dict[int, int]  # clase COCO -> columna en la salida
 
 
-def make_batch_model(model_path: str | Path, keep_classes: tuple[int, ...] = KEEP_CLASSES) -> BatchModel:
+def make_batch_model(model_path: str | Path, keep_classes: tuple[int, ...] | None = KEEP_CLASSES) -> BatchModel:
+    """`keep_classes` None = la salida entera, sin recortar (el modelo de postura: las 4 de la caja, el puntaje y los
+    17 puntos; ahí no hay clases que sacar)."""
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
@@ -81,7 +83,7 @@ def make_batch_model(model_path: str | Path, keep_classes: tuple[int, ...] = KEE
     g.initializer.extend([numpy_helper.from_array(np.array(255.0, np.float32), "_pre_255"),
                           numpy_helper.from_array(np.array([2, 1, 0], np.int64), "_pre_rgb")])
     # 3) salida: solo las 4 coordenadas y las clases que se usan
-    keep = [k for k in keep_classes if 4 + k < n_out]
+    keep = [k for k in (range(n_out - 4) if keep_classes is None else keep_classes) if 4 + k < n_out]
     cols = np.array([0, 1, 2, 3] + [4 + k for k in keep], np.int64)
     g.initializer.append(numpy_helper.from_array(cols, "_post_cols"))
     post = helper.make_node("Gather", [old_out.name, "_post_cols"], [OUTPUT_NAME], axis=1)

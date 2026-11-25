@@ -612,8 +612,15 @@ class Agent:
         now = time.monotonic()
         secs, self._stats_at = max(now - self._stats_at, 1e-3), now
         fresh, self._fresh = self._fresh, False
+        if getattr(self, "_cpu_meter", None) is None:
+            from .consumo import CpuMeter
+
+            self._cpu_meter = CpuMeter()
+        cpu = self._cpu_meter.sample(sum(w.cpu_read_s for w in getattr(self, "workers", {}).values()))
         return {"capacity": self.machine.get("capacity"), "instance_id": self.machine.get("instance_id"),
                 "frames_per_s": round(frames / secs, 1), "batch_avg": round(batch, 2),
+                # en qué se va el procesador de este proceso, por grupo de hilos (procesadores enteros)
+                **({"cpu": cpu} if cpu else {}),
                 # qué trabajos de «Entrenar objetos» puede hacer (solo el proceso que los toma)
                 **({"objects": self.objects.caps} if getattr(self, "objects", None) else {}),
                 **({"fixed": True} if self.machine.get("fixed") else {}),  # siempre prendida: no se vacía ni se apaga
@@ -1066,7 +1073,9 @@ def run_machine(a, data_dir: Path, verify: bool | str) -> None:
     """Máquina de análisis en la nube: se da de alta sola, recibe del servidor las cámaras que le tocan y las
     analiza. Sin ventana ni usuario. Si el servidor la rechaza (la borraron), se vuelve a dar de alta."""
     from . import maquina
+    from .worker import lean_opencv
 
+    lean_opencv()
     instance = maquina.instance_id()
     name = maquina.machine_name(instance, a.proceso)
 

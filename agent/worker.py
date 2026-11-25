@@ -8,6 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from time import thread_time  # (aparte de `time`: las pruebas cambian ese reloj por uno de mentira)
 
 import cv2
 
@@ -198,6 +199,82 @@ def video_info(cap) -> dict:
     return out
 
 
+# Decodificar con un solo hilo por cámara (25 nov). FFmpeg usa por defecto un hilo por procesador para cada video; con
+# 20 cámaras son 80 hilos peleando por 4 procesadores, y repartir un video chico entre varios hilos cuesta más que
+# hacerlo en uno. Medido: leyendo a toda velocidad un hilo gasta entre 15 y 35 % menos procesador (segunda calidad
+# H.265 a 8 cuadros/s: 8,6 ms por segundo de video contra 13,2); en vivo, con 10 cámaras, bastante menos (de 0,70 a
+# 0,66 procesadores), y no demora los cuadros (con varios hilos cada cuadro sale un par de cuadros más tarde). El video
+# sale idéntico. Con un hilo se decodifica en el hilo de la cámara. `VIGIA_HILOS_VIDEO`: otro número, o «auto» para
+# dejarlo como antes.
+ONE_THREAD_MAX_PX_S = 1920 * 1080 * 30  # hasta acá un hilo sobra (1080p H.265 a 25: 18 % de un procesador)
+DECODE_BUSY = 0.6  # si leer el video se lleva más de esto de un procesador durante un minuto, un hilo no alcanza
+
+
+def lean_opencv() -> None:
+    """Máquina de análisis: OpenCV sin su grupo de hilos propio (25 nov). Achicar una imagen o pasarla a gris la
+    reparte entre todos los procesadores y deja esos hilos dando vueltas un rato por si llega más trabajo; con muchas
+    cámaras, cada una en su hilo, eso no gana tiempo y gasta (medido con 10 cámaras: 0,11 procesadores en esos hilos;
+    haciéndolo cada cámara en el suyo, 0,04). El resultado es el mismo. `VIGIA_HILOS_OPENCV`: otro número (0 = los
+    que elija OpenCV, como antes). La app de escritorio no lo usa: ahí hay pocas cámaras y procesador de sobra."""
+    v = (os.getenv("VIGIA_HILOS_OPENCV") or "1").strip()
+    try:
+        n = int(v)
+    except ValueError:
+        n = 1
+    if n > 0:
+        cv2.setNumThreads(n)
+
+
+def video_threads() -> int | None:
+    """Hilos para decodificar cada cámara según `VIGIA_HILOS_VIDEO` (None = los que elija FFmpeg)."""
+    v = (os.getenv("VIGIA_HILOS_VIDEO") or "1").strip().lower()
+    if v in ("auto", "0"):
+        return None
+    try:
+        return max(1, int(v))
+    except ValueError:
+        return 1
+
+
+_threads_ok: bool | None = None  # ¿abrir con la opción de hilos anda en este proceso? (None = todavía no se sabe)
+_plain_tries = 0
+PLAIN_TRIES_MAX = 3
+
+
+def open_video(url: str, threads: int | None = None):
+    """Abre el video con FFmpeg. Con `threads`, decodificando con esa cantidad de hilos. Por si un OpenCV no abriera
+    con esa opción: mientras ninguna cámara del proceso haya abierto así, una que no abre se prueba también sin la
+    opción (hasta 3 veces en total: no es cuestión de golpear dos veces a un grabador que no contesta); si sin la
+    opción abre, el problema es la opción y el proceso no la usa más."""
+    global _threads_ok, _plain_tries
+    prop = getattr(cv2, "CAP_PROP_N_THREADS", None)
+    if not threads or prop is None or _threads_ok is False:
+        return cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    try:
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, [prop, int(threads)])
+    except (TypeError, cv2.error):  # un OpenCV viejo que no recibe opciones al abrir: como antes
+        _threads_ok = False
+        return cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    if cap.isOpened():
+        _threads_ok = True
+    elif _threads_ok is None and _plain_tries < PLAIN_TRIES_MAX:
+        _plain_tries += 1
+        plain = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if plain.isOpened():
+            _threads_ok = False
+            log.warning("Este OpenCV no abre el video eligiendo los hilos: se decodifica como antes")
+            cap.release()
+            return plain
+        plain.release()
+    return cap
+
+
+def heavy_video(info: dict) -> bool:
+    """Un video tan grande que un solo hilo podría no alcanzar para decodificarlo (más que 1080p a 30 cuadros/s)."""
+    w, h = info.get("video_w") or 0, info.get("video_h") or 0
+    return w * h * (info.get("video_fps") or 25.0) > ONE_THREAD_MAX_PX_S
+
+
 class MediaClock:
     """Segundos de video transcurridos según las marcas de tiempo del stream. Si el stream no las trae
     (o vuelven atrás), cuenta cuadros a los fps que declara. Nunca retrocede."""
@@ -261,6 +338,11 @@ class CameraWorker:
         self.idle_pct: float | None = None  # parte de los cuadros salteados por quietud (último minuto)
         self.skipped_pct: float | None = None  # parte de lo que tocaba analizar y no se llegó (último minuto)
         self.video: dict = {}  # qué video manda la cámara (`video_info`): códec, tamaño y cuadros por segundo
+        self._video_threads = video_threads()  # hilos para decodificar (None = los que elija FFmpeg)
+        # procesador que gasta el hilo de esta cámara (último minuto, en % de un procesador): todo, leer el video
+        # (con un hilo, ahí se decodifica) y analizar. `cpu_read_s`: lo gastado leyendo, acumulado (agent/consumo.py)
+        self.cpu: dict = {}
+        self.cpu_read_s = 0.0
         self.metrics_queue = metrics_queue
         self.outbox = outbox
         self.client = client
@@ -388,6 +470,8 @@ class CameraWorker:
                 "ia_hurto": self.analyzer.theft_ai,
                 # el video que llega (códec, tamaño, cuadros por segundo): la app marca los que pesan de más
                 **self.video,
+                # procesador del hilo de la cámara en el último minuto (% de uno): todo, leer el video y analizar
+                **self.cpu,
                 # («normal», «sensibilidad 8 de 10 · personas lejos»): para saber si la máquina ya la aplica
                 "detection": self.detection.describe(), "last_frame_age_s":
                     None if self.last_frame_at is None else round(time.time() - self.last_frame_at, 1)}
@@ -403,7 +487,7 @@ class CameraWorker:
                 self._stop.wait(backoff)
                 backoff = min(backoff * 2, 60.0)
                 continue
-            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+            cap = open_video(url, self._video_threads)
             if not cap.isOpened():
                 why = self.hik.open_failure(url)
                 if self.hik.brand == "hikconnect":  # (el estado se corta a 300 letras: el motivo primero)
@@ -453,6 +537,11 @@ class CameraWorker:
         # «1080p lite» (960x1080 con píxeles 2:1): se analiza con píxeles cuadrados (960x540), igual que en
         # «Configurar…» y en las alarmas; si no, las personas quedan flacas y los gestos no andan
         self.video = video_info(cap)
+        if self._video_threads == 1 and heavy_video(self.video):
+            self._video_threads = None  # (se reconecta una vez: `run` vuelve a abrir enseguida)
+            log.info("[%s] video grande (%sx%s): se decodifica con varios hilos", self.name,
+                     self.video.get("video_w"), self.video.get("video_h"))
+            return
         sar = pixel_aspect(cap)
         if sar and sar != self._sar_logged:
             self._sar_logged = sar
@@ -479,6 +568,9 @@ class CameraWorker:
         analyzed = slow = grabbed = 0
         late_s = span_s = 0.0  # lo que los análisis se pasaron de step_s / lo que ocupó cada uno (o step_s si fue menos)
         last_skip_log = time.monotonic()
+        # procesador de este hilo por etapa (segundos en el minuto): leer el video y analizar
+        cpu0 = thread_time()
+        cpu_read = cpu_ai = 0.0
         while not self._stop.is_set():
             if self._pending_analysis is not None:
                 # se saca antes de aplicarlo: si falla, no se reintenta en cada cuadro
@@ -487,7 +579,11 @@ class CameraWorker:
             # tomar todos los cuadros evita acumular retraso; solo se convierten a imagen los que se usan
             # (analizar o mostrar en la ventana), que es lo que más procesador gasta
             g0 = time.monotonic()
+            c0 = thread_time()
             ok = cap.grab()
+            c1 = thread_time()
+            cpu_read += c1 - c0
+            self.cpu_read_s += c1 - c0
             if not ok:
                 fails += 1
                 if fails >= 3:
@@ -513,6 +609,15 @@ class CameraWorker:
                     log.info("[%s] la máquina no da abasto: analizó %d cuadros en el último minuto, un %.0f %% menos de "
                              "los que tocaba (%d análisis tardaron más de %.0f ms)", self.name, analyzed,
                              100 * self.skipped_pct, slow, 1000 * step_s)
+                span = now - last_skip_log
+                self.cpu = {"cpu": round(100 * (c1 - cpu0) / span), "cpu_video": round(100 * cpu_read / span),
+                            "cpu_ia": round(100 * cpu_ai / span)}
+                if self._video_threads == 1 and cpu_read / span > DECODE_BUSY:
+                    self._video_threads = None
+                    log.info("[%s] decodificar el video se lleva el %.0f %% de un procesador: se reconecta para "
+                             "repartirlo entre varios hilos", self.name, 100 * cpu_read / span)
+                    return
+                cpu0, cpu_read, cpu_ai = c1, 0.0, 0.0
                 analyzed = slow = 0
                 late_s = span_s = 0.0
                 last_skip_log = now
@@ -520,11 +625,15 @@ class CameraWorker:
             show = self.show_window and now - last_show >= DISPLAY_INTERVAL
             if not (analyze or show):
                 continue
+            c0 = thread_time()
             ok, frame = cap.retrieve()
+            if ok and frame is not None and sar:
+                frame = square_pixels(frame, sar, shrink=True)
+            c1 = thread_time()
+            cpu_read += c1 - c0
+            self.cpu_read_s += c1 - c0
             if not ok or frame is None:
                 continue
-            if sar:
-                frame = square_pixels(frame, sar, shrink=True)
             if show:  # la ventana se dibuja a 10 cuadros por segundo como máximo
                 last_show = now
                 self.display = hud(frame, self.analyzer.zones, self.analyzer.last_tracks, ts, self.name,
@@ -533,12 +642,14 @@ class CameraWorker:
                 continue
             last_proc = ts
             wall = datetime.now(self.hik.tz)
+            c0 = thread_time()
             if self.gate.should_analyze(frame, ts, self.analyzer.busy):
                 findings = self.analyzer.process(frame, ts, wall)
                 self.metrics.update(self.analyzer.last_tracks, ts, frame.shape[1::-1], wall)
             else:  # escena quieta y vacía: no hace falta buscar personas
                 self.analyzer.idle(frame, ts)
                 findings = []
+            cpu_ai += thread_time() - c0
             if now - last_idle > 60:
                 last_idle = now
                 self.idle_pct = self.gate.take_saved_fraction()

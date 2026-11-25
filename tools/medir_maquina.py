@@ -9,7 +9,11 @@ Se corre EN LA MÁQUINA, con el análisis andando; no instala ni cambia nada y n
 Mira dos veces el tiempo de procesador de cada hilo de los procesos del análisis (/proc/<pid>/task/*/stat) y los junta
 por nombre: los hilos con que FFmpeg decodifica se llaman «av:h264:df0», «av:hevc:df1»…; los de Python (leer, achicar,
 comprimir los cuadros de los clips, seguir a las personas, reglas) quedan como «python». Muestra también cómo está el
-sistema entero y la placa de video. No imprime claves (del archivo de configuración solo saca lo que no es secreto)."""
+sistema entero y la placa de video. No imprime claves (del archivo de configuración solo saca lo que no es secreto).
+
+Desde el 25 nov cada cámara decodifica su video con un solo hilo (el suyo, de Python): ya no hay hilos «av:…» salvo en
+videos enormes, y lo de decodificar queda sumado en «python». El reparto de verdad lo informa cada proceso (agent/
+consumo.py) y se ve en la app, pestaña «Máquinas», al elegir la máquina."""
 
 from __future__ import annotations
 
@@ -22,7 +26,8 @@ import time
 from collections import defaultdict
 
 HZ = os.sysconf("SC_CLK_TCK")
-SAFE_ENV = ("VIGIA_CAPACIDAD", "VIGIA_HILOS", "VIGIA_LOTE", "VIGIA_FIJA", "VIGIA_TENSORRT")  # nada de claves
+SAFE_ENV = ("VIGIA_CAPACIDAD", "VIGIA_HILOS", "VIGIA_LOTE", "VIGIA_FIJA", "VIGIA_TENSORRT", "VIGIA_HILOS_VIDEO",
+            "VIGIA_HILOS_OPENCV", "VIGIA_LOTE_POSTURA", "VIGIA_PLACA_ESPERA")  # nada de claves
 
 
 def read(path: str, binary: bool = False):
