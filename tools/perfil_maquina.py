@@ -81,7 +81,7 @@ def short(frame: str) -> str:
     if "agent/worker.py" not in frame:
         frame = re.sub(r":\d+\)", ")", frame)
     frame = re.sub(r"\((?:/[^ )]*/)?(?:site-packages/|vigia/)", "(", frame)
-    return frame[:90]
+    return frame if len(frame) <= 110 else frame[:60] + "…" + frame[-48:]
 
 
 def collect(path: str, leaf: dict, parts: dict, ours: dict) -> int:
@@ -166,7 +166,7 @@ def main() -> None:
             named: dict[str, int] = defaultdict(int)
             for name, n in nleaf.items():
                 m = re.search(r"\(([^()]*)\)\s*$", name)
-                lib = re.sub(r"\.cpython.*|\.so[.\d]*$", "", os.path.basename(m.group(1))) if m else "python"
+                lib = re.sub(r"\.cpython.*|\.so[.\d]*$|:\d+$", "", os.path.basename(m.group(1))) if m else "(python)"
                 libs[lib] += n
                 if not name.startswith("0x"):
                     named[name] += n
