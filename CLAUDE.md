@@ -1408,8 +1408,12 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     - **Postura de todas las personas de un cuadro en una sola llamada** (`PoseEstimator.estimate_many`, `look`): en
       la placa NVIDIA la postura usa un modelo por lotes (`core/lotes.make_batch_model(…, None)` = la salida entera;
       `OnnxSession(all_outputs=True)`, hilo «postura-lotes», espera 2 ms). Al armarla se comprueba sola contra el
-      modelo original en el procesador con lotes de 1 a 8 (de paso quedan «en caliente»); si no da lo mismo, falla o
-      no quedó en la placa, sigue de a una persona como siempre (`pose._session`). `VIGIA_LOTE_POSTURA=1` lo apaga.
+      modelo original en el procesador con lotes de 1 a 8 (de paso quedan «en caliente»; de fábrica el lote es de
+      hasta 8 = `MAX_PER_FRAME`, justo los tamaños comprobados); si no da lo mismo, falla o no quedó en la placa,
+      sigue de a una persona como siempre (`pose._session`). `VIGIA_LOTE_POSTURA=1` lo apaga (y `VIGIA_LOTE=1`
+      también). Por si la placa o el driver tiraran abajo el proceso sin avisar: mientras se arma y se comprueba
+      existe `<datos>/postura-lotes-<proceso>.intento` (`VIGIA_MARCA_POSTURA`, lo pone `run_machine`); si quedó, la
+      vez siguiente arranca de a una persona (vale una semana; borrarlo para volver a probar).
       Medido acá (procesador): diferencia máxima 1,5e-4 en la salida del modelo y < 0,5 píxeles en los puntos.
       **Sin probar en una placa de verdad** (acá no hay): por eso la comprobación al arrancar.
     - **Un hilo para decodificar cada cámara** (`worker.open_video`, `CAP_PROP_N_THREADS`; `VIGIA_HILOS_VIDEO`: otro
@@ -1449,8 +1453,19 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       pasar las 8 de Cristino a la segunda calidad (≈ 0,5 procesadores, lo más grande y gratis; hay que activarla en
       ese grabador) y el «video dormido» (decodificar solo los cuadros clave con la imagen quieta; pide leer el video
       con PyAV y mirar el tamaño de los paquetes para no perder a quien cruza entre dos cuadros clave: sin hacer).
+    - **Cómo estaba antes, para comparar** (25 nov, 13:40 de Uruguay, las 4 partes de la máquina de AWS, versión
+      2.0.0): 20 cámaras en línea; el detector, 3,5 + 6,6 + 8,4 + 16,3 = 34,8 imágenes por segundo, lotes de 1,0 a
+      1,25; cada cámara analizando entre 3,9 y 4,6 cuadros/s (las de 12 cuadros/s de video 4,0-4,1; las de 15 y 25,
+      4,1-4,6); ninguna con «no da abasto». Después de la actualización de la noche: que sigan las 20 en línea a los
+      mismos cuadros por segundo, que el registro diga «Postura de las personas … (lotes de hasta 8 personas)» y
+      leer el `cpu` de cada proceso.
+    - **Prueba de humo de punta a punta** (servidor local + `python -m agent --clave-maquinas …` + 3 cámaras en vivo
+      por TCP, con `VIGIA_LOTE_POSTURA=4` para forzar el lote en el procesador): se da de alta, abre las tres con un
+      hilo, la postura por lotes pasa su comprobación, no queda la marca, y `/api/analysis` devuelve el `cpu` de la
+      máquina (en el procesador el detector cae en `nativos`: son los hilos de onnxruntime).
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
-      `tests/test_mas_camaras.py`. La carga local: `carga.py` de la sesión (no está en el repo).
+      `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
+      repo).
 - **Programa de la PC central amigable (22 oct):** el .exe ya no abre consola (`console=False`); la ventana
   pide **usuario y clave de administrador** y un nombre de PC → `POST /api/agent/login` crea (o reutiliza por
   nombre, rotando el token) un agente central y devuelve el token, que se guarda en `agente.env`

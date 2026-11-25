@@ -151,3 +151,51 @@ def test_un_estimador_viejo_sin_lotes_sigue_sirviendo():
     assert est.calls == 3 and all(t.kpts is not None for t in tracks)
     assert pose.look(None, np.zeros((360, 640, 3), np.uint8), tracks) == 0
     assert all(t.kpts is None for t in tracks)
+
+
+def test_de_fabrica_solo_la_placa_nvidia_usa_lotes(monkeypatch):
+    from core import detectors, pose
+
+    monkeypatch.delenv("VIGIA_LOTE", raising=False)
+    monkeypatch.setattr(detectors, "_providers", lambda ort: ["CPUExecutionProvider"])
+    assert pose._auto_batch() == 1  # procesador (y la app de Windows con DirectML): de a una, como siempre
+    monkeypatch.setattr(detectors, "_providers", lambda ort: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    assert pose._auto_batch() == 1
+    monkeypatch.setattr(detectors, "_providers", lambda ort: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    assert pose._auto_batch() == pose.MAX_PER_FRAME  # justo los tamaños que se comprueban al arrancar
+    monkeypatch.setenv("VIGIA_LOTE", "1")  # quien apagó los lotes del detector, apagó también estos
+    assert pose._auto_batch() == 1
+
+
+def test_si_el_proceso_se_cerro_preparando_el_lote_la_proxima_arranca_sin_el(tmp_path, monkeypatch, caplog):
+    import os
+    import time
+
+    from core import pose
+
+    mark = tmp_path / "datos" / "postura-lotes-1.intento"
+    monkeypatch.setenv("VIGIA_MARCA_POSTURA", str(mark))
+    monkeypatch.setenv("VIGIA_LOTE_POSTURA", "4")
+    # lo normal: la marca existe solo mientras se arma y se comprueba
+    seen = []
+    real = pose.OnnxSession.run_many
+    monkeypatch.setattr(pose.OnnxSession, "run_many", lambda self, cs: (seen.append(mark.exists()), real(self, cs))[1])
+    assert pose._session(MODEL).max_batch == 4
+    assert seen and all(seen) and not mark.exists()
+    monkeypatch.setattr(pose.OnnxSession, "run_many", real)
+
+    # el proceso se cerró en ese rato (quedó la marca): la vez siguiente, de a una persona, y lo dice
+    mark.write_text("x", encoding="utf-8")
+    with caplog.at_level("WARNING", logger="vigia.pose"):
+        assert pose._session(MODEL).max_batch == 1
+    assert "se cerró preparando la postura por lotes" in caplog.text
+    assert mark.exists()  # sigue protegiendo en los arranques que vienen
+
+    # pasada una semana se prueba de nuevo (por si fue otra cosa: un corte justo en ese momento)
+    old = time.time() - pose.RETRY_AFTER_S - 60
+    os.utime(mark, (old, old))
+    assert pose._session(MODEL).max_batch == 4 and not mark.exists()
+
+    # si la comprobación falla sin cerrar el proceso, la marca no queda (ya se sabe qué pasó: sigue de a una)
+    monkeypatch.setattr(pose.OnnxSession, "run_many", lambda self, cs: [o + 5.0 for o in real(self, cs)])
+    assert pose._session(MODEL).max_batch == 1 and not mark.exists()

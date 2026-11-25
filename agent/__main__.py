@@ -1076,6 +1076,8 @@ def run_machine(a, data_dir: Path, verify: bool | str) -> None:
     from .worker import lean_opencv
 
     lean_opencv()
+    # si este proceso se cierra justo al preparar la postura por lotes, la vez siguiente arranca sin ellos (core/pose)
+    os.environ.setdefault("VIGIA_MARCA_POSTURA", str(data_dir / f"postura-lotes-{a.proceso or 0}.intento"))
     instance = maquina.instance_id()
     name = maquina.machine_name(instance, a.proceso)
 

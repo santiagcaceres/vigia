@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -225,38 +226,95 @@ CHECK_TOLERANCE = 1.5  # el lote tiene que dar lo mismo que de a una persona (en
 POSE_WAIT_S = 0.002  # cuánto espera el lote por más personas: las de un cuadro llegan juntas, no hace falta esperar
 
 
+RETRY_AFTER_S = 7 * 86400.0  # una marca de «se cerró preparando el lote» vale una semana; después se prueba de nuevo
+
+
+def _auto_batch() -> int:
+    """De fábrica: en la placa NVIDIA, lotes de hasta `MAX_PER_FRAME` personas (justo los tamaños que se comprueban al
+    arrancar); en lo demás (procesador, DirectML de la app), de a una como siempre. `VIGIA_LOTE=1` (apagar los lotes
+    del detector) apaga también estos."""
+    if (os.getenv("VIGIA_LOTE") or "").strip() == "1":
+        return 1
+    try:
+        import onnxruntime as ort
+
+        from .detectors import _providers
+
+        nvidia = any(p in _providers(ort) for p in ("TensorrtExecutionProvider", "CUDAExecutionProvider"))
+    except Exception:  # noqa: BLE001 - sin onnxruntime no hay nada que decidir
+        return 1
+    return MAX_PER_FRAME if nvidia else 1
+
+
+def _crashed_before(mark: Path | None) -> bool:
+    """¿La vez anterior el proceso se cerró mientras preparaba la postura por lotes? (queda la marca; vale una semana)"""
+    try:
+        return bool(mark) and mark.exists() and time.time() - mark.stat().st_mtime < RETRY_AFTER_S
+    except OSError:
+        return False
+
+
 def _session(path: Path) -> OnnxSession:
-    """La sesión del modelo de postura. En la placa NVIDIA, por lotes (`VIGIA_LOTE_POSTURA`, por defecto el mismo
-    tamaño que el detector; 1 = de a una persona como antes): todas las personas de un cuadro en una sola llamada. Antes
-    de usarla se comprueba contra el modelo original en el procesador, con recortes de prueba: si el lote no da lo
-    mismo (o falla), se sigue de a una persona como siempre. De paso quedan «en caliente» los tamaños de lote más
-    comunes (la placa elige cómo calcular cada tamaño la primera vez que lo ve, y eso tarda)."""
-    env = os.getenv("VIGIA_LOTE_POSTURA")
-    sess = OnnxSession(path, threads=2, max_batch=int(env) if env else None, max_wait=POSE_WAIT_S, all_outputs=True)
-    if sess.max_batch <= 1:
-        return sess
-    if not env and not sess.on_gpu:  # la placa no quiso el modelo por lotes: con el de siempre, que quizá sí
-        log.warning("La postura por lotes no quedó en la placa de video: se calcula de a una persona")
+    """La sesión del modelo de postura. En la placa NVIDIA, por lotes (`VIGIA_LOTE_POSTURA`: otro tamaño; 1 = de a una
+    persona como antes): todas las personas de un cuadro en una sola llamada. Antes de usarla se comprueba contra el
+    modelo original en el procesador, con recortes de prueba y todos los tamaños de lote que se van a usar: si el lote
+    no da lo mismo (o falla), se sigue de a una persona como siempre. De paso esos tamaños quedan «en caliente» (la
+    placa elige cómo calcular cada uno la primera vez que lo ve, y eso tarda).
+
+    `VIGIA_MARCA_POSTURA` (lo pone la máquina de análisis): un archivo que existe mientras se arma y se comprueba el
+    lote. Si el proceso se cierra en ese rato (una falla de la placa o del driver no avisa: lo tira abajo), la marca
+    queda y la vez siguiente arranca de a una persona en vez de volver a caerse."""
+    env = (os.getenv("VIGIA_LOTE_POSTURA") or "").strip()
+    try:
+        batch = max(1, int(env)) if env else _auto_batch()
+    except ValueError:
+        batch = _auto_batch()
+    if batch <= 1:
+        return OnnxSession(path, threads=2, max_batch=1)
+    mark = Path(os.environ["VIGIA_MARCA_POSTURA"]) if os.getenv("VIGIA_MARCA_POSTURA") else None
+    if _crashed_before(mark):
+        log.warning("La vez anterior el proceso se cerró preparando la postura por lotes: se calcula de a una persona "
+                    "(para volver a probar, borrar %s)", mark)
         return OnnxSession(path, threads=2, max_batch=1)
     try:
-        ref = _CpuRunner(path, threads=1)
-        rng = np.random.default_rng(7)
-        canvases = [cv2.GaussianBlur(rng.integers(0, 255, (sess.size[1], sess.size[0], 3), dtype=np.uint8), (0, 0), 6)
-                    for _ in range(min(sess.max_batch, MAX_PER_FRAME))]
-        want = [ref.run(c) for c in canvases[:2]]
-        worst = 0.0
-        for n in range(1, len(canvases) + 1):
-            got = sess.run_many(canvases[:n])
-            for w, g in zip(want, got):
-                if g.shape != w.shape:
-                    raise ValueError(f"el lote devuelve otra forma ({g.shape} en vez de {w.shape})")
-                worst = max(worst, float(np.abs(g - w).max()))
-        if worst > CHECK_TOLERANCE:
-            raise ValueError(f"el lote da distinto que de a una (diferencia {worst:.2f})")
-        return sess
-    except Exception as exc:  # noqa: BLE001 - ante la duda, como siempre
-        log.warning("La postura por lotes no pasó la comprobación (%s): se calcula de a una persona", exc)
-        return OnnxSession(path, threads=2, max_batch=1)
+        if mark:
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            mark.write_text("Preparando la postura por lotes. Si este archivo queda, el proceso se cerró en ese rato.\n",
+                            encoding="utf-8")
+    except OSError:
+        mark = None
+    try:
+        sess = OnnxSession(path, threads=2, max_batch=batch, max_wait=POSE_WAIT_S, all_outputs=True)
+        if sess.max_batch <= 1:
+            return sess
+        if not env and not sess.on_gpu:  # la placa no quiso el modelo por lotes: con el de siempre, que quizá sí
+            log.warning("La postura por lotes no quedó en la placa de video: se calcula de a una persona")
+            return OnnxSession(path, threads=2, max_batch=1)
+        try:
+            ref = _CpuRunner(path, threads=1)
+            rng = np.random.default_rng(7)
+            canvases = [cv2.GaussianBlur(rng.integers(0, 255, (sess.size[1], sess.size[0], 3), dtype=np.uint8),
+                                         (0, 0), 6) for _ in range(sess.max_batch)]
+            want = [ref.run(c) for c in canvases[:2]]
+            worst = 0.0
+            for n in range(1, len(canvases) + 1):
+                got = sess.run_many(canvases[:n])
+                for w, g in zip(want, got):
+                    if g.shape != w.shape:
+                        raise ValueError(f"el lote devuelve otra forma ({g.shape} en vez de {w.shape})")
+                    worst = max(worst, float(np.abs(g - w).max()))
+            if worst > CHECK_TOLERANCE:
+                raise ValueError(f"el lote da distinto que de a una (diferencia {worst:.2f})")
+            return sess
+        except Exception as exc:  # noqa: BLE001 - ante la duda, como siempre
+            log.warning("La postura por lotes no pasó la comprobación (%s): se calcula de a una persona", exc)
+            return OnnxSession(path, threads=2, max_batch=1)
+    finally:
+        if mark:  # (si el proceso se cerró antes de llegar acá, la marca queda)
+            try:
+                mark.unlink()
+            except OSError:
+                pass
 
 
 def build_pose(model_path: str | Path | None = None) -> PoseEstimator | None:
