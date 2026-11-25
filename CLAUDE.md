@@ -1453,6 +1453,22 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       pasar las 8 de Cristino a la segunda calidad (≈ 0,5 procesadores, lo más grande y gratis; hay que activarla en
       ese grabador) y el «video dormido» (decodificar solo los cuadros clave con la imagen quieta; pide leer el video
       con PyAV y mirar el tamaño de los paquetes para no perder a quien cruza entre dos cuadros clave: sin hacer).
+    - **Perfil de la máquina de AWS (25 nov, 14:40 de Uruguay, código de la noche anterior, `tools/perfil_maquina.py`
+      y `tools/medir_maquina.py` corridos por el dueño en Session Manager):** 2,37 de 4 procesadores (41 % libre), 0
+      avisos de «no da abasto», la placa al 12-31 %. Decodificar 0,89 (0,78 en H.265); los hilos de Python 1,47, y de
+      eso: leer el video (`cap.grab`: red, separar y esperar a los hilos de FFmpeg) 25 %, **el achique del filtro de
+      movimiento 20 %**, las llamadas al modelo (`Session.run`, el lado del procesador de usar la placa) 18 %,
+      achicar y comprimir los cuadros del clip 16 %, **la consulta a la nube por Spot 4,6 %** (`create_default_context`
+      en cada consulta), la postura 0,2 % (poca gente grande a esa hora: la postura por tandas casi no cambia nada
+      ahí). **La sospecha de que el procesador se iba en las llamadas a la placa era exagerada** (18 %, no la mitad):
+      TensorRT no es lo primero. Arreglado (mismo resultado):
+      - `MotionGate`: con alguien a la vista ya no compara (se analiza igual; la referencia se pone al día en el primer
+        cuadro sin nadie) y pasa a gris **antes** de achicar (5-40 % más barato, a lo sumo 1 de 255 de diferencia;
+        las decisiones dieron idénticas cuadro por cuadro en los 5 videos de prueba).
+      - `maquina.Interruptions`: una sola conexión (`httpx.Client`) en vez de `httpx.get` cada 5 s por proceso.
+      - Lo que quedó medido y **no** se cambió: achicar el cuadro del clip con `INTER_LINEAR` en vez de `INTER_AREA` es
+        4-5 veces más barato (960x544 → 640: 0,45 contra 2,15 ms) pero cambia la imagen del clip (34-48 dB contra el
+        original, del orden del error del mismo JPEG): es calidad, decidirlo con el dueño.
     - **Cómo estaba antes, para comparar** (25 nov, 13:40 de Uruguay, las 4 partes de la máquina de AWS, versión
       2.0.0): 20 cámaras en línea; el detector, 3,5 + 6,6 + 8,4 + 16,3 = 34,8 imágenes por segundo, lotes de 1,0 a
       1,25; cada cámara analizando entre 3,9 y 4,6 cuadros/s (las de 12 cuadros/s de video 4,0-4,1; las de 15 y 25,

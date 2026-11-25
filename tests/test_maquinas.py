@@ -447,12 +447,12 @@ def test_medir_cuantas_camaras_aguanta_la_maquina():
 
 # ---------------------------------------------------------------- máquinas Spot: la nube avisa que se las lleva
 def test_aviso_de_la_nube_spot_y_auto_scaling(monkeypatch):
+    from types import SimpleNamespace
+
     import httpx
 
-    def nube(put, get):
-        monkeypatch.setattr(maquina.httpx, "put", put)
-        monkeypatch.setattr(maquina.httpx, "get", get)
-        return maquina.Interruptions()
+    def nube(put, get):  # (una sola conexión para todas las consultas: se le pasa una de mentira)
+        return maquina.Interruptions(http=SimpleNamespace(put=put, get=get))
 
     paths: dict[str, httpx.Response] = {}
 

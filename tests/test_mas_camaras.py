@@ -358,3 +358,59 @@ def test_esperar_a_la_placa_durmiendo_solo_si_se_pide(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="vigia.detectors"):
         assert detectors.gpu_wait_mode(Cuda(set_flags=36)) == "error"
     assert "queda como siempre" in caplog.text
+
+
+# ---------------------------------------------------------------- filtro de movimiento más barato (mismo resultado)
+def _gate_before(frame):
+    """Cómo achicaba el filtro de movimiento hasta el 25 nov: primero achicar y después pasar a gris."""
+    from core.motion import SIZE
+
+    small = cv2.cvtColor(cv2.resize(frame, SIZE, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    return cv2.GaussianBlur(small, (3, 3), 0)
+
+
+def test_el_filtro_de_movimiento_achica_mas_barato_y_decide_lo_mismo():
+    from core.motion import MotionGate
+
+    rng = np.random.default_rng(11)
+    base = cv2.GaussianBlur(rng.integers(0, 255, (544, 960, 3), dtype=np.uint8), (0, 0), 3)
+    gate = MotionGate()
+    assert int(np.abs(gate._small(base).astype(int) - _gate_before(base)).max()) <= 1
+
+    # una escena con ruido de cámara y una persona que entra y sale: decide igual cuadro por cuadro
+    def frames():
+        for i in range(120):
+            img = base.copy()
+            if 40 <= i < 80:
+                x = 100 + 8 * (i - 40)
+                cv2.rectangle(img, (x, 200), (x + 60, 500), (40, 40, 200), -1)
+            noise = rng.integers(-3, 4, img.shape, dtype=np.int16)
+            yield np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+    old, new = MotionGate(), MotionGate()
+    old._small = _gate_before  # (lo de antes, para comparar)
+    got_old, got_new = [], []
+    for i, f in enumerate(frames()):
+        got_old.append(old.moved(f, i * 0.2))
+        got_new.append(new.moved(f, i * 0.2))
+    assert got_old == got_new
+    assert any(got_new[40:80]) and not any(got_new[5:35])
+
+
+def test_con_alguien_a_la_vista_no_compara_y_despues_se_pone_al_dia(monkeypatch):
+    from core.motion import MotionGate
+
+    gate = MotionGate(every=2.0)
+    calls = []
+    real = gate.moved
+    monkeypatch.setattr(gate, "moved", lambda f, ts: (calls.append(ts), real(f, ts))[1])
+    still = np.full((54, 96, 3), 120, np.uint8)
+    assert gate.should_analyze(still, 0.0, busy=False)  # (el primero siempre)
+    for i in range(1, 20):
+        assert gate.should_analyze(still, i * 0.2, busy=True)  # se analiza siempre, sin achicar ni comparar
+    assert calls == [0.0]
+    changed = still.copy()
+    changed[10:40, 20:60] = 250  # se fue la persona y quedó algo distinto: el primer cuadro sin nadie lo ve
+    assert gate.should_analyze(changed, 4.0, busy=False)
+    assert not gate.should_analyze(changed, 4.2, busy=False)  # y desde ahí compara contra lo nuevo
+    assert gate.take_saved_fraction() == 1 / 22

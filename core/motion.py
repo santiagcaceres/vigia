@@ -32,9 +32,12 @@ class MotionGate:
         self.skipped = 0
 
     def _small(self, frame: np.ndarray) -> np.ndarray:
+        # a gris antes de achicar (25 nov): achicar un solo canal en vez de tres cuesta entre un 5 y un 40 % menos y
+        # da lo mismo (a lo sumo 1 de diferencia en 255, contra los 18 que hacen falta para contar como cambio). En la
+        # máquina de AWS este achique era el 20 % de lo que gastaban los hilos de Python
+        if frame.ndim == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(frame, SIZE, interpolation=cv2.INTER_AREA)
-        if small.ndim == 3:
-            small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         return cv2.GaussianBlur(small, (3, 3), 0)  # saca el ruido de la imagen nocturna
 
     def moved(self, frame: np.ndarray, ts: float) -> bool:
@@ -51,8 +54,11 @@ class MotionGate:
     def should_analyze(self, frame: np.ndarray, ts: float, busy: bool) -> bool:
         """`busy`: hay personas siguiéndose o un clip abierto; ahí se analiza siempre."""
         self.checked += 1
+        if busy:  # con alguien a la vista se analiza igual: no hace falta comparar (25 nov: ahorra el achique en esos
+            self._last_full = ts  # cuadros; la referencia se pone al día en el primer cuadro sin nadie)
+            return True
         moved = self.moved(frame, ts)
-        if busy or moved or ts - self._last_full >= self.every:
+        if moved or ts - self._last_full >= self.every:
             self._last_full = ts
             return True
         self.skipped += 1

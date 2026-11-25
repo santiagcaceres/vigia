@@ -56,8 +56,12 @@ class Interruptions:
     - Google Cloud: `instance/preempted` = TRUE (Spot reclamada).
     En otra nube o en una PC, `cloud` queda en None y no se mira nada."""
 
-    def __init__(self, timeout: float = 1.0):
+    def __init__(self, timeout: float = 1.0, http=None):
+        """`http`: con qué se hacen los pedidos (las pruebas pasan uno de mentira). De fábrica, una sola conexión para
+        todo (25 nov: con `httpx.get` cada consulta, una cada 5 s en cada proceso, armaba de nuevo todo lo de HTTPS
+        aunque el pedido sea por HTTP: en la máquina de AWS era el 4,6 % de lo que gastaban los hilos de Python)."""
         self.timeout = timeout
+        self._http = http if http is not None else httpx.Client(timeout=timeout)
         self._token: str | None = None
         self._token_at = 0.0
         self.cloud = self._detect()
@@ -65,7 +69,7 @@ class Interruptions:
     def _aws_token(self, force: bool = False) -> str | None:
         if self._token and not force and time.monotonic() - self._token_at < 240:
             return self._token
-        t = httpx.put(f"{METADATA}/latest/api/token", timeout=self.timeout,
+        t = self._http.put(f"{METADATA}/latest/api/token", timeout=self.timeout,
                       headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"})
         if t.status_code == 200 and t.text.isascii() and t.text.strip():
             self._token, self._token_at = t.text.strip(), time.monotonic()
@@ -79,7 +83,7 @@ class Interruptions:
         except (httpx.HTTPError, UnicodeError):
             pass
         try:
-            r = httpx.get(f"{METADATA}/computeMetadata/v1/instance/id", timeout=self.timeout,
+            r = self._http.get(f"{METADATA}/computeMetadata/v1/instance/id", timeout=self.timeout,
                           headers={"Metadata-Flavor": "Google"})
             if r.status_code == 200 and r.headers.get("metadata-flavor", "").lower() == "google":
                 return "gcp"
@@ -94,7 +98,7 @@ class Interruptions:
                 if not token:
                     return None
                 h = {"X-aws-ec2-metadata-token": token}
-                r = httpx.get(f"{METADATA}/latest/meta-data/spot/instance-action", headers=h, timeout=self.timeout)
+                r = self._http.get(f"{METADATA}/latest/meta-data/spot/instance-action", headers=h, timeout=self.timeout)
                 if r.status_code == 200 and r.text.strip():
                     try:
                         d = r.json()
@@ -103,12 +107,12 @@ class Interruptions:
                     what = {"terminate": "terminar", "stop": "detener", "hibernate": "hibernar"}.get(
                         str(d.get("action")), "sacar")
                     return f"AWS va a {what} esta máquina Spot" + (f" ({d['time']})" if d.get("time") else "")
-                r = httpx.get(f"{METADATA}/latest/meta-data/autoscaling/target-lifecycle-state", headers=h,
+                r = self._http.get(f"{METADATA}/latest/meta-data/autoscaling/target-lifecycle-state", headers=h,
                               timeout=self.timeout)
                 if r.status_code == 200 and r.text.strip() == "Terminated":
                     return "El grupo de Auto Scaling de AWS va a terminar esta máquina"
             elif self.cloud == "gcp":
-                r = httpx.get(f"{METADATA}/computeMetadata/v1/instance/preempted", timeout=self.timeout,
+                r = self._http.get(f"{METADATA}/computeMetadata/v1/instance/preempted", timeout=self.timeout,
                               headers={"Metadata-Flavor": "Google"})
                 if r.status_code == 200 and r.text.strip().upper() == "TRUE":
                     return "Google Cloud va a sacar esta máquina Spot"
