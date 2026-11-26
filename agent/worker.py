@@ -49,6 +49,11 @@ DISPLAY_INTERVAL = 0.1  # la ventana de la PC central no necesita más de 10 cua
 # cuadros que tocaba analizar y no se analizó porque los análisis tardaron más que el tiempo entre uno y otro.
 SLOW_LOG_FRACTION = 0.10  # el registro lo avisa si en el minuto se analizó un 10 % menos de lo que tocaba
 WAITING_GRAB_MAX_S = 0.02  # un cuadro que tardó menos que esto en salir ya estaba esperando (es viejo)
+# con la placa pedida, la primera conexión (con OpenCV) cuenta los cuadros que manda la cámara este rato antes de pasar a
+# la placa: lo que dice el video al abrir a veces es el doble de lo que manda (30 con 15), y con eso la placa no sabría
+# cuántos baja ni cuántos informar
+GPU_LEARN_S = 6.0
+GPU_LEARN_SKIP_S = 1.5  # (lo primero no se cuenta: al conectar, algunos grabadores mandan de golpe lo que tenían)
 CATCHUP_MAX_S = 5.0  # (por las dudas, como mucho 5 s seguidos salteando: después se analiza igual)
 # filtro de movimiento (core/motion.py): qué parte de la imagen chica (96x54) tiene que cambiar para mirar el cuadro.
 # Con «Personas lejos» se baja: alguien al fondo de un depósito (menos del ~8 % del alto) mueve menos puntos que eso y,
@@ -639,6 +644,8 @@ class CameraWorker:
         if clock is None:
             step_s = max(step_s, math.ceil((step_s - 1e-3) / frame_s - 1e-6) * frame_s)
         analyzed = slow = grabbed = 0
+        learn_since: float | None = None  # (pasar a la placa: desde cuándo se cuentan los cuadros de la cámara)
+        learn_times: list[float] = []  # cuándo llegó cada cuadro mientras tanto
         late_s = span_s = 0.0  # lo que los análisis se pasaron de step_s / lo que ocupó cada uno (o step_s si fue menos)
         last_skip_log = time.monotonic()
         # procesador de este hilo por etapa (segundos en el minuto): leer el video y analizar
@@ -666,6 +673,8 @@ class CameraWorker:
             fails = 0
             now = time.monotonic()
             grabbed += 1
+            if learn_since is not None and len(learn_times) < 2000:
+                learn_times.append(now)
             ts = base + (clock.tick() if clock else now - t0)  # segundos del video (o de la PC)
             self._last_ts, self._last_ts_at = ts, now
             self.last_frame_at = time.time()
@@ -701,9 +710,16 @@ class CameraWorker:
             c0 = thread_time()
             ok, frame = cap.retrieve()
             if learn_gpu and ok and frame is not None:
-                self._gpu_ref = frame.copy()  # (sin achicar: la de la placa se compara contra esta)
-                self._gpu_switch = True
-                return
+                if learn_since is None:
+                    learn_since = now
+                elif now - learn_since >= GPU_LEARN_S:
+                    start = learn_since + GPU_LEARN_SKIP_S
+                    rate = sum(1 for t in learn_times if t >= start) / max(now - start, 1e-3)
+                    if 1.0 <= rate <= 120.0:  # los cuadros por segundo que manda de verdad
+                        self._gpu_hint["video_fps"] = round(rate, 1)
+                    self._gpu_ref = frame.copy()  # (sin achicar: la de la placa se compara contra esta)
+                    self._gpu_switch = True
+                    return
             if ok and frame is not None and sar:
                 frame = square_pixels(frame, sar, shrink=True)
             c1 = thread_time()

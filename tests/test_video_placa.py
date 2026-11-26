@@ -364,6 +364,8 @@ def test_la_camara_pasa_sola_de_opencv_a_la_placa_y_analiza_igual(tmp_path, rtsp
     assert "video por la placa" in caplog.text, caplog.text[-2000:]
     assert st["state"] == "en_linea" and st["video_codec"] == "H.264 · placa"
     assert (st["video_w"], st["video_h"]) == (640, 360)
+    # los cuadros por segundo que manda la cámara, contados con OpenCV antes de pasar a la placa (no lo que dice el video)
+    assert 10.5 <= w._gpu_hint["video_fps"] <= 13.5 and 10.5 <= st["video_fps"] <= 13.5
     assert det.rate() >= 3.5  # analiza a los cuadros por segundo de siempre (a 5 por segundo, con video de 12)
     assert det.frames and all(f == (360, 640) for f in det.frames)
     assert not video_placa._live  # al cerrar la cámara no queda ningún ffmpeg andando
