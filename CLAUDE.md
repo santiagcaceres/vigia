@@ -1607,7 +1607,7 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       /var/lib/vigia/trt, `VIGIA_TRT_LIBS`, pip). **`VIGIA_TENSORRT=1`** lo usa solo el detector compartido de las
       máquinas (`build_detector` → `OnnxSession(trt=True)`; `todo` = también la postura); las librerías se cargan una
       vez (`tensorrt_ready`) y, si no están o la sesión falla con TensorRT, sigue con **CUDA** (antes una falla al
-      armar la sesión caía al procesador). Pruebas: `tests/test_tensorrt.py`. Cómo prenderlo: `deploy/aws/TIGO.md`.
+      armar la sesión caía al procesador). Pruebas: `tests/test_tensorrt.py`. Cómo prenderlo: `deploy/aws/TIGO.md`. **En producción (parte 4 desde las 14:52, medido 15:14-15:18, 6 cámaras en línea a 3,6-4,3 cuadros/s, sin saltear):** los hilos del modelo (detector + postura, que sigue en CUDA) gastan ~7 ms de procesador por imagen del detector contra 13-15 en las partes con CUDA (4 lecturas sumadas: 0,22 procesadores para 32 imágenes/s contra 0,17-0,40 para 11-31); el motor guardado cargó al instante, la memoria de la placa subió 70 MB (2,56 → 2,63 GB) y las alertas siguieron saliendo. El uso de la placa es de toda la máquina (no se puede separar por parte). A esa hora hay poca gente: en la prueba de llenado el modelo gastaba 0,56 procesadores, con TensorRT serían ~0,28.
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).

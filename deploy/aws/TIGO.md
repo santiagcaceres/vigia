@@ -180,7 +180,15 @@ sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.ser
 El registro de esa parte dice «Detector de personas en GPU (Tensorrt)». Si no encuentra el motor guardado lo arma (unos
 minutos, en los que esa parte no analiza). Deshacer: `sudo rm
 /etc/systemd/system/vigia-maquina@4.service.d/tensorrt.conf && sudo systemctl daemon-reload && sudo systemctl restart
-vigia-maquina@4`. Para las 4 partes, el mismo archivo en `/etc/systemd/system/vigia-maquina@.service.d/`.
+vigia-maquina@4`.
+
+**Resultado en la parte 4 (26 nov, 15:14-15:18 de Uruguay):** las 6 cámaras en línea a 3,6-4,3 cuadros/s, sin saltear, con alertas; el procesador de los hilos del modelo bajó a la mitad por imagen (~7 ms contra 13-15 en las otras partes); el motor guardado cargó al instante; +70 MB de memoria de la placa. **Para las 4 partes:**
+
+```bash
+sudo mkdir -p /etc/systemd/system/vigia-maquina@.service.d && printf '[Service]\nEnvironment=VIGIA_TENSORRT=1\n' | sudo tee /etc/systemd/system/vigia-maquina@.service.d/tensorrt.conf && sudo rm -f /etc/systemd/system/vigia-maquina@4.service.d/tensorrt.conf && sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.service
+```
+
+Deshacer en las 4: `sudo rm /etc/systemd/system/vigia-maquina@.service.d/tensorrt.conf && sudo systemctl daemon-reload && sudo systemctl restart 'vigia-maquina@*'`.
 
 ## 1. Antes de crear nada (con Tigo)
 
