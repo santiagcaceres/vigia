@@ -49,7 +49,11 @@ def test_sugiere_gondola_pasillo_y_puerta_con_sentido():
     g = np.array(by_type["shelf"]["polygon"])
     assert g[:, 0].min() < 0.75 < g[:, 0].max() and g[:, 1].min() < 0.55 < g[:, 1].max()
     door = by_type["entrance"]
-    assert door["name"] == "Puerta abajo" and door["direction"] == "arriba"  # aparecen abajo y suben
+    # la puerta va como una línea (26 nov) con la flecha hacia donde entran: aparecen abajo y suben
+    from core.geometry import line_arrow
+    assert door["name"] == "Puerta abajo" and door["line"] is True and len(door["polygon"]) == 2
+    start, tip = line_arrow(*door["polygon"], 640, 360, 40)
+    assert tip[1] < start[1] and "direction" not in door
     # lo que ya está marcado no se vuelve a sugerir
     again = suggest(FootMap.build(store()), existing=[by_type["shelf"]])
     assert "shelf" not in {z["type"] for z in again}
