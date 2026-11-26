@@ -75,6 +75,79 @@ def test_el_ffmpeg_decodifica_en_la_placa_y_achica_solo_si_hace_falta():
     assert lite[lite.index("-resize") + 1] == "960x540" and lite.index("-resize") < lite.index("-i")
     cpu = video_placa.command("a.mp4", [], None, (960, 540), (960, 1080))
     assert "-c:v" not in cpu and cpu[cpu.index("-vf") + 1] == "scale=960:540" and "-threads" in cpu
+    for c in (cmd, lite, cpu):  # cada cuadro como llega: ffmpeg no inventa copias para llenar un ritmo fijo
+        assert c[c.index("-fps_mode") + 1] == "passthrough" and c.index("-fps_mode") > c.index("-i")
+    assert "-hwaccel" not in cmd and "-vf" not in cmd  # (sin `min_gap`, como antes: se trae cada cuadro)
+
+
+def test_con_hueco_los_cuadros_quedan_en_la_placa_y_se_baja_solo_los_que_pasan():
+    """26 nov, en la máquina de AWS: traer cada cuadro de la placa 0,53 s de procesador por minuto; dejarlos allá y
+    bajar uno de cada dos, 0,41 s (con ffmpeg todavía rellenando los que faltaban)."""
+    gap = video_placa.MIN_GAP_S
+    assert gap == 0.045
+    cmd = video_placa.command("rtsp://x/1", [], "hevc_cuvid", (960, 544), (960, 1088), min_gap=gap)
+    assert cmd[cmd.index("-hwaccel") + 1] == "cuda" and cmd[cmd.index("-hwaccel_output_format") + 1] == "cuda"
+    assert cmd.index("-hwaccel") < cmd.index("-c:v") < cmd.index("-resize") < cmd.index("-i") < cmd.index("-vf")
+    keep, *rest = cmd[cmd.index("-vf") + 1].split("',")
+    assert keep.startswith("select='") and "gte(t-prev_selected_t,0.045)" in keep and "lt(t,prev_selected_t)" in keep
+    assert rest == ["hwdownload,format=nv12"]  # (el filtro no toca la imagen: anda con los cuadros en la placa)
+    cpu = video_placa.command("a.mp4", [], None, (960, 540), (960, 1080), min_gap=gap)
+    assert "-hwaccel" not in cpu and cpu[cpu.index("-vf") + 1].endswith("',scale=960:540")
+    assert video_placa.thin_factor(25, gap) == 2 and video_placa.thin_factor(30, gap) == 2
+    assert [video_placa.thin_factor(f, gap) for f in (12, 15, 20)] == [1, 1, 1]  # (esos llegan enteros)
+    assert video_placa.thin_factor(60, gap) == 3 and video_placa.thin_factor(25, 0) == 1
+    assert video_placa.thin_factor(0, gap) == 1  # (sin saber cuántos manda la cámara)
+
+
+def _count(pc) -> int:
+    n = 0
+    while pc.grab():
+        n += 1
+    return n
+
+
+def test_llega_uno_de_cada_dos_de_un_video_de_25_y_todos_de_uno_de_12(tmp_path):
+    rapido = tmp_path / "rapido.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=640x360:rate=25", "-t", "4", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p",
+                    str(rapido)], check=True)
+    hint = {"video_codec": "H.264", "video_w": 640, "video_h": 360, "video_fps": 25.0, "sar": None}
+    pc = video_placa.PlacaCapture(str(rapido), [], hint, None, decoder=None, min_gap=video_placa.MIN_GAP_S)
+    try:
+        assert pc.thin == 2 and pc.get(cv2.CAP_PROP_FPS) == 12.5 and pc.source_fps == 25
+        assert _count(pc) == 50  # de los 100 cuadros de 4 s, uno de cada dos
+    finally:
+        pc.release()
+    lento = video(tmp_path, "lento", seconds=3)
+    _, info = opencv_frames(lento, 1)
+    pc = video_placa.PlacaCapture(str(lento), [], {**info, "sar": None}, None, decoder=None,
+                                  min_gap=video_placa.MIN_GAP_S)
+    try:
+        assert pc.thin == 1 and _count(pc) == 36  # 12 cuadros/s: llegan todos
+    finally:
+        pc.release()
+
+
+def test_un_corte_del_video_no_se_rellena_con_cuadros_repetidos(tmp_path):
+    """Con el ritmo fijo de fábrica de ffmpeg, un hueco en el video (un corte de la cámara, una que manda menos de lo
+    que dice) salía relleno de copias del último cuadro (en la máquina: `dup=359` en un minuto). OpenCV no lo hace."""
+    corte = tmp_path / "corte.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=320x240:rate=10:duration=2", "-vf", "setpts='if(gte(N,10),PTS+3/TB,PTS)'",
+                    "-fps_mode", "vfr", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(corte)], check=True)
+    ref = cv2.VideoCapture(str(corte), cv2.CAP_FFMPEG)
+    n_ref = 0
+    while ref.grab():
+        n_ref += 1
+    ref.release()
+    assert n_ref == 20
+    hint = {"video_codec": "H.264", "video_w": 320, "video_h": 240, "video_fps": 10.0, "sar": None}
+    for gap in (0.0, video_placa.MIN_GAP_S):
+        pc = video_placa.PlacaCapture(str(corte), [], hint, None, decoder=None, min_gap=gap)
+        try:
+            assert _count(pc) == n_ref  # los mismos 20 cuadros que OpenCV, sin los 30 repetidos del corte
+        finally:
+            pc.release()
 
 
 @pytest.mark.parametrize("name,pix_fmt,rng", [("limitado", "yuv420p", "tv"), ("completo", "yuvj420p", "pc")])

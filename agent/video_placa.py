@@ -16,6 +16,15 @@ conexión de cada cámara es con OpenCV, como siempre; con lo que se aprendió d
 placa con el mismo tamaño (los «1080p lite» ya con píxeles cuadrados, como `square_pixels(shrink=True)`). Si algo no
 anda (sin la librería, otro códec, ffmpeg que no abre), sigue con OpenCV, como siempre.
 
+Qué cuadros se traen (26 nov, medido en la máquina de AWS con 1 minuto de H.265 960x576 a 12 cuadros/s): traer de la
+placa cada cuadro entero gasta procesador aunque después no se use (0,53 s); dejarlos en la placa y bajar solo uno de
+cada dos, 0,41 s aun con ffmpeg rellenando los que faltaban. Por eso: (1) `-fps_mode passthrough`: cada cuadro sale como
+llega, sin que ffmpeg invente copias para llenar un ritmo fijo (salía `dup=359`: con un corte de la cámara o un video que
+manda menos de lo que dice, por el caño pasaban cuadros repetidos, y OpenCV no hace eso); (2) con la cámara analizada a
+5 cuadros/s o menos, solo se baja de la placa un cuadro cada `MIN_GAP_S` (45 ms) del video: un video de 25 cuadros/s
+llega a 12,5 (lo mismo que una cámara de 12, que hoy analiza igual: 4,0-4,2 cuadros/s) y uno de 15 o menos, entero.
+`VIGIA_PLACA_HUECO=0` trae todos, como antes.
+
 Apagado de fábrica: `VIGIA_VIDEO_PLACA=si` lo prende (para probarlo en una parte de la máquina y comparar). Solo RTSP:
 Hik-Connect (HLS/FLV) llega en ráfagas y necesita las marcas de tiempo del video, que por el caño no vienen."""
 
@@ -24,6 +33,7 @@ from __future__ import annotations
 import collections
 import ctypes
 import logging
+import math
 import os
 import select
 import shutil
@@ -40,6 +50,17 @@ DECODERS = {"H.264": "h264_cuvid", "H.265": "hevc_cuvid"}
 FIRST_FRAME_TIMEOUT_S = 20.0  # hasta el primer cuadro (conectar con el grabador y arrancar el decodificador)
 FRAME_TIMEOUT_S = 20.0  # sin cuadros este rato = se cortó (ffmpeg también corta a los 10 s con `-timeout`)
 MAX_WIDTH = 1920  # más ancho que esto se achica en la placa (hoy no hay cámaras así: no cambia nada)
+# como mucho un cuadro cada tanto (segundos del video) se trae de la placa, si la cámara se analiza a 5 cuadros/s o menos
+# (ver arriba). Más de 45 ms: un video de 20 cuadros/s (50 ms) llega entero aunque los cuadros vengan un poco corridos
+def _gap_from_env(default: float = 0.045) -> float:
+    try:
+        return max(0.0, min(float(os.getenv("VIGIA_PLACA_HUECO") or default), 0.2))
+    except ValueError:
+        return default
+
+
+MIN_GAP_S = _gap_from_env()
+THIN_MAX_PROCESS_FPS = 5.5
 PIPE_SIZE = 1 << 20  # el caño de 1 MB: un cuadro de 960x576 en NV12 (830 KB) pasa de una vez
 # rango de colores «completo» (0-255, el de los JPEG; muchas cámaras lo mandan así) → el «de video» (16-235) que espera
 # la conversión de OpenCV. El decodificador de la placa entrega lo que viene en el video, sin convertir el rango
@@ -116,22 +137,49 @@ def nv12_to_bgr(buf, w: int, h: int, full_range: bool = False) -> np.ndarray:
     return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
 
 
+def keep_filter(min_gap: float) -> str:
+    """El filtro que deja pasar como mucho un cuadro cada `min_gap` segundos del video (no toca la imagen: sirve con los
+    cuadros todavía en la placa). Si el reloj del video vuelve atrás (el grabador cambió la hora), deja pasar enseguida:
+    si no, no saldría nada hasta que el reloj alcanzara al de antes."""
+    if min_gap <= 0:
+        return ""
+    return f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{min_gap:g})+lt(t,prev_selected_t)'"
+
+
+def thin_factor(fps: float, min_gap: float) -> int:
+    """De cada cuántos cuadros de un video parejo de `fps` llega uno con `keep_filter(min_gap)` (para informar los
+    cuadros por segundo que manda la cámara, no los que llegan)."""
+    if min_gap <= 0 or not 1.0 <= fps <= 120.0:
+        return 1
+    return max(1, math.ceil(min_gap * fps - 1e-6))
+
+
 def command(url: str, input_args: list[str], decoder: str | None, size: tuple[int, int],
-            native: tuple[int, int] | None, ffmpeg: str = "ffmpeg") -> list[str]:
+            native: tuple[int, int] | None, ffmpeg: str = "ffmpeg", min_gap: float = 0.0) -> list[str]:
     """El ffmpeg que lee la cámara. Con `decoder` (h264_cuvid / hevc_cuvid) decodifica y achica en la placa; sin él
-    (las pruebas, en una máquina sin placa) lo mismo con el procesador."""
+    (las pruebas, en una máquina sin placa) lo mismo con el procesador. Con `min_gap`, los cuadros quedan en la placa y
+    se baja solo uno cada `min_gap` segundos del video."""
     w, h = size
+    resize = native is None or tuple(native) != (w, h)
+    keep = keep_filter(min_gap)
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"] + list(input_args)
     if decoder:
+        if keep:  # (los cuadros decodificados quedan en la memoria de la placa hasta `hwdownload`)
+            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
         cmd += ["-c:v", decoder]
-        if native is None or tuple(native) != (w, h):
+        if resize:
             cmd += ["-resize", f"{w}x{h}"]
         cmd += ["-i", url]
+        if keep:
+            cmd += ["-vf", f"{keep},hwdownload,format=nv12"]
     else:
         cmd += ["-threads", "1", "-i", url]
-        if native is None or tuple(native) != (w, h):
-            cmd += ["-vf", f"scale={w}:{h}"]
-    return cmd + ["-an", "-sn", "-dn", "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "nv12", "pipe:1"]
+        filters = [f for f in (keep, f"scale={w}:{h}" if resize else "") if f]
+        if filters:
+            cmd += ["-vf", ",".join(filters)]
+    # cada cuadro como llega: sin copias inventadas para llenar un ritmo fijo (lo que hace ffmpeg de fábrica)
+    return cmd + ["-an", "-sn", "-dn", "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt",
+                  "nv12", "pipe:1"]
 
 
 class PlacaCapture:
@@ -142,12 +190,15 @@ class PlacaCapture:
     gpu = True
 
     def __init__(self, url: str, input_args: list[str], hint: dict, ref: np.ndarray | None = None,
-                 decoder: str | None = "auto", first_timeout: float = FIRST_FRAME_TIMEOUT_S):
+                 decoder: str | None = "auto", first_timeout: float = FIRST_FRAME_TIMEOUT_S, min_gap: float = 0.0):
         self.why = ""
         self.proc: subprocess.Popen | None = None
         self.decoder = DECODERS.get(hint.get("video_codec") or "") if decoder == "auto" else decoder
         native = (int(hint.get("video_w") or 0), int(hint.get("video_h") or 0))
-        self.fps = float(hint.get("video_fps") or 0.0)
+        self.source_fps = float(hint.get("video_fps") or 0.0)  # lo que manda la cámara
+        # de cada cuántos llega uno (con `min_gap`) y los cuadros por segundo que llegan por el caño
+        self.thin = thin_factor(self.source_fps, min_gap)
+        self.fps = self.source_fps / self.thin
         self.codec = hint.get("video_codec") or ""
         if self.decoder is None and decoder == "auto":
             self.why = f"el códec {self.codec or '(desconocido)'} no se decodifica en la placa"
@@ -163,7 +214,8 @@ class PlacaCapture:
         self._have_frame = False
         self._pending_first = False
         self._err: collections.deque[str] = collections.deque(maxlen=8)
-        cmd = command(url, input_args, self.decoder, (self.w, self.h), native, shutil.which("ffmpeg") or "ffmpeg")
+        cmd = command(url, input_args, self.decoder, (self.w, self.h), native, shutil.which("ffmpeg") or "ffmpeg",
+                      min_gap)
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE, bufsize=0)

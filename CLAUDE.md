@@ -1550,10 +1550,22 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       las marcas de tiempo del video). El estado dice «H.265 · placa» en `video_codec` (la app lo muestra en «Video que
       llega»). El medidor cuenta esos ffmpeg en `video` mientras andan (`video_placa.live_cpu`) y no los vuelve a
       contar en `externos` al terminar (`reaped_cpu_s`, por `os.wait4`). **Apagado de fábrica:** `VIGIA_VIDEO_PLACA=si`
-      lo prende (en la de AWS, primero en `vigia-maquina@4`: pasos en `deploy/aws/TIGO.md`). **Sin probar en la placa
-      de verdad dentro del programa** (acá no hay placa: las pruebas usan el mismo camino con el decodificador del
-      procesador; las imágenes salen con 0,3-0,6 de 255 de diferencia media contra las de OpenCV). Falta medir la
-      memoria de la placa por cada ffmpeg (un contexto de CUDA por cámara: con 75 cámaras podría pesar). Pruebas:
+      lo prende (en la de AWS, desde el 26 nov a las 11:45 en `vigia-maquina@4`: pasos en `deploy/aws/TIGO.md`). Las
+      imágenes salen con 0,3-0,6 de 255 de diferencia media contra las de OpenCV (medido acá con el decodificador del
+      procesador). **En producción (26 nov, 11:54, parte 4, 6 cámaras):** las 6 «· placa», 4,0-4,4 cuadros/s como las
+      demás, sin saltear; leer el video costó ~40 % menos que con el procesador, no el 85 % de la prueba (la de 960x1088
+      H.265 a 25 cuadros/s, ~8 % de un procesador contra ~13 % estimado). **Memoria de la placa:** ~120 MiB por cada
+      ffmpeg (113-131; casi todo es lo fijo de abrir la placa) y 486 MiB por proceso del análisis: 75 cámaras en una
+      2xlarge serían 11-13 GB de 15 (entra, con poco margen). **Arreglado después** (las máquinas lo toman al
+      actualizarse): ffmpeg rellenaba con copias para llevar el video a un ritmo fijo (lo que hace de fábrica con
+      `rawvideo`: `dup=359` en la prueba de la máquina; un corte de 3 s en un video de 10 cuadros/s salía con 30 cuadros
+      repetidos) → `-fps_mode passthrough`; y se traía de la placa cada cuadro entero aunque se analizaran 4-5 por
+      segundo → con la cámara a 5 cuadros/s o menos, los cuadros quedan en la placa (`-hwaccel cuda
+      -hwaccel_output_format cuda`) y se baja como mucho uno cada 45 ms del video (`select`, `MIN_GAP_S`,
+      `VIGIA_PLACA_HUECO=0` = todos): un video de 25 llega a 12,5 (como uno de 12, que hoy analiza igual: 4,0-4,2) y
+      uno de 20 o menos, entero. Medido en la máquina con el archivo de prueba (720 cuadros, 960x576): 0,53 s de
+      procesador trayendo todos, 0,41 s bajando la mitad (y eso con ffmpeg todavía rellenando). El estado informa los
+      cuadros por segundo que manda la cámara (`PlacaCapture.thin`, `source_fps`), no los que llegan. Pruebas:
       `tests/test_video_placa.py` (con `MEDIAMTX=<mediamtx>` la de punta a punta con una cámara RTSP simulada).
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el

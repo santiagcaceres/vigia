@@ -552,10 +552,13 @@ class CameraWorker:
         from . import video_placa
         if not self._gpu_hint or not self._gpu_wanted(url):
             return None
-        cap = video_placa.PlacaCapture(url, self.hik.ffmpeg_input_args(), self._gpu_hint, self._gpu_ref)
+        # (analizando a 5 cuadros/s o menos se baja de la placa como mucho un cuadro cada 45 ms: ver video_placa)
+        gap = video_placa.MIN_GAP_S if self.process_fps <= video_placa.THIN_MAX_PROCESS_FPS else 0.0
+        cap = video_placa.PlacaCapture(url, self.hik.ffmpeg_input_args(), self._gpu_hint, self._gpu_ref, min_gap=gap)
         if cap.isOpened():
-            log.info("[%s] video por la placa (%s %sx%s%s)", self.name, cap.decoder, cap.w, cap.h,
-                     ", rango completo" if cap.full_range else "")
+            log.info("[%s] video por la placa (%s %sx%s%s%s)", self.name, cap.decoder, cap.w, cap.h,
+                     ", rango completo" if cap.full_range else "",
+                     f", llega 1 de cada {cap.thin} cuadros" if cap.thin > 1 else "")
             return cap
         cap.release()
         self._gpu_failed(cap.why)
@@ -585,9 +588,12 @@ class CameraWorker:
         # «Configurar…» y en las alarmas; si no, las personas quedan flacas y los gestos no andan
         self.video = video_info(cap)
         gpu = getattr(cap, "gpu", False)
+        thin = int(getattr(cap, "thin", 1) or 1)  # (por la placa puede llegar 1 de cada 2: se informa lo que manda)
         if gpu:
             self._gpu_fails = 0
             self.video["video_codec"] = f"{self.video.get('video_codec') or 'video'} · placa"  # (la app lo muestra)
+            if getattr(cap, "source_fps", 0):
+                self.video["video_fps"] = round(cap.source_fps, 1)
         if not gpu and self._video_threads == 1 and heavy_video(self.video):
             self._video_threads = None  # (se reconecta una vez: `run` vuelve a abrir enseguida)
             log.info("[%s] video grande (%sx%s): se decodifica con varios hilos", self.name,
@@ -659,7 +665,7 @@ class CameraWorker:
                 behind_since = None
             if now - last_skip_log > 60:
                 # los cuadros por segundo de verdad (lo que dice el video al abrir a veces no es cierto)
-                self.video = {**self.video, "video_fps": round(grabbed / (now - last_skip_log), 1)}
+                self.video = {**self.video, "video_fps": round(thin * grabbed / (now - last_skip_log), 1)}
                 grabbed = 0
                 self.skipped_pct = late_s / span_s if span_s else 0.0
                 if self.skipped_pct >= SLOW_LOG_FRACTION:
