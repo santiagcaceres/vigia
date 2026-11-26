@@ -136,6 +136,22 @@ sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.ser
 Deshacer: `sudo rm /etc/systemd/system/vigia-maquina@4.service.d/placa-video.conf && sudo systemctl daemon-reload &&
 sudo systemctl restart vigia-maquina@4`.
 
+**Resultado en la parte 4 (26 nov, 12:46, 6 cámaras, con el arreglo de los cuadros repetidos y bajando de la placa
+solo los que se usan):** leer el video costó ~la mitad que con el procesador (0,19 procesadores las 5 que andaban por
+la placa, contra ~0,40 estimado con el procesador), a los mismos 3,9-4,1 cuadros/s analizados. Una cámara que manda 12
+cuadros/s llegaba con 25 (13 eran copias de ffmpeg): ahora con los 12 de verdad. La memoria de la placa: ~120 MiB por
+cámara. Para prenderlo en **las 4 partes** (un archivo para todas, en vez del de la parte 4):
+
+```bash
+sudo mkdir -p /etc/systemd/system/vigia-maquina@.service.d
+printf '[Service]\nEnvironment=VIGIA_VIDEO_PLACA=si\n' | sudo tee /etc/systemd/system/vigia-maquina@.service.d/placa-video.conf
+sudo rm -f /etc/systemd/system/vigia-maquina@4.service.d/placa-video.conf
+sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.service   # trae el código y reinicia
+```
+
+Deshacer en las 4: `sudo rm /etc/systemd/system/vigia-maquina@.service.d/placa-video.conf && sudo systemctl
+daemon-reload && sudo systemctl restart 'vigia-maquina@*'`.
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.

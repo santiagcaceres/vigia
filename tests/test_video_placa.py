@@ -66,18 +66,64 @@ def test_el_tamano_que_se_pide_es_el_del_video_con_pixeles_cuadrados():
 def test_el_ffmpeg_decodifica_en_la_placa_y_achica_solo_si_hace_falta():
     args = ["-rtsp_transport", "tcp", "-timeout", "10000000"]
     cmd = video_placa.command("rtsp://x/1", args, "hevc_cuvid", (960, 576), (960, 576))
-    assert cmd[:4] == ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel"] and args == cmd[5:9]
+    assert cmd[:6] == ["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-loglevel", "level+info"]
+    assert args == cmd[6:10]
     assert cmd[cmd.index("-c:v") + 1] == "hevc_cuvid" and cmd.index("-c:v") < cmd.index("-i")
-    assert "-resize" not in cmd  # mismo tamaño: nada que achicar
+    # siempre al tamaño pedido, aunque sea el mismo: si la cámara cambia de tamaño, el caño no se desarma
+    assert cmd[cmd.index("-resize") + 1] == "960x576" and cmd.index("-resize") < cmd.index("-i")
     assert cmd[-5:] == ["-f", "rawvideo", "-pix_fmt", "nv12", "pipe:1"]  # cada cuadro por el caño, sin pasar a colores
     assert cmd[cmd.index("-pix_fmt") + 1] == "nv12" and cmd[cmd.index("-map") + 1] == "0:v:0"
     lite = video_placa.command("rtsp://x/1", args, "h264_cuvid", (960, 540), (960, 1080))
     assert lite[lite.index("-resize") + 1] == "960x540" and lite.index("-resize") < lite.index("-i")
     cpu = video_placa.command("a.mp4", [], None, (960, 540), (960, 1080))
     assert "-c:v" not in cpu and cpu[cpu.index("-vf") + 1] == "scale=960:540" and "-threads" in cpu
+    same = video_placa.command("a.mp4", [], None, (640, 360), (640, 360))
+    assert same[same.index("-vf") + 1] == "scale=640:360"
     for c in (cmd, lite, cpu):  # cada cuadro como llega: ffmpeg no inventa copias para llenar un ritmo fijo
         assert c[c.index("-fps_mode") + 1] == "passthrough" and c.index("-fps_mode") > c.index("-i")
     assert "-hwaccel" not in cmd and "-vf" not in cmd  # (sin `min_gap`, como antes: se trae cada cuadro)
+
+
+def test_de_lo_que_dice_ffmpeg_quedan_los_errores_sin_la_clave_y_el_tamano_del_video():
+    """Con `-loglevel level+info`: los errores (para decir por qué no anduvo) sin usuario ni clave, y el tamaño del
+    video que llega. El renglón «Input #0 … from 'rtsp://usuario:clave@…'» no se guarda."""
+    line = video_placa.log_line
+    assert line("[error] Error opening input file rtsp://vigia:Abc@2024@10.0.0.1:554/x.", False) == (
+        "error", "Error opening input file rtsp://***@10.0.0.1:554/x.")
+    assert line("[tcp @ 0x56] [error] Connection refused", True) == ("error", "Connection refused")
+    assert line("[fatal] Error opening input files: Connection refused", False)[0] == "error"
+    assert line("[info] Input #0, rtsp, from 'rtsp://vigia:clave@10.0.0.1/x':", False) == ("", None)
+    assert line("[warning] RTP: missed 3 packets", False) == ("", None)
+    assert line("[info]   Stream #0:0: Video: hevc (Main), yuv420p(tv), 960x1088, 25 fps, 90k tbn", False) == (
+        "size", (960, 1088))
+    assert line("[info]   Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), "
+                "320x240 [SAR 1:1 DAR 4:3], 76 kb/s", False) == ("size", (320, 240))
+    assert line("[info] Output #0, rawvideo, to 'pipe:1':", False) == ("output", None)
+    # (lo de la salida no es el video que llega)
+    assert line("[info]   Stream #0:0: Video: rawvideo (NV12 / 0x3231564E), nv12, 640x360, q=2-31", True) == ("", None)
+
+
+def test_si_la_camara_cambio_de_tamano_no_se_abre_y_lo_dice(tmp_path):
+    """La placa se abre con lo que se aprendió con OpenCV. Si la cámara ahora manda otro tamaño (un técnico cambió la
+    segunda calidad), no se abre: el CameraWorker vuelve a mirar el video con OpenCV y después pasa a la placa con el
+    tamaño nuevo. Si OpenCV vuelve a decir lo mismo (lo cuentan distinto), se abre igual al tamaño pedido."""
+    path = video(tmp_path, "otro", size="640x480", seconds=2)
+    viejo = {"video_codec": "H.264", "video_w": 640, "video_h": 360, "video_fps": 12.0, "sar": None}
+    pc = video_placa.PlacaCapture(str(path), [], viejo, None, decoder=None)
+    assert not pc.isOpened() and pc.stale and pc.proc is None
+    assert pc.why == "el video ahora llega de 640x480 (se esperaba 640x360)"
+    igual = video_placa.PlacaCapture(str(path), [], viejo, None, decoder=None, check_size=False)
+    try:
+        assert igual.isOpened() and not igual.stale
+        ok, img = igual.read()
+        assert ok and img.shape == (360, 640, 3)  # al tamaño pedido: los cuadros no salen corridos
+    finally:
+        igual.release()
+    bien = video_placa.PlacaCapture(str(path), [], {**viejo, "video_h": 480}, None, decoder=None)
+    try:
+        assert bien.isOpened() and bien.input_size == (640, 480)
+    finally:
+        bien.release()
 
 
 def test_con_hueco_los_cuadros_quedan_en_la_placa_y_se_baja_solo_los_que_pasan():
@@ -176,7 +222,8 @@ def test_el_rango_completo_se_reconoce_comparando_con_la_imagen_de_opencv(tmp_pa
 
     def as_the_card(*a, **k):  # NV12 en el rango completo, como lo entrega el decodificador de la placa
         c = real(*a, **k)
-        return c[:c.index("-f")] + ["-vf", "scale=out_range=pc"] + c[c.index("-f"):]
+        c[c.index("-vf") + 1] += ":out_range=pc"
+        return c
     monkeypatch.setattr(video_placa, "command", as_the_card)
     raw = video_placa.PlacaCapture(str(path), [], {**info, "sar": None}, None, decoder=None)
     plain = raw.read()[1]
@@ -340,3 +387,40 @@ def test_sin_pedirlo_sigue_con_opencv_y_si_la_placa_falla_tambien(tmp_path, rtsp
         w, det = run_worker(tmp_path / "b", rtsp_camera, 9)
     assert "el video por la placa no anduvo" in caplog.text and "10 minutos con el procesador" in caplog.text
     assert w.last_status["state"] == "en_linea" and w.last_status["video_codec"] == "H.264" and det.frames
+
+
+def test_si_la_camara_cambio_de_tamano_vuelve_a_mirarla_con_opencv_sin_castigar_a_la_placa(tmp_path, monkeypatch, caplog):
+    """`_open_gpu` con una cámara que cambió de tamaño: borra lo aprendido (la conexión siguiente es con OpenCV, que lo
+    vuelve a aprender y pasa a la placa enseguida), sin los 10 minutos con el procesador de una falla. Si OpenCV vuelve
+    a decir el mismo tamaño, la placa se abre sin comparar."""
+    monkeypatch.setenv("VIGIA_VIDEO_PLACA", "si")
+    monkeypatch.setattr(video_placa, "available", lambda: (True, ""))
+    seen = []
+
+    class Fake:
+        def __init__(self, url, args, hint, ref, min_gap=0.0, check_size=True):
+            seen.append(check_size)
+            self.stale = check_size
+            self.why = "el video ahora llega de 640x480 (se esperaba 640x360)"
+            self.decoder, self.w, self.h, self.full_range, self.thin = "h264_cuvid", 640, 360, False, 1
+
+        def isOpened(self):  # noqa: N802
+            return not self.stale
+
+        def release(self):
+            pass
+    monkeypatch.setattr(video_placa, "PlacaCapture", Fake)
+    cfg = {"id": 7, "name": "Puerta", "process_fps": 5, "analysis": {},
+           "connection": {"brand": "hikvision", "host": "127.0.0.1", "rtsp_port": 9, "username": "vigia",
+                          "password": "x", "channel": 3}}
+    w = CameraWorker(cfg, Counter(), None, worker_mod.Outbox(tmp_path / "outbox", None), None, None,
+                     {"clip_pre_seconds": 1, "clip_max_seconds": 30})
+    hint = {"video_codec": "H.264", "video_w": 640, "video_h": 360, "video_fps": 12.0, "sar": None}
+    w._gpu_hint = dict(hint)
+    url = "rtsp://vigia:x@127.0.0.1:9/Streaming/Channels/302"
+    with caplog.at_level(logging.INFO, logger="vigia"):
+        assert w._open_gpu(url) is None
+    assert w._gpu_hint is None and w._gpu_relearn == (640, 360) and w._gpu_off_until == 0.0
+    assert "se vuelve a mirar el video con OpenCV" in caplog.text and "no anduvo" not in caplog.text
+    w._gpu_hint = dict(hint)  # OpenCV dijo lo mismo: ahora se abre sin comparar el tamaño
+    assert isinstance(w._open_gpu(url), Fake) and seen == [True, False]

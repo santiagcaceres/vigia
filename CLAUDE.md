@@ -1565,7 +1565,16 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       `VIGIA_PLACA_HUECO=0` = todos): un video de 25 llega a 12,5 (como uno de 12, que hoy analiza igual: 4,0-4,2) y
       uno de 20 o menos, entero. Medido en la máquina con el archivo de prueba (720 cuadros, 960x576): 0,53 s de
       procesador trayendo todos, 0,41 s bajando la mitad (y eso con ffmpeg todavía rellenando). El estado informa los
-      cuadros por segundo que manda la cámara (`PlacaCapture.thin`, `source_fps`), no los que llegan. Pruebas:
+      cuadros por segundo que manda la cámara (`PlacaCapture.thin`, `source_fps`), no los que llegan. **Con eso, en la
+      parte 4 (26 nov, 12:46):** leer el video de las 5 que andaban por la placa, 0,19 procesadores contra ~0,40
+      estimado con el procesador (~la mitad), a 3,9-4,1 cuadros/s; la 169 manda 12 cuadros/s y llegaba con 25 (13
+      copias). **Blindaje (mismo día):** ffmpeg con `-loglevel level+info -nostats`: los errores sin usuario ni clave
+      (`core.clips.redact`; antes un «Error opening input file rtsp://usuario:clave@…» quedaba tal cual en el motivo y
+      el registro) y, de lo demás, solo el tamaño del video que llega (`log_line`); la salida siempre al tamaño pedido
+      (`-resize` / `scale`), así una cámara que cambia de tamaño no desarma los cuadros del caño; si al conectar el
+      video viene de otro tamaño que el aprendido (`stale`), el `CameraWorker` lo vuelve a mirar con OpenCV y pasa a
+      la placa con el nuevo, sin los 10 minutos de castigo (si OpenCV dice lo mismo, `_gpu_relearn`, no se compara).
+      Para prenderlo en las 4 partes: `deploy/aws/TIGO.md`. Pruebas:
       `tests/test_video_placa.py` (con `MEDIAMTX=<mediamtx>` la de punta a punta con una cámara RTSP simulada).
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el

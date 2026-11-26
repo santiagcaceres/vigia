@@ -35,6 +35,7 @@ import ctypes
 import logging
 import math
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -43,6 +44,8 @@ import time
 
 import cv2
 import numpy as np
+
+from core.clips import redact
 
 log = logging.getLogger("vigia.video_placa")
 
@@ -61,6 +64,12 @@ def _gap_from_env(default: float = 0.045) -> float:
 
 MIN_GAP_S = _gap_from_env()
 THIN_MAX_PROCESS_FPS = 5.5
+SIZE_WAIT_S = 1.0  # después del primer cuadro, lo que se espera a que ffmpeg diga de qué tamaño viene el video
+# lo que dice ffmpeg (con `-loglevel level+info` cada renglón viene con su nivel): los errores, sin usuario ni clave,
+# para decir por qué no anduvo; de los de información solo el tamaño del video que llega (nada más se guarda: el
+# renglón «Input #0 … from 'rtsp://usuario:clave@…'» se descarta)
+_LEVEL_ERROR = re.compile(r"\[(?:error|fatal|panic)\] ")
+_INPUT_SIZE = re.compile(r"^\[info\]\s+Stream #0:\d+.*?: Video: .*?, (\d{2,5})x(\d{2,5})[ ,\[]")
 PIPE_SIZE = 1 << 20  # el caño de 1 MB: un cuadro de 960x576 en NV12 (830 KB) pasa de una vez
 # rango de colores «completo» (0-255, el de los JPEG; muchas cámaras lo mandan así) → el «de video» (16-235) que espera
 # la conversión de OpenCV. El decodificador de la placa entrega lo que viene en el video, sin convertir el rango
@@ -154,29 +163,42 @@ def thin_factor(fps: float, min_gap: float) -> int:
     return max(1, math.ceil(min_gap * fps - 1e-6))
 
 
+def log_line(line: str, inputs_done: bool) -> tuple[str, object]:
+    """Un renglón de lo que dice ffmpeg: ("error", texto sin usuario ni clave), ("size", (ancho, alto)) del video que
+    llega (solo antes de «Output #»), ("output", None) al empezar la parte de la salida, o ("", None)."""
+    m = _LEVEL_ERROR.search(line)
+    if m:
+        return "error", redact(line[m.end():])[:160]
+    if inputs_done:
+        return "", None
+    if line.startswith("[info] Output #"):
+        return "output", None
+    m = _INPUT_SIZE.search(line)
+    if m:
+        return "size", (int(m.group(1)), int(m.group(2)))
+    return "", None
+
+
 def command(url: str, input_args: list[str], decoder: str | None, size: tuple[int, int],
             native: tuple[int, int] | None, ffmpeg: str = "ffmpeg", min_gap: float = 0.0) -> list[str]:
     """El ffmpeg que lee la cámara. Con `decoder` (h264_cuvid / hevc_cuvid) decodifica y achica en la placa; sin él
     (las pruebas, en una máquina sin placa) lo mismo con el procesador. Con `min_gap`, los cuadros quedan en la placa y
     se baja solo uno cada `min_gap` segundos del video."""
     w, h = size
-    resize = native is None or tuple(native) != (w, h)
     keep = keep_filter(min_gap)
-    cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"] + list(input_args)
+    # (los errores y, de lo demás, solo el tamaño del video que llega: ver `log_line`; sin el avance cada medio segundo)
+    cmd = [ffmpeg, "-nostdin", "-hide_banner", "-nostats", "-loglevel", "level+info"] + list(input_args)
+    # siempre al tamaño pedido (`size`), aunque sea el mismo del video (`native`, que ya no se mira acá): si la cámara
+    # cambia de tamaño en el medio, los cuadros siguen ocupando lo mismo en el caño (si no, se leerían corridos:
+    # imágenes desarmadas)
     if decoder:
         if keep:  # (los cuadros decodificados quedan en la memoria de la placa hasta `hwdownload`)
             cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        cmd += ["-c:v", decoder]
-        if resize:
-            cmd += ["-resize", f"{w}x{h}"]
-        cmd += ["-i", url]
+        cmd += ["-c:v", decoder, "-resize", f"{w}x{h}", "-i", url]
         if keep:
             cmd += ["-vf", f"{keep},hwdownload,format=nv12"]
     else:
-        cmd += ["-threads", "1", "-i", url]
-        filters = [f for f in (keep, f"scale={w}:{h}" if resize else "") if f]
-        if filters:
-            cmd += ["-vf", ",".join(filters)]
+        cmd += ["-threads", "1", "-i", url, "-vf", ",".join(f for f in (keep, f"scale={w}:{h}") if f)]
     # cada cuadro como llega: sin copias inventadas para llenar un ritmo fijo (lo que hace ffmpeg de fábrica)
     return cmd + ["-an", "-sn", "-dn", "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt",
                   "nv12", "pipe:1"]
@@ -190,8 +212,14 @@ class PlacaCapture:
     gpu = True
 
     def __init__(self, url: str, input_args: list[str], hint: dict, ref: np.ndarray | None = None,
-                 decoder: str | None = "auto", first_timeout: float = FIRST_FRAME_TIMEOUT_S, min_gap: float = 0.0):
+                 decoder: str | None = "auto", first_timeout: float = FIRST_FRAME_TIMEOUT_S, min_gap: float = 0.0,
+                 check_size: bool = True):
         self.why = ""
+        # el video llega de otro tamaño que el que se aprendió con OpenCV (la cámara cambió): hay que volver a mirarlo
+        self.stale = False
+        self.input_size: tuple[int, int] | None = None
+        self._inputs_done = False
+        self._size_seen = threading.Event()
         self.proc: subprocess.Popen | None = None
         self.decoder = DECODERS.get(hint.get("video_codec") or "") if decoder == "auto" else decoder
         native = (int(hint.get("video_w") or 0), int(hint.get("video_h") or 0))
@@ -237,6 +265,13 @@ class PlacaCapture:
             self.release()
             return
         self._pending_first = True
+        if check_size and self._size_seen.wait(SIZE_WAIT_S) and self.input_size \
+                and tuple(self.input_size) != tuple(native):
+            self.stale = True
+            self.why = (f"el video ahora llega de {self.input_size[0]}x{self.input_size[1]} "
+                        f"(se esperaba {native[0]}x{native[1]})")
+            self.release()
+            return
         if ref is not None:
             self.full_range = self._looks_full_range(ref)
 
@@ -341,9 +376,15 @@ class PlacaCapture:
             return
         try:
             for raw in iter(proc.stderr.readline, b""):
-                line = raw.decode(errors="replace").strip()
-                if line:
-                    self._err.append(line[:160])
+                kind, value = log_line(raw.decode(errors="replace").strip(), self._inputs_done)
+                if kind == "error":
+                    self._err.append(value)
+                elif kind == "output":
+                    self._inputs_done = True
+                    self._size_seen.set()  # (no dijo el tamaño: no se compara)
+                elif kind == "size" and self.input_size is None:
+                    self.input_size = value
+                    self._size_seen.set()
         except (OSError, ValueError):
             pass
 

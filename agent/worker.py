@@ -346,6 +346,7 @@ class CameraWorker:
         self._gpu_switch = False  # se cortó a propósito la conexión de OpenCV para volver a abrir por la placa
         self._gpu_fails = 0
         self._gpu_off_until = 0.0
+        self._gpu_relearn: tuple | None = None  # el tamaño que la placa dijo que no era (ya se volvió a mirar)
         self._url = ""
         # procesador que gasta el hilo de esta cámara (último minuto, en % de un procesador): todo, leer el video
         # (con un hilo, ahí se decodifica) y analizar. `cpu_read_s`: lo gastado leyendo, acumulado (agent/consumo.py)
@@ -554,13 +555,22 @@ class CameraWorker:
             return None
         # (analizando a 5 cuadros/s o menos se baja de la placa como mucho un cuadro cada 45 ms: ver video_placa)
         gap = video_placa.MIN_GAP_S if self.process_fps <= video_placa.THIN_MAX_PROCESS_FPS else 0.0
-        cap = video_placa.PlacaCapture(url, self.hik.ffmpeg_input_args(), self._gpu_hint, self._gpu_ref, min_gap=gap)
+        size = (self._gpu_hint.get("video_w"), self._gpu_hint.get("video_h"))
+        # si ya se volvió a mirar con OpenCV y dijo lo mismo, el tamaño que dice ffmpeg no se compara (no cambió la
+        # cámara: los dos lo cuentan distinto; los cuadros salen igual al tamaño pedido)
+        cap = video_placa.PlacaCapture(url, self.hik.ffmpeg_input_args(), self._gpu_hint, self._gpu_ref, min_gap=gap,
+                                       check_size=size != self._gpu_relearn)
         if cap.isOpened():
             log.info("[%s] video por la placa (%s %sx%s%s%s)", self.name, cap.decoder, cap.w, cap.h,
                      ", rango completo" if cap.full_range else "",
                      f", llega 1 de cada {cap.thin} cuadros" if cap.thin > 1 else "")
             return cap
         cap.release()
+        if cap.stale:  # la cámara cambió de tamaño: se vuelve a mirar con OpenCV (enseguida pasa otra vez a la placa)
+            log.info("[%s] %s: se vuelve a mirar el video con OpenCV", self.name, cap.why)
+            self._gpu_relearn = size
+            self._gpu_hint = None
+            return None
         self._gpu_failed(cap.why)
         return None
 
