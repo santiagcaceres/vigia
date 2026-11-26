@@ -42,7 +42,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from core.analyzer import ZONE_COLORS, annotate
+from core.analyzer import ZONE_COLORS, annotate, line_label_at
 from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, MAX_SENSITIVITY, DetectionConfig
 from core.detectors import Detection, Detector, tuned
 from core.escena import COCO_ES, OBJECT_CONF, light
@@ -359,7 +359,7 @@ class Tuner:
         # qué decide el conteo por zona: si no cambia (se prueban otros tiempos o gestos), en vivo el conteo sigue
         # como venía (desde que se abrió) en lugar de rehacerse solo con los últimos 10 minutos que se recuerdan
         # (con la espera: tildar «Medir el tiempo de espera acá» en una zona también recuenta, si no la zona no la mediría)
-        count_key = (tuple((z.name, z.type, tuple(map(tuple, z.polygon)), z.direction, z.wait) for z in zones),
+        count_key = (tuple((z.name, z.type, tuple(map(tuple, z.polygon)), z.direction, z.wait, z.line) for z in zones),
                      repr(rule_cfg.schedule))
         with self._lock:
             keep = (self.live and count_key == getattr(self, "_count_key", None)
@@ -976,9 +976,9 @@ class Tuner:
         rules = set(self.rule_cfg.enabled_rules)
         g = self.rule_cfg.gestures
         out: list[str] = []
-        if any(z.type == "entrance" and not z.direction for z in self.zones):
-            out.append("La zona Entrada no tiene sentido: cuenta igual a los que entran y a los que salen. Marcá hacia "
-                       "dónde caminan los que entran en «✎ Marcar zonas» → «Sentido».")
+        if any(z.type == "entrance" and not z.direction and not z.line for z in self.zones):
+            out.append("La entrada está marcada como una zona sin sentido: cuenta igual a los que entran y a los que "
+                       "salen. En «✎ Marcar zonas», elegila y tocá «Pasar a línea» (o borrala y marcá la línea).")
         if self.metrics_only or (not rules and not g.enabled and not self.ia_on):
             why = gestures_blocked(self.analysis) or "el tipo de cámara no usa reglas"
             out.append(f"Esta cámara no da alertas: es «solo métricas» ({why}).")
@@ -1223,7 +1223,7 @@ def count_text(z: Zone, counts: dict | None) -> str | None:
             if tb.get("attend_avg_s") is not None:
                 text += f"  atencion {wait_clock(tb['attend_avg_s'])}"
         return text
-    if z.type == "entrance" and z.direction:
+    if z.type == "entrance" and (z.direction or z.line):
         text = f"entraron {c.get('entries', 0)}  salieron {c.get('exits', 0)}"
     else:
         text = f"{'pasaron' if z.type == 'entrance' else 'entraron'} {c['visits']}"
@@ -1250,6 +1250,9 @@ def draw_counts(out: np.ndarray, zones: list[Zone], counts: dict | None) -> None
         step = 18 * thick
         x0 = int(min(p[0] for p in z.polygon) * w) + 4
         y = int(min(p[1] for p in z.polygon) * h) + 16 * thick + 20 * thick  # debajo del nombre
+        if z.line:  # la entrada (una línea): al lado de su nombre, que va arriba de la línea (abajo va la flecha)
+            nx, y = line_label_at(z, w, h, thick)
+            x0 = nx + cv2.getTextSize(z.name, cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0][0] + 10 * thick
         y = min(max(y, 14), h - 26 - step * (len(lines) - 1))
         for line in lines:
             tw, th = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, size, thick)[0]

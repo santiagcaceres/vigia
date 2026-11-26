@@ -567,8 +567,8 @@ async function metricsView(v, clientId) {
       <h2>Gente</h2>
       <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
         ${t.door ? tile(t.entries, "Entraron", `${t.exits} salieron${t.staff ? ` · ${t.staff} de personal descontados` : ""}`)
-          : t.entries ? tile(t.entries, "Pasaron por la entrada", "entrando o saliendo: falta marcar el sentido de entrada")
-          : tile("—", "Entraron", isAdmin() ? "falta marcar la zona Entrada, con su sentido, en la cámara de la puerta" : "todavía no se cuenta la puerta")}
+          : t.entries ? tile(t.entries, "Pasaron por la entrada", "entrando o saliendo: falta marcar la línea de entrada")
+          : tile("—", "Entraron", isAdmin() ? "falta marcar la línea de entrada en la cámara de la puerta" : "todavía no se cuenta la puerta")}
         ${tile(fmtDur(avg(t.people_dwell_s, t.people)), "Tiempo promedio en cámara", "")}
         ${tile(t.people_max, "Máximo al mismo tiempo", "")}
         ${zones.length ? tile(esc(zones[0][0]), "Zona más visitada", `${zones[0][1].visits} visitas`) : ""}

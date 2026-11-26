@@ -1034,6 +1034,40 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     los datos (sirve de denominador del tiempo promedio). `agent.oficina.door_text`.
   - **Siguiente (estaciones):** uniforme por color (clic en 3-4 pisteros en «Ajustar…»; el tracker ya tiene el histograma
     HSV) para la espera hasta el pistero real, «se bajó del vehículo» y «se bajó y fue a la tienda». Sin hacer.
+- **La entrada se marca como una línea con flecha (26 nov, el dueño: «cuando marquemos las zonas de entrada, que sea una
+  línea, con una flecha que apunte a donde es la entrada, no como ahora que es una zona»; app 1.51.0).**
+  - **Datos:** zona `entrance` con `"line": true` y los 2 puntos en `polygon` (`core.rules.Zone.line`; `contains` da
+    siempre False: no es un lugar, no tiene visitas ni «ahora» ni sale en «A dónde van»). La flecha sale perpendicular
+    hacia el lado donde `core.geometry.line_side` da positivo (marcada de izquierda a derecha apunta hacia abajo):
+    **darla vuelta = invertir los dos puntos**, no hay otro campo. `direction` y `wait` no van en una línea (el servidor
+    los saca sin error, por si una app vieja se los pone).
+  - **Conteo** (`MetricsCollector._cross_lines`, con los pies de cada persona): entra quien pasa del lado de atrás al de
+    la flecha y sale quien pasa al revés. Para decir de qué lado está, los pies tienen que estar al 5 % de su altura de
+    la línea o más (`LINE_MARGIN`: quien está parado encima no cuenta); el camino tiene que pasar entre las dos puntas
+    (5 % de más, `LINE_SLACK`); el cruce vale si en el cuadro siguiente sigue del lado nuevo (un recuadro que salta un
+    cuadro y vuelve no cuenta) o si la persona se pierde ahí (salió por la puerta). De qué lado apareció se sabe por su
+    primera detección (`Track.first_bbox`: el seguimiento la informa recién a la tercera). Un salto que nadie da
+    caminando (`LINE_STEP`, `LINE_SPEED`: el seguimiento le dio el mismo número a otra persona) o reaparecer después de
+    3 s (`LINE_GAP_SECONDS`) no cuentan. Suma en `entries` / `exits` / `door` de siempre: servidor, web, PDF y Excel
+    no cambiaron (salvo los textos «falta marcar la línea de entrada»).
+  - **A las máquinas** viaja en `analysis["line_zones"]` (aparte, como `extra_zones`: una máquina sin actualizar pide 3
+    puntos por zona y dejaría la cámara en error). **Las máquinas cuentan con la línea recién al actualizarse** (la de
+    AWS, cada noche; ya, con `sudo systemctl start vigia-actualizar-diario.service`). Con línea, 5 cuadros/s aunque la
+    cámara sea solo métricas (`camera_fps`).
+  - **App** (`ZonesEditor`): con el tipo «Entrada (conteo)» se marca con dos clics, uno en cada punta de la puerta (o
+    arrastrando); queda con la flecha hacia abajo de la imagen (hacia la cámara, `core.geometry.oriented_line`) y la
+    palabra «entran» en la punta. «↔ Dar vuelta la flecha» o un clic en la flecha la invierten; las puntas y la línea se
+    arrastran. Salió el desplegable «Sentido». Las entradas de antes (zona con sentido) se siguen viendo y contando
+    igual; «Pasar a línea» las convierte (`polygon_to_line`). En producción había una sola: Minas · Entrada (7,
+    «arriba»). Una zona no pasa a ser entrada ni una línea otra cosa («Aplicar a la elegida» lo dice). La línea con su
+    flecha se dibuja en la imagen analizada (`core.analyzer.draw_entry_line`, con el nombre y «entraron N salieron M»
+    arriba), en el reproductor de alertas y en «Personas por zona»; «Sugerir zonas» propone la puerta como línea.
+    Una app 1.50 o anterior la ve como una zona finita de dos puntos y la conserva al guardar.
+  - **Límite:** para contar hay que ver a la persona de los dos lados de la línea: se marca sobre el piso, un paso
+    adentro de la puerta, no en el borde de la imagen (quien aparece ya del lado de adentro no cuenta). Probado con
+    personas simuladas y, de punta a punta, con el detector de verdad sobre un video armado con recortes de la foto de
+    prueba (2 entran, 1 sale); **nunca con una puerta real**: comparar con un conteo a mano en la primera cámara.
+    Pruebas: `tests/test_linea_entrada.py`.
 - **Zonas sobre datos: mapa de pisadas, sugerencias y editor nuevo (28 oct, pedido del dueño: «no están bien marcados
   los pasillos y góndolas»; app 1.25.0):**
   - **Mapa de pisadas** (`core/pisadas.py`, `FootMap.build` sobre los recuadros guardados del `Tuner`, cada video por

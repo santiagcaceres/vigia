@@ -23,7 +23,7 @@ def test_la_app_dice_cuantos_entraron_y_no_la_suma_de_personas():
         "3 de personal descontados")
     assert door_text(bucket(entries=12)).startswith("Pasaron por la entrada 12")  # sin sentido marcado
     sin_puerta = door_text(bucket())
-    assert "935" not in sin_puerta and "zona Entrada" in sin_puerta
+    assert "935" not in sin_puerta and "línea de entrada" in sin_puerta
 
 
 def test_ni_la_web_ni_el_pdf_ni_el_excel_suman_personas():

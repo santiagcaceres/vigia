@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from .detectors import Detector
+from .geometry import line_arrow
 from .gestos import MANO_BOLSA, MANO_BOLSILLO, MANO_ROPA
 from .hurto_ia import OnlineTheftDetector, frame_record
 from .pose import detect_with_bags, look
@@ -88,6 +89,28 @@ class ClipReady:
                 yield ts, img
 
 
+def draw_entry_line(img: np.ndarray, a, b, color, thick: int = 1) -> None:
+    """La entrada marcada como una línea (`a` y `b` de 0 a 1), con su flecha hacia adentro, sobre `img`."""
+    h, w = img.shape[:2]
+    pa, pb = (int(a[0] * w), int(a[1] * h)), (int(b[0] * w), int(b[1] * h))
+    length = float(np.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+    start, tip = line_arrow(a, b, w, h, min(max(0.3 * length, 18 * thick), 40 * thick))
+    start, tip = (int(start[0]), int(start[1])), (int(tip[0]), int(tip[1]))
+    for col, extra in (((0, 0, 0), 2), (color, 0)):  # (con borde negro: se ve sobre un piso claro)
+        cv2.line(img, pa, pb, col, 3 * thick + extra, cv2.LINE_AA)
+        cv2.arrowedLine(img, start, tip, col, 2 * thick + extra, cv2.LINE_AA, tipLength=0.45)
+
+
+def line_label_at(z: Zone, w: int, h: int, thick: int = 1) -> tuple[int, int]:
+    """Dónde va el nombre de una línea de entrada: arriba de su punta izquierda (o abajo, si está pegada al borde de
+    arriba), para no tapar la flecha."""
+    x = int(min(p[0] for p in z.polygon) * w) + 4
+    y = int(min(p[1] for p in z.polygon) * h) - 8 * thick
+    if y < 14 * thick:
+        y = int(max(p[1] for p in z.polygon) * h) + 20 * thick
+    return x, y
+
+
 def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: RuleEvent | None = None) -> np.ndarray:
     img = frame.copy()
     h, w = img.shape[:2]
@@ -96,11 +119,18 @@ def annotate(frame: np.ndarray, zones: list[Zone], tracks: list[Track], event: R
     for z in zones:
         pts = np.array([[int(x * w), int(y * h)] for x, y in z.polygon], np.int32)
         polys.append((z, pts))
-        cv2.fillPoly(overlay, [pts], ZONE_COLORS.get(z.type, (200, 200, 200)))
+        if not z.line:
+            cv2.fillPoly(overlay, [pts], ZONE_COLORS.get(z.type, (200, 200, 200)))
     img = cv2.addWeighted(overlay, 0.18, img, 0.82, 0)
     thick = max(1, w // 640)
     for z, pts in polys:
         color = ZONE_COLORS.get(z.type, (200, 200, 200))
+        if z.line:  # la entrada: una línea con la flecha hacia adentro
+            draw_entry_line(img, z.polygon[0], z.polygon[1], color, thick)
+            at = line_label_at(z, w, h, thick)
+            cv2.putText(img, z.name, at, cv2.FONT_HERSHEY_SIMPLEX, 0.5 * thick, (0, 0, 0), thick + 2, cv2.LINE_AA)
+            cv2.putText(img, z.name, at, cv2.FONT_HERSHEY_SIMPLEX, 0.5 * thick, color, thick, cv2.LINE_AA)
+            continue
         cv2.polylines(img, [pts], True, color, 2 * thick)
         cv2.putText(img, z.name, (int(pts[:, 0].min()) + 4, int(pts[:, 1].min()) + 16 * thick),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5 * thick, color, thick, cv2.LINE_AA)

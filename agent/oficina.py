@@ -341,13 +341,15 @@ def parse_channels(text: str) -> list[int]:
 
 
 def door_text(b: dict, staff: bool = False) -> str:
-    """Cuánta gente entró, de un cubo de métricas (total, día u hora): lo cuenta la zona Entrada con su sentido."""
+    """Cuánta gente entró, de un cubo de métricas (total, día u hora): lo cuenta la línea de entrada (o una zona
+    Entrada con sentido, de las de antes)."""
     if b.get("door"):
         return (f"Entraron {b.get('entries', 0)} · salieron {b.get('exits', 0)}"
                 + (f" · {b['staff_entries']} de personal descontados" if staff and b.get("staff_entries") else ""))
     if b.get("entries"):
-        return f"Pasaron por la entrada {b['entries']} (entrando o saliendo: falta marcar el sentido de la puerta)"
-    return ("Todavía no se cuenta la gente que entra: marcá la zona Entrada, con su sentido, en la cámara de la "
+        return (f"Pasaron por la entrada {b['entries']} (entrando o saliendo: falta marcarla como una línea con su "
+                "flecha)")
+    return ("Todavía no se cuenta la gente que entra: marcá la línea de entrada, con su flecha, en la cámara de la "
             "puerta.")
 
 
@@ -4293,7 +4295,9 @@ ZONE_HELP = {"shelf": "Góndola: el piso frente al estante, donde la gente se pa
              "checkout": "Caja: el piso donde el cliente paga, de su lado del mostrador.",
              "exit": "Salida: el piso junto a la puerta, del lado de adentro.",
              "restricted": "Restringida: donde un cliente no debería entrar (da alerta).",
-             "entrance": "Entrada: la puerta; marcá hacia dónde caminan en la imagen los que entran.",
+             "entrance": "Entrada: una LÍNEA sobre el piso, de lado a lado de la puerta (dos clics, uno en cada punta). "
+                         "Marcala un paso adentro: tiene que verse a la gente de los dos lados de la línea. La flecha "
+                         "apunta hacia donde camina quien ENTRA.",
              "pump": "Surtidor: el lugar donde para el vehículo a cargar.",
              "shop": "Tienda: el piso de la tienda de la estación.",
              "staff": "Personal: detrás del mostrador o depósito: quien lo pisa se toma como empleado.",
@@ -4316,6 +4320,56 @@ def nearest_vertex(zones: list[dict], nx: float, ny: float, w: int, h: int, radi
     return best
 
 
+# ---- la entrada como una línea con flecha (26 nov, pedido del dueño: «que sea una línea, con una flecha que apunte a
+# donde es la entrada, no como ahora que es una zona»). Se guarda como una zona `entrance` con "line": True y los dos
+# puntos de la línea en "polygon"; la flecha sale perpendicular, hacia el lado que da el orden de los puntos
+# (core.geometry.line_side): para darla vuelta se invierten
+LINE_ARROW = 46  # largo de la flecha en el editor, en píxeles
+
+
+def is_line(z: dict) -> bool:
+    return bool(z.get("line")) and len(z.get("polygon") or []) == 2
+
+
+def line_at(zones: list[dict], nx: float, ny: float, w: int, h: int, radius: float) -> int | None:
+    """La línea de entrada (la de más arriba) que pasa a menos de `radius` píxeles de (nx, ny), o None."""
+    from core.geometry import segment_distance
+    for zi in range(len(zones) - 1, -1, -1):
+        if is_line(zones[zi]):
+            (ax, ay), (bx, by) = zones[zi]["polygon"]
+            if segment_distance((nx * w, ny * h), (ax * w, ay * h), (bx * w, by * h)) <= radius:
+                return zi
+    return None
+
+
+def arrow_at(zones: list[dict], nx: float, ny: float, w: int, h: int, radius: float) -> int | None:
+    """La línea de entrada cuya flecha está bajo (nx, ny) (clic en la flecha = darla vuelta), o None. La parte de la
+    flecha pegada a la línea no cuenta: ahí se agarra la línea para moverla."""
+    from core.geometry import line_arrow, segment_distance
+    for zi in range(len(zones) - 1, -1, -1):
+        if is_line(zones[zi]):
+            a, b = zones[zi]["polygon"]
+            start, tip = line_arrow(a, b, w, h, LINE_ARROW)
+            k = 14.0 / LINE_ARROW
+            near = (start[0] + (tip[0] - start[0]) * k, start[1] + (tip[1] - start[1]) * k)
+            if segment_distance((nx * w, ny * h), near, tip) <= radius:
+                return zi
+    return None
+
+
+def polygon_to_line(z: dict, w: int, h: int) -> list[list[float]]:
+    """Una entrada marcada como zona (las de antes), pasada a línea: cruza la zona por el medio, a lo ancho de su
+    sentido, con la flecha hacia donde entraban (sin sentido, hacia abajo)."""
+    from core.geometry import oriented_line
+    pts = z.get("polygon") or []
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+    d = z.get("direction")
+    a, b = ((cx, min(ys)), (cx, max(ys))) if d in ("derecha", "izquierda") else ((min(xs), cy), (max(xs), cy))
+    a, b = oriented_line(a, b, DOOR_ARROWS.get(d, (0, 1)), w, h)
+    return [[round(a[0], 4), round(a[1], 4)], [round(b[0], 4), round(b[1], 4)]]
+
+
 def zone_at(zones: list[dict], nx: float, ny: float) -> int | None:
     """La zona (la de más arriba) que contiene el punto, o None."""
     from core.geometry import point_in_polygon
@@ -4336,8 +4390,12 @@ def moved_polygon(poly: list[list[float]], dx: float, dy: float) -> list[list[fl
 class ZonesEditor:
     """Editor de zonas sobre la imagen de la cámara.
     - Zona nueva: «＋ Zona nueva» (o clic afuera de las zonas) y clics en el piso; doble clic para cerrarla.
+    - La entrada (tipo «Entrada (conteo)») no es una zona: es una LÍNEA de lado a lado de la puerta (dos clics, o
+      arrastrar de una punta a la otra) con una flecha hacia donde se entra. «↔ Dar vuelta la flecha» o un clic en la
+      flecha la invierten. Las entradas marcadas como zona (las de antes) se siguen viendo y contando igual; «Pasar a
+      línea» las convierte.
     - Corregir: clic en una zona para elegirla; arrastrar sus puntos o la zona entera; clic derecho en un punto lo
-      borra. Nombre, tipo, sentido y «Medir el tiempo de espera acá» se cambian con «Aplicar a la elegida».
+      borra. Nombre, tipo y «Medir el tiempo de espera acá» se cambian con «Aplicar a la elegida».
     - Desde «● En vivo» / «🎞 Clips» llega el mapa de pisadas (`footmap`, core/pisadas.py): se ve encima de la imagen (celeste =
       caminan, rojo = se paran) y «Sugerir zonas» propone zonas a partir de él (punteadas hasta guardar)."""
 
@@ -4383,8 +4441,10 @@ class ZonesEditor:
         self.info.pack(side="left", anchor="w", padx=(8, 0))
         self._snapping = False
         ttk.Label(left, text="Cómo se marca:  1) elegí el tipo y un nombre   2) «＋ Zona nueva» y clics sobre el piso, "
-                             "punto por punto   3) doble clic para cerrarla   4) «Guardar zonas».   Corregir: clic en "
-                             "la zona y arrastrá sus puntos o la zona entera; clic derecho en un punto lo borra.",
+                             "punto por punto   3) doble clic para cerrarla   4) «Guardar zonas».   La entrada es una "
+                             "línea: dos clics, uno en cada punta de la puerta; la flecha apunta hacia donde se entra.   "
+                             "Corregir: clic en la zona y arrastrá sus puntos o la zona entera; clic derecho en un punto "
+                             "lo borra.",
                   foreground="#666", wraplength=self.W, justify="left").pack(anchor="w")
         # (debajo de la imagen, donde sobra lugar: en la columna de la derecha, con una zona de espera elegida, la
         # ventana pasaba los 768 de alto y «Guardar zonas» quedaba debajo de la barra de tareas)
@@ -4396,7 +4456,6 @@ class ZonesEditor:
         right.grid(row=0, column=1, sticky="n")
         self.zname = tk.StringVar()
         self.ztype = tk.StringVar(value=ZONE_NAMES["shelf"])
-        self.zdir = tk.StringVar(value=DOOR_NAMES["abajo"])
         ttk.Label(right, text="Zona", style="Subtitulo.TLabel").pack(anchor="w")
         row = ttk.Frame(right)
         row.pack(anchor="w", fill="x")
@@ -4410,10 +4469,12 @@ class ZonesEditor:
         tbox.bind("<<ComboboxSelected>>", lambda _e: self._show_help())
         row = ttk.Frame(right)
         row.pack(anchor="w", fill="x", pady=(2, 0))
-        ttk.Label(row, text="Sentido", width=8).pack(side="left")
-        self.dirbox = ttk.Combobox(row, textvariable=self.zdir, values=list(DOOR_NAMES.values()), state="readonly",
-                                   width=22)
-        self.dirbox.pack(side="left")
+        # la entrada (una línea con flecha): dar vuelta la flecha de la elegida y, para las entradas de antes
+        # (marcadas como zona), pasarlas a línea
+        self.flipbtn = ttk.Button(row, text="↔ Dar vuelta la flecha", command=self.flip_line, state="disabled")
+        self.flipbtn.pack(side="left")
+        self.tolinebtn = ttk.Button(row, text="Pasar a línea", command=self.to_line, state="disabled")
+        self.tolinebtn.pack(side="left", padx=4)
         # tiempo de espera de los clientes en esta zona (métricas, no da alertas): un renglón aparte, así el editor sigue
         # entrando en 1366 de ancho
         self.zwait = tk.BooleanVar(value=False)
@@ -4429,7 +4490,7 @@ class ZonesEditor:
         ttk.Button(bz, text="＋ Zona nueva", command=self.new_zone).pack(side="left")
         ttk.Button(bz, text="Cerrar zona", command=self.close_zone).pack(side="left", padx=4)
         ttk.Button(bz, text="Deshacer punto", command=self.undo).pack(side="left")
-        ttk.Button(right, text="Aplicar a la elegida (nombre, tipo, sentido y espera)",
+        ttk.Button(right, text="Aplicar a la elegida (nombre, tipo y espera)",
                    command=self.apply_selected).pack(anchor="w", pady=(4, 0))
         ttk.Label(right, text="Zonas", style="Subtitulo.TLabel").pack(anchor="w", pady=(8, 0))
         self.zlist = tk.Listbox(right, height=6, width=42, exportselection=False)
@@ -4454,7 +4515,9 @@ class ZonesEditor:
         self.photo = None
         self.canvas.bind("<ButtonPress-1>", self.press)
         self.canvas.bind("<B1-Motion>", self.motion)
-        self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "drag", None))
+        self.canvas.bind("<ButtonRelease-1>", self.release)
+        self.canvas.bind("<Motion>", self.hover)
+        self._press_at: tuple[int, int] | None = None  # dónde se apretó el primer punto de una línea (para arrastrarla)
         self.canvas.bind("<Double-Button-1>", lambda e: self.close_zone())
         self.canvas.bind("<Button-3>", self.right_click)
         self._show_help()
@@ -4556,28 +4619,72 @@ class ZonesEditor:
     def _pos(self, ev) -> tuple[float, float]:
         return min(max(ev.x / self.W, 0.0), 1.0), min(max(ev.y / self.H, 0.0), 1.0)
 
+    def _line_mode(self) -> bool:
+        """Lo que se está por marcar es la entrada: una línea de dos puntos (no una zona)."""
+        return self._type() == "entrance"
+
     def press(self, ev) -> None:
         nx, ny = self._pos(ev)
         if self.drawing:
             self.draft.append((nx, ny))
+            if self._line_mode():
+                if len(self.draft) >= 2:
+                    return self.close_line()
+                self._press_at = (ev.x, ev.y)
             return self.draw()
         hit = nearest_vertex(self.zones, nx, ny, self.W, self.H, self.HANDLE)
         if hit is not None:
             self.select(hit[0])
             self.drag = ("punto", hit[0], hit[1])
             return
-        zi = zone_at(self.zones, nx, ny)
+        ai = arrow_at(self.zones, nx, ny, self.W, self.H, self.HANDLE)
+        if ai is not None:  # clic en la flecha de una entrada: darla vuelta
+            self.select(ai)
+            return self.flip_line()
+        zi = line_at(self.zones, nx, ny, self.W, self.H, self.HANDLE)  # (antes que las zonas: va dibujada encima)
+        if zi is None:
+            zi = zone_at(self.zones, nx, ny)
         if zi is not None:
             self.select(zi)
             self.drag = ("zona", zi, nx, ny, [list(p) for p in self.zones[zi]["polygon"]])
             return
         self.select(None)  # afuera de las zonas: empieza una zona nueva
         self.drawing, self.draft = True, [(nx, ny)]
+        self._press_at = (ev.x, ev.y) if self._line_mode() else None
+        if self._line_mode():
+            self.info.configure(text="Entrada: ahora hacé clic en la otra punta de la puerta (o arrastrá hasta ahí).")
         self.draw()
+
+    def hover(self, ev) -> None:
+        """Marcando la entrada, con una punta ya puesta: la línea y su flecha siguen al mouse."""
+        if self.drawing and self._line_mode() and len(self.draft) == 1:
+            self._band(self._pos(ev))
+
+    def release(self, ev) -> None:
+        self.drag = None
+        at, self._press_at = self._press_at, None
+        if (at is not None and self.drawing and self._line_mode() and len(self.draft) == 1
+                and abs(ev.x - at[0]) + abs(ev.y - at[1]) > 16):  # se arrastró de una punta a la otra
+            self.draft.append(self._pos(ev))
+            self.close_line()
+
+    def _band(self, to: tuple[float, float]) -> None:
+        """La línea que se está marcando, de la primera punta a `to`, con la flecha como quedaría."""
+        from core.geometry import line_arrow, oriented_line
+        c = self.canvas
+        c.delete("band")
+        a, b = oriented_line(self.draft[0], to, w=self.W, h=self.H)
+        if abs(a[0] - b[0]) * self.W + abs(a[1] - b[1]) * self.H < 6:
+            return
+        col = ZONE_COLORS["entrance"]
+        c.create_line(a[0] * self.W, a[1] * self.H, b[0] * self.W, b[1] * self.H, fill=col, width=3, dash=(6, 4),
+                      tags="band")
+        start, tip = line_arrow(a, b, self.W, self.H, LINE_ARROW)
+        c.create_line(*start, *tip, fill="#fff", width=3, arrow="last", arrowshape=(14, 16, 6), tags="band")
 
     def motion(self, ev) -> None:
         if self.drag is None:
-            return
+            return self.hover(ev)
         nx, ny = self._pos(ev)
         if self.drag[0] == "punto":
             _, zi, vi = self.drag
@@ -4593,6 +4700,9 @@ class ZonesEditor:
         if hit is None:
             return
         zi, vi = hit
+        if is_line(self.zones[zi]):
+            return self.app.mb.showinfo(NOMBRE, "La línea de entrada tiene dos puntas: se arrastran (para sacarla: "
+                                                "«Borrar zona elegida»).", parent=self.top)
         if len(self.zones[zi]["polygon"]) <= 3:
             return self.app.mb.showinfo(NOMBRE, "Una zona necesita al menos 3 puntos (para sacarla: «Borrar zona "
                                                 "elegida»).", parent=self.top)
@@ -4603,34 +4713,108 @@ class ZonesEditor:
     def _type(self) -> str:
         return next((k for k, t in ZONE_NAMES.items() if t == self.ztype.get()), "shelf")
 
-    def _direction(self) -> str:
-        return next((k for k, t in DOOR_NAMES.items() if t == self.zdir.get()), "")
+    def _sel_zone(self) -> dict | None:
+        return self.zones[self.sel] if self.sel is not None and self.sel < len(self.zones) else None
+
+    def _old_door(self) -> bool:
+        """La elegida es una entrada marcada como zona (las de antes de la línea)."""
+        z = self._sel_zone()
+        return z is not None and z.get("type") == "entrance" and not is_line(z)
+
+    def _no_wait(self) -> bool:
+        """En lo que se está marcando o editando no se mide espera: Personal, Surtidor, Mesa y la línea de entrada
+        (no es un lugar donde alguien esté)."""
+        return self._type() in NO_WAIT_TYPES or (self._line_mode() and not self._old_door())
 
     def _wait(self) -> bool:
-        """«Medir el tiempo de espera acá» tildada y el tipo lo permite (no en Personal ni en Surtidor)."""
-        return bool(self.zwait.get()) and self._type() not in NO_WAIT_TYPES
+        """«Medir el tiempo de espera acá» tildada y el tipo lo permite (no en Personal, Surtidor ni la entrada)."""
+        return bool(self.zwait.get()) and not self._no_wait()
 
     def _show_help(self) -> None:
-        """Ayuda del tipo elegido (y de la espera, si está tildada); el sentido solo se elige para la Entrada y la
-        espera no va en Personal ni en Surtidor (el personal no espera; en el surtidor esperan vehículos)."""
-        no_wait = self._type() in NO_WAIT_TYPES
+        """Ayuda del tipo elegido (y de la espera, si está tildada). La entrada se marca como una línea: los botones de
+        la flecha son para la línea elegida, y «Pasar a línea» para una entrada de las de antes (una zona)."""
+        no_wait = self._no_wait()
         if no_wait:
             self.zwait.set(False)
-        self.help.configure(text=ZONE_HELP.get(self._type(), "") + (f"\n{WAIT_HELP}" if self._wait() else ""))
-        self.dirbox.configure(state="readonly" if self._type() == "entrance" else "disabled")
+        z = self._sel_zone()
+        old = ("\nEsta entrada está marcada como una zona (como se hacía antes): sigue contando igual. «Pasar a línea» "
+               "la deja como las nuevas.") if self._old_door() and self._type() == "entrance" else ""
+        self.help.configure(text=ZONE_HELP.get(self._type(), "") + old + (f"\n{WAIT_HELP}" if self._wait() else ""))
+        self.flipbtn.configure(state="normal" if z is not None and is_line(z) else "disabled")
+        self.tolinebtn.configure(state="normal" if self._old_door() else "disabled")
         self.waitcb.configure(state="disabled" if no_wait else "normal")
+        if self.drawing and self._line_mode() and len(self.draft) > 1:
+            # se cambió el tipo a «Entrada» con varios puntos de una zona ya puestos: la línea se empieza de nuevo
+            self.draft = []
+            self.info.configure(text="Entrada: clic en una punta de la puerta y clic en la otra.")
+            self.draw()
 
     def new_zone(self) -> None:
         self.select(None)
         self.drawing, self.draft = True, []
-        self.info.configure(text="Zona nueva: clics en el piso para marcar los puntos; doble clic para cerrarla.")
+        self.info.configure(text="Entrada: clic en una punta de la puerta y clic en la otra (un paso adentro, sobre el "
+                                 "piso)." if self._line_mode() else
+                                 "Zona nueva: clics en el piso para marcar los puntos; doble clic para cerrarla.")
 
     def undo(self) -> None:
         if self.draft:
             self.draft.pop()
             self.draw()
 
+    def close_line(self) -> None:
+        """Las dos puntas de la entrada ya están: queda la línea, con la flecha hacia abajo de la imagen (hacia la
+        cámara, lo más común); si se entra para el otro lado, se da vuelta."""
+        from core.geometry import oriented_line
+        a, b = self.draft[0], self.draft[-1]
+        if abs(a[0] - b[0]) * self.W + abs(a[1] - b[1]) * self.H < 24:  # un clic doble, no una línea
+            self.draft = [a]
+            self.info.configure(text="La línea quedó muy corta: hacé clic en la otra punta de la puerta.")
+            return self.draw()
+        name = self.zname.get().strip() or f"entrada_{len(self.zones) + 1}"
+        if any(z["name"] == name for z in self.zones):
+            self.draft = [a]
+            self.draw()
+            return self.app.mb.showinfo(NOMBRE, "Ya hay una zona con ese nombre.", parent=self.top)
+        a, b = oriented_line(a, b, w=self.W, h=self.H)
+        self.zones.append({"name": name, "type": "entrance", "line": True,
+                           "polygon": [[round(snap_edge(x), 4), round(snap_edge(y), 4)] for x, y in (a, b)]})
+        self.drawing, self.draft = False, []
+        self.zname.set("")
+        self.select(len(self.zones) - 1)
+        self.info.configure(text="Entrada marcada. La flecha tiene que apuntar hacia ADENTRO (hacia donde camina quien "
+                                 "entra): si quedó al revés, «↔ Dar vuelta la flecha» o un clic en la flecha.")
+
+    def flip_line(self) -> None:
+        """«↔ Dar vuelta la flecha» (o un clic en la flecha): los que cruzan para el otro lado pasan a ser los que
+        entran."""
+        z = self._sel_zone()
+        if z is None or not is_line(z):
+            return self.app.mb.showinfo(NOMBRE, "Elegí la línea de entrada (un clic sobre ella o en la lista).",
+                                        parent=self.top)
+        z["polygon"] = [list(z["polygon"][1]), list(z["polygon"][0])]
+        self.select(self.sel)
+        self.info.configure(text="Flecha dada vuelta: entra quien cruza la línea hacia donde apunta la flecha; el que "
+                                 "la cruza al revés, sale.")
+
+    def to_line(self) -> None:
+        """«Pasar a línea»: una entrada marcada como zona (las de antes) queda como una línea que la cruza por el
+        medio, con la flecha hacia donde entraban."""
+        z = self._sel_zone()
+        if not self._old_door():
+            return self.app.mb.showinfo(NOMBRE, "Elegí una entrada marcada como zona (las de antes).", parent=self.top)
+        z["polygon"] = polygon_to_line(z, self.W, self.H)
+        z["line"] = True
+        z.pop("direction", None)
+        z.pop("wait", None)
+        self.select(self.sel)
+        self.info.configure(text="Quedó como una línea. Llevá las puntas a los dos lados de la puerta (un paso "
+                                 "adentro, sobre el piso) y revisá que la flecha apunte hacia donde se entra.")
+
     def close_zone(self) -> None:
+        if self.drawing and self._line_mode():  # la entrada se cierra sola con el segundo clic
+            if len(self.draft) >= 2:
+                return self.close_line()
+            return self.info.configure(text="Entrada: falta el clic en la otra punta de la puerta.")
         pts = list(dict.fromkeys(self.draft))
         if len(pts) < 3:
             if self.drawing:
@@ -4641,8 +4825,6 @@ class ZonesEditor:
         if any(z["name"] == name for z in self.zones):
             return self.app.mb.showinfo(NOMBRE, "Ya hay una zona con ese nombre.", parent=self.top)
         zone = {"name": name, "type": ztype, "polygon": [[snap_edge(x), snap_edge(y)] for x, y in pts]}
-        if ztype == "entrance" and self._direction():
-            zone["direction"] = self._direction()
         if self._wait():
             zone["wait"] = True
         self.zones.append(zone)
@@ -4657,24 +4839,28 @@ class ZonesEditor:
             z = self.zones[zi]
             self.zname.set(z["name"])
             self.ztype.set(ZONE_NAMES.get(z["type"], z["type"]))
-            self.zdir.set(DOOR_NAMES[z.get("direction") if z.get("direction") in DOOR_ARROWS else ""])
             self.zwait.set(bool(z.get("wait")))
-            self._show_help()
+        self._show_help()  # (también sin ninguna elegida: los botones de la flecha se apagan)
         self.draw()
 
     def apply_selected(self) -> None:
-        """Nombre, tipo, sentido y espera de los campos de arriba a la zona elegida (por ejemplo, a una sugerida)."""
+        """Nombre, tipo y espera de los campos de arriba a la zona elegida (por ejemplo, a una sugerida)."""
         if self.sel is None:
             return self.app.mb.showinfo(NOMBRE, "Elegí una zona: clic sobre ella o en la lista.", parent=self.top)
         z = self.zones[self.sel]
         name = self.zname.get().strip() or z["name"]
         if any(o["name"] == name for i, o in enumerate(self.zones) if i != self.sel):
             return self.app.mb.showinfo(NOMBRE, "Ya hay otra zona con ese nombre.", parent=self.top)
+        if is_line(z) and self._type() != "entrance":
+            return self.app.mb.showinfo(NOMBRE, "Una línea solo puede ser la entrada. Para marcar otra cosa ahí, "
+                                                "borrala y dibujá la zona con «＋ Zona nueva».", parent=self.top)
+        if not is_line(z) and self._type() == "entrance" and z["type"] != "entrance":
+            return self.app.mb.showinfo(NOMBRE, "La entrada se marca como una línea, no como una zona: borrá esta zona, "
+                                                "elegí el tipo «Entrada (conteo)» y hacé dos clics, uno en cada punta "
+                                                "de la puerta.", parent=self.top)
         z["name"], z["type"] = name, self._type()
-        if z["type"] == "entrance" and self._direction():
-            z["direction"] = self._direction()
-        else:
-            z.pop("direction", None)
+        if z["type"] != "entrance":
+            z.pop("direction", None)  # (una entrada de las de antes conserva su sentido)
         if self._wait():
             z["wait"] = True
         else:
@@ -4721,7 +4907,8 @@ class ZonesEditor:
             door = f"  {DOOR_NAMES[z['direction']][-1]}" if z.get("direction") in DOOR_ARROWS else ""
             sug = "  (sugerida)" if z.get("sugerida") else ""
             wait = " · espera" if z.get("wait") else ""
-            self.zlist.insert("end", f"{z['name']}  ·  {ZONE_NAMES.get(z['type'], z['type'])}{door}{wait}{sug}")
+            kind = "Entrada (línea con flecha)" if is_line(z) else ZONE_NAMES.get(z["type"], z["type"])
+            self.zlist.insert("end", f"{z['name']}  ·  {kind}{door}{wait}{sug}")
         if self.sel is not None and self.sel < len(self.zones):
             self.zlist.selection_set(self.sel)
 
@@ -4740,6 +4927,11 @@ class ZonesEditor:
             col = ZONE_COLORS.get(z["type"], "#fff")
             pts = [v for x, y in z["polygon"] for v in (x * self.W, y * self.H)]
             chosen = zi == self.sel
+            if is_line(z):  # la entrada: una línea con la flecha hacia donde se entra
+                self._draw_line(z, col, chosen)
+                continue
+            if len(pts) < 6:
+                continue  # (algo que no es una zona ni una línea: no se dibuja)
             c.create_polygon(*pts, outline=col, fill=col, stipple="gray12" if z.get("sugerida") else "gray25",
                              width=3 if chosen else 2, dash=(6, 4) if z.get("sugerida") else None)
             c.create_text(pts[0] + 4, pts[1] + 4, text=z["name"] + (" · espera" if z.get("wait") else ""), fill=col,
@@ -4761,6 +4953,33 @@ class ZonesEditor:
                 c.create_line(*pts, fill=col, width=2)
             for x, y in self.draft:
                 c.create_oval(x * self.W - 4, y * self.H - 4, x * self.W + 4, y * self.H + 4, fill=col, outline="")
+
+    def _draw_line(self, z: dict, col: str, chosen: bool) -> None:
+        """Una entrada: la línea (con borde negro, para que se vea sobre un piso claro), la flecha blanca hacia donde
+        se entra con la palabra «entran» en la punta, el nombre y, si está elegida, sus dos puntas para arrastrar."""
+        from core.geometry import line_arrow
+        c = self.canvas
+        (ax, ay), (bx, by) = z["polygon"]
+        pa, pb = (ax * self.W, ay * self.H), (bx * self.W, by * self.H)
+        dash = (6, 4) if z.get("sugerida") else None
+        c.create_line(*pa, *pb, fill="#000", width=8 if chosen else 6)
+        c.create_line(*pa, *pb, fill=col, width=5 if chosen else 3, dash=dash)
+        start, tip = line_arrow((ax, ay), (bx, by), self.W, self.H, LINE_ARROW)
+        c.create_line(*start, *tip, fill="#000", width=7, arrow="last", arrowshape=(16, 18, 7))
+        c.create_line(*start, *tip, fill="#fff", width=4, arrow="last", arrowshape=(14, 16, 6))
+        ux, uy = (tip[0] - start[0]) / LINE_ARROW, (tip[1] - start[1]) / LINE_ARROW
+        tx = min(max(tip[0] + ux * 26, 30), self.W - 30)
+        ty = min(max(tip[1] + uy * 14, 10), self.H - 10)
+        for dx, dy, fill in ((1, 1, "#000"), (0, 0, "#fff")):
+            c.create_text(tx + dx, ty + dy, text="entran", fill=fill, font=("Segoe UI", 10, "bold"))
+        nx, ny = min(pa[0], pb[0]) + 8, min(pa[1], pb[1]) - 24  # el nombre, arriba de la línea
+        if ny < 2:
+            ny = max(pa[1], pb[1]) + 8
+        for dx, dy, fill in ((1, 1, "#000"), (0, 0, col)):
+            c.create_text(nx + dx, ny + dy, text=z["name"], fill=fill, anchor="nw", font=("Segoe UI", 10, "bold"))
+        if chosen:  # las dos puntas, para arrastrar
+            for x, y in (pa, pb):
+                c.create_rectangle(x - 5, y - 5, x + 5, y + 5, fill="#fff", outline=col, width=2)
 
     def save(self) -> None:
         rules = dict(self.rules)  # los tiempos los manda la ventana de la cámara (los que se están probando ahí)
@@ -6252,7 +6471,7 @@ class TuneWindow:
         c = c or {}
         for z in zones:
             zc = (c.get("zones") or {}).get(z.name) or {"visits": 0, "now": 0}
-            if z.type == "entrance" and z.direction:
+            if z.type == "entrance" and (z.direction or z.line):
                 entered = f"{zc.get('entries', 0)} · salieron {zc.get('exits', 0)}"
             elif z.type == "staff":
                 entered = f"personal: {zc.get('staff', 0)}"
@@ -6366,7 +6585,8 @@ class TuneWindow:
             door = st.get("door")
             if door:
                 lines.append((f"Puerta: entraron {door['entries']} · salieron {door['exits']}" if door["door"] else
-                              f"Puerta: pasaron {door['entries']} (sin sentido: marcalo en «✎ Marcar zonas»)")
+                              f"Puerta: pasaron {door['entries']} (sin sentido: marcala como línea en «✎ Marcar "
+                              "zonas»)")
                              + (f" · personal {door['staff']}" if door["staff"] else "") + " → comparalo con tu conteo")
             pose = st.get("pose") or {}
             if st.get("gestures") and pose.get("people"):

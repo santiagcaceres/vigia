@@ -23,6 +23,13 @@ class Track:
     hist: np.ndarray | None = field(default=None, repr=False)  # colores de la ropa (para reconocerla)
     at_border: bool = False  # la última vez se la vio tocando el borde de la imagen (saliendo)
     kpts: np.ndarray | None = field(default=None, repr=False)  # postura (17x3) de este cuadro, si se miró
+    # dónde se la detectó por primera vez (el seguimiento la informa recién a la tercera detección): la línea de
+    # entrada lo usa para saber de qué lado apareció quien la cruza apenas entra en la imagen
+    first_bbox: BBox | None = None
+
+    def __post_init__(self) -> None:
+        if self.first_bbox is None:
+            self.first_bbox = self.bbox
 
     @property
     def visible(self) -> bool:

@@ -657,9 +657,13 @@ class StreamUrlIn(BaseModel):
 class ZoneIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     type: Literal["shelf", "checkout", "exit", "restricted", "entrance", "pump", "shop", "staff", "aisle", "table"]
-    polygon: list[tuple[float, float]] = Field(min_length=3)
-    # solo entrance: hacia dónde se mueve en la imagen quien ENTRA (cuenta ingresos y egresos por separado)
+    polygon: list[tuple[float, float]] = Field(min_length=2)  # (2 solo en una línea de entrada: parse_zones)
+    # solo entrance: hacia dónde se mueve en la imagen quien ENTRA (cuenta ingresos y egresos por separado). Es de
+    # las entradas marcadas como zona (las de antes del 26 nov); en una línea el sentido lo da el orden de sus puntos
     direction: Literal["abajo", "arriba", "derecha", "izquierda"] | None = None
+    # solo entrance: la entrada es una LÍNEA (los 2 puntos de `polygon`) con una flecha hacia adentro
+    # (core.rules.Zone.line): entra quien la cruza hacia la flecha, sale quien la cruza al revés
+    line: bool | None = None
     # medir el tiempo de espera de los clientes acá (caja, mostrador, fila): métricas, no da alertas. No va en zonas
     # de personal ni de surtidor (core.rules.parse_zones lo rechaza). None/False = no se mide
     wait: bool | None = None
@@ -2451,8 +2455,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # «wait» (medir la espera) se guarda solo si está prendido: una zona sin espera queda como siempre. En una zona de
         # personal o de surtidor no va: se saca sin dar error (una app 1.39 que le cambia el tipo a una zona que medía
         # espera no tiene esa casilla para destildarla)
+        # «line» (la entrada marcada como línea), igual: solo si está prendido; y una línea no lleva el sentido de las
+        # zonas de antes ni espera (una app vieja se los puede poner con «Aplicar a la elegida»)
         cfg = {"zones": [{k: v for k, v in z.model_dump(exclude_none=True).items()
-                          if k != "wait" or (v and z.type not in NO_WAIT_TYPES)}
+                          if (k != "wait" or (v and z.type not in NO_WAIT_TYPES and not z.line))
+                          and (k != "line" or v) and (k != "direction" or not z.line)}
                          for z in body.zones], "rules": clean_rules(body.rules)}
         try:
             parse_config(cfg)
@@ -2862,6 +2869,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         extra = [z for z in zones if (z or {}).get("type") in NEW_ZONE_TYPES]
         # las mesas (plan «gastronomía»), en otra lista más: una máquina sin reiniciar lee `extra_zones` y no conoce «mesa»
         tables = [z for z in zones if (z or {}).get("type") in TABLE_ZONE_TYPES]
+        # la entrada marcada como una línea (2 puntos), en otra lista más: una máquina sin actualizar pide 3 puntos por
+        # zona y dejaría de usar todas las de la cámara. Hasta que se actualice, esa cámara no cuenta la puerta
+        lines = [z for z in zones if (z or {}).get("line")]
+        zones = [z for z in zones if not (z or {}).get("line")]
         out = {"zones": [z for z in zones if (z or {}).get("type") not in NEW_ZONE_TYPES + TABLE_ZONE_TYPES],
                "rules": rules,
                "vehicles": vehicles, "plans": plans, "client_plans": plans_of(client), "profile": c.profile or "general",
@@ -2876,6 +2887,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out["detection"] = det.to_dict(compact=True)
         if tables:
             out["table_zones"] = tables
+        if lines:
+            out["line_zones"] = lines
         if extra:
             out["extra_zones"] = extra
             staff = [z for z in extra if z.get("type") == "staff"]
@@ -2893,7 +2906,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def camera_fps(c: Camera, analysis: dict) -> float:
         if analysis.get("metrics_only"):
             zones = analysis.get("zones") or []
-            if any((z or {}).get("type") == "entrance" and (z or {}).get("direction") for z in zones):
+            if analysis.get("line_zones") or any((z or {}).get("type") == "entrance" and (z or {}).get("direction")
+                                                 for z in zones):
                 return MIN_FPS  # puerta con sentido: a menos cuadros, quien cruza rápido pasa entre dos y no se cuenta
             counting = any((z or {}).get("type") in ("entrance", "pump") for z in zones)
             # con mesas también: la visita del mozo dura segundos

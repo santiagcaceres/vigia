@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from .geometry import oriented_line
+
 GRID = (96, 54)  # celdas (ancho, alto): en 1920x1080, 20 px por celda
 STILL_SPEED = 0.03  # moverse menos que esto (fracción del ancho de la imagen por segundo) = está parado
 SPEED_WINDOW = 1.0  # la velocidad se mide contra dónde estaba hace 1 s (el recuadro tiembla de un cuadro a otro)
@@ -153,6 +155,17 @@ def _norm(poly: np.ndarray) -> list[list[float]]:
             for x, y in poly]
 
 
+def _door_near(zones: list[dict], x: float, y: float, radius: float = 0.25) -> bool:
+    """Ya hay una línea de entrada marcada cerca de (x, y)."""
+    for z in zones:
+        pts = z.get("polygon") or []
+        if z.get("line") and len(pts) == 2:
+            mx, my = (pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2
+            if abs(mx - x) + abs(my - y) <= radius:
+                return True
+    return False
+
+
 def _inside(zones: list[dict], x: float, y: float) -> bool:
     from .geometry import point_in_polygon
     return any(point_in_polygon(x, y, [tuple(p) for p in z.get("polygon") or []]) for z in zones)
@@ -212,24 +225,30 @@ def _doors(fm: FootMap, existing: list[dict]) -> list[dict]:
         lo, hi = float(np.percentile(along, 10)), float(np.percentile(along, 90))
         lo, hi = max(0.0, lo - 0.05), min(1.0, hi + 0.05)
         depth = 0.15
+        # la entrada va como una LÍNEA paralela a ese borde, un poco adentro (para ver a la gente de los dos lados), con
+        # la flecha hacia adentro del local: hacia donde caminan los que aparecen por ahí
         if side == "abajo":
-            poly, direction = [[lo, 1 - depth], [hi, 1 - depth], [hi, 1.0], [lo, 1.0]], "arriba"
+            a, b, inward = (lo, 1 - depth), (hi, 1 - depth), (0.0, -1.0)
         elif side == "arriba":
-            poly, direction = [[lo, 0.0], [hi, 0.0], [hi, depth], [lo, depth]], "abajo"
+            a, b, inward = (lo, depth), (hi, depth), (0.0, 1.0)
         elif side == "izquierda":
-            poly, direction = [[0.0, lo], [depth, lo], [depth, hi], [0.0, hi]], "derecha"
+            a, b, inward = (depth, lo), (depth, hi), (1.0, 0.0)
         else:
-            poly, direction = [[1 - depth, lo], [1.0, lo], [1.0, hi], [1 - depth, hi]], "izquierda"
-        cx, cy = np.mean(poly, axis=0)
-        if _inside(existing, float(cx), float(cy)):
+            a, b, inward = (1 - depth, lo), (1 - depth, hi), (-1.0, 0.0)
+        cx, cy = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+        if _inside(existing, cx, cy) or _door_near(existing, cx, cy):
             continue
         n_in = sum(1 for p in items if p[4] > 0)
         moves = [(p[2], p[3]) for p in items if p[4] > 0 and abs(p[2]) + abs(p[3]) > 0.02]
-        if moves:  # hacia dónde caminan de verdad los que aparecen por ese borde
+        toward = inward
+        if moves:  # hacia dónde caminan de verdad los que aparecen por ese borde (si es hacia afuera, la flecha al revés)
             mx, my = float(np.mean([m[0] for m in moves])), float(np.mean([m[1] for m in moves]))
-            direction = ("derecha" if mx > 0 else "izquierda") if abs(mx) > abs(my) else ("abajo" if my > 0 else "arriba")
-        out.append({"name": f"Puerta {side}", "type": "entrance", "direction": direction,
-                    "polygon": [[round(a, 3), round(b, 3)] for a, b in poly],
+            if mx * inward[0] + my * inward[1] < 0:
+                toward = (-inward[0], -inward[1])
+        a, b = oriented_line(a, b, toward)
+        word = {(0.0, 1.0): "abajo", (0.0, -1.0): "arriba", (1.0, 0.0): "la derecha", (-1.0, 0.0): "la izquierda"}[toward]
+        out.append({"name": f"Puerta {side}", "type": "entrance", "line": True,
+                    "polygon": [[round(a[0], 3), round(a[1], 3)], [round(b[0], 3), round(b[1], 3)]],
                     "why": f"{n_in} personas aparecieron y {len(items) - n_in} se fueron por el borde de {side} "
-                           f"(entran hacia {direction}: revisalo)"})
+                           f"(la flecha apunta hacia {word}, hacia donde entran: revisala)"})
     return out

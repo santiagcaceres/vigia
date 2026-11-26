@@ -296,9 +296,9 @@ def metrics_pdf(client: str, plans: list[str], since: date, until: date, m: dict
             first = (str(t["entries"]), "Entraron",
                      f"{t['exits']} salieron" + (f" · {t['staff']} de personal descontados" if t.get("staff") else ""))
         elif t.get("entries"):
-            first = (str(t["entries"]), "Pasaron por la entrada", "entrando o saliendo (falta marcar el sentido)")
+            first = (str(t["entries"]), "Pasaron por la entrada", "entrando o saliendo (falta la línea de entrada)")
         else:
-            first = ("-", "Entraron", "falta la zona Entrada (con su sentido) en la cámara de la puerta")
+            first = ("-", "Entraron", "falta marcar la entrada en la cámara de la puerta")
         tiles = [first,
                  (dur(avg(t["people_dwell_s"], t["people"])), "Tiempo promedio", "en cámara, por persona"),
                  (str(t["people_max"]), "Máximo a la vez", "personas al mismo tiempo")]

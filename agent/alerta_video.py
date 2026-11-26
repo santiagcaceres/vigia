@@ -141,10 +141,14 @@ def draw_overlay(img: np.ndarray, rec: dict | None, zones: list[dict], alert: st
     h, w = img.shape[:2]
     for z in zones or []:
         pts = np.array([[int(x * w), int(y * h)] for x, y in z.get("polygon") or []], np.int32)
-        if len(pts) < 3:
-            continue
         color = ZONE_BGR.get(z.get("type"), (200, 200, 200))
-        cv2.polylines(img, [pts], True, color, 1, cv2.LINE_AA)
+        if z.get("line") and len(pts) == 2:  # la entrada marcada como una línea, con su flecha
+            from core.analyzer import draw_entry_line
+            draw_entry_line(img, z["polygon"][0], z["polygon"][1], color)
+        elif len(pts) < 3:
+            continue
+        else:
+            cv2.polylines(img, [pts], True, color, 1, cv2.LINE_AA)
         x, y = pts[:, 0].min(), pts[:, 1].min()
         cv2.putText(img, ascii_text(str(z.get("name") or "")), (int(x) + 3, int(y) + 14), cv2.FONT_HERSHEY_SIMPLEX,
                     0.42, color, 1, cv2.LINE_AA)

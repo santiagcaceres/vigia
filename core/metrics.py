@@ -13,7 +13,9 @@ Qué se mide por cubo:
   sumaron ahí ("a dónde van").
 - `entries` / `exits`: ingresos y egresos de clientes por la zona `entrance`. Con sentido (`direction`: hacia
   dónde se mueve en la imagen quien entra) cuenta cada cruce de la puerta por separado y `door` queda en 1; sin
-  sentido (zonas viejas) `entries` cuenta a todos los que la pisaron, entren o salgan.
+  sentido (zonas viejas) `entries` cuenta a todos los que la pisaron, entren o salgan. Desde el 26 nov la entrada se
+  marca como una LÍNEA con una flecha (`Zone.line`): entra quien la cruza hacia la flecha y sale quien la cruza al
+  revés (`MetricsCollector._cross_lines`); las zonas de entrada de antes siguen contando como contaban.
 - `staff` / `staff_entries`: personas que se tomaron como empleados (pisaron una zona `staff` al menos 2 s, o
   aparecieron con el local cerrado según su horario) y sus ingresos: no cuentan en `people`, `entries` ni zonas.
 - `vehicles`, `vehicles_dwell_s`, `vehicles_max`: lo mismo para vehículos (estaciones de servicio).
@@ -63,7 +65,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from .geometry import bbox_foot
+from .geometry import bbox_foot, crosses_segment, line_distance
 from .rules import DIRECTIONS, VEHICLE_LABEL, Zone
 from .schedule import is_open
 from .tracker import Track
@@ -71,6 +73,18 @@ from .tracker import Track
 MIN_VISIT_SECONDS = 2.0  # menos que esto es ruido del detector
 STAFF_MIN_SECONDS = 2.0  # en la zona de personal: menos que esto puede ser un cliente que se acercó al mostrador
 CROSS_FRACTION = 0.4  # para contar un cruce, moverse al menos este tanto del ancho de la puerta en el sentido marcado
+# línea de entrada: para decir de qué lado de la línea está alguien, sus pies tienen que estar a esta parte de su altura
+# (o más) de la línea. Así el temblor del recuadro de quien está parado encima no cuenta como ir y venir
+LINE_MARGIN = 0.05
+LINE_MARGIN_MIN_PX = 2.0
+LINE_SLACK = 0.05  # la línea vale este tanto de su largo más allá de cada punta (por si quedó un poco corta)
+LINE_BORN_SECONDS = 2.0  # recién aparecida: se mira de qué lado estaba en su primera detección (`Track.first_bbox`)
+# entre una vez que se la ve y la siguiente, una persona no se mueve más que esto (en alturas suyas: un paso más lo que
+# camina por segundo) ni pasan más de LINE_GAP_SECONDS. Si no, no se sabe por dónde anduvo (estuvo tapada un rato) o el
+# seguimiento le dio el mismo número a otra persona: no cuenta como cruce
+LINE_STEP = 0.6
+LINE_SPEED = 1.5
+LINE_GAP_SECONDS = 3.0
 WAIT_MIN_SECONDS = 5.0  # en una zona de espera: menos que esto es pasar de largo, no esperar
 WAIT_EDGES = (60, 180, 300, 600)  # cortes del histograma de esperas: < 1 min, 1-3, 3-5, 5-10 y 10 min o más
 # entre dos cuadros cuenta como mucho esto (un corte del video no suma tiempo mirado). Más que el cuadro cada 2 s que
@@ -271,6 +285,17 @@ class _TableUse:
 
 
 @dataclass
+class _LineState:
+    """Una persona frente a una línea de entrada."""
+    side: int = 0  # de qué lado está: +1 del de la flecha (adentro), -1 del otro, 0 todavía no se sabe
+    anchor: tuple[float, float] = (0.0, 0.0)  # dónde se la vio por última vez de ese lado (píxeles)
+    pending: int = 0  # cruce sin confirmar: +1 entró, -1 salió, 0 ninguno
+    seen: tuple[float, float] = (0.0, 0.0)  # la última vez que se la vio: dónde, de qué alto y cuándo
+    seen_h: float = 0.0
+    seen_ts: float = 0.0
+
+
+@dataclass
 class _Visit:
     label: str
     first_ts: float
@@ -283,6 +308,7 @@ class _Visit:
     door_from: dict[str, tuple[float, float]] = field(default_factory=dict)  # puerta -> dónde estaba antes de pisarla
     crossings: list[int] = field(default_factory=list)  # +1 entró, -1 salió
     door_of: list[str] = field(default_factory=list)  # por qué puerta fue cada cruce (para contar cada puerta aparte)
+    lines: dict[str, _LineState] = field(default_factory=dict)  # línea de entrada -> por dónde anda esta persona
     attended: set[str] = field(default_factory=set)  # zonas de espera donde, estando ahí, hubo alguien en el puesto
     table_from: dict[str, float] = field(default_factory=dict)  # mesa -> cuándo llegó caminando (posible visita del mozo)
     dwell_booked: bool = False  # empleado: lo que lleva en cada zona ya se sumó a `staff_dwell` (de ahí en más, por cuadro)
@@ -326,7 +352,8 @@ class MetricsCollector:
         self.by_type: dict[str, list[Zone]] = {}
         for z in zones:
             self.by_type.setdefault(z.type, []).append(z)
-        self.doors = [z for z in self.by_type.get("entrance", []) if z.direction]
+        self.doors = [z for z in self.by_type.get("entrance", []) if z.direction and not z.line]
+        self.lines = [z for z in self.by_type.get("entrance", []) if z.line]  # la entrada marcada como una línea
         self._staff_names = {z.name for z in self.by_type.get("staff", [])}
         self._wait_names = [z.name for z in zones if z.wait]
         self._post_of = {z.name: nearest_post(z, self.by_type.get("staff", [])) for z in zones if z.wait}
@@ -355,7 +382,7 @@ class MetricsCollector:
         self._last_frame_ts = ts
         b = self._bucket(wall)
         b["frames"] += 1
-        if self.doors:
+        if self.doors or self.lines:
             b["door"] = 1
         live_ids = {t.id for t in tracks}
         visible_people = visible_vehicles = 0
@@ -402,6 +429,8 @@ class MetricsCollector:
                         if c:
                             v.crossings.append(c)
                             v.door_of.append(z.name)
+                if self.lines:
+                    self._cross_lines(v, t, (fx, fy), w, h, ts)
                 v.last_pos = (nx, ny)
             entered = now_in - v.inside
             if self._table_names and t.label != VEHICLE_LABEL:
@@ -558,8 +587,58 @@ class MetricsCollector:
         if not use.visits:
             st["no_visit"] += 1
 
+    def _cross_lines(self, v: _Visit, t: Track, foot: tuple[float, float], w: int, h: int, ts: float) -> None:
+        """La entrada marcada como una línea: anota en la visita cada vez que la persona la cruza (+1 hacia la flecha,
+        -1 al revés). Para que cuente tiene que vérsela de los dos lados, con los pies a `LINE_MARGIN` de su altura de
+        la línea o más (quien está parado encima no cuenta), el camino tiene que pasar entre las dos puntas (rodearla
+        no cuenta) y tiene que seguir del lado nuevo en el cuadro siguiente (un recuadro que salta un cuadro y vuelve,
+        porque algo le tapó las piernas, no cuenta; si la persona se pierde justo después de cruzar, sí). Un salto que
+        nadie da caminando (`LINE_STEP`, `LINE_SPEED`) o reaparecer después de `LINE_GAP_SECONDS` tampoco cuentan."""
+        height = t.bbox[3] - t.bbox[1]
+        margin = max(LINE_MARGIN * height, LINE_MARGIN_MIN_PX)
+        for z in self.lines:
+            a = (z.polygon[0][0] * w, z.polygon[0][1] * h)
+            b = (z.polygon[1][0] * w, z.polygon[1][1] * h)
+            st = v.lines.get(z.name)
+            if st is None:
+                st = v.lines[z.name] = _LineState(anchor=foot, seen=foot, seen_h=height, seen_ts=ts)
+                first = t.first_bbox
+                if first is not None and 0 < ts - t.first_ts <= LINE_BORN_SECONDS:
+                    # el seguimiento la informa recién a la tercera detección: de qué lado apareció
+                    born, born_h = bbox_foot(first), first[3] - first[1]
+                    st.seen, st.seen_h, st.seen_ts = born, born_h, t.first_ts
+                    if abs(d0 := line_distance(a, b, born)) >= max(LINE_MARGIN * born_h, LINE_MARGIN_MIN_PX):
+                        st.side, st.anchor = (1 if d0 > 0 else -1), born
+            gap = ts - st.seen_ts
+            reach = min(st.seen_h, height) * (LINE_STEP + LINE_SPEED * max(gap, 0.0))
+            if gap > LINE_GAP_SECONDS or math.hypot(foot[0] - st.seen[0], foot[1] - st.seen[1]) > reach:
+                # no se sabe por dónde anduvo (estuvo tapada) o es otra persona con el mismo número: de acá en más
+                if st.pending:  # (lo que había cruzado antes de perderse vale, como cuando se va)
+                    v.crossings.append(st.pending)
+                    v.door_of.append(z.name)
+                st.side, st.pending = 0, 0
+            st.seen, st.seen_h, st.seen_ts = foot, height, ts
+            d = line_distance(a, b, foot)
+            if abs(d) < margin:
+                continue  # encima de la línea: sigue del lado en que estaba
+            side = 1 if d > 0 else -1
+            if side == st.side or st.side == 0:
+                if st.pending:  # sigue del lado nuevo: el cruce vale
+                    v.crossings.append(st.pending)
+                    v.door_of.append(z.name)
+                st.side, st.anchor, st.pending = side, foot, 0
+                continue
+            # cambió de lado: si venía de cambiar en el cuadro anterior, fue un salto del recuadro (no cuenta ninguno)
+            pending = 0 if st.pending else (side if crosses_segment(a, b, st.anchor, foot, LINE_SLACK) else 0)
+            st.side, st.anchor, st.pending = side, foot, pending
+
     def _finish(self, tid: int, v: _Visit) -> None:
         dur = v.last_ts - v.first_ts
+        for name, st in v.lines.items():  # se perdió recién cruzada la línea (salió por la puerta): el cruce vale
+            if st.pending:
+                v.crossings.append(st.pending)
+                v.door_of.append(name)
+        v.lines = {}
         for name, start in v.door_from.items():  # se perdió adentro de la puerta: hasta donde se lo vio
             z = next((z for z in self.doors if z.name == name), None)
             if z is not None and v.last_pos is not None and (c := crossing(z, start, v.last_pos)):
@@ -634,13 +713,14 @@ class MetricsCollector:
         por ella (`entries`, `exits`); cada zona de personal, cuántos empleados (`staff`). Y los totales de la cámara.
         `{"zones": {nombre: {"type", "visits", "now", ...}}, "entries", "exits", "door", "staff", "since"}`."""
         zones = {z.name: {"type": z.type, "visits": 0, "now": self._now.get(z.name, 0)} for z in self.zones}
-        for z in self.doors:
+        for z in self.doors + self.lines:
             done = self._door_done.get(z.name, [0, 0])
             zones[z.name].update(entries=done[0], exits=done[1])
         for name in self._staff_names:
             zones[name]["staff"] = self._staff_done.get(name, 0)
-        entrance_plain = {z.name for z in self.by_type.get("entrance", []) if not z.direction}
-        out = {"zones": zones, "entries": 0, "exits": 0, "door": bool(self.doors), "staff": 0, "since": self.since}
+        entrance_plain = {z.name for z in self.by_type.get("entrance", []) if not z.direction and not z.line}
+        out = {"zones": zones, "entries": 0, "exits": 0, "door": bool(self.doors or self.lines), "staff": 0,
+               "since": self.since}
         for b in self._buckets.values():  # visitas ya terminadas
             for name, z in (b.get("zones") or {}).items():
                 if name in zones:
@@ -706,7 +786,7 @@ class MetricsCollector:
         return self.schedule is not None and not is_open(self.schedule, v.wall_first, 0)
 
     def _is_door(self, name: str) -> bool:
-        return any(z.name == name for z in self.doors)
+        return any(z.name == name for z in self.doors + self.lines)
 
     def _bucket(self, wall: datetime) -> dict:
         return self._buckets.setdefault(bucket_start(wall), empty_bucket())

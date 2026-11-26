@@ -40,6 +40,8 @@ VEHICLE_LABEL = "vehiculo"
 # borde, el punto de los pies cae pegado al borde (Pasillo bebidas de Minas, 28 oct: la zona llegaba al 98 % del alto,
 # la señora pisaba en el 99 % y nunca «estuvo» en la zona)
 EDGE_SNAP = 0.03
+# una línea de entrada más corta que esto (suma de lo que mide a lo ancho y a lo alto, de 0 a 1) es un clic doble
+LINE_MIN_LENGTH = 0.03
 # tipos de zona donde no se mide espera: el personal no espera y en el surtidor esperan vehículos (ya se mide aparte)
 NO_WAIT_TYPES = ("staff", "pump", "table")  # (la mesa mide lo suyo: ocupación y visitas del mozo)
 
@@ -93,9 +95,14 @@ class Zone:
     direction: str | None = None  # solo entrance: hacia dónde se entra (DIRECTIONS)
     # medir el tiempo de espera de los clientes en esta zona (caja, mostrador, fila): métricas, no reglas
     wait: bool = False
+    # solo entrance: la entrada marcada como una LÍNEA (los dos puntos de `polygon`) con una flecha hacia adentro, en
+    # vez de una zona. Se cuenta a quien la cruza: hacia la flecha entra, al revés sale (core/metrics.py). La flecha
+    # sale perpendicular hacia el lado donde `core.geometry.line_side` da positivo: para darla vuelta se invierten los
+    # dos puntos. No es un lugar: nadie «está» en ella
+    line: bool = False
 
     def contains(self, nx: float, ny: float) -> bool:
-        return point_in_polygon(nx, ny, self.polygon)
+        return not self.line and point_in_polygon(nx, ny, self.polygon)
 
 
 @dataclass
@@ -166,21 +173,30 @@ def parse_zones(items: list[dict] | None) -> list[Zone]:
         if ztype not in ZONE_TYPES:
             raise ValueError(f"Tipo de zona inválido {ztype!r}; usar uno de {ZONE_TYPES}")
         poly = tuple((float(x), float(y)) for x, y in z.get("polygon", []))
-        if len(poly) < 3:
+        line = bool(z.get("line"))
+        if line and ztype != "entrance":
+            raise ValueError(f"La zona {name!r}: solo la entrada se marca como una línea")
+        if line and len(poly) != 2:
+            raise ValueError(f"La línea de entrada {name!r} va con 2 puntos (sus dos puntas)")
+        if not line and len(poly) < 3:
             raise ValueError(f"La zona {name!r} necesita al menos 3 puntos")
         if any(not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0) for x, y in poly):
             raise ValueError(f"La zona {name!r} debe usar coordenadas normalizadas entre 0 y 1")
         poly = tuple((snap_edge(x), snap_edge(y)) for x, y in poly)
-        direction = z.get("direction") or None
+        if line and abs(poly[0][0] - poly[1][0]) + abs(poly[0][1] - poly[1][1]) < LINE_MIN_LENGTH:
+            raise ValueError(f"La línea de entrada {name!r} es muy corta: marcala de un lado al otro de la puerta")
+        # (en una línea el sentido lo da el orden de sus dos puntos: el `direction` de las zonas de antes no cuenta,
+        # por si una app vieja se lo puso con «Aplicar a la elegida»)
+        direction = None if line else (z.get("direction") or None)
         if direction is not None and (ztype != "entrance" or direction not in DIRECTIONS):
             raise ValueError(f"La zona {name!r}: el sentido de entrada va solo en zonas de entrada "
                              f"({', '.join(DIRECTIONS)})")
-        wait = bool(z.get("wait"))
+        wait = bool(z.get("wait")) and not line
         if wait and ztype in NO_WAIT_TYPES:
             raise ValueError(f"La zona {name!r}: el tiempo de espera se mide en zonas de clientes (no en "
                              "«Personal» ni en «Surtidor»)")
         names.add(name)
-        zones.append(Zone(name, ztype, poly, direction, wait))
+        zones.append(Zone(name, ztype, poly, direction, wait, line))
     return zones
 
 
@@ -193,6 +209,8 @@ def parse_config(config: dict | None) -> tuple[list[Zone], RuleConfig]:
     cfg.gestures = GestureConfig.from_dict(config.get("gestures"), strict=False)
     # las zonas de tipos nuevos viajan aparte (un agente viejo no conoce el tipo y rechazaría todas las zonas)
     extra = list(config.get("extra_zones") or config.get("staff_zones") or []) + list(config.get("table_zones") or [])
+    # y las líneas de entrada, en otra lista (`line_zones`): una máquina sin actualizar pide 3 puntos por zona
+    extra += list(config.get("line_zones") or [])
     return parse_zones(list(config.get("zones") or []) + extra), cfg
 
 
