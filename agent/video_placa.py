@@ -63,6 +63,34 @@ def _gap_from_env(default: float = 0.045) -> float:
 
 
 MIN_GAP_S = _gap_from_env()
+
+
+def _rate_from_env(default: float = 10.0) -> float:
+    try:
+        return max(0.0, float(os.getenv("VIGIA_PLACA_DESDE") or default))
+    except ValueError:
+        return default
+
+
+# Solo los videos pesados van por la placa (26 nov, medido en la máquina de AWS a la velocidad de una cámara): cada
+# ffmpeg con la placa tiene un piso de ~0,025 procesadores (el controlador de NVIDIA se despierta cientos de veces por
+# segundo, la mitad en el sistema; con «nvdec» en vez de «cuvid», lo mismo) más lo que cuesta pasar las imágenes al
+# programa. Decodificar con el procesador cuesta ~0,005 procesadores por millón de píxeles por segundo: un video de
+# 960x576 a 12 cuadros/s (6,6) cuesta lo mismo de las dos maneras, uno de 960x1088 a 25 (26) cuesta 0,13 con el
+# procesador y ~0,04 por la placa. Desde 10 millones de píxeles por segundo (1280x720 a 12, 960x1088 a 10) conviene la
+# placa; los livianos siguen con OpenCV y no ocupan los ~124 MB de memoria de la placa de cada ffmpeg.
+# `VIGIA_PLACA_DESDE=0`: todos por la placa.
+MIN_PIXEL_RATE = _rate_from_env()  # millones de píxeles por segundo
+
+
+def worth_it(w: float, h: float, fps: float, min_rate: float | None = None) -> bool:
+    """¿Conviene leer este video por la placa? (ancho × alto × cuadros por segundo de lo que manda la cámara)."""
+    min_rate = MIN_PIXEL_RATE if min_rate is None else min_rate
+    if min_rate <= 0:
+        return True
+    if not (w and h and fps):
+        return False  # (sin saber cuánto pesa: con el procesador, como siempre)
+    return w * h * fps / 1e6 >= min_rate
 THIN_MAX_PROCESS_FPS = 5.5
 SIZE_WAIT_S = 1.0  # después del primer cuadro, lo que se espera a que ffmpeg diga de qué tamaño viene el video
 # lo que dice ffmpeg (con `-loglevel level+info` cada renglón viene con su nivel): los errores, sin usuario ni clave,

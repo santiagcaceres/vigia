@@ -558,6 +558,9 @@ class CameraWorker:
         from . import video_placa
         if not self._gpu_hint or not self._gpu_wanted(url):
             return None
+        h = self._gpu_hint
+        if not video_placa.worth_it(h.get("video_w"), h.get("video_h"), h.get("video_fps")):
+            return None  # (video liviano: con el procesador cuesta lo mismo; ver video_placa.MIN_PIXEL_RATE)
         # (analizando a 5 cuadros/s o menos se baja de la placa como mucho un cuadro cada 45 ms: ver video_placa)
         gap = video_placa.MIN_GAP_S if self.process_fps <= video_placa.THIN_MAX_PROCESS_FPS else 0.0
         size = (self._gpu_hint.get("video_w"), self._gpu_hint.get("video_h"))
@@ -717,9 +720,15 @@ class CameraWorker:
                     rate = sum(1 for t in learn_times if t >= start) / max(now - start, 1e-3)
                     if 1.0 <= rate <= 120.0:  # los cuadros por segundo que manda de verdad
                         self._gpu_hint["video_fps"] = round(rate, 1)
-                    self._gpu_ref = frame.copy()  # (sin achicar: la de la placa se compara contra esta)
-                    self._gpu_switch = True
-                    return
+                    from . import video_placa
+                    hint = self._gpu_hint
+                    if video_placa.worth_it(hint.get("video_w"), hint.get("video_h"), hint.get("video_fps")):
+                        self._gpu_ref = frame.copy()  # (sin achicar: la de la placa se compara contra esta)
+                        self._gpu_switch = True
+                        return
+                    learn_gpu = False  # video liviano: sigue con OpenCV (por la placa costaría lo mismo)
+                    log.info("[%s] video liviano (%sx%s a %s cuadros/s): se sigue leyendo con el procesador",
+                             self.name, hint.get("video_w"), hint.get("video_h"), hint.get("video_fps"))
             if ok and frame is not None and sar:
                 frame = square_pixels(frame, sar, shrink=True)
             c1 = thread_time()

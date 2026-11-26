@@ -152,6 +152,17 @@ sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.ser
 Deshacer en las 4: `sudo rm /etc/systemd/system/vigia-maquina@.service.d/placa-video.conf && sudo systemctl
 daemon-reload && sudo systemctl restart 'vigia-maquina@*'`.
 
+Con las 4 partes por la placa (26 nov, 13:18) la máquina gastó casi lo mismo que antes: cada ffmpeg con la placa tiene
+un piso de ~0,025-0,03 procesadores (el controlador de NVIDIA), y en las cámaras livianas eso es lo mismo que
+decodificar con el procesador. Desde ese día el programa usa la placa **solo para los videos pesados** (10 millones de
+píxeles por segundo o más: 1280x720 a 12, 960x1088 a 10); las livianas siguen con el procesador sin hacer nada. Para
+mirar en qué gasta cada ffmpeg de la placa:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/santiagcaceres/vigia/main/tools/ffmpeg_placa.py -o /tmp/fp.py
+sudo python3 /tmp/fp.py
+```
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.

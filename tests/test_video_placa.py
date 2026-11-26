@@ -356,6 +356,7 @@ def run_worker(tmp_path, port: int, seconds: float) -> tuple[CameraWorker, Count
 
 def test_la_camara_pasa_sola_de_opencv_a_la_placa_y_analiza_igual(tmp_path, rtsp_camera, monkeypatch, caplog):
     monkeypatch.setenv("VIGIA_VIDEO_PLACA", "si")
+    monkeypatch.setattr(video_placa, "MIN_PIXEL_RATE", 0.0)  # (la cámara simulada es liviana: igual por la placa)
     monkeypatch.setattr(video_placa, "available", lambda: (True, ""))
     monkeypatch.setattr(video_placa, "DECODERS", {"H.264": "", "H.265": ""})  # (acá: el decodificador del procesador)
     with caplog.at_level(logging.INFO, logger="vigia"):
@@ -379,6 +380,7 @@ def test_sin_pedirlo_sigue_con_opencv_y_si_la_placa_falla_tambien(tmp_path, rtsp
     assert w.last_status["video_codec"] == "H.264" and "placa" not in caplog.text and det.frames
     # pedida pero el ffmpeg no da video: sigue con OpenCV, sin cortar el análisis
     monkeypatch.setenv("VIGIA_VIDEO_PLACA", "si")
+    monkeypatch.setattr(video_placa, "MIN_PIXEL_RATE", 0.0)
     monkeypatch.setattr(video_placa, "available", lambda: (True, ""))
     monkeypatch.setattr(video_placa, "FIRST_FRAME_TIMEOUT_S", 3)
     real = video_placa.command
@@ -397,6 +399,7 @@ def test_si_la_camara_cambio_de_tamano_vuelve_a_mirarla_con_opencv_sin_castigar_
     a decir el mismo tamaño, la placa se abre sin comparar."""
     monkeypatch.setenv("VIGIA_VIDEO_PLACA", "si")
     monkeypatch.setattr(video_placa, "available", lambda: (True, ""))
+    monkeypatch.setattr(video_placa, "MIN_PIXEL_RATE", 0.0)
     seen = []
 
     class Fake:
@@ -426,3 +429,25 @@ def test_si_la_camara_cambio_de_tamano_vuelve_a_mirarla_con_opencv_sin_castigar_
     assert "se vuelve a mirar el video con OpenCV" in caplog.text and "no anduvo" not in caplog.text
     w._gpu_hint = dict(hint)  # OpenCV dijo lo mismo: ahora se abre sin comparar el tamaño
     assert isinstance(w._open_gpu(url), Fake) and seen == [True, False]
+
+
+def test_solo_los_videos_pesados_van_por_la_placa():
+    """26 nov, en la máquina de AWS a la velocidad de una cámara: cada ffmpeg con la placa gasta un piso de ~0,025
+    procesadores; con el procesador, ~0,005 por millón de píxeles por segundo. Desde 10 conviene la placa."""
+    assert video_placa.MIN_PIXEL_RATE == 10.0
+    assert not video_placa.worth_it(960, 576, 12)  # 6,6: lo mismo de las dos maneras (la mayoría de las cámaras)
+    assert not video_placa.worth_it(640, 480, 25)  # 7,7
+    assert video_placa.worth_it(1280, 720, 12)  # 11
+    assert video_placa.worth_it(960, 1088, 24)  # 25: por la placa ~0,04 contra 0,13
+    assert not video_placa.worth_it(960, 1088, 0)  # (sin saber cuántos cuadros manda: con el procesador)
+    assert video_placa.worth_it(640, 360, 12, min_rate=0)  # (VIGIA_PLACA_DESDE=0: todos)
+
+
+def test_una_camara_liviana_sigue_con_opencv_y_lo_dice(tmp_path, rtsp_camera, monkeypatch, caplog):
+    monkeypatch.setenv("VIGIA_VIDEO_PLACA", "si")
+    monkeypatch.setattr(video_placa, "available", lambda: (True, ""))
+    monkeypatch.setattr(video_placa, "DECODERS", {"H.264": "", "H.265": ""})
+    with caplog.at_level(logging.INFO, logger="vigia"):
+        w, det = run_worker(tmp_path, rtsp_camera, 12)
+    assert "video liviano (640x360 a" in caplog.text and "video por la placa" not in caplog.text
+    assert w.last_status["video_codec"] == "H.264" and det.rate() >= 3.5 and not video_placa._live

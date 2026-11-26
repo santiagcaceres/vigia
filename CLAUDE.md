@@ -1574,7 +1574,20 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       (`-resize` / `scale`), así una cámara que cambia de tamaño no desarma los cuadros del caño; si al conectar el
       video viene de otro tamaño que el aprendido (`stale`), el `CameraWorker` lo vuelve a mirar con OpenCV y pasa a
       la placa con el nuevo, sin los 10 minutos de castigo (si OpenCV dice lo mismo, `_gpu_relearn`, no se compara).
-      Para prenderlo en las 4 partes: `deploy/aws/TIGO.md`. Pruebas:
+      Para prenderlo en las 4 partes: `deploy/aws/TIGO.md`. **Con las 4 partes por la placa (26 nov, 13:18, 20
+      cámaras):** el total de la máquina casi no cambió (1,61 procesadores contra 1,73; leer el video 0,81 contra
+      0,83), la carga subió de 2,9 a 4,5 y la memoria de la placa de 2,5 a 4,0 GB. `tools/ffmpeg_placa.py` (corrido en
+      la máquina): 19 ffmpeg, 0,031 procesadores cada uno, chico o grande; lo que más gasta es el controlador de NVIDIA
+      (`cuda-EvtHandlr` se despierta ~670 veces por segundo por cámara, casi todo en el sistema) y hilos internos
+      (0,34 de 0,60), pasar las imágenes por el caño 0,13, recibir el video 0,08 y decodificar 0,04; el decodificador de
+      la placa al 6-8 %. A la velocidad de la cámara (`-re`, 20 s de 960x576 a 12): procesador 1,00 s, cuvid 0,50,
+      **nvdec 0,54** (no mejora). **Por eso solo van por la placa los videos pesados** (`video_placa.MIN_PIXEL_RATE`,
+      10 millones de píxeles por segundo: 1280x720 a 12, 960x1088 a 10 o más; `VIGIA_PLACA_DESDE`, 0 = todos): los
+      livianos (960x576 a 12, 640x480 a 25: la mayoría) cuestan lo mismo de las dos maneras y por la placa ocuparían
+      ~124 MB cada uno. La decisión se toma con los cuadros por segundo contados en la primera conexión (`GPU_LEARN_S`,
+      6 s salteando el primer 1,5 s; lo que dice el video al abrir a veces es el doble) y queda en el registro («video
+      liviano … se sigue leyendo con el procesador»). Un costo así de fijo por cámara solo se baja con un programa que
+      lea varias cámaras con la misma conexión a la placa (sin hacer). Pruebas:
       `tests/test_video_placa.py` (con `MEDIAMTX=<mediamtx>` la de punta a punta con una cámara RTSP simulada).
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
