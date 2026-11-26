@@ -257,6 +257,9 @@ def _instalar(tmp: Path, env: dict, *, placa: bool = True, nucleos: int = 4, med
         _stub(binp / name, body)
     if placa:
         _stub(binp / "nvidia-smi", 'echo "Tesla T4, 550.0, 15360 MiB"')
+        # el driver que está andando (para instalar las librerías de video de la misma versión)
+        _stub(binp / "dpkg-query", 'case "$*" in *Package*) echo libnvidia-compute-580-server;; '
+                                   '*Version*) printf 580.178.04-0ubuntu0.24.04.1;; esac')
     r = subprocess.run(["bash", str(t / "instalar.sh")], capture_output=True, text=True, timeout=120,
                        env={"PATH": f"{binp}:/usr/bin:/bin", "HOME": str(t), **env})
     return r.returncode, r.stdout + r.stderr, t
@@ -284,6 +287,9 @@ def test_instalar_maquina_fija_con_placa_y_encendedor(tmp_path):
     for unit in ("vigia-maquina@1", "vigia-maquina@2", "vigia-escalador", "vigia-actualizar-diario.timer"):
         assert f"enable --now {unit}" in pedidos, pedidos
     assert "vigia-maquina@3" not in pedidos and "requirements-servidor.txt" in pedidos
+    # las librerías de video de NVIDIA (decodificar en la placa), de la misma versión que el driver que anda
+    assert ("install --no-install-recommends libnvidia-decode-580-server=580.178.04-0ubuntu0.24.04.1 "
+            "libnvidia-encode-580-server=580.178.04-0ubuntu0.24.04.1") in pedidos, pedidos
     # si el driver de la placa no carga, el análisis no arranca (no queda analizando con el procesador)
     assert "ExecStartPre=" in (t / "systemd/vigia-maquina@.service.d/placa.conf").read_text(encoding="utf-8")
     assert "OnCalendar=*-*-* 06:15:00 UTC" in (t / "systemd/vigia-actualizar-diario.timer").read_text(encoding="utf-8")
@@ -325,6 +331,7 @@ def test_instalar_segunda_maquina_grande_y_maquina_sin_placa(tmp_path):
     assert maq["VIGIA_CAPACIDAD"] == "6" and maq["VIGIA_HILOS"] == "4"
     assert not (t / "systemd/vigia-maquina@.service.d").exists()
     assert "requirements-servidor-cpu.txt" in (t / "pedidos.log").read_text(encoding="utf-8")
+    assert "libnvidia" not in (t / "pedidos.log").read_text(encoding="utf-8")  # (sin placa, nada de NVIDIA)
     # si no se pudo medir: con placa, 30 por máquina; sin placa, una por núcleo
     code, out, t = _instalar(tmp_path / "c", {"VIGIA_POOL_KEY": "vgm_clave-de-prueba"}, medir={})
     assert code == 0 and _env(t / "etc/vigia/maquina.env")["VIGIA_CAPACIDAD"] == "15", out

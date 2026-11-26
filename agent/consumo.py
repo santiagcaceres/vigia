@@ -4,7 +4,8 @@ máquina hay que saber qué gasta; antes solo se sabía corriendo `tools/medir_m
 Lee `/proc/self/task` (Linux; en otro sistema no informa nada) y lo agrupa:
 
 - `video`: decodificar el video (los hilos de FFmpeg «av:…» cuando una cámara usa varios, más lo que cada cámara gasta
-  leyendo y pasando a imagen, que con un solo hilo por cámara es donde se decodifica).
+  leyendo y pasando a imagen, que con un solo hilo por cámara es donde se decodifica, más los ffmpeg que leen las
+  cámaras que se decodifican en la placa, `agent/video_placa.py`).
 - `camaras`: el resto del trabajo de cada cámara: preparar la imagen para el modelo, leer el resultado, seguimiento,
   reglas, gestos, métricas, guardar los cuadros para los clips.
 - `modelo`: los hilos que le dan el trabajo a la placa de video (detector y postura por lotes).
@@ -86,6 +87,16 @@ def gpu_usage(timeout: float = 5.0) -> dict[str, float]:
     return {"gpu": round(use), "gpu_gb": round(mem / 1024, 2)}
 
 
+def _placa_cpu() -> tuple[dict[int, float], float]:
+    """Los ffmpeg que leen cámaras por la placa: lo que lleva cada uno que sigue andando y el total de los que
+    terminaron (agent/video_placa.py; si no se cargó, nada)."""
+    import sys
+    vp = sys.modules.get("agent.video_placa")
+    if vp is None:
+        return {}, 0.0
+    return vp.live_cpu(), vp.reaped_cpu_s
+
+
 def group_of(comm: str, name: str | None) -> str:
     """`comm`: nombre del hilo en el sistema; `name`: el del hilo de Python (None si no es de Python)."""
     if comm.startswith("av:"):
@@ -110,6 +121,8 @@ class CpuMeter:
         self._prev: dict[int, tuple[str, float]] | None = None
         self._read_s = 0.0
         self._children = 0.0  # procesador de los programas que lanzó (ffmpeg) y ya terminaron, acumulado
+        self._placa: dict[int, float] = {}  # cada ffmpeg que lee una cámara por la placa → lo que llevaba gastado
+        self._placa_done = 0.0  # lo que gastaron en total los que ya terminaron (ya se contó en `video`)
         self._at = 0.0
         self.last: dict[str, float] = {}
 
@@ -122,6 +135,7 @@ class CpuMeter:
             return {}
         t = os.times()
         children = t.children_user + t.children_system
+        placa, placa_done = _placa_cpu()
         if self._prev is not None:
             span = now - self._at
             names = {t.native_id: t.name for t in threading.enumerate()}
@@ -131,11 +145,15 @@ class CpuMeter:
             moved = min(max(read_s - self._read_s, 0.0), used["camaras"])
             used["camaras"] -= moved
             used["video"] += moved
-            used["externos"] = max(children - self._children, 0.0)
+            # los ffmpeg que leen cámaras por la placa son de «video» mientras andan; cuando terminan, su total también
+            # aparece en lo de los programas terminados: ahí se descuenta, para no contarlo dos veces
+            used["video"] += sum(max(secs - self._placa.get(pid, 0.0), 0.0) for pid, secs in placa.items())
+            used["externos"] = max(children - self._children - (placa_done - self._placa_done), 0.0)
             self.last = {g: round(used[g] / span, 2) for g in GROUPS if used[g] / span >= 0.005}
             self.last["total"] = round(sum(used.values()) / span, 2)
             self.last["cores"] = os.cpu_count() or 0  # procesadores de la máquina (para saber cuánto queda libre)
             self.last.update(machine_load())
             self.last.update(gpu_usage())
         self._prev, self._read_s, self._at, self._children = cur, read_s, now, children
+        self._placa, self._placa_done = placa, placa_done
         return self.last

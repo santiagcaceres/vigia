@@ -55,6 +55,17 @@ APT="apt-get -q -y -o DPkg::Lock::Timeout=600"  # al prender una máquina nueva,
 
 $APT update
 $APT install git python3-venv ffmpeg curl
+if [ "$GPU" = "si" ]; then
+  # las librerías de video de NVIDIA (decodificar y comprimir en la placa: agent/video_placa.py). El driver «para
+  # cálculo» no las trae; van en la MISMA versión del driver que está andando (una más nueva no anda hasta reiniciar).
+  # Si no se pueden instalar, el video se sigue decodificando con el procesador, como siempre
+  NV=$(dpkg-query -W -f='${Package}\n' 'libnvidia-compute-*' 2>/dev/null | sed -n 's/^libnvidia-compute-//p' | head -1)
+  if [ -n "$NV" ]; then
+    NVVER=$(dpkg-query -W -f='${Version}' "libnvidia-compute-$NV")
+    $APT install --no-install-recommends "libnvidia-decode-$NV=$NVVER" "libnvidia-encode-$NV=$NVVER" \
+      || echo "AVISO: no se instalaron las librerías de video de NVIDIA: el video se decodifica con el procesador"
+  fi
+fi
 id vigia >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/vigia vigia
 [ -d /opt/vigia/.git ] || git clone -q --depth 1 "$REPO" /opt/vigia
 chown -R vigia:vigia /opt/vigia

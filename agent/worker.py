@@ -339,6 +339,14 @@ class CameraWorker:
         self.skipped_pct: float | None = None  # parte de lo que tocaba analizar y no se llegó (último minuto)
         self.video: dict = {}  # qué video manda la cámara (`video_info`): códec, tamaño y cuadros por segundo
         self._video_threads = video_threads()  # hilos para decodificar (None = los que elija FFmpeg)
+        # decodificar en la placa (agent/video_placa.py, `VIGIA_VIDEO_PLACA=si`): lo que se sabe del video de la última
+        # conexión con OpenCV (códec, tamaño, píxeles) y una imagen suya; tras la primera conexión se pasa a la placa
+        self._gpu_hint: dict | None = None
+        self._gpu_ref = None
+        self._gpu_switch = False  # se cortó a propósito la conexión de OpenCV para volver a abrir por la placa
+        self._gpu_fails = 0
+        self._gpu_off_until = 0.0
+        self._url = ""
         # procesador que gasta el hilo de esta cámara (último minuto, en % de un procesador): todo, leer el video
         # (con un hilo, ahí se decodifica) y analizar. `cpu_read_s`: lo gastado leyendo, acumulado (agent/consumo.py)
         self.cpu: dict = {}
@@ -487,7 +495,8 @@ class CameraWorker:
                 self._stop.wait(backoff)
                 backoff = min(backoff * 2, 60.0)
                 continue
-            cap = open_video(url, self._video_threads)
+            self._url = url
+            cap = self._open_gpu(url) or open_video(url, self._video_threads)
             if not cap.isOpened():
                 why = self.hik.open_failure(url)
                 if self.hik.brand == "hikconnect":  # (el estado se corta a 300 letras: el motivo primero)
@@ -516,6 +525,11 @@ class CameraWorker:
                 self._stop.wait(5.0)
             finally:
                 cap.release()
+            if getattr(cap, "gpu", False) and time.monotonic() - connected_at < 30 and not self._stop.is_set():
+                self._gpu_failed("el video por la placa se cortó enseguida")
+            if self._gpu_switch and not self._stop.is_set():
+                self._gpu_switch = False  # (ya se sabe qué video manda: se vuelve a abrir enseguida, por la placa)
+                continue
             if not self._stop.is_set():
                 self.state = "reconectando"
                 # si el video se corta enseguida una y otra vez, esperar cada vez más (no martillar al equipo
@@ -525,6 +539,39 @@ class CameraWorker:
         self._finish_clips(self.analyzer.flush())
         self._send_metrics(self.metrics.close())
         self.state = "detenida"
+
+    def _gpu_wanted(self, url: str) -> bool:
+        """¿Esta cámara se puede leer por la placa? (pedido, la máquina puede, RTSP y no apagado por fallas)."""
+        from . import video_placa
+        return (video_placa.wanted() and url.lower().startswith("rtsp://")
+                and not bursty(self.hik.brand, url) and time.monotonic() >= self._gpu_off_until
+                and video_placa.available()[0])
+
+    def _open_gpu(self, url: str):
+        """El video por la placa, si se pidió y ya se sabe qué video manda la cámara. None = con OpenCV."""
+        from . import video_placa
+        if not self._gpu_hint or not self._gpu_wanted(url):
+            return None
+        cap = video_placa.PlacaCapture(url, self.hik.ffmpeg_input_args(), self._gpu_hint, self._gpu_ref)
+        if cap.isOpened():
+            log.info("[%s] video por la placa (%s %sx%s%s)", self.name, cap.decoder, cap.w, cap.h,
+                     ", rango completo" if cap.full_range else "")
+            return cap
+        cap.release()
+        self._gpu_failed(cap.why)
+        return None
+
+    def _gpu_failed(self, why: str) -> None:
+        """La placa no anduvo: 10 minutos con el procesador (si no, cada conexión de OpenCV volvería a pasarse a la
+        placa enseguida y no se analizaría nunca); a la tercera vez seguida, una hora."""
+        self._gpu_fails += 1
+        if self._gpu_fails >= 3:
+            self._gpu_fails = 0
+            self._gpu_off_until = time.monotonic() + 3600
+            log.warning("[%s] el video por la placa falló 3 veces (%s): una hora con el procesador", self.name, why)
+        else:
+            self._gpu_off_until = time.monotonic() + 600
+            log.warning("[%s] el video por la placa no anduvo (%s): 10 minutos con el procesador", self.name, why)
 
     def _read_loop(self, cap: cv2.VideoCapture) -> None:
         self._sync_pose()
@@ -537,12 +584,22 @@ class CameraWorker:
         # «1080p lite» (960x1080 con píxeles 2:1): se analiza con píxeles cuadrados (960x540), igual que en
         # «Configurar…» y en las alarmas; si no, las personas quedan flacas y los gestos no andan
         self.video = video_info(cap)
-        if self._video_threads == 1 and heavy_video(self.video):
+        gpu = getattr(cap, "gpu", False)
+        if gpu:
+            self._gpu_fails = 0
+            self.video["video_codec"] = f"{self.video.get('video_codec') or 'video'} · placa"  # (la app lo muestra)
+        if not gpu and self._video_threads == 1 and heavy_video(self.video):
             self._video_threads = None  # (se reconecta una vez: `run` vuelve a abrir enseguida)
             log.info("[%s] video grande (%sx%s): se decodifica con varios hilos", self.name,
                      self.video.get("video_w"), self.video.get("video_h"))
             return
         sar = pixel_aspect(cap)
+        # con OpenCV y la placa pedida: se anota qué video manda (para pedir el mismo por la placa) y, con la primera
+        # imagen, se vuelve a abrir por la placa
+        learn_gpu = not gpu and self.video.get("video_codec") in ("H.264", "H.265") and self._gpu_wanted(
+            getattr(self, "_url", "") or "")
+        if learn_gpu:
+            self._gpu_hint = {**self.video, "sar": sar}
         if sar and sar != self._sar_logged:
             self._sar_logged = sar
             log.info("[%s] el video tiene píxeles de %.2f:1: se analiza con píxeles cuadrados", self.name, sar)
@@ -612,7 +669,7 @@ class CameraWorker:
                 span = now - last_skip_log
                 self.cpu = {"cpu": round(100 * (c1 - cpu0) / span), "cpu_video": round(100 * cpu_read / span),
                             "cpu_ia": round(100 * cpu_ai / span)}
-                if self._video_threads == 1 and cpu_read / span > DECODE_BUSY:
+                if not gpu and self._video_threads == 1 and cpu_read / span > DECODE_BUSY:
                     self._video_threads = None
                     log.info("[%s] decodificar el video se lleva el %.0f %% de un procesador: se reconecta para "
                              "repartirlo entre varios hilos", self.name, 100 * cpu_read / span)
@@ -627,6 +684,10 @@ class CameraWorker:
                 continue
             c0 = thread_time()
             ok, frame = cap.retrieve()
+            if learn_gpu and ok and frame is not None:
+                self._gpu_ref = frame.copy()  # (sin achicar: la de la placa se compara contra esta)
+                self._gpu_switch = True
+                return
             if ok and frame is not None and sar:
                 frame = square_pixels(frame, sar, shrink=True)
             c1 = thread_time()

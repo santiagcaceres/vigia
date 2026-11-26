@@ -1531,6 +1531,30 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       abasto» con `wait_pct` ≥ 50). **Falta repetir la prueba** con el arreglo andando, mejor con cámaras con sus zonas
       (sin ajustar, cada una da 2-3 alertas por minuto). La meta de costo por cámara del dueño pide unas 75 cámaras por
       g4dn.2xlarge: con la placa a un tercio con 27 cámaras, quedaría cerca del 90 % (los precios no van en este archivo).
+    - **Decodificar el video en la placa (26 nov, el dueño: «¿no se puede usar más GPU, que está libre, en lugar de
+      CPU?»).** Decodificar era la mitad del procesador de la máquina (0,9 de 1,7). Medido en la de AWS con ffmpeg (1
+      minuto de H.265 960x576 a 12 cuadros/s): con el procesador 2,3-2,5 s de procesador; con el decodificador de la
+      placa (`hevc_cuvid`) al tamaño original y en NV12, **0,33 s**; achicando a 640, 0,29 (no hace falta achicar: no
+      se pierde calidad); con `-hwaccel cuda` + `scale_cuda`, 8,4 s (no sirve); traer cada imagen entera pasada a
+      colores, 1,9 s (lo caro es la conversión, por eso se pasa a colores solo lo que se analiza). Comprimir clips con
+      NVENC gastó un tercio que libx264 (para un segundo paso). **Hizo falta instalar** `libnvidia-decode-580-server` y
+      `libnvidia-encode-580-server` (de la misma versión que el driver; el `--gpgpu` no las trae: ffmpeg decía «Cannot
+      load libnvcuvid.so.1» y volvía al procesador sin avisar); desde ahora `instalar.sh` las instala con placa.
+      **`agent/video_placa.py`** (`PlacaCapture`): un ffmpeg por cámara con `h264_cuvid`/`hevc_cuvid` que manda cada
+      cuadro por un caño en NV12; `retrieve` lo pasa a BGR con OpenCV solo en los cuadros que se usan (como
+      `grab`/`retrieve` de OpenCV, con la misma interfaz para el CameraWorker). La primera conexión de cada cámara es con
+      OpenCV, como siempre: con su códec, tamaño y píxeles (`_gpu_hint`) y una imagen (`_gpu_ref`) se vuelve a abrir
+      enseguida por la placa con el mismo video (los «1080p lite» ya cuadrados, en la placa); el rango de colores
+      «completo» (que la placa entrega sin convertir) se reconoce comparando con esa imagen. Si la placa no anda, sigue
+      con OpenCV (10 minutos; a la tercera falla seguida, una hora). Solo RTSP (Hik-Connect llega en ráfagas y necesita
+      las marcas de tiempo del video). El estado dice «H.265 · placa» en `video_codec` (la app lo muestra en «Video que
+      llega»). El medidor cuenta esos ffmpeg en `video` mientras andan (`video_placa.live_cpu`) y no los vuelve a
+      contar en `externos` al terminar (`reaped_cpu_s`, por `os.wait4`). **Apagado de fábrica:** `VIGIA_VIDEO_PLACA=si`
+      lo prende (en la de AWS, primero en `vigia-maquina@4`: pasos en `deploy/aws/TIGO.md`). **Sin probar en la placa
+      de verdad dentro del programa** (acá no hay placa: las pruebas usan el mismo camino con el decodificador del
+      procesador; las imágenes salen con 0,3-0,6 de 255 de diferencia media contra las de OpenCV). Falta medir la
+      memoria de la placa por cada ffmpeg (un contexto de CUDA por cámara: con 75 cámaras podría pesar). Pruebas:
+      `tests/test_video_placa.py` (con `MEDIAMTX=<mediamtx>` la de punta a punta con una cámara RTSP simulada).
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).

@@ -111,6 +111,31 @@ para entrenar objetos con la placa. A los minutos el reparto le pasó solo 22 c�
 va primero): la farmacia pasó de 2-3 cuadros/s salteando a ~4 sin saltear. Sin encendedor (no hay segunda máquina).
 Si con todas las cámaras saltea mucho, pasar a g4dn.2xlarge (el doble de procesador; la reserva cubre la familia).
 
+### Decodificar el video en la placa (26 nov 2026)
+
+El driver «para cálculo» (`--gpgpu`) no trae las librerías de video de NVIDIA, y sin ellas ffmpeg decodifica con el
+procesador aunque se le pida la placa. Se instalaron a mano el 26 nov, de la **misma versión** que el driver que anda
+(desde esa fecha `instalar.sh` lo hace solo):
+
+```bash
+v=$(dpkg-query -W -f='${Package}\n' 'libnvidia-compute-*' | sed -n 's/^libnvidia-compute-//p' | head -1)
+ver=$(dpkg-query -W -f='${Version}' "libnvidia-compute-$v")
+sudo apt-get install -y --no-install-recommends "libnvidia-decode-$v=$ver" "libnvidia-encode-$v=$ver"
+```
+
+Medido después (1 minuto de H.265 960x576 a 12 cuadros/s): decodificar con el procesador, 2,3-2,5 s de procesador;
+con la placa al tamaño original (`hevc_cuvid`, NV12), 0,33 s. El programa lo usa con `VIGIA_VIDEO_PLACA=si`
+(`agent/video_placa.py`, apagado de fábrica). Para probarlo en una sola de las 4 partes de la máquina y comparar:
+
+```bash
+sudo mkdir -p /etc/systemd/system/vigia-maquina@4.service.d
+printf '[Service]\nEnvironment=VIGIA_VIDEO_PLACA=si\n' | sudo tee /etc/systemd/system/vigia-maquina@4.service.d/placa-video.conf
+sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.service   # trae el código y reinicia
+```
+
+Deshacer: `sudo rm /etc/systemd/system/vigia-maquina@4.service.d/placa-video.conf && sudo systemctl daemon-reload &&
+sudo systemctl restart vigia-maquina@4`.
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.
