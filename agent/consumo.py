@@ -11,17 +11,26 @@ Lee `/proc/self/task` (Linux; en otro sistema no informa nada) y lo agrupa:
 - `clips`: armar y subir los clips.
 - `nativos`: hilos de las librerías (onnxruntime, CUDA) que no son de Python.
 - `otros`: lo demás (hablar con el servidor, imagen en vivo…).
+- `externos`: los programas que lanza el proceso y ya terminaron (ffmpeg al armar o bajar cada clip; el entrenamiento
+  de «Entrenar objetos»). Se cuentan cuando terminan: no están en `/proc/self/task` (26 nov: los clips de una tanda de
+  alertas dejaron la máquina sin procesador y el medidor no lo veía).
 
-Los números son procesadores enteros (0,42 = el 42 % de un procesador). Solo nombres de grupo: nada de la máquina."""
+Los números son procesadores enteros (0,42 = el 42 % de un procesador). Además, de la máquina entera (lo mismo en
+todos sus procesos): `load` (la carga del último minuto: cuántos procesos quieren procesador), `wait_pct` (qué parte del
+tiempo hubo procesos esperando procesador, `/proc/pressure/cpu`), y de la placa de video `gpu` (% de uso) y `gpu_gb`
+(memoria usada, en GB), si la hay. Solo nombres de grupo y números: nada de la máquina."""
 
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import subprocess
 import threading
 import time
 from collections import defaultdict
 
-GROUPS = ("video", "camaras", "modelo", "clips", "nativos", "otros")
+GROUPS = ("video", "camaras", "modelo", "clips", "nativos", "otros", "externos")
 
 
 def thread_cpu() -> dict[int, tuple[str, float]]:
@@ -42,6 +51,39 @@ def thread_cpu() -> dict[int, tuple[str, float]]:
         except (OSError, ValueError, IndexError):  # el hilo terminó mientras se leía
             continue
     return out
+
+
+def machine_load() -> dict[str, float]:
+    """La carga de la máquina entera: `load` (último minuto) y `wait_pct` (parte del tiempo en que hubo procesos
+    esperando procesador, últimos 10 s). Vacío donde no se puede leer (Windows)."""
+    out: dict[str, float] = {}
+    try:
+        out["load"] = round(os.getloadavg()[0], 1)
+    except (OSError, AttributeError):
+        pass
+    try:
+        with open("/proc/pressure/cpu", encoding="ascii") as f:
+            m = re.search(r"some avg10=([\d.]+)", f.read())
+        if m:
+            out["wait_pct"] = round(float(m.group(1)), 1)
+    except OSError:
+        pass
+    return out
+
+
+def gpu_usage(timeout: float = 5.0) -> dict[str, float]:
+    """Uso de la placa de video NVIDIA (la primera): `gpu` (%) y `gpu_gb` (memoria usada; en GB porque el servidor no
+    guarda números de más de 1000). Vacío sin placa."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return {}
+    try:
+        r = subprocess.run([smi, "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=timeout, check=False)
+        use, mem = (float(v) for v in r.stdout.strip().splitlines()[0].split(",")[:2])
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return {}
+    return {"gpu": round(use), "gpu_gb": round(mem / 1024, 2)}
 
 
 def group_of(comm: str, name: str | None) -> str:
@@ -67,6 +109,7 @@ class CpuMeter:
         self.min_span = min_span  # (el sistema cuenta de a 10 ms por hilo: con ventanas cortas el número baila)
         self._prev: dict[int, tuple[str, float]] | None = None
         self._read_s = 0.0
+        self._children = 0.0  # procesador de los programas que lanzó (ffmpeg) y ya terminaron, acumulado
         self._at = 0.0
         self.last: dict[str, float] = {}
 
@@ -77,6 +120,8 @@ class CpuMeter:
         cur = thread_cpu()
         if not cur:
             return {}
+        t = os.times()
+        children = t.children_user + t.children_system
         if self._prev is not None:
             span = now - self._at
             names = {t.native_id: t.name for t in threading.enumerate()}
@@ -86,8 +131,11 @@ class CpuMeter:
             moved = min(max(read_s - self._read_s, 0.0), used["camaras"])
             used["camaras"] -= moved
             used["video"] += moved
+            used["externos"] = max(children - self._children, 0.0)
             self.last = {g: round(used[g] / span, 2) for g in GROUPS if used[g] / span >= 0.005}
             self.last["total"] = round(sum(used.values()) / span, 2)
             self.last["cores"] = os.cpu_count() or 0  # procesadores de la máquina (para saber cuánto queda libre)
-        self._prev, self._read_s, self._at = cur, read_s, now
+            self.last.update(machine_load())
+            self.last.update(gpu_usage())
+        self._prev, self._read_s, self._at, self._children = cur, read_s, now, children
         return self.last

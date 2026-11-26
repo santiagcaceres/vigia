@@ -1179,7 +1179,7 @@ def machine_load(m: dict) -> str:
 
 CPU_GROUPS = (("video", "decodificar el video"), ("camaras", "trabajo de cada cámara"),
               ("modelo", "darle el trabajo a la placa"), ("clips", "armar clips"), ("nativos", "librerías"),
-              ("otros", "otros"))
+              ("externos", "ffmpeg (clips)"), ("otros", "otros"))
 
 
 def cpu_text(m: dict | None, short: bool = False) -> str:
@@ -1193,12 +1193,22 @@ def cpu_text(m: dict | None, short: bool = False) -> str:
     if total <= 0 or cores <= 0:
         return ""
     pct = round(100 * total / cores)
+    wait = cpu.get("wait_pct")
+    starved = type(wait) in (int, float) and wait >= 50  # la máquina no da abasto (aunque el análisis use poco)
     if short:
-        return f"proc. {pct} %"
+        return f"proc. {pct} %" + (" ⚠" if starved else "")
     parts = [f"{label} {num_es(round(float(cpu[k]), 1))}" for k, label in CPU_GROUPS
              if type(cpu.get(k)) in (int, float) and cpu[k] >= 0.05]
-    return (f"El análisis usa el {pct} % del procesador ({num_es(round(total, 1))} de {num_es(cores)})"
+    text = (f"El análisis usa el {pct} % del procesador ({num_es(round(total, 1))} de {num_es(cores)})"
             + (": " + " · ".join(parts) if parts else "") + ".")
+    if type(cpu.get("load")) in (int, float):
+        text += f" Carga de la máquina {num_es(cpu['load'])}"
+        text += (f" (⚠ el {num_es(round(wait))} % del tiempo hay procesos esperando procesador: no da abasto)."
+                 if starved else ".")
+    if type(cpu.get("gpu")) in (int, float):
+        text += f" Placa de video: {num_es(cpu['gpu'])} %" + (
+            f", {num_es(round(cpu['gpu_gb'], 1))} GB de memoria." if type(cpu.get("gpu_gb")) in (int, float) else ".")
+    return text
 
 
 def room_text(a: dict) -> str:

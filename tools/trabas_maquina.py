@@ -108,6 +108,32 @@ def read_text(path: str) -> str:
         return ""
 
 
+def top_processes(span: float = 2.0, n: int = 8) -> list[tuple[float, str, int]]:
+    """Los programas que más procesador gastan en toda la máquina (en procesadores enteros), mirando `span` segundos."""
+    def snap() -> dict[int, tuple[str, float]]:
+        out = {}
+        for path in glob.glob("/proc/[0-9]*/stat"):
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+                left, right = data.index(b"("), data.rindex(b")")
+                rest = data[right + 2:].split()
+                out[int(path.split("/")[2])] = (data[left + 1:right].decode(errors="replace"), int(rest[11]) + int(rest[12]))
+            except (OSError, ValueError, IndexError):
+                continue
+        return out
+    hz = float(os.sysconf("SC_CLK_TCK"))
+    a = snap()
+    time.sleep(span)
+    b = snap()
+    used = [((ticks - a[pid][1]) / hz / span, name, pid) for pid, (name, ticks) in b.items() if pid in a]
+    by_name: dict[str, list[float]] = defaultdict(list)
+    for cores, name, _pid in used:
+        by_name[name].append(cores)
+    rows = [(sum(v), f"{name} ×{len(v)}" if len(v) > 1 else name, len(v)) for name, v in by_name.items()]
+    return sorted((r for r in rows if r[0] >= 0.02), reverse=True)[:n]
+
+
 def system_report(seconds: int) -> None:
     load = read_text("/proc/loadavg").split()
     print(f"== Sistema: {os.cpu_count()} procesadores · carga {' '.join(load[:3])}")
@@ -119,6 +145,11 @@ def system_report(seconds: int) -> None:
         m = re.search(r"some avg10=([\d.]+) avg60=([\d.]+)", read_text(f"/proc/pressure/{what}"))
         if m:  # parte del tiempo en que algún proceso estuvo esperando ese recurso
             print(f"   esperando {name}: {m.group(1)} % (últimos 10 s) · {m.group(2)} % (último minuto)")
+    top = top_processes()
+    if top:
+        print("   los programas que más procesador gastan (procesadores enteros; «×N» = N procesos con ese nombre):")
+        for cores, name, _n in top:
+            print(f"      {cores:5.2f}  {name}")
     if not shutil.which("nvidia-smi"):
         print("   (sin nvidia-smi: no hay placa de video o falta el driver)")
         return

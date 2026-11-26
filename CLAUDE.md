@@ -1513,6 +1513,24 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       por TCP, con `VIGIA_LOTE_POSTURA=4` para forzar el lote en el procesador): se da de alta, abre las tres con un
       hilo, la postura por lotes pasa su comprobación, no queda la marca, y `/api/analysis` devuelve el `cpu` de la
       máquina (en el procesador el detector cae en `nativos`: son los hilos de onnxruntime).
+    - **Prueba de llenado (26 nov, 10:05-10:25 de Uruguay).** Con el código de la noche y 20 cámaras, la máquina usaba
+      1,7 de 4 procesadores (0,09 por cámara) y la placa entre 25 y 41 % (2,5 GB de 15). Se marcaron para analizar 10
+      cámaras sin ajustar (gestos de fábrica, casi sin zonas): 7 en línea, **51 alertas en 20 minutos**, y a los 5 minutos
+      las cámaras de todos los clientes bajaron a 1-3 cuadros/s salteando hasta 70 %, con el análisis usando MENOS
+      procesador que antes. `tools/trabas_maquina.py` (dónde esperan los hilos, la carga, la placa y los programas que
+      más gastan) mostró carga 51 en 4 procesadores y el 98 % del tiempo con procesos esperando procesador; el disco y la
+      memoria, 0. **Causa: ffmpeg de los clips** (cada alerta pasa su clip a H.264 y, con `nvr_clips`, lo baja del
+      grabador decodificando H.265): usaba un hilo por procesador para decodificar y otros tantos para comprimir, con la
+      misma prioridad que el análisis, y como es otro programa el medidor del proceso no lo veía. Se desmarcaron a las
+      10:25 y la máquina volvió a 4 cuadros/s. **Arreglo (las máquinas lo toman al actualizarse):** ffmpeg con un hilo
+      (`VIGIA_FFMPEG_HILOS`, 0 = los de fábrica) y prioridad baja (`nice 15`, `VIGIA_FFMPEG_NICE`;
+      `core.clips.ffmpeg_command`): el clip tarda más con la máquina ocupada, pero no le saca procesador al análisis. El
+      medidor (`agent/consumo.py`) suma `externos` (lo que gastaron los programas que lanzó, al terminar:
+      `os.times().children_*`) y, de la máquina entera, `load`, `wait_pct` (`/proc/pressure/cpu`), `gpu` y `gpu_gb`
+      (nvidia-smi); el servidor no suma esos entre procesos (`MACHINE_WIDE`) y la app los muestra en «Máquinas» («⚠ no da
+      abasto» con `wait_pct` ≥ 50). **Falta repetir la prueba** con el arreglo andando, mejor con cámaras con sus zonas
+      (sin ajustar, cada una da 2-3 alertas por minuto). La meta de costo por cámara del dueño pide unas 75 cámaras por
+      g4dn.2xlarge: con la placa a un tercio con 27 cámaras, quedaría cerca del 90 % (los precios no van en este archivo).
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).

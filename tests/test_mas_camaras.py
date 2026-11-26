@@ -414,3 +414,109 @@ def test_con_alguien_a_la_vista_no_compara_y_despues_se_pone_al_dia(monkeypatch)
     assert gate.should_analyze(changed, 4.0, busy=False)
     assert not gate.should_analyze(changed, 4.2, busy=False)  # y desde ahí compara contra lo nuevo
     assert gate.take_saved_fraction() == 1 / 22
+
+
+# ---------------------------------------------------------------- ffmpeg de los clips no le saca procesador al análisis
+# (26 nov: 10 cámaras sin ajustar dieron 51 alertas en 20 minutos; cada clip lanzaba un ffmpeg con todos los hilos y la
+# misma prioridad que el análisis, y la máquina quedó con carga 51 en 4 procesadores: todas las cámaras a 1-3 cuadros/s)
+def test_ffmpeg_arma_el_clip_con_un_hilo_y_prioridad_baja(monkeypatch, tmp_path):
+    from core import clips
+
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        (tmp_path / "out.mp4").write_bytes(b"x")
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr(clips.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(clips.subprocess, "run", run)
+    assert clips.transcode_h264("rtsp://grabador/tramo", tmp_path / "out.mp4", duration=30)
+    cmd = seen[-1]
+    if clips.os.name != "nt":
+        assert cmd[:4] == ["/usr/bin/nice", "-n", "15", "/usr/bin/ffmpeg"]  # prioridad baja: el análisis va primero
+    i = cmd.index("-i")
+    assert cmd[cmd.index("-threads"):cmd.index("-threads") + 2] == ["-threads", "1"] and cmd.index("-threads") < i
+    after = cmd[i:]
+    assert after[after.index("-threads") + 1] == "1" and after[after.index("-filter_threads") + 1] == "1"
+    assert after[after.index("-c:v") + 1] == "libx264" and after[-1].endswith("out.mp4")
+    # se puede volver a como era (los hilos de fábrica y la misma prioridad)
+    monkeypatch.setattr(clips, "FFMPEG_THREADS", 0)
+    monkeypatch.setattr(clips, "FFMPEG_NICE", 0)
+    clips.transcode_h264("a.mp4", tmp_path / "out.mp4")
+    assert seen[-1][0] == "/usr/bin/ffmpeg" and "-threads" not in seen[-1] and "-filter_threads" not in seen[-1]
+
+
+def test_un_clip_de_verdad_sale_con_ffmpeg_de_un_hilo(tmp_path):
+    import shutil
+
+    from core.clips import video_duration, write_mp4
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("sin ffmpeg")
+    import cv2
+
+    frames = []
+    for i in range(25):
+        img = np.zeros((180, 320, 3), np.uint8)
+        cv2.circle(img, (10 + 12 * i, 90), 12, (0, 200, 255), -1)
+        frames.append((i * 0.2, cv2.imencode(".jpg", img)[1].tobytes()))
+    out = tmp_path / "clip.mp4"
+    assert write_mp4(frames, out) and (video_duration(out) or 0) > 4
+    assert not (tmp_path / "clip.raw.mp4").exists()  # se pasó a H.264 (si no, queda el de OpenCV con otro nombre)
+
+
+def test_el_medidor_cuenta_ffmpeg_la_carga_y_la_placa(monkeypatch):
+    import subprocess
+    import sys
+
+    if not consumo.thread_cpu():
+        pytest.skip("sin /proc (no es Linux)")
+    meter = consumo.CpuMeter(min_span=0)
+    meter.sample()
+    t0 = time.monotonic()
+    subprocess.run([sys.executable, "-c", "import time\nt = time.process_time()\nwhile time.process_time() - t < 0.4: pass"],
+                   check=True)
+    cpu = meter.sample()
+    span = time.monotonic() - t0
+    assert cpu["externos"] == pytest.approx(0.4 / span, abs=0.2)  # el programa que lanzó (como ffmpeg), al terminar
+    assert cpu["total"] >= cpu["externos"] and "load" in cpu
+    if consumo.machine_load().get("wait_pct") is not None:
+        assert 0 <= cpu["wait_pct"] <= 100
+    # la placa: lo que dice nvidia-smi (sin placa, nada)
+    monkeypatch.setattr(consumo.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(consumo.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "31, 2523\n"})())
+    assert consumo.gpu_usage() == {"gpu": 31, "gpu_gb": 2.46}
+    monkeypatch.setattr(consumo.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "[N/A]\n"})())
+    assert consumo.gpu_usage() == {}
+    monkeypatch.setattr(consumo.shutil, "which", lambda name: None)
+    assert consumo.gpu_usage() == {}
+
+
+def test_la_app_avisa_cuando_la_maquina_no_da_abasto():
+    m = {"cpu": {"total": 1.6, "cores": 4, "video": 0.9, "camaras": 0.4, "modelo": 0.3, "externos": 2.1,
+                 "load": 51.6, "wait_pct": 98.9, "gpu": 31, "gpu_gb": 2.46}}
+    assert cpu_text(m, short=True) == "proc. 40 % ⚠"
+    largo = cpu_text(m)
+    assert "ffmpeg (clips) 2,1" in largo and "Carga de la máquina 51,6" in largo
+    assert "el 99 % del tiempo hay procesos esperando procesador: no da abasto" in largo
+    assert largo.endswith("Placa de video: 31 %, 2,5 GB de memoria.")
+    tranquila = cpu_text({"cpu": {"total": 1.7, "cores": 4, "load": 2.1, "wait_pct": 3.0}})
+    assert "no da abasto" not in tranquila and "Carga de la máquina 2,1." in tranquila
+    assert cpu_text({"cpu": {"total": 1.7, "cores": 4, "wait_pct": 3.0}}, short=True) == "proc. 42 %"
+
+
+def test_lo_de_la_maquina_entera_no_se_suma_entre_sus_procesos(app):
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        key = a.post("/api/analysis/pool-key").json()["key"]
+        base = {"cameras": [], "capacity": 8, "instance_id": "i-fija"}
+        for n, ext in ((1, 0.8), (2, 1.3)):
+            r = TestClient(app).post("/api/agent/enroll", json={"key": key, "name": f"fija-{n}", "capacity": 8,
+                                                                "instance_id": "i-fija"})
+            TestClient(app, headers={"X-Agent-Token": r.json()["token"]}).post("/api/agent/status", json={
+                **base, "cpu": {"total": 0.5, "externos": ext, "cores": 4, "load": 51.6, "wait_pct": 98.9,
+                                "gpu": 31, "gpu_gb": 2.46}})
+        cpu = a.get("/api/analysis").json()["machines"][0]["cpu"]
+        assert cpu == {"total": 1.0, "externos": 2.1, "cores": 4, "load": 51.6, "wait_pct": 98.9, "gpu": 31,
+                       "gpu_gb": 2.46}

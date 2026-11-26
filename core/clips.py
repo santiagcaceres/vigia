@@ -116,16 +116,44 @@ def write_mp4(frames: list[tuple[float, np.ndarray | bytes]], path: str | Path) 
     return path.exists() and path.stat().st_size > 0
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+# ffmpeg arma cada clip (lo pasa a H.264 y, con `nvr_clips`, lo baja del grabador). Por defecto usaba un hilo por
+# procesador para decodificar y otros tantos para comprimir, con la misma prioridad que el análisis: el 26 nov, en la
+# máquina de AWS, 10 cámaras nuevas sin ajustar dieron 51 alertas en 20 minutos, cada una con su ffmpeg, y la máquina
+# quedó con carga 51 en 4 procesadores (98 % del tiempo había procesos esperando procesador): las cámaras de todos los
+# clientes bajaron a 1-3 cuadros/s. Ahora cada ffmpeg usa un hilo (`VIGIA_FFMPEG_HILOS`; 0 = los de fábrica) y corre
+# con prioridad baja (`VIGIA_FFMPEG_NICE`, de 0 a 19; 0 = la misma que el análisis): el clip tarda más en estar listo
+# cuando la máquina está ocupada, pero nunca le saca procesador al análisis en vivo
+FFMPEG_THREADS = _env_int("VIGIA_FFMPEG_HILOS", 1)
+FFMPEG_NICE = min(max(_env_int("VIGIA_FFMPEG_NICE", 15), 0), 19)
+
+
+def ffmpeg_command(ffmpeg: str, args: list[str]) -> list[str]:
+    """ffmpeg con prioridad baja (`nice`, donde lo hay: no en Windows) y la cantidad de hilos de `FFMPEG_THREADS`."""
+    threads = ["-threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS > 0 else []
+    nice = shutil.which("nice") if FFMPEG_NICE > 0 and os.name != "nt" else None
+    return ([nice, "-n", str(FFMPEG_NICE)] if nice else []) + [ffmpeg] + threads + args
+
+
 def transcode_h264(src: str | Path, dst: str | Path, max_width: int = 1280, timeout: int = 180,
                    extra_input: list[str] | None = None, duration: float | None = None) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return False
-    cmd = [ffmpeg, "-y", "-loglevel", "error"] + (extra_input or []) + ["-i", str(src)]
+    args = ["-y", "-loglevel", "error"] + (extra_input or []) + ["-i", str(src)]
     if duration:
-        cmd += ["-t", f"{duration:.2f}"]
-    cmd += ["-an", "-vf", f"scale='min({max_width},iw)':-2", "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
+        args += ["-t", f"{duration:.2f}"]
+    threads = ["-threads", str(FFMPEG_THREADS), "-filter_threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS > 0 else []
+    args += ["-an", "-vf", f"scale='min({max_width},iw)':-2"] + threads + [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        str(dst)]
+    cmd = ffmpeg_command(ffmpeg, args)  # (el primer «-threads», antes de «-i», es para decodificar)
     try:
         r = subprocess.run(cmd, timeout=timeout, capture_output=True)
     except subprocess.TimeoutExpired:

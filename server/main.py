@@ -1330,7 +1330,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 tot = used.setdefault(a.instance_id or f"agente-{a.id}", {})
                 for k, v in cpu.items():
                     if type(v) in (int, float):
-                        tot[k] = max(tot.get(k, 0.0), v) if k == "cores" else round(tot.get(k, 0.0) + v, 2)
+                        # (los de la máquina entera, iguales en todos sus procesos, no se suman)
+                        tot[k] = max(tot.get(k, 0.0), v) if k in MACHINE_WIDE else round(tot.get(k, 0.0) + v, 2)
         return {"mode": mode, "capacity": pool_capacity(s), "spare": spare, "clients_on_servers": clients_on,
                 "has_pool_key": bool(setting(s, "pool_key_hash")), "plan": p.as_dict(),
                 "cameras": len(cams), "cameras_active": open_now,
@@ -2217,6 +2218,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ------------------------------------------------------------ cámaras
     STATUS_KEY = re.compile(r"^[a-z_]{1,40}$")
+    # en el `cpu` de cada proceso, lo que es de la máquina entera (agent/consumo.py): al juntar sus procesos no se suma
+    MACHINE_WIDE = ("cores", "load", "wait_pct", "gpu", "gpu_gb")
 
     def finite(v) -> float | None:
         """Un número de verdad (no texto, no infinito ni NaN), o None."""
