@@ -87,6 +87,37 @@ def frames(n: int, size: tuple[int, int]) -> tuple[list[np.ndarray], str]:
     return [rng.integers(0, 255, (size[1], size[0], 3), dtype=np.uint8) for _ in range(n)], "imágenes inventadas"
 
 
+PHOTOS = ("https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/assets/bus.jpg",
+          "https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/assets/zidane.jpg")
+
+
+def photos_with_people(size: tuple[int, int]) -> list[np.ndarray]:
+    """Dos fotos con gente (las de prueba de Ultralytics), enteras y achicadas dentro de un cuadro de 1280x720 (gente
+    chica, como en una cámara de local) y espejadas: para comparar si los dos encuentran las mismas personas."""
+    import urllib.request
+
+    import cv2
+    out = []
+    for url in PHOTOS:
+        try:
+            data = urllib.request.urlopen(url, timeout=20).read()
+        except OSError as exc:
+            print("   (no se pudo bajar", url.rsplit("/", 1)[-1], f"{exc})")
+            continue
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            continue
+        for scale in (1.0, 0.5, 0.3):
+            frame = np.full((720, 1280, 3), 114, np.uint8)
+            r = scale * min(1280 / img.shape[1], 720 / img.shape[0])
+            small = cv2.resize(img, (max(1, int(img.shape[1] * r)), max(1, int(img.shape[0] * r))),
+                               interpolation=cv2.INTER_AREA)
+            frame[:small.shape[0], :small.shape[1]] = small
+            for f in (frame, frame[:, ::-1].copy()):
+                out.append(letterbox(f, size))
+    return out
+
+
 def people(out: np.ndarray, col: int, conf: float = 0.35) -> list[tuple]:
     import cv2
     o = out.T if out.shape[0] < out.shape[1] else out  # (N, 4+C)
@@ -159,7 +190,11 @@ def main() -> None:
         tw, tc = bench(trt, canvases, b, args.vueltas)
         print(f"   {b:>4}   {cw:8.2f} ({cc:5.2f})              {tw:8.2f} ({tc:5.2f})      ×{cw / tw:.1f} más rápido")
     col = cuda.col_of[0]
-    same = total = 0
+    extra = photos_with_people(cuda.size)
+    if extra:
+        print(f"Comparando también con {len(extra)} versiones de 2 fotos con gente (enteras, chicas y espejadas)")
+    canvases = canvases + extra
+    same = total = n_cuda = n_trt = 0
     ious: list[float] = []
     dconf: list[float] = []
     for c in canvases:
@@ -167,12 +202,14 @@ def main() -> None:
         b = people(trt.session.run(None, {trt.input_name: c[None]})[0][0], col)
         total += 1
         same += len(a) == len(b)
+        n_cuda += len(a)
+        n_trt += len(b)
         for pa in a:
             best = max(b, key=lambda pb: iou(pa, pb), default=None)
             if best:
                 ious.append(iou(pa, best))
                 dconf.append(abs(pa[4] - best[4]))
-    print(f"Personas: misma cantidad en {same} de {total} cuadros", end="")
+    print(f"Personas: CUDA vio {n_cuda} y TensorRT {n_trt}; misma cantidad en {same} de {total} imágenes", end="")
     if ious:
         print(f" · las mismas cajas (coincidencia promedio {np.mean(ious):.3f}, peor {min(ious):.3f}) · confianza "
               f"distinta en {np.mean(dconf):.3f} de promedio (peor {max(dconf):.3f})")
