@@ -284,7 +284,10 @@ def _session(path: Path) -> OnnxSession:
     except OSError:
         mark = None
     try:
-        sess = OnnxSession(path, threads=2, max_batch=batch, max_wait=POSE_WAIT_S, all_outputs=True)
+        # (TensorRT para la postura solo con VIGIA_TENSORRT=todo: el detector de personas es lo que pesa)
+        from .detectors import tensorrt_mode
+        sess = OnnxSession(path, threads=2, max_batch=batch, max_wait=POSE_WAIT_S, all_outputs=True,
+                           trt=tensorrt_mode() == "todo")
         if sess.max_batch <= 1:
             return sess
         if not env and not sess.on_gpu:  # la placa no quiso el modelo por lotes: con el de siempre, que quizá sí

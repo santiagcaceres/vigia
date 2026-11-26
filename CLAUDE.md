@@ -1589,6 +1589,25 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       liviano … se sigue leyendo con el procesador»). Un costo así de fijo por cámara solo se baja con un programa que
       lea varias cámaras con la misma conexión a la placa (sin hacer). Pruebas:
       `tests/test_video_placa.py` (con `MEDIAMTX=<mediamtx>` la de punta a punta con una cámara RTSP simulada).
+    - **Prueba de llenado con todo esto (26 nov, 13:51-14:14):** Mayorista Alberto marcada (8 de 10 en línea) → 28
+      cámaras a 3,9-4,5 cuadros/s sin saltear; procesador ~3,0 de 4 (video 1,26, cámaras 0,9, modelo 0,56, clips 0,25);
+      placa 36-45 %, 3,0 GB. Pero las 8 cámaras sin ajustar dieron **96 alertas en 23 min** (71 «mano en la bolsa»; Zona
+      de Pedidos 35, Caja 24, Frente Caja 19): los clips (prioridad baja) se hicieron cola, carga 18 y 93 % esperando
+      procesador, sin frenar el análisis. Se desmarcaron a las 14:14; antes de volver a analizarlas, gestos apagados en
+      caja y pedidos. Estimado: ~0,09-0,10 procesadores por cámara → 34-37 en la xlarge; con la segunda calidad del
+      manual (H.264, 640x360 o WD1, 8 cuadros/s) ~0,075 → ~45; en una 2xlarge el límite pasa a ser la placa (~40 % con
+      28) → TensorRT.
+    - **TensorRT (26 nov, `tools/tensorrt_prueba.py` en la máquina de AWS, onnxruntime 1.32, T4):** el detector de
+      personas por lotes en media precisión gasta **2,6-3 veces menos** que con CUDA (de a 1: 2,6-2,8 ms por cuadro
+      contra 6,8-7,7; de a 8: 1,6-1,8 contra 4,8-5,5) y **lo mismo en procesador** (el hilo que le da el trabajo a la
+      placa queda ocupado todo ese rato: ms de procesador = ms de reloj). Mismas personas: 29 de 29 en 44 imágenes (el
+      video de prueba sin gente y las dos fotos de Ultralytics enteras, chicas y espejadas), cajas a 0,993 de
+      coincidencia (la peor 0,961), confianza a 0,001 (la peor 0,003). El motor se arma una vez (285 s) y queda en
+      `/var/lib/vigia/.cache/vigia-tensorrt`; las librerías (`tensorrt-cu12-libs`, ~2 GB) en /var/tmp/vigia-trt (o
+      /var/lib/vigia/trt, `VIGIA_TRT_LIBS`, pip). **`VIGIA_TENSORRT=1`** lo usa solo el detector compartido de las
+      máquinas (`build_detector` → `OnnxSession(trt=True)`; `todo` = también la postura); las librerías se cargan una
+      vez (`tensorrt_ready`) y, si no están o la sesión falla con TensorRT, sigue con **CUDA** (antes una falla al
+      armar la sesión caía al procesador). Pruebas: `tests/test_tensorrt.py`. Cómo prenderlo: `deploy/aws/TIGO.md`.
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).

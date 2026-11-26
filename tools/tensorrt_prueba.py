@@ -30,7 +30,7 @@ LIBS = ("libnvinfer.so.10", "libnvinfer_plugin.so.10", "libnvonnxparser.so.10")
 
 
 def find_trt_libs() -> Path | None:
-    for base in [TRT_DIR, *map(Path, sys.path)]:
+    for base in [Path("/var/lib/vigia/trt"), TRT_DIR, *map(Path, sys.path)]:
         d = base / "tensorrt_libs"
         if (d / LIBS[0]).exists():
             return d
@@ -142,7 +142,10 @@ def session(trt: bool):
     os.environ["VIGIA_TENSORRT"] = "1" if trt else "0"
     from core.detectors import OnnxSession
     t0 = time.monotonic()
-    s = OnnxSession(Path("models/personas.onnx"), threads=1, max_batch=16)
+    try:  # (desde el 26 nov el programa pide TensorRT solo para el detector compartido: `trt=True`)
+        s = OnnxSession(Path("models/personas.onnx"), threads=1, max_batch=16, trt=trt)
+    except TypeError:
+        s = OnnxSession(Path("models/personas.onnx"), threads=1, max_batch=16)
     return s, time.monotonic() - t0
 
 

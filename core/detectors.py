@@ -104,9 +104,10 @@ class OnnxSession:
     """
 
     def __init__(self, model_path: str | Path, threads: int = 2, max_batch: int | None = None,
-                 max_wait: float = 0.008, all_outputs: bool = False):
+                 max_wait: float = 0.008, all_outputs: bool = False, trt: bool = False):
         """`all_outputs`: en lotes, la salida entera en vez de solo las clases que usa el detector (el modelo de
-        postura: core/pose.py)."""
+        postura: core/pose.py). `trt`: con `VIGIA_TENSORRT`, usar TensorRT (solo el detector de personas de las
+        máquinas lo pide: ver `tensorrt_ready`)."""
         import onnxruntime as ort
 
         if hasattr(ort, "preload_dlls") and "CUDAExecutionProvider" in ort.get_available_providers():
@@ -114,7 +115,7 @@ class OnnxSession:
                 ort.preload_dlls()
             except Exception:  # noqa: BLE001
                 pass
-        providers = _providers(ort)
+        providers = _providers(ort, tensorrt=trt)
         nvidia = any(p in providers for p in ("TensorrtExecutionProvider", "CUDAExecutionProvider"))
         if nvidia:
             gpu_wait_mode()
@@ -144,10 +145,21 @@ class OnnxSession:
         if "TensorrtExecutionProvider" in providers:
             providers = [_tensorrt(self.max_batch, "imagenes" if self.uint8 else None, batch_size)
                          if p == "TensorrtExecutionProvider" else p for p in providers]
+            log.info("TensorRT: preparando el modelo (si es la primera vez en esta máquina arma el motor: unos "
+                     "minutos)")
         try:
             self.session = ort.InferenceSession(model, opts, providers=providers)
-        except Exception:  # noqa: BLE001 - placa sin soporte: seguir con el procesador
-            self.session = ort.InferenceSession(model, opts, providers=["CPUExecutionProvider"])
+        except Exception as exc:  # noqa: BLE001 - placa sin soporte: seguir con el procesador
+            plain = [p for p in providers if (p[0] if isinstance(p, tuple) else p) != "TensorrtExecutionProvider"]
+            self.session = None
+            if len(plain) < len(providers):  # falló TensorRT: con CUDA, como siempre (nunca al procesador por eso)
+                log.warning("TensorRT no anduvo (%s): se sigue con %s", str(exc)[:200], plain[0] if plain else "?")
+                try:
+                    self.session = ort.InferenceSession(model, opts, providers=plain)
+                except Exception:  # noqa: BLE001
+                    self.session = None
+            if self.session is None:
+                self.session = ort.InferenceSession(model, opts, providers=["CPUExecutionProvider"])
         used = self.session.get_providers()
         self.device = ("GPU (" + used[0].replace("ExecutionProvider", "") + ")"
                        if used and used[0] != "CPUExecutionProvider" else "procesador")
@@ -489,10 +501,78 @@ def gpu_wait_mode(lib=None) -> str | None:
         return "error"
 
 
-def _providers(ort) -> list[str]:
+# TensorRT (26 nov, medido en la máquina de AWS con una T4 y `tools/tensorrt_prueba.py`): el detector de personas en
+# media precisión gasta 2,6-3 veces menos placa por cuadro que con CUDA (de a 8: 1,6 ms contra 4,8) y lo mismo de
+# procesador (el hilo que espera a la placa está ocupado todo ese rato), y encuentra las mismas personas (29 de 29,
+# cajas con 0,99 de coincidencia, confianza a 0,001). `VIGIA_TENSORRT=1`: lo usa el detector de personas compartido
+# de las máquinas; `todo`: también la postura. Las librerías de NVIDIA (`tensorrt-cu12-libs`, ~2 GB) se buscan en
+# `VIGIA_TRT_LIBS`, en /var/lib/vigia/trt o /var/tmp/vigia-trt (donde las deja la herramienta) o instaladas con pip;
+# si no están o fallan, sigue con CUDA como siempre.
+TRT_LIBS = ("libnvinfer.so.10", "libnvinfer_plugin.so.10", "libnvonnxparser.so.10")
+_trt_lock = threading.Lock()
+_trt_ok: bool | None = None
+
+
+def tensorrt_mode() -> str:
+    """"" (apagado), "detector" o "todo" (`VIGIA_TENSORRT`)."""
+    v = (os.getenv("VIGIA_TENSORRT") or "").strip().lower()
+    if v in ("", "0", "no"):
+        return ""
+    return "todo" if v == "todo" else "detector"
+
+
+def _trt_dirs() -> list[Path]:
+    dirs = [Path(os.environ["VIGIA_TRT_LIBS"])] if os.getenv("VIGIA_TRT_LIBS") else []
+    dirs += [Path("/var/lib/vigia/trt/tensorrt_libs"), Path("/var/tmp/vigia-trt/tensorrt_libs")]
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("tensorrt_libs")
+        if spec and spec.submodule_search_locations:
+            dirs += [Path(p) for p in spec.submodule_search_locations]
+    except (ImportError, ValueError):
+        pass
+    return dirs
+
+
+def tensorrt_ready() -> bool:
+    """Carga una vez las librerías de TensorRT (onnxruntime las busca por nombre al armar la sesión). False = no están o
+    no cargan: el detector sigue con CUDA."""
+    global _trt_ok
+    with _trt_lock:
+        if _trt_ok is None:
+            _trt_ok = _load_trt()
+        return _trt_ok
+
+
+def _load_trt() -> bool:
+    import ctypes
+    for d in _trt_dirs():
+        if not (d / TRT_LIBS[0]).exists():
+            continue
+        try:
+            for name in TRT_LIBS:
+                if (d / name).exists():
+                    ctypes.CDLL(str(d / name), mode=ctypes.RTLD_GLOBAL)
+        except OSError as exc:
+            log.warning("No cargaron las librerías de TensorRT de %s (%s): el detector sigue con CUDA", d, exc)
+            return False
+        log.info("TensorRT: librerías de %s", d)
+        return True
+    try:  # (instaladas en el sistema)
+        ctypes.CDLL(TRT_LIBS[0], mode=ctypes.RTLD_GLOBAL)
+        return True
+    except OSError:
+        log.warning("Se pidió TensorRT (VIGIA_TENSORRT) pero no están sus librerías: el detector sigue con CUDA "
+                    "(se bajan con «tools/tensorrt_prueba.py --instalar»)")
+        return False
+
+
+def _providers(ort, tensorrt: bool = False) -> list[str]:
+    """Dónde corre un modelo, en orden de preferencia. TensorRT solo si lo pide quien arma la sesión (`tensorrt`), está
+    prendido (`VIGIA_TENSORRT`) y sus librerías cargan."""
     available = ort.get_available_providers()
     preferred = ["CUDAExecutionProvider", "DmlExecutionProvider", "OpenVINOExecutionProvider", "CPUExecutionProvider"]
-    if os.getenv("VIGIA_TENSORRT", "0") not in ("0", "", "no"):  # TensorRT: más rápido, si está instalado
+    if tensorrt and tensorrt_mode() and "TensorrtExecutionProvider" in available and tensorrt_ready():
         preferred.insert(0, "TensorrtExecutionProvider")
     if os.getenv("VIGIA_DISPOSITIVO") == "procesador":
         preferred = ["CPUExecutionProvider"]
@@ -552,7 +632,7 @@ def build_detector(name: str, model_path: str | Path | None = None, vehicles: bo
                 # la app: una sola sesión con más hilos, en vez de una de 2 hilos por cámara
                 threads = hilos or (min(4, max(2, os.cpu_count() or 2)) if shared else 2)
                 sess = (SessionPool(model_path, hilos) if hilos > 1 else
-                        OnnxSession(model_path, threads=threads, max_batch=None))
+                        OnnxSession(model_path, threads=threads, max_batch=None, trt=True))
             det = OnnxYoloDetector(classes=classes, session=sess)
             if det.on_gpu or sess.max_batch > 1 or os.getenv("VIGIA_HILOS") or shared:  # una sola sesión para todas
                 _sessions[str(model_path)] = sess

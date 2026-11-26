@@ -163,6 +163,25 @@ curl -fsSL https://raw.githubusercontent.com/santiagcaceres/vigia/main/tools/ffm
 sudo python3 /tmp/fp.py
 ```
 
+### TensorRT para el detector (26 nov 2026)
+
+Medido en la máquina con `tools/tensorrt_prueba.py`: el detector de personas gasta 2,6-3 veces menos placa y procesador
+por cuadro que con CUDA y encuentra las mismas personas. La herramienta ya bajó las librerías (`/var/tmp/vigia-trt`,
+~2 GB) y dejó el motor armado en `/var/lib/vigia/.cache/vigia-tensorrt`. Para pasar las librerías a un lugar que no se
+limpie solo y prenderlo **primero en la parte 4**:
+
+```bash
+sudo mkdir -p /var/lib/vigia/trt && sudo mv /var/tmp/vigia-trt/* /var/lib/vigia/trt/ && sudo chown -R vigia: /var/lib/vigia/trt
+sudo mkdir -p /etc/systemd/system/vigia-maquina@4.service.d
+printf '[Service]\nEnvironment=VIGIA_TENSORRT=1\n' | sudo tee /etc/systemd/system/vigia-maquina@4.service.d/tensorrt.conf
+sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.service   # trae el código y reinicia
+```
+
+El registro de esa parte dice «Detector de personas en GPU (Tensorrt)». Si no encuentra el motor guardado lo arma (unos
+minutos, en los que esa parte no analiza). Deshacer: `sudo rm
+/etc/systemd/system/vigia-maquina@4.service.d/tensorrt.conf && sudo systemctl daemon-reload && sudo systemctl restart
+vigia-maquina@4`. Para las 4 partes, el mismo archivo en `/etc/systemd/system/vigia-maquina@.service.d/`.
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.
