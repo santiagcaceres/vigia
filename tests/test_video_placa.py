@@ -152,6 +152,7 @@ def test_el_medidor_cuenta_el_ffmpeg_de_la_placa_en_video_y_no_dos_veces(tmp_pat
         n += 1
     mid = meter.sample()
     pc.release()
+    time.sleep(1.0)  # (con un rato entre las dos lecturas: en 10 ms, el redondeo de 10 ms del sistema pesaría)
     end = meter.sample()
     assert n == 300 and mid["video"] > 0.05  # lo que gasta el ffmpeg mientras anda cuenta como decodificar video
     assert end.get("externos", 0.0) < 0.05  # y al terminar no aparece otra vez como programa externo
