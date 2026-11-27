@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -54,6 +55,13 @@ WAITING_GRAB_MAX_S = 0.02  # un cuadro que tardó menos que esto en salir ya est
 # cuántos baja ni cuántos informar
 GPU_LEARN_S = 6.0
 GPU_LEARN_SKIP_S = 1.5  # (lo primero no se cuenta: al conectar, algunos grabadores mandan de golpe lo que tenían)
+# Video con la placa dentro del proceso (agent/video_av.py): si una cámara no abrió así por algo que no es la placa (el
+# grabador no contestó, mandó algo raro al conectar), esa vez abre con OpenCV y a los 2 minutos se vuelve a probar con
+# la placa (y si vuelve a fallar, el doble, hasta una hora). 27 nov, en la máquina de AWS: un corte del grabador de
+# Cristino dejaba sus cámaras con el procesador hasta el próximo corte. Si el problema es de la placa, una hora.
+AV_BACK_S = 120.0
+AV_BACK_MAX_S = 3600.0
+_AV_HW_ERROR = re.compile(r"cuda|hwaccel|hw_device|nvdec|cuvid|not supported|no capable|libnvcuvid", re.IGNORECASE)
 CATCHUP_MAX_S = 5.0  # (por las dudas, como mucho 5 s seguidos salteando: después se analiza igual)
 # filtro de movimiento (core/motion.py): qué parte de la imagen chica (96x54) tiene que cambiar para mirar el cuadro.
 # Con «Personas lejos» se baja: alguien al fondo de un depósito (menos del ~8 % del alto) mueve menos puntos que eso y,
@@ -349,6 +357,8 @@ class CameraWorker:
         self._gpu_hint: dict | None = None
         self._gpu_ref = None
         self._gpu_switch = False  # se cortó a propósito la conexión de OpenCV para volver a abrir por la placa
+        self._av_back_at: float | None = None  # cuándo volver a probar la placa dentro del proceso (abrió con OpenCV)
+        self._av_fails = 0
         self._gpu_fails = 0
         self._gpu_off_until = 0.0
         self._gpu_relearn: tuple | None = None  # el tamaño que la placa dijo que no era (ya se volvió a mirar)
@@ -555,8 +565,9 @@ class CameraWorker:
 
     def _open_av(self, url: str):
         """El video con la placa dentro del proceso (agent/video_av.py, `VIGIA_VIDEO_PLACA=proceso`). None = con
-        OpenCV: no se pidió, no es RTSP, llega en ráfagas, la máquina no puede o falló hace poco. Si no abre, esta vez
-        y los próximos 10 minutos con OpenCV (si el grabador está caído, OpenCV tampoco abre y no cambia nada)."""
+        OpenCV: no se pidió, no es RTSP, llega en ráfagas, la máquina no puede o falló hace poco. Si no abre por algo
+        que no es la placa, esta vez abre con OpenCV y se vuelve a probar la placa en 2 minutos (`AV_BACK_S`, el doble
+        cada vez que vuelve a fallar); si es la placa, una hora con OpenCV."""
         from . import video_av
         if (not video_av.wanted() or not url.lower().startswith("rtsp://") or bursty(self.hik.brand, url)
                 or time.monotonic() < self._gpu_off_until or not video_av.available()[0]):
@@ -565,9 +576,18 @@ class CameraWorker:
         if cap.isOpened():
             if not cap.gpu:
                 log.info("[%s] la placa no puede con este video: lo decodifica el procesador", self.name)
+            self._av_fails, self._av_back_at = 0, None
             return cap
-        self._gpu_off_until = time.monotonic() + 600
-        log.warning("[%s] no abrió con la placa (%s): con OpenCV por 10 minutos", self.name, cap.why or "?")
+        why = cap.why or "?"
+        if _AV_HW_ERROR.search(why):
+            self._gpu_off_until = time.monotonic() + 3600
+            log.warning("[%s] la placa no pudo abrir este video (%s): con OpenCV por una hora", self.name, why)
+            return None
+        self._av_fails += 1
+        wait = min(AV_BACK_S * 2 ** (self._av_fails - 1), AV_BACK_MAX_S)
+        self._av_back_at = time.monotonic() + wait
+        log.warning("[%s] no abrió con la placa (%s): se prueba con OpenCV y se vuelve a la placa en %d min", self.name,
+                    why, round(wait / 60))
         return None
 
     def _open_gpu(self, url: str):
@@ -665,6 +685,8 @@ class CameraWorker:
             step_s = max(step_s, math.ceil((step_s - 1e-3) / frame_s - 1e-6) * frame_s)
         analyzed = slow = grabbed = 0
         learn_since: float | None = None  # (pasar a la placa: desde cuándo se cuentan los cuadros de la cámara)
+        # abrió con OpenCV porque la placa dentro del proceso no pudo esa vez: cuándo volver a probarla
+        av_back = None if gpu or getattr(cap, "av", False) else self._av_back_at
         learn_times: list[float] = []  # cuándo llegó cada cuadro mientras tanto
         late_s = span_s = 0.0  # lo que los análisis se pasaron de step_s / lo que ocupó cada uno (o step_s si fue menos)
         last_skip_log = time.monotonic()
@@ -672,6 +694,11 @@ class CameraWorker:
         cpu0 = thread_time()
         cpu_read = cpu_ai = 0.0
         while not self._stop.is_set():
+            if av_back is not None and time.monotonic() >= av_back:
+                self._av_back_at = None
+                self._gpu_switch = True  # (se vuelve a abrir enseguida: con la placa dentro del proceso)
+                log.info("[%s] se vuelve a probar el video con la placa", self.name)
+                return
             if self._pending_analysis is not None:
                 # se saca antes de aplicarlo: si falla, no se reintenta en cada cuadro
                 pending, self._pending_analysis = self._pending_analysis, None

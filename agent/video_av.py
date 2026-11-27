@@ -110,6 +110,7 @@ class AvCapture:
     """El video de una cámara leído con PyAV, con la placa si se puede. Ver el comentario del módulo."""
 
     thin = 1
+    av = True  # (el worker lo distingue de OpenCV)
 
     def __init__(self, url: str, input_args: list[str] | None = None, use_gpu: bool | None = None,
                  threads: int | None = 1):
