@@ -502,7 +502,7 @@ class CameraWorker:
                 backoff = min(backoff * 2, 60.0)
                 continue
             self._url = url
-            cap = self._open_gpu(url) or open_video(url, self._video_threads)
+            cap = self._open_gpu(url) or self._open_av(url) or open_video(url, self._video_threads)
             if not cap.isOpened():
                 why = self.hik.open_failure(url)
                 if self.hik.brand == "hikconnect":  # (el estado se corta a 300 letras: el motivo primero)
@@ -552,6 +552,23 @@ class CameraWorker:
         return (video_placa.wanted() and url.lower().startswith("rtsp://")
                 and not bursty(self.hik.brand, url) and time.monotonic() >= self._gpu_off_until
                 and video_placa.available()[0])
+
+    def _open_av(self, url: str):
+        """El video con la placa dentro del proceso (agent/video_av.py, `VIGIA_VIDEO_PLACA=proceso`). None = con
+        OpenCV: no se pidió, no es RTSP, llega en ráfagas, la máquina no puede o falló hace poco. Si no abre, esta vez
+        y los próximos 10 minutos con OpenCV (si el grabador está caído, OpenCV tampoco abre y no cambia nada)."""
+        from . import video_av
+        if (not video_av.wanted() or not url.lower().startswith("rtsp://") or bursty(self.hik.brand, url)
+                or time.monotonic() < self._gpu_off_until or not video_av.available()[0]):
+            return None
+        cap = video_av.AvCapture(url, self.hik.ffmpeg_input_args(), threads=self._video_threads)
+        if cap.isOpened():
+            if not cap.gpu:
+                log.info("[%s] la placa no puede con este video: lo decodifica el procesador", self.name)
+            return cap
+        self._gpu_off_until = time.monotonic() + 600
+        log.warning("[%s] no abrió con la placa (%s): con OpenCV por 10 minutos", self.name, cap.why or "?")
+        return None
 
     def _open_gpu(self, url: str):
         """El video por la placa, si se pidió y ya se sabe qué video manda la cámara. None = con OpenCV."""

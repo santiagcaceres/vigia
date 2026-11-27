@@ -6,4 +6,6 @@ opencv-python-headless>=4.9
 onnx>=1.16  # arma el modelo para analizar varias cámaras juntas (core/lotes.py)
 # CUDA y cuDNN vienen por pip: en la máquina solo hace falta el driver de NVIDIA (nvidia-smi)
 onnxruntime-gpu[cuda,cudnn]>=1.21
+# PyAV: leer el video con la placa dentro del proceso (agent/video_av.py, solo con VIGIA_VIDEO_PLACA=proceso)
+av>=19,<20
 tzdata>=2024.1
