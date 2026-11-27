@@ -1608,6 +1608,27 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
       máquinas (`build_detector` → `OnnxSession(trt=True)`; `todo` = también la postura); las librerías se cargan una
       vez (`tensorrt_ready`) y, si no están o la sesión falla con TensorRT, sigue con **CUDA** (antes una falla al
       armar la sesión caía al procesador). Pruebas: `tests/test_tensorrt.py`. Cómo prenderlo: `deploy/aws/TIGO.md`. **En producción (parte 4 desde las 14:52, medido 15:14-15:18, 6 cámaras en línea a 3,6-4,3 cuadros/s, sin saltear):** los hilos del modelo (detector + postura, que sigue en CUDA) gastan ~7 ms de procesador por imagen del detector contra 13-15 en las partes con CUDA (4 lecturas sumadas: 0,22 procesadores para 32 imágenes/s contra 0,17-0,40 para 11-31); el motor guardado cargó al instante, la memoria de la placa subió 70 MB (2,56 → 2,63 GB) y las alertas siguieron saliendo. El uso de la placa es de toda la máquina (no se puede separar por parte). A esa hora hay poca gente: en la prueba de llenado el modelo gastaba 0,56 procesadores, con TensorRT serían ~0,28.
+    - **Más trabajo a la placa (27 nov, el dueño: «si el procesador está a tope y sobra placa, pasá más a la
+      placa»).** Con TensorRT en las 4 partes (20 cámaras, 21 h): el modelo 4-5 ms de procesador por imagen (antes
+      13-15), la máquina 1,4 de 4 procesadores, la placa 14-18 %. Lo que quedaba en el procesador: leer el video de
+      las livianas (~40 % en hora pico), comprimir los clips (libx264) y achicar/guardar los cuadros del clip.
+      - **Clips con la placa** (`core/clips.py`, `VIGIA_CLIPS_PLACA` auto|si|no): con `nvidia-smi` y una prueba de
+        NVENC que anda, ffmpeg comprime con `h264_nvenc` (p4, vbr, cq 27) y decodifica la entrada con `-hwaccel cuda`
+        (si no puede, vuelve solo al procesador). Si la placa falla, el clip se rehace con libx264 y por una hora no se
+        prueba (`NVENC_RETRY_S`). `write_mp4` manda los JPEG del buffer tal cual a ffmpeg por un caño (`image2pipe`,
+        `_pipe_mp4`): ya no decodifica cada cuadro en Python ni escribe el MP4 de OpenCV que ffmpeg volvía a leer
+        (cuadros que no son JPEG: `rawvideo`). Si el caño falla, como antes.
+      - **El video dentro del proceso** (`agent/video_av.py`, `VIGIA_VIDEO_PLACA=proceso`, apagado de fábrica): PyAV
+        (las librerías de FFmpeg como módulo; `av` en `requirements-servidor.txt`) lee cada cámara por RTSP en su hilo y
+        la placa decodifica con NVDEC en el **contexto principal de CUDA del proceso** (`primary_ctx`, el mismo de
+        onnxruntime): un solo «enchufe» a la placa para todas, sin un ffmpeg ni un caño por cámara (eso era el costo
+        fijo de ~0,03). Los cuadros quedan en la placa (`is_hw_owned`) y se baja solo el que se usa; misma cara que
+        `cv2.VideoCapture` (`AvCapture`), el worker no cambia (`_open_av`). Si la placa no puede con ese video, PyAV
+        decodifica con el procesador; si no abre, esa cámara va con OpenCV 10 minutos. PyAV suelta el GIL al decodificar
+        (4 hilos en el mismo tiempo que 1). `tools/placa_prueba.py` lo mide en la máquina (8 cámaras simuladas a
+        velocidad real, procesador contra placa), y también NVENC y la postura con TensorRT.
+      - Pruebas: `tests/test_video_av.py` (con `MEDIAMTX`, de punta a punta con una cámara RTSP simulada, sin placa) y
+        las de clips en `tests/test_mas_camaras.py`.
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).
