@@ -78,6 +78,24 @@ def load_av():
     return av
 
 
+def ensure_src() -> bool:
+    """El video de prueba: el de la prueba del 26 nov (/tmp/prueba.mp4, de una cámara de verdad) o, si ya no está,
+    uno inventado del mismo tipo (H.265 960x576 a 12 cuadros/s, 60 s; con movimiento en toda la imagen, así cuesta
+    decodificar más o menos lo mismo)."""
+    if SRC.exists() and SRC.stat().st_size > 0:
+        return True
+    if not shutil.which("ffmpeg"):
+        return False
+    say(f"No está {SRC}: armo un video de prueba inventado (H.265 960x576 a 12 cuadros/s, 60 s)…")
+    r = subprocess.run(["nice", "-n", "15", "ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "testsrc2=size=960x576:rate=12:duration=60", "-c:v", "libx265", "-preset", "fast",
+                        "-x265-params", "log-level=error:keyint=24", "-b:v", "512k", "-pix_fmt", "yuv420p", "-threads",
+                        "2", str(SRC)], capture_output=True, text=True, timeout=900, check=False)
+    if r.returncode != 0:
+        say("   No se pudo armar:", (r.stderr.strip().splitlines() or ["?"])[-1][:200])
+    return SRC.exists() and SRC.stat().st_size > 0
+
+
 def make_h264_copy() -> bool:
     if SRC_H264.exists() and SRC_H264.stat().st_size > 0:
         return True
@@ -163,8 +181,8 @@ def run_video_mode(av, path: Path, mode: str, cams: int, seconds: float) -> dict
 
 def video_part(cams: int, seconds: float) -> None:
     say("\n== 1. Leer el video de varias cámaras en un solo proceso")
-    if not SRC.exists():
-        say(f"   Falta el video de prueba {SRC} (el de la prueba del 26 nov). Se puede volver a bajar de una cámara.")
+    if not ensure_src():
+        say(f"   Falta el video de prueba {SRC} y no se pudo armar uno.")
         return
     av = load_av()
     if av is None:
@@ -217,7 +235,7 @@ def frame_at(path: Path, sec: float):
 
 def clips_part() -> None:
     say("\n== 2. Comprimir el clip de una alerta (30 s)")
-    if not SRC.exists() or not shutil.which("ffmpeg"):
+    if not ensure_src() or not shutil.which("ffmpeg"):
         say("   Falta el video de prueba o ffmpeg.")
         return
     out = Path("/var/tmp/vigia-clip-prueba")
