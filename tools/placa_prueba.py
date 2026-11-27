@@ -62,7 +62,7 @@ def gpu_mem_of(pid: int) -> int | None:
 
 def load_av():
     try:
-        import av  # noqa: F401
+        import av
         return av
     except ImportError:
         pass
@@ -358,7 +358,8 @@ def main() -> None:
     ap.add_argument("--camaras", type=int, default=8)
     ap.add_argument("--segundos", type=float, default=20.0)
     args = ap.parse_args()
-    load = open("/proc/loadavg").read().split()[:3]
+    with open("/proc/loadavg", encoding="ascii") as f:
+        load = f.read().split()[:3]
     say(f"Carga de la máquina ahora: {' '.join(load)} (con las cámaras andando)")
     parts = {"video": lambda: video_part(args.camaras, args.segundos), "clips": clips_part, "postura": pose_part}
     for name, fn in parts.items():

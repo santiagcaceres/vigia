@@ -191,7 +191,7 @@ def _nvenc_works(ffmpeg: str) -> bool:
     try:
         r = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                             "color=c=gray:s=320x240:d=0.4:r=10", "-c:v", "h264_nvenc", "-f", "null", "-"],
-                           capture_output=True, timeout=30)
+                           capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return getattr(r, "returncode", 1) == 0
@@ -204,7 +204,7 @@ def _gpu_failed(err: str) -> None:
 
 def _even_size(w: int, h: int, max_width: int = 1280) -> tuple[int, int]:
     ow = max(2, min(max_width, w) // 2 * 2)
-    oh = max(2, int(round(h * ow / max(w, 1) / 2)) * 2)
+    oh = max(2, round(h * ow / max(w, 1) / 2) * 2)
     return ow, oh
 
 
@@ -302,7 +302,7 @@ def transcode_h264(src: str | Path, dst: str | Path, max_width: int = 1280, time
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
         cmd = ffmpeg_command(ffmpeg, args)  # (el primer «-threads», antes de «-i», es para decodificar)
         try:
-            r = subprocess.run(cmd, timeout=timeout, capture_output=True)
+            r = subprocess.run(cmd, timeout=timeout, capture_output=True, check=False)
         except subprocess.TimeoutExpired:
             log.warning("ffmpeg excedió el tiempo procesando %s", redact(str(src)))
             return False
