@@ -284,10 +284,9 @@ def _session(path: Path) -> OnnxSession:
     except OSError:
         mark = None
     try:
-        # (TensorRT para la postura solo con VIGIA_TENSORRT=todo: el detector de personas es lo que pesa)
+        # (TensorRT para la postura solo con VIGIA_TENSORRT=todo; se prueba después de comprobar el lote con CUDA)
         from .detectors import tensorrt_mode
-        sess = OnnxSession(path, threads=2, max_batch=batch, max_wait=POSE_WAIT_S, all_outputs=True,
-                           trt=tensorrt_mode() == "todo")
+        sess = OnnxSession(path, threads=2, max_batch=batch, max_wait=POSE_WAIT_S, all_outputs=True)
         if sess.max_batch <= 1:
             return sess
         if not env and not sess.on_gpu:  # la placa no quiso el modelo por lotes: con el de siempre, que quizá sí
@@ -308,6 +307,8 @@ def _session(path: Path) -> OnnxSession:
                     worst = max(worst, float(np.abs(g - w).max()))
             if worst > CHECK_TOLERANCE:
                 raise ValueError(f"el lote da distinto que de a una (diferencia {worst:.2f})")
+            if tensorrt_mode() == "todo":
+                return _with_tensorrt(path, sess, canvases) or sess
             return sess
         except Exception as exc:  # noqa: BLE001 - ante la duda, como siempre
             log.warning("La postura por lotes no pasó la comprobación (%s): se calcula de a una persona", exc)
@@ -318,6 +319,45 @@ def _session(path: Path) -> OnnxSession:
                 mark.unlink()
             except OSError:
                 pass
+
+
+# TensorRT en media precisión no da exactamente lo mismo que CUDA (27 nov, medido en la máquina de AWS con 17 personas
+# de dos fotos: los puntos se mueven 0,004 largos de torso en promedio, el peor 0,17; los gestos usan umbrales de 0,35
+# a 0,5), así que no se le pide la comprobación exacta del lote (1,5 píxeles en todo): se compara con el lote de CUDA
+# ya comprobado y tiene que dar casi lo mismo en lo típico (la mitad de los números a menos de esto) y en el puntaje
+TRT_MEDIAN_TOLERANCE = 1.0  # píxeles del recorte de 256 (mediana de todas las salidas)
+TRT_SCORE_TOLERANCE = 0.05  # el puntaje de cada persona encontrada (de 0 a 1)
+
+
+def _with_tensorrt(path: Path, cuda: OnnxSession, canvases: list[np.ndarray]) -> OnnxSession | None:
+    """La postura por lotes con TensorRT (`VIGIA_TENSORRT=todo`), si queda en TensorRT y da casi lo mismo que el lote de
+    CUDA ya comprobado. None = sigue con CUDA (y lo dice en el registro). Medido: 2,3 a 3,6 veces menos placa y
+    procesador por persona."""
+    try:
+        trt = OnnxSession(path, threads=2, max_batch=cuda.max_batch, max_wait=POSE_WAIT_S, all_outputs=True, trt=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("La postura con TensorRT no se pudo armar (%s): sigue con CUDA", str(exc)[:200])
+        return None
+    if "Tensorrt" not in trt.device:
+        trt.close()
+        return None
+    try:
+        a = np.stack(cuda.run_many(canvases))
+        b = np.stack(trt.run_many(canvases))
+        if a.shape != b.shape or not np.isfinite(b).all():
+            raise ValueError(f"devuelve otra cosa ({b.shape} en vez de {a.shape})")
+        diff = np.abs(a - b)
+        median = float(np.median(diff))
+        score = float(diff[:, 4].max()) if a.ndim == 3 and a.shape[1] > 4 else 0.0
+        if median > TRT_MEDIAN_TOLERANCE or score > TRT_SCORE_TOLERANCE:
+            raise ValueError(f"da distinto que CUDA (mediana {median:.2f}, puntaje {score:.3f})")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("La postura con TensorRT no pasó la comprobación (%s): sigue con CUDA", exc)
+        trt.close()
+        return None
+    cuda.close()
+    log.info("Postura con TensorRT (diferencia con CUDA: mediana %.3f, puntaje %.4f)", median, score)
+    return trt
 
 
 def build_pose(model_path: str | Path | None = None) -> PoseEstimator | None:

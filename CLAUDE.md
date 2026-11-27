@@ -1627,8 +1627,19 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
         decodifica con el procesador; si no abre, esa cámara va con OpenCV 10 minutos. PyAV suelta el GIL al decodificar
         (4 hilos en el mismo tiempo que 1). `tools/placa_prueba.py` lo mide en la máquina (8 cámaras simuladas a
         velocidad real, procesador contra placa), y también NVENC y la postura con TensorRT.
-      - Pruebas: `tests/test_video_av.py` (con `MEDIAMTX`, de punta a punta con una cámara RTSP simulada, sin placa) y
-        las de clips en `tests/test_mas_camaras.py`.
+      - **Medido en la máquina de AWS (27 nov, 9:50 de Uruguay, `tools/placa_prueba.py`, con las cámaras andando):**
+        8 cámaras simuladas a velocidad real en un proceso, procesador contra placa dentro del proceso: H.265 960x576 a 12
+        **0,066 → 0,026** procesadores por cámara; H.264 640x480 a 25 **0,035 → 0,025** (con un ffmpeg por cámara por la
+        placa eran ~0,031); imágenes idénticas (diferencia 0); memoria de la placa 254 MB para las 8 contando el contexto
+        de CUDA (un ffmpeg por cámara: ~124 MB cada uno). Clip de 30 s: libx264 4,97 s de procesador, NVENC 1,87, placa
+        entera (cuvid + NVENC) 1,31; con cq 27 salía más nítido (39,4 contra 35,9 dB) pero 60 % más pesado → **cq 30**.
+        Postura con TensorRT (motor armado en 350 s, guardado): **2,3-3,6 veces menos** placa y procesador por persona; 17
+        personas de dos fotos: los puntos se mueven 0,004 largos de torso en promedio (el peor 0,17), confianza 0,002. La
+        comprobación exacta del lote (1,5 px) no la pasaría en media precisión: con `VIGIA_TENSORRT=todo` se comprueba
+        primero el lote con CUDA y después TensorRT contra ese (`core.pose._with_tensorrt`: mediana ≤ 1 px y puntaje ≤
+        0,05); si no, sigue con CUDA. `OnnxSession.close()` suelta la que no se usa.
+      - Pruebas: `tests/test_video_av.py` (con `MEDIAMTX`, de punta a punta con una cámara RTSP simulada, sin placa),
+        las de clips en `tests/test_mas_camaras.py` y las de TensorRT en `tests/test_postura_lotes.py`.
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).

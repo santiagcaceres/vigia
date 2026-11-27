@@ -152,7 +152,9 @@ def ffmpeg_command(ffmpeg: str, args: list[str]) -> list[str]:
 # puede vuelve solo al procesador). `VIGIA_CLIPS_PLACA`: «auto» (de fábrica: si hay `nvidia-smi` y ffmpeg puede
 # comprimir una prueba con NVENC), «si» (sin la prueba) o «no». Si la placa falla al comprimir, ese clip se rehace con
 # libx264 como antes y la placa no se vuelve a usar para clips en una hora.
-NVENC_ARGS = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "27", "-b:v", "0"]
+# (cq 30: medido en la máquina de AWS el 27 nov, con 27 el clip salía con más calidad que libx264 —39,4 dB contra
+# 35,9— pero 60 % más pesado; con 30 queda más o menos del mismo peso, y el Storage cobra por lo que se guarda)
+NVENC_ARGS = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "30", "-b:v", "0"]
 X264_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"]
 NVENC_RETRY_S = 3600.0
 _GPU_ERROR = re.compile(r"nvenc|cuda|cuvid|nvdec|OpenEncodeSession|No capable devices|libnvidia|hwaccel|"

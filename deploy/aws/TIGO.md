@@ -190,6 +190,22 @@ sudo mkdir -p /etc/systemd/system/vigia-maquina@.service.d && printf '[Service]\
 
 Deshacer en las 4: `sudo rm /etc/systemd/system/vigia-maquina@.service.d/tensorrt.conf && sudo systemctl daemon-reload && sudo systemctl restart 'vigia-maquina@*'`.
 
+### Más trabajo a la placa: clips, postura y video dentro del proceso (27 nov 2026)
+
+Medido con `tools/placa_prueba.py` (ver CLAUDE.md). Con el código de ese día los clips se comprimen solos con la placa
+(NVENC; `VIGIA_CLIPS_PLACA=no` lo apaga). La postura con TensorRT y el video dentro del proceso se prenden a mano:
+
+```bash
+# postura también con TensorRT (las 4 partes) y el video dentro del proceso en la parte 4; trae el código y reinicia
+sudo sed -i 's/VIGIA_TENSORRT=1/VIGIA_TENSORRT=todo/' /etc/systemd/system/vigia-maquina@.service.d/tensorrt.conf && sudo mkdir -p /etc/systemd/system/vigia-maquina@4.service.d && printf '[Service]\nEnvironment=VIGIA_VIDEO_PLACA=proceso\n' | sudo tee /etc/systemd/system/vigia-maquina@4.service.d/placa-video.conf && sudo systemctl daemon-reload && sudo systemctl start vigia-actualizar-diario.service
+```
+
+El archivo de la parte 4 se llama igual que el general (`placa-video.conf`) a propósito: así reemplaza al de las 4
+partes solo en esa. Para las 4: el mismo contenido en `/etc/systemd/system/vigia-maquina@.service.d/placa-video.conf`
+(y borrar el de la parte 4). Deshacer en la parte 4: `sudo rm /etc/systemd/system/vigia-maquina@4.service.d/placa-video.conf
+&& sudo systemctl daemon-reload && sudo systemctl restart vigia-maquina@4`. El registro dice «Postura con TensorRT
+(diferencia con CUDA …)» y «El video de las cámaras por RTSP se lee con la placa dentro del proceso».
+
 ## 1. Antes de crear nada (con Tigo)
 
 1. Cuenta de AWS con nosotros como administradores, en **N. Virginia (`us-east-1`)**.

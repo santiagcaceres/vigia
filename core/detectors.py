@@ -202,18 +202,32 @@ class OnnxSession:
             futs.append(fut)
         return [f.result() for f in futs]
 
+    def close(self) -> None:
+        """Deja de usar esta sesión (una que se armó para comparar y no se usa): termina su hilo de lotes y suelta el
+        modelo. Lo que llegue después falla."""
+        if self.max_batch > 1:
+            self._queue.put(None)
+        self.session = None
+
     def _loop(self) -> None:
         while True:
-            items = [self._queue.get()]
+            first = self._queue.get()
+            if first is None:
+                return
+            items = [first]
             deadline = time.monotonic() + self.max_wait
             while len(items) < self.max_batch:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     break
                 try:
-                    items.append(self._queue.get(timeout=left))
+                    item = self._queue.get(timeout=left)
                 except queue.Empty:
                     break
+                if item is None:
+                    self._queue.put(None)  # (se termina después de este lote)
+                    break
+                items.append(item)
             try:
                 out = self.session.run(None, {self.input_name: np.stack([c for c, _ in items])})[0]
             except Exception as exc:  # noqa: BLE001 - que cada cámara reciba el error

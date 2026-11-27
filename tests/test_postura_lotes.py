@@ -199,3 +199,72 @@ def test_si_el_proceso_se_cerro_preparando_el_lote_la_proxima_arranca_sin_el(tmp
     # si la comprobación falla sin cerrar el proceso, la marca no queda (ya se sabe qué pasó: sigue de a una)
     monkeypatch.setattr(pose.OnnxSession, "run_many", lambda self, cs: [o + 5.0 for o in real(self, cs)])
     assert pose._session(MODEL).max_batch == 1 and not mark.exists()
+
+
+# ------------------------------------------------- la postura con TensorRT (27 nov, `VIGIA_TENSORRT=todo`)
+# En la máquina de AWS: 2,3 a 3,6 veces menos placa y procesador por persona, los puntos a 0,004 largos de torso en
+# promedio. En media precisión no da exactamente lo mismo: se compara con el lote de CUDA ya comprobado.
+def _fake_trt(monkeypatch, pose, change, device: str = "GPU (Tensorrt)"):
+    real_init = pose.OnnxSession.__init__
+    made = []
+
+    def init(self, *a, trt=False, **k):
+        real_init(self, *a, **k)
+        if trt:  # (acá no hay placa: la sesión «TensorRT» es la de siempre con los números corridos)
+            self.device = device
+            made.append(self)
+            real_many = pose.OnnxSession.run_many
+
+            def many(cs, _self=self):
+                return [change(o) for o in real_many(_self, cs)]
+            self.run_many = many
+
+    monkeypatch.setattr(pose.OnnxSession, "__init__", init)
+    return made
+
+
+def test_la_postura_usa_tensorrt_si_da_casi_lo_mismo_que_cuda(monkeypatch, caplog):
+    from core import pose
+
+    monkeypatch.setenv("VIGIA_LOTE_POSTURA", "4")
+    monkeypatch.setenv("VIGIA_TENSORRT", "todo")
+    made = _fake_trt(monkeypatch, pose, lambda o: o * 1.001)  # un milésimo distinto: como media precisión
+    with caplog.at_level("INFO", logger="vigia.pose"):
+        sess = pose._session(MODEL)
+    assert made and sess is made[0] and sess.max_batch == 4
+    assert "Postura con TensorRT" in caplog.text
+
+
+def test_si_tensorrt_da_distinto_o_no_queda_sigue_con_el_lote_de_cuda(monkeypatch, caplog):
+    from core import pose
+
+    monkeypatch.setenv("VIGIA_LOTE_POSTURA", "4")
+    monkeypatch.setenv("VIGIA_TENSORRT", "todo")
+    made = _fake_trt(monkeypatch, pose, lambda o: o + 5.0)
+    with caplog.at_level("WARNING", logger="vigia.pose"):
+        sess = pose._session(MODEL)
+    assert made and sess is not made[0] and sess.max_batch == 4  # el lote de CUDA, no de a una persona
+    assert "TensorRT no pasó la comprobación" in caplog.text and made[0].session is None  # (la otra se soltó)
+    made = _fake_trt(monkeypatch, pose, lambda o: o, device="GPU (CUDA)")  # TensorRT no quedó: tampoco
+    sess = pose._session(MODEL)
+    assert sess is not made[-1] and sess.max_batch == 4
+    monkeypatch.setenv("VIGIA_TENSORRT", "1")  # solo el detector: la postura ni lo prueba
+    n = len(made)
+    pose._session(MODEL)
+    assert len(made) == n
+
+
+def test_una_sesion_cerrada_termina_su_hilo_de_lotes():
+    import threading
+    import time
+
+    from core.detectors import OnnxSession
+
+    sess = OnnxSession(MODEL, threads=1, max_batch=4, all_outputs=True)
+    before = sum(t.name == "postura-lotes" for t in threading.enumerate())
+    sess.close()
+    for _ in range(50):
+        if sum(t.name == "postura-lotes" for t in threading.enumerate()) < before:
+            break
+        time.sleep(0.02)
+    assert sum(t.name == "postura-lotes" for t in threading.enumerate()) == before - 1 and sess.session is None
