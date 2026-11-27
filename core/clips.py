@@ -6,6 +6,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
+import time
 from itertools import pairwise
 from pathlib import Path
 
@@ -95,6 +98,8 @@ def write_mp4(frames: list[tuple[float, np.ndarray | bytes]], path: str | Path) 
     if first is None:
         return False
     h, w = first.shape[:2]
+    if _pipe_mp4(frames, order, fps, (w, h), path):  # (ffmpeg recibe los cuadros por un caño: sin el MP4 intermedio)
+        return True
     tmp = path.with_name(path.stem + ".raw.mp4")
     vw = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     if not vw.isOpened():
@@ -141,29 +146,176 @@ def ffmpeg_command(ffmpeg: str, args: list[str]) -> list[str]:
     return ([nice, "-n", str(FFMPEG_NICE)] if nice else []) + [ffmpeg] + threads + args
 
 
+# Comprimir el clip con la placa de video (27 nov: en la máquina de AWS el procesador es el límite y la placa sobra; con
+# muchas alertas juntas los clips se hacían cola esperando procesador). Con una placa NVIDIA, ffmpeg comprime con NVENC
+# (el compresor de la placa: casi no usa procesador) y decodifica lo que entra con la placa (`-hwaccel cuda`, que si no
+# puede vuelve solo al procesador). `VIGIA_CLIPS_PLACA`: «auto» (de fábrica: si hay `nvidia-smi` y ffmpeg puede
+# comprimir una prueba con NVENC), «si» (sin la prueba) o «no». Si la placa falla al comprimir, ese clip se rehace con
+# libx264 como antes y la placa no se vuelve a usar para clips en una hora.
+NVENC_ARGS = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "27", "-b:v", "0"]
+X264_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"]
+NVENC_RETRY_S = 3600.0
+_GPU_ERROR = re.compile(r"nvenc|cuda|cuvid|nvdec|OpenEncodeSession|No capable devices|libnvidia|hwaccel|"
+                        r"hardware|device", re.IGNORECASE)
+_nvenc: dict = {"ok": None, "off_until": 0.0}
+_nvenc_lock = threading.Lock()
+
+
+def _gpu_mode() -> str:
+    mode = (os.getenv("VIGIA_CLIPS_PLACA") or "auto").strip().lower()
+    return "no" if mode in ("no", "0", "false", "off") else ("si" if mode in ("si", "sí", "1", "true") else "auto")
+
+
+def use_gpu(ffmpeg: str | None = None) -> bool:
+    """¿Comprimir los clips con la placa? (se averigua una vez por proceso)."""
+    mode = _gpu_mode()
+    if mode == "no" or time.monotonic() < _nvenc["off_until"]:
+        return False
+    with _nvenc_lock:
+        if _nvenc["ok"] is None:
+            ffmpeg = ffmpeg or shutil.which("ffmpeg")
+            if not ffmpeg:
+                return False
+            if mode == "si":
+                _nvenc["ok"] = True
+            elif not shutil.which("nvidia-smi"):
+                _nvenc["ok"] = False
+            else:
+                _nvenc["ok"] = _nvenc_works(ffmpeg)
+                log.info("Clips: %s", "se comprimen con la placa de video (NVENC)" if _nvenc["ok"] else
+                         "la placa no los puede comprimir: siguen con el procesador")
+        return bool(_nvenc["ok"])
+
+
+def _nvenc_works(ffmpeg: str) -> bool:
+    try:
+        r = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "color=c=gray:s=320x240:d=0.4:r=10", "-c:v", "h264_nvenc", "-f", "null", "-"],
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return getattr(r, "returncode", 1) == 0
+
+
+def _gpu_failed(err: str) -> None:
+    _nvenc["off_until"] = time.monotonic() + NVENC_RETRY_S
+    log.warning("Clips: la placa no pudo comprimir (%s); se usa el procesador por una hora", redact(err)[:200])
+
+
+def _even_size(w: int, h: int, max_width: int = 1280) -> tuple[int, int]:
+    ow = max(2, min(max_width, w) // 2 * 2)
+    oh = max(2, int(round(h * ow / max(w, 1) / 2)) * 2)
+    return ow, oh
+
+
+def _pipe_mp4(frames: list, order: list[int], fps: float, size: tuple[int, int], path: Path,
+              timeout: int = 180) -> bool:
+    """El clip en una sola pasada: los cuadros van a ffmpeg por un caño (los JPEG del buffer tal cual, sin
+    decodificarlos acá) y sale el MP4 H.264. Antes se decodificaba cada JPEG, se escribía un MP4 intermedio con OpenCV
+    y ffmpeg lo volvía a leer y comprimir. False si no anduvo (y se hace como antes)."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    w, h = size
+    jpeg = all(isinstance(f, (bytes, bytearray, memoryview)) for _, f in frames)
+    ow, oh = _even_size(w, h)
+    for gpu in ([True, False] if use_gpu(ffmpeg) else [False]):
+        if jpeg:
+            inp = (["-hwaccel", "cuda"] if gpu else []) + ["-f", "image2pipe", "-framerate", f"{fps:.4f}",
+                                                           "-c:v", "mjpeg", "-i", "pipe:0"]
+        else:
+            inp = ["-f", "rawvideo", "-pix_fmt", "bgr24", "-video_size", f"{w}x{h}", "-framerate", f"{fps:.4f}",
+                   "-i", "pipe:0"]
+        threads = ["-filter_threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS > 0 else []
+        threads += ["-threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS > 0 and not gpu else []
+        args = ["-y", "-loglevel", "error"] + inp + ["-an", "-vf", f"scale={ow}:{oh}"] + threads + \
+            (NVENC_ARGS if gpu else X264_ARGS) + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path)]
+        cmd = ffmpeg_command(ffmpeg, args)
+        ok, err = _feed(cmd, frames, order, (w, h), jpeg, timeout)
+        if ok and path.exists() and path.stat().st_size > 0:
+            return True
+        if gpu and _GPU_ERROR.search(err or ""):
+            _gpu_failed(err)
+            continue
+        if err:
+            log.warning("ffmpeg no armó el clip %s: %s", path.name, redact(err)[:200])
+        return False
+    return False
+
+
+def _feed(cmd: list[str], frames: list, order: list[int], size: tuple[int, int], jpeg: bool,
+          timeout: int) -> tuple[bool, str]:
+    with tempfile.TemporaryFile() as errf:
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errf)
+        except OSError as exc:
+            return False, str(exc)
+        deadline = time.monotonic() + timeout
+        ok = True
+        try:
+            last_i, data = None, b""
+            for i in order:
+                if time.monotonic() > deadline:
+                    ok = False
+                    break
+                if i != last_i:
+                    f = frames[i][1]
+                    if jpeg:
+                        data = bytes(f)
+                    else:
+                        img = _decode(f)
+                        if img is not None:
+                            if img.shape[:2] != (size[1], size[0]):
+                                img = cv2.resize(img, size)
+                            data = np.ascontiguousarray(img).tobytes()
+                    last_i = i
+                if data:
+                    proc.stdin.write(data)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            ok = False
+        try:
+            proc.wait(timeout=max(5.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            ok = False
+        errf.seek(0)
+        err = errf.read().decode(errors="replace").strip()
+        last = err.splitlines()[-1] if err else ""
+        return ok and proc.returncode == 0, (err if _GPU_ERROR.search(err) else last)
+
+
 def transcode_h264(src: str | Path, dst: str | Path, max_width: int = 1280, timeout: int = 180,
                    extra_input: list[str] | None = None, duration: float | None = None) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return False
-    args = ["-y", "-loglevel", "error"] + (extra_input or []) + ["-i", str(src)]
-    if duration:
-        args += ["-t", f"{duration:.2f}"]
-    threads = ["-threads", str(FFMPEG_THREADS), "-filter_threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS > 0 else []
-    args += ["-an", "-vf", f"scale='min({max_width},iw)':-2"] + threads + [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-        str(dst)]
-    cmd = ffmpeg_command(ffmpeg, args)  # (el primer «-threads», antes de «-i», es para decodificar)
-    try:
-        r = subprocess.run(cmd, timeout=timeout, capture_output=True)
-    except subprocess.TimeoutExpired:
-        log.warning("ffmpeg excedió el tiempo procesando %s", redact(str(src)))
-        return False
-    if r.returncode != 0:
-        err = redact(r.stderr.decode(errors="replace").strip().splitlines()[-1] if r.stderr.strip() else "")
-        log.warning("ffmpeg falló (%s): %s", redact(str(src)), err)
-        return False
-    return Path(dst).exists() and Path(dst).stat().st_size > 0
+    for gpu in ([True, False] if use_gpu(ffmpeg) else [False]):
+        args = ["-y", "-loglevel", "error"] + (["-hwaccel", "cuda"] if gpu else []) + (extra_input or []) + \
+            ["-i", str(src)]
+        if duration:
+            args += ["-t", f"{duration:.2f}"]
+        threads = ["-threads", str(FFMPEG_THREADS), "-filter_threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS > 0 \
+            else []
+        args += ["-an", "-vf", f"scale='min({max_width},iw)':-2"] + threads + (NVENC_ARGS if gpu else X264_ARGS) + [
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
+        cmd = ffmpeg_command(ffmpeg, args)  # (el primer «-threads», antes de «-i», es para decodificar)
+        try:
+            r = subprocess.run(cmd, timeout=timeout, capture_output=True)
+        except subprocess.TimeoutExpired:
+            log.warning("ffmpeg excedió el tiempo procesando %s", redact(str(src)))
+            return False
+        if r.returncode != 0:
+            text = r.stderr.decode(errors="replace").strip() if r.stderr else ""
+            if gpu and _GPU_ERROR.search(text):
+                _gpu_failed(text.splitlines()[-1] if text else "")
+                continue
+            err = redact(text.splitlines()[-1] if text else "")
+            log.warning("ffmpeg falló (%s): %s", redact(str(src)), err)
+            return False
+        return Path(dst).exists() and Path(dst).stat().st_size > 0
+    return False
 
 
 def video_duration(path: str | Path) -> float | None:

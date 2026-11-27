@@ -431,6 +431,7 @@ def test_ffmpeg_arma_el_clip_con_un_hilo_y_prioridad_baja(monkeypatch, tmp_path)
 
     monkeypatch.setattr(clips.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(clips.subprocess, "run", run)
+    monkeypatch.setenv("VIGIA_CLIPS_PLACA", "no")  # (la placa, en las pruebas de abajo)
     assert clips.transcode_h264("rtsp://grabador/tramo", tmp_path / "out.mp4", duration=30)
     cmd = seen[-1]
     if clips.os.name != "nt":
@@ -464,6 +465,117 @@ def test_un_clip_de_verdad_sale_con_ffmpeg_de_un_hilo(tmp_path):
     out = tmp_path / "clip.mp4"
     assert write_mp4(frames, out) and (video_duration(out) or 0) > 4
     assert not (tmp_path / "clip.raw.mp4").exists()  # se pasó a H.264 (si no, queda el de OpenCV con otro nombre)
+
+
+# ------------------------------------------------------------------- los clips se comprimen con la placa de video
+# (27 nov: el procesador es el límite de la máquina de AWS y la placa sobra; con muchas alertas juntas los clips se
+# hacían cola esperando procesador)
+def _fake_gpu(monkeypatch, clips, works=True):
+    monkeypatch.setattr(clips, "_nvenc", {"ok": None, "off_until": 0.0})
+    monkeypatch.delenv("VIGIA_CLIPS_PLACA", raising=False)
+    monkeypatch.setattr(clips.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(clips, "_nvenc_works", lambda ffmpeg: works)
+
+
+def test_con_placa_el_clip_se_comprime_con_nvenc_y_si_falla_con_el_procesador(monkeypatch, tmp_path):
+    from core import clips
+
+    _fake_gpu(monkeypatch, clips)
+    seen, answers = [], []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        bad = answers.pop(0) if answers else None
+        if bad:
+            return type("R", (), {"returncode": 1, "stderr": bad.encode()})()
+        (tmp_path / "out.mp4").write_bytes(b"x")
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr(clips.subprocess, "run", run)
+    assert clips.transcode_h264("rtsp://grabador/tramo", tmp_path / "out.mp4", duration=30)
+    cmd = seen[-1]
+    assert "h264_nvenc" in cmd and "libx264" not in cmd
+    assert cmd.index("-hwaccel") < cmd.index("-i") and cmd[cmd.index("-hwaccel") + 1] == "cuda"  # decodifica la placa
+    # la placa falla al comprimir: el mismo clip se rehace con el procesador y por una hora no se vuelve a probar
+    answers.append("[h264_nvenc @ 0x1] OpenEncodeSessionEx failed: out of memory (10): (no details)")
+    assert clips.transcode_h264("a.mp4", tmp_path / "out.mp4")
+    assert "h264_nvenc" in seen[-2] and "libx264" in seen[-1] and "-hwaccel" not in seen[-1]
+    assert not clips.use_gpu()
+    clips.transcode_h264("a.mp4", tmp_path / "out.mp4")
+    assert "libx264" in seen[-1]
+    # un error que no es de la placa (el grabador no tiene ese tramo) no la apaga ni se reintenta
+    monkeypatch.setattr(clips, "_nvenc", {"ok": True, "off_until": 0.0})
+    n = len(seen)
+    answers.append("rtsp://u:clave@grabador/tramo: 404 Not Found")
+    assert not clips.transcode_h264("rtsp://u:clave@grabador/tramo", tmp_path / "out.mp4")
+    assert len(seen) == n + 1 and clips.use_gpu()
+
+
+def test_sin_placa_o_apagado_los_clips_siguen_con_el_procesador(monkeypatch):
+    from core import clips
+
+    _fake_gpu(monkeypatch, clips, works=False)  # hay nvidia-smi pero ffmpeg no puede comprimir con NVENC
+    assert not clips.use_gpu()
+    _fake_gpu(monkeypatch, clips)
+    monkeypatch.setenv("VIGIA_CLIPS_PLACA", "no")
+    assert not clips.use_gpu()
+    monkeypatch.setattr(clips, "_nvenc", {"ok": None, "off_until": 0.0})
+    monkeypatch.setattr(clips.shutil, "which", lambda name: None if name == "nvidia-smi" else f"/usr/bin/{name}")
+    monkeypatch.delenv("VIGIA_CLIPS_PLACA")
+    assert not clips.use_gpu()
+
+
+def test_el_clip_va_a_ffmpeg_por_un_cano_sin_el_mp4_intermedio(monkeypatch, tmp_path):
+    """Los JPEG del buffer van tal cual a ffmpeg (sin decodificarlos en Python ni escribir un MP4 de OpenCV que después
+    ffmpeg vuelve a leer), con cada cuadro repetido lo que dura (la velocidad real) y la placa si la hay."""
+    import shutil
+
+    import cv2
+
+    from core import clips
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("sin ffmpeg")
+    monkeypatch.setattr(clips, "_nvenc", {"ok": False, "off_until": 0.0})
+    frames = []
+    for i in range(20):
+        img = np.zeros((180, 320, 3), np.uint8)
+        cv2.circle(img, (10 + 14 * i, 90), 12, (0, 200, 255), -1)
+        frames.append((i * 0.25, cv2.imencode(".jpg", img)[1].tobytes()))
+    decoded = []
+    real = clips._decode
+    monkeypatch.setattr(clips, "_decode", lambda f: decoded.append(1) or real(f))
+    out = tmp_path / "clip.mp4"
+    assert clips.write_mp4(frames, out)
+    assert len(decoded) == 1  # (solo el primero, para saber el tamaño)
+    assert not (tmp_path / "clip.raw.mp4").exists()
+    cap = cv2.VideoCapture(str(out))
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    assert (w, h) == (320, 180) and abs(n / fps - 5.0) < 0.6
+    # con la placa: el comando pide NVENC y que la placa decodifique los JPEG; si falla, otra vez con el procesador
+    which = shutil.which
+    _fake_gpu(monkeypatch, clips)
+    monkeypatch.setattr(clips.shutil, "which", lambda name: which(name) or f"/usr/bin/{name}")
+    cmds = []
+    real_popen = clips.subprocess.Popen
+
+    def popen(cmd, **kw):
+        cmds.append(cmd)
+        if "h264_nvenc" in cmd:
+            cmd = [c if c != "h264_nvenc" else "no_existe_nvenc" for c in cmd]  # que falle como sin placa
+        return real_popen(cmd, **kw)
+
+    monkeypatch.setattr(clips.subprocess, "Popen", popen)
+    assert clips.write_mp4(frames, tmp_path / "clip2.mp4")
+    assert "h264_nvenc" in cmds[0] and cmds[0].index("-hwaccel") < cmds[0].index("-i")
+    assert "libx264" in cmds[1] and "-hwaccel" not in cmds[1] and not clips.use_gpu()
+    # cuadros que no son JPEG (las alarmas, la app): crudos por el caño
+    raw = [(t, real(f)) for t, f in frames]
+    monkeypatch.setattr(clips, "_nvenc", {"ok": False, "off_until": 0.0})
+    assert clips.write_mp4(raw, tmp_path / "clip3.mp4") and "rawvideo" in cmds[-1]
 
 
 def test_el_medidor_cuenta_ffmpeg_la_carga_y_la_placa(monkeypatch):
