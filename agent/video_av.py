@@ -83,7 +83,10 @@ def _check() -> tuple[bool, str]:
     except ImportError:
         pass  # (un PyAV sin HWDevice: se sabrá al abrir la primera cámara)
     except Exception as exc:  # noqa: BLE001
-        return False, f"no se pudo abrir la placa ({type(exc).__name__}: {exc})"
+        why = f"no se pudo abrir la placa ({type(exc).__name__}: {exc})"
+        if "not supported" in str(exc).lower():  # (el contexto de CUDA ya estaba abierto con la espera de siempre)
+            why += "; la placa ya la estaba usando el modelo sin esperar durmiendo (ver core.detectors.gpu_wait_mode)"
+        return False, why
     return True, ""
 
 

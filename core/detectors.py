@@ -478,24 +478,72 @@ class OnnxYoloDetector:
 
 
 _wait_mode_done = False
+CU_CTX_SCHED_BLOCKING_SYNC = 0x04  # (la misma marca en la librería del driver)
 CUDA_BLOCKING_SYNC = 0x04  # cudaDeviceScheduleBlockingSync (driver_types.h)
 
 
-def gpu_wait_mode(lib=None) -> str | None:
-    """`VIGIA_PLACA_ESPERA=dormir` (a prueba, apagado de fábrica): mientras la placa NVIDIA calcula, el hilo que espera
-    el resultado duerme en vez de quedarse dando vueltas. De fábrica CUDA da vueltas (gasta un procesador entero
-    mientras espera, para enterarse unos microsegundos antes); con la placa trabajando para 20 cámaras eso es
-    procesador que no hace nada. Hay que pedirlo antes de que la placa se use por primera vez en el proceso; si no se
-    puede (otra versión de CUDA, sin la librería), queda como siempre y lo dice. Devuelve lo que hizo (para el
-    registro y las pruebas). Sin probar todavía en una placa de verdad: por eso hay que prenderlo a mano."""
+def _wait_wanted() -> str | None:
+    """Por qué hay que hacer dormir al hilo que espera a la placa: «pedido» (`VIGIA_PLACA_ESPERA=dormir`) o «video»
+    (`VIGIA_VIDEO_PLACA=proceso`: el video que lee PyAV comparte el contexto principal de CUDA con el modelo, y FFmpeg
+    solo lo comparte si ese contexto espera durmiendo; si no, «Operation not supported»). None = como siempre."""
+    if (os.getenv("VIGIA_PLACA_ESPERA") or "").strip().lower() in ("dormir", "bloquear"):
+        return "pedido"
+    if (os.getenv("VIGIA_VIDEO_PLACA") or "").strip().lower() in ("proceso", "pyav", "av"):
+        return "video"
+    return None
+
+
+def _driver_blocking_sync(cu, dev_ordinal: int) -> None:
+    """Con la librería del driver (libcuda): el contexto principal de la placa espera durmiendo, con exactamente esa
+    marca (FFmpeg compara la marca entera: `CU_CTX_SCHED_BLOCKING_SYNC`). Antes de que nadie lo use."""
+    import ctypes
+
+    def check(err, what):
+        if err:
+            raise OSError(f"CUDA respondió el error {err} ({what})")
+
+    check(cu.cuInit(0), "cuInit")
+    dev = ctypes.c_int()
+    check(cu.cuDeviceGet(ctypes.byref(dev), dev_ordinal), "cuDeviceGet")
+    flags, active = ctypes.c_uint(), ctypes.c_int()
+    check(cu.cuDevicePrimaryCtxGetState(dev, ctypes.byref(flags), ctypes.byref(active)), "cuDevicePrimaryCtxGetState")
+    if flags.value == CU_CTX_SCHED_BLOCKING_SYNC:
+        return
+    if active.value:
+        raise OSError("la placa ya se estaba usando en este proceso con la espera de siempre")
+    setter = getattr(cu, "cuDevicePrimaryCtxSetFlags_v2", None) or cu.cuDevicePrimaryCtxSetFlags
+    check(setter(dev, CU_CTX_SCHED_BLOCKING_SYNC), "cuDevicePrimaryCtxSetFlags")
+
+
+def gpu_wait_mode(lib=None, driver=None) -> str | None:
+    """Mientras la placa NVIDIA calcula, el hilo que espera el resultado duerme en vez de quedarse dando vueltas. De
+    fábrica CUDA da vueltas (gasta un procesador entero mientras espera, para enterarse unos microsegundos antes); con
+    la placa trabajando para 20 cámaras eso es procesador que no hace nada. Se prende con `VIGIA_PLACA_ESPERA=dormir`
+    o, sin pedirlo, con `VIGIA_VIDEO_PLACA=proceso` (27 nov: en la máquina de AWS el video por PyAV no abría la placa,
+    «Operation not supported», porque el detector ya había abierto el contexto principal con la espera de siempre).
+    Hay que hacerlo antes de que la placa se use por primera vez en el proceso; si no se puede (otra versión de CUDA,
+    sin la librería), queda como siempre y lo dice. Primero con la librería del driver (`libcuda`, la marca exacta que
+    pide FFmpeg), si no con la de CUDA (`libcudart`). Devuelve lo que hizo (para el registro y las pruebas)."""
     global _wait_mode_done
-    if _wait_mode_done or (os.getenv("VIGIA_PLACA_ESPERA") or "").strip().lower() not in ("dormir", "bloquear"):
+    why = _wait_wanted()
+    if _wait_mode_done or not why:
         return None
     _wait_mode_done = True
+    dev = int(os.getenv("VIGIA_PLACA") or 0)
     try:
         if lib is None:
             import ctypes
 
+            if driver is None:
+                try:
+                    driver = ctypes.CDLL("libcuda.so.1")
+                except OSError:
+                    driver = None
+            if driver is not None:
+                _driver_blocking_sync(driver, dev)
+                log.info("Placa de video: el hilo que espera el resultado duerme (%s)",
+                         "VIGIA_PLACA_ESPERA" if why == "pedido" else "para leer el video con la placa en el proceso")
+                return "dormir"
             for name in ("libcudart.so.12", "libcudart.so.13", "libcudart.so.11.0", "libcudart.so"):
                 try:
                     lib = ctypes.CDLL(name)
@@ -503,8 +551,7 @@ def gpu_wait_mode(lib=None) -> str | None:
                 except OSError:
                     continue
         if lib is None:
-            raise OSError("no está la librería de CUDA (libcudart)")
-        dev = int(os.getenv("VIGIA_PLACA") or 0)
+            raise OSError("no está la librería de CUDA (libcuda ni libcudart)")
         err = lib.cudaSetDevice(dev) or lib.cudaSetDeviceFlags(CUDA_BLOCKING_SYNC)
         if err:
             raise OSError(f"CUDA respondió el error {err}")

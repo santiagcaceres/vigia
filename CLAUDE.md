@@ -1638,8 +1638,17 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
         comprobación exacta del lote (1,5 px) no la pasaría en media precisión: con `VIGIA_TENSORRT=todo` se comprueba
         primero el lote con CUDA y después TensorRT contra ese (`core.pose._with_tensorrt`: mediana ≤ 1 px y puntaje ≤
         0,05); si no, sigue con CUDA. `OnnxSession.close()` suelta la que no se usa.
+      - **En producción (27 nov, 10:10 de Uruguay):** postura con TensorRT andando en las 4 partes («diferencia con CUDA:
+        mediana 0,034, puntaje 0,0006»). El video dentro del proceso en la parte 4 **no abrió la placa** («Operation not
+        supported», `AVERROR(ENOTSUP)`): FFmpeg solo comparte el contexto principal de CUDA si espera durmiendo
+        (`CU_CTX_SCHED_BLOCKING_SYNC`, compara la marca entera) y el detector ya lo había abierto con la espera de
+        siempre (en `placa_prueba.py` anduvo porque el video se abrió antes que cualquier modelo). Arreglo:
+        `gpu_wait_mode` se prende solo con `VIGIA_VIDEO_PLACA=proceso` y pone esa marca con la librería del driver
+        (`libcuda`, `cuDevicePrimaryCtxSetFlags_v2`) antes de que se use la placa; de paso el hilo que espera al modelo
+        duerme en vez de dar vueltas (con TensorRT, los ms de procesador eran los ms de reloj). Si no se puede, el video
+        sigue con el procesador y lo dice.
       - Pruebas: `tests/test_video_av.py` (con `MEDIAMTX`, de punta a punta con una cámara RTSP simulada, sin placa),
-        las de clips en `tests/test_mas_camaras.py` y las de TensorRT en `tests/test_postura_lotes.py`.
+        las de clips y de la espera en `tests/test_mas_camaras.py` y las de TensorRT en `tests/test_postura_lotes.py`.
     - Pruebas: `tests/test_postura_lotes.py` (con `VIGIA_TEST_FOTO=<bus.jpg>` compara la postura de las 4 personas),
       `tests/test_mas_camaras.py`. La carga y el humo locales: `carga.py` y `humo.py` de la sesión (no están en el
       repo).

@@ -345,6 +345,7 @@ def test_esperar_a_la_placa_durmiendo_solo_si_se_pide(monkeypatch, caplog):
 
     monkeypatch.setattr(detectors, "_wait_mode_done", False)
     monkeypatch.delenv("VIGIA_PLACA_ESPERA", raising=False)
+    monkeypatch.delenv("VIGIA_VIDEO_PLACA", raising=False)
     lib = Cuda()
     assert detectors.gpu_wait_mode(lib) is None and lib.calls == []  # de fábrica no toca nada
 
@@ -358,6 +359,60 @@ def test_esperar_a_la_placa_durmiendo_solo_si_se_pide(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="vigia.detectors"):
         assert detectors.gpu_wait_mode(Cuda(set_flags=36)) == "error"
     assert "queda como siempre" in caplog.text
+
+
+class Driver:
+    """La librería del driver de NVIDIA (libcuda), de mentira: guarda la marca del contexto principal."""
+
+    def __init__(self, flags=0, active=0):
+        self.flags, self.active, self.calls = flags, active, []
+
+    def cuInit(self, n):  # noqa: N802 - los nombres de CUDA
+        self.calls.append("init")
+        return 0
+
+    def cuDeviceGet(self, ref, ordinal):  # noqa: N802
+        ref._obj.value = ordinal
+        return 0
+
+    def cuDevicePrimaryCtxGetState(self, dev, flags, active):  # noqa: N802
+        flags._obj.value, active._obj.value = self.flags, self.active
+        return 0
+
+    def cuDevicePrimaryCtxSetFlags_v2(self, dev, flags):  # noqa: N802
+        self.calls.append(("flags", flags))
+        self.flags = flags
+        return 0
+
+
+def test_con_el_video_en_el_proceso_la_placa_espera_durmiendo_con_la_marca_exacta(monkeypatch, caplog):
+    """27 nov, en la máquina de AWS: el video por PyAV no abría la placa («Operation not supported») porque el detector
+    ya había abierto el contexto principal de CUDA con la espera de siempre, y FFmpeg solo comparte ese contexto si
+    espera durmiendo (compara la marca entera). Con `VIGIA_VIDEO_PLACA=proceso` se pone esa marca antes de usar la
+    placa, con la librería del driver."""
+    from core import detectors
+
+    monkeypatch.delenv("VIGIA_PLACA_ESPERA", raising=False)
+    monkeypatch.setenv("VIGIA_VIDEO_PLACA", "proceso")
+    monkeypatch.setattr(detectors, "_wait_mode_done", False)
+    drv = Driver()
+    with caplog.at_level("INFO", logger="vigia.detectors"):
+        assert detectors.gpu_wait_mode(driver=drv) == "dormir"
+    assert drv.calls == ["init", ("flags", 0x04)] and "leer el video con la placa" in caplog.text
+    # ya estaba así: no se toca
+    monkeypatch.setattr(detectors, "_wait_mode_done", False)
+    drv = Driver(flags=0x04, active=1)
+    assert detectors.gpu_wait_mode(driver=drv) == "dormir" and drv.calls == ["init"]
+    # la placa ya se usó con la espera de siempre: no se puede, y lo dice (el video sigue con el procesador)
+    monkeypatch.setattr(detectors, "_wait_mode_done", False)
+    with caplog.at_level("WARNING", logger="vigia.detectors"):
+        assert detectors.gpu_wait_mode(driver=Driver(flags=0, active=1)) == "error"
+    assert "ya se estaba usando" in caplog.text
+    # sin pedir nada, nunca
+    monkeypatch.delenv("VIGIA_VIDEO_PLACA")
+    monkeypatch.setattr(detectors, "_wait_mode_done", False)
+    drv = Driver()
+    assert detectors.gpu_wait_mode(driver=drv) is None and drv.calls == []
 
 
 # ---------------------------------------------------------------- filtro de movimiento más barato (mismo resultado)
