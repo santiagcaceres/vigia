@@ -173,7 +173,7 @@ def test_al_guardar_zonas_la_app_se_las_pasa_a_las_camaras_que_se_miran_con_la_i
     a.refresh_config()  # se guardaron zonas en la app
     a._refresh_views()
     a.clip_pool.shutdown(wait=True)
-    assert asked == [[7]]  # solo las que se miran con la IA
+    assert asked == [[7, 9]]  # las que abren el video (con la IA, o sin ella: por si cambió la clave, 27 nov)
     a._refresh_views()
     assert got == [({"zones": ["nuevas"]}, 5)]
 

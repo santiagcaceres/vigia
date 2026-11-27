@@ -24,7 +24,7 @@ from core.pose import build_pose
 from core.rules import RuleEngine, parse_config
 from core.scorer import Scorer
 
-from .cameras import build_camera, download_nvr_clip
+from .cameras import build_camera, download_nvr_clip, retry_wait
 from .live import LiveStreamer, hud
 from .outbox import Outbox, ServerClient
 
@@ -515,17 +515,22 @@ class CameraWorker:
             cap = self._open_gpu(url) or self._open_av(url) or open_video(url, self._video_threads)
             if not cap.isOpened():
                 why = self.hik.open_failure(url)
+                wait = retry_wait(why, backoff)  # (clave rechazada: no insistir, el grabador bloquearía a la máquina)
                 if self.hik.brand == "hikconnect":  # (el estado se corta a 300 letras: el motivo primero)
                     self.state, self.error = "sin_conexion", f"No abrió el video de Hik-Connect — {why}"
                     log.warning("[%s] %s (%s); reintento en %.0fs", self.name, self.error, self.hik.redacted(url),
-                                backoff)
+                                wait)
+                elif getattr(why, "hold", False):  # (clave: el motivo entero, el estado se corta a 300 letras)
+                    self.state, self.error = "sin_conexion", str(why)
+                    log.warning("[%s] %s (%s); reintento en %.0fs", self.name, self.error, self.hik.redacted(url),
+                                wait)
                 else:
                     self.state, self.error = "sin_conexion", f"No se pudo abrir {self.hik.redacted(url)}"
                     if why:
                         self.error += f" — {why}"
-                    log.warning("[%s] %s; reintento en %.0fs", self.name, self.error, backoff)
+                    log.warning("[%s] %s; reintento en %.0fs", self.name, self.error, wait)
                 cap.release()
-                self._stop.wait(backoff)
+                self._stop.wait(wait)
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error = "en_linea", None

@@ -325,6 +325,35 @@ class _NoReply(Exception):
     """El grabador aceptó la conexión pero no contestó el pedido (no es lo mismo que un puerto que no contesta)."""
 
 
+class _Closed(ConnectionResetError):
+    """La otra punta aceptó la conexión y la cerró sin mandar nada (para el diagnóstico es como cortarla)."""
+
+
+# Tras una clave rechazada (o un grabador que corta al recibirla) no se vuelve a probar sola enseguida: cada intento
+# con la clave mal cuenta como uno fallido y el grabador termina bloqueando a esa IP (Hikvision, unos 30 minutos), y
+# ahí no abre ninguna cámara de ese grabador desde esa PC o máquina, ni con la clave buena (27 nov, Mayorista Alberto).
+AUTH_HOLD_S = 30 * 60
+HOLD_NOTE = ("No se reintenta sola por 30 minutos (cada intento con la clave mal alarga el bloqueo); al corregir "
+             "la clave, sí")
+
+
+class Diagnosis(str):
+    """El motivo en castellano. `hold` = no reintentar enseguida (ver `AUTH_HOLD_S`)."""
+
+    hold = False
+
+
+def _held(text: str) -> Diagnosis:
+    d = Diagnosis(f"{text}. {HOLD_NOTE}")
+    d.hold = True
+    return d
+
+
+def retry_wait(why: object, backoff: float) -> float:
+    """Cuánto esperar antes de volver a abrir el video: lo de siempre, o `AUTH_HOLD_S` si la clave fue rechazada."""
+    return float(AUTH_HOLD_S) if getattr(why, "hold", False) else backoff
+
+
 def _rtsp_request(host: str, port: int, method: str, url: str, headers: dict, timeout: float) -> tuple[int, dict] | None:
     """Un pedido RTSP en una conexión propia: (código, cabeceras en minúscula; las repetidas, juntas). None = la otra
     punta no contestó como RTSP. Si conecta pero no contesta a tiempo: `_NoReply`."""
@@ -344,6 +373,8 @@ def _rtsp_request(host: str, port: int, method: str, url: str, headers: dict, ti
                 data += chunk
         except (TimeoutError, socket.timeout) as exc:
             raise _NoReply from exc
+    if not data:
+        raise _Closed("cerró sin contestar")
     head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1", "replace").split("\r\n")
     parts = head[0].split(" ", 2) if head else []
     if len(parts) < 2 or not parts[0].upper().startswith("RTSP/") or not parts[1].isdigit():
@@ -398,8 +429,9 @@ def _other_quality(url: str) -> str | None:
 
 def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
     """Por qué no abre un video RTSP, en castellano (OpenCV solo dice que no pudo): el nombre no existe, el puerto no
-    contesta, no es un servidor de video, usuario o clave mal, ese canal o calidad no existe, sin permiso, sin
-    transmisiones libres, o el grabador entrega el video y lo que falla es leerlo en esta PC."""
+    contesta, no es un servidor de video, usuario o clave mal (o el grabador bloqueó a esta PC por eso), ese canal o
+    calidad no existe, sin permiso, sin transmisiones libres, o el grabador entrega el video y lo que falla es leerlo en
+    esta PC. Devuelve un `Diagnosis`: con `hold` cuando no conviene reintentar enseguida (`retry_wait`)."""
     import socket
     from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -409,8 +441,9 @@ def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
     try:
         socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except (socket.gaierror, UnicodeError):
-        return (f"no se encuentra «{host}»: el DDNS no existe, venció o está mal escrito (o esta PC no tiene "
-                "internet)")
+        return Diagnosis(f"no se encuentra «{host}»: el DDNS no existe, venció o está mal escrito (o esta PC no tiene "
+                         "internet)")
+    asked_key = [False]  # ¿el grabador contestó como video y pidió la clave? (el corte vino después, al mandársela)
 
     def ask(target: str) -> tuple[int, dict] | None:
         clean = urlunsplit((u.scheme, f"{host}:{port}", urlsplit(target).path, urlsplit(target).query, ""))
@@ -418,55 +451,74 @@ def rtsp_diagnose(url: str, timeout: float = 6.0) -> str:
         if res and res[0] == 401 and user:
             auth = _authorization(res[1].get("www-authenticate", ""), user, password, "DESCRIBE", clean)
             if auth:
+                asked_key[0] = True
                 res = _rtsp_request(host, port, "DESCRIBE", clean, {"Authorization": auth}, timeout)
         return res
 
+    locked = ("el grabador contesta como video pero corta al recibir la clave: bloqueó a esta PC por claves mal "
+              "puestas. Esperá 30 minutos o reiniciá el grabador y revisá la clave guardada")
     not_video = SDK_PORTS.get(port, "")
+    # Un corte antes de pedir la clave: o el puerto no es el de video, o el corte es solo para esta PC (el grabador la
+    # bloqueó, o la PC está en la red del local y el router no deja entrar por la dirección de afuera desde adentro)
+    only_here = ("" if not_video else
+                 ". La otra: que el corte sea solo para esta PC. Si el mismo link anda desde el celular con datos o "
+                 "desde otra PC, el grabador bloqueó a esta por claves mal puestas (esperá unos 30 minutos o reiniciá el "
+                 "grabador) o esta PC está dentro de la red del local (probá desde otra red)")
     try:
         res = ask(url)
     except _NoReply:
+        if asked_key[0]:
+            return _held(locked)
         if not_video:
-            return f"{host}:{port} acepta la conexión pero no contesta el pedido de video: {not_video}"
-        return (f"{host}:{port} acepta la conexión pero no contesta el pedido de video: el grabador puede haber "
-                "bloqueado a esta PC por intentos fallidos (esperá unos 30 minutos) o la conexión es muy lenta")
+            return Diagnosis(f"{host}:{port} acepta la conexión pero no contesta el pedido de video: {not_video}")
+        return Diagnosis(f"{host}:{port} acepta la conexión pero no contesta el pedido de video: el grabador puede "
+                         "haber bloqueado a esta PC por intentos fallidos (esperá unos 30 minutos) o la conexión es "
+                         "muy lenta")
     except (ConnectionResetError, ConnectionAbortedError):
+        if asked_key[0]:
+            return _held(locked)
         # Conectó (el nombre, el router y el reenvío andan) y la otra punta cortó al recibir el pedido de video: lo
         # típico de un puerto que no es RTSP, como el 8000 de Hikvision.
-        return (f"se llega a {host}:{port} (el DDNS y el router andan) pero corta la conexión al pedir el video: ese "
-                f"puerto no es el de video (RTSP). {not_video or OTHER_PORT}")
+        head = f"se llega a {host}:{port} (el DDNS y el router andan) pero corta la conexión al pedir el video"
+        if not_video:
+            return Diagnosis(f"{head}: ese puerto no es el de video (RTSP). {not_video}")
+        return Diagnosis(f"{head}. Una posibilidad: ese puerto no es el de video (RTSP). {OTHER_PORT}{only_here}")
     except (TimeoutError, socket.timeout):
-        return (f"{host} no contesta en el puerto {port} desde esta PC: no está abierto (o no está redirigido al "
-                "grabador) en el router del local, el DDNS apunta a otra IP, o el proveedor de internet del local no "
-                "deja entrar. Si VLC sí lo abre desde esta misma PC, es el firewall o el antivirus de Windows: "
-                "permitile a «Analítica Crítica» conectarse")
+        return Diagnosis(f"{host} no contesta en el puerto {port} desde esta PC: no está abierto (o no está "
+                         "redirigido al grabador) en el router del local, el DDNS apunta a otra IP, o el proveedor de "
+                         "internet del local no deja entrar. Si VLC sí lo abre desde esta misma PC, es el firewall o el "
+                         "antivirus de Windows: permitile a «Analítica Crítica» conectarse")
     except ConnectionRefusedError:
-        return (f"{host} rechaza la conexión en el puerto {port}: ese puerto no está redirigido al grabador en el "
-                "router del local")
+        return Diagnosis(f"{host} rechaza la conexión en el puerto {port}: ese puerto no está redirigido al grabador "
+                         "en el router del local")
     except OSError as exc:
-        return (f"no se puede llegar a {host}:{port} ({exc.strerror or exc}): revisá el DDNS, el router del local y "
-                "el internet de esta PC")
+        return Diagnosis(f"no se puede llegar a {host}:{port} ({exc.strerror or exc}): revisá el DDNS, el router del "
+                         "local y el internet de esta PC")
     if res is None:
-        return (f"{host}:{port} contesta pero no como video (RTSP): "
-                f"{not_video or '¿ese es el puerto de video? (el 554 de adentro; quizá se redirigió el de la página)'}")
+        if asked_key[0]:
+            return _held(locked)
+        return Diagnosis(f"{host}:{port} contesta pero no como video (RTSP): "
+                         f"{not_video or '¿ese es el puerto de video? (el 554 de adentro; quizá se redirigió el de la página)'}")
     code = res[0]
     if code == 200:
-        return ("el grabador entrega el video (usuario, clave y canal están bien) pero esta PC no lo pudo leer: "
-                "¿video en H.265 o un códec raro? Probá poner el subflujo del grabador en H.264")
+        return Diagnosis("el grabador entrega el video (usuario, clave y canal están bien) pero esta PC no lo pudo "
+                         "leer: ¿video en H.265 o un códec raro? Probá poner el subflujo del grabador en H.264")
     if code == 401:
-        return ("el grabador rechazó el usuario o la clave (o el usuario quedó bloqueado por intentos fallidos: "
-                "esperá unos 30 minutos)")
+        return _held("el grabador rechazó el usuario o la clave (o quedó bloqueado por intentos fallidos): revisala "
+                     "letra por letra, con mayúsculas y minúsculas")
     if code == 403:
-        return "el usuario no tiene permiso para ver ese canal: dale «vista en vivo» en el grabador"
+        return Diagnosis("el usuario no tiene permiso para ver ese canal: dale «vista en vivo» en el grabador")
     if code in (404, 400, 454, 457):
         other = _other_quality(url)
         try:
             alt = ask(other) if other else None
-        except OSError:
+        except (OSError, _NoReply):
             alt = None
         if alt and alt[0] == 200:
-            return ("ese canal existe pero la calidad que se pide no está activada en el grabador (el subflujo): "
-                    "activalo, o elegí la calidad principal")
-        return "el grabador contesta pero no tiene ese canal: revisá el número de canal"
+            return Diagnosis("ese canal existe pero la calidad que se pide no está activada en el grabador (el "
+                             "subflujo): activalo, o elegí la calidad principal")
+        return Diagnosis("el grabador contesta pero no tiene ese canal: revisá el número de canal")
     if code in (453, 503):
-        return "el grabador no da más transmisiones a la vez: cerrá otras (otra PC, el celular, la máquina de análisis)"
-    return f"el grabador respondió {code} al pedir el video"
+        return Diagnosis("el grabador no da más transmisiones a la vez: cerrá otras (otra PC, el celular, la máquina "
+                         "de análisis)")
+    return Diagnosis(f"el grabador respondió {code} al pedir el video")

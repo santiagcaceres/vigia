@@ -167,3 +167,159 @@ def test_hik_connect_que_corta_no_es_el_antivirus():
     msg = diagnose(f"http://127.0.0.1:{port}/v3/openlive/X_1_2.m3u8", timeout=3.0)
     srv.close()
     assert "cortó la conexión sin mandar el video" in msg and "antivirus" not in msg
+
+
+# ---- 27 nov, Mayorista Alberto: el grabador bloqueó a la PC por claves mal puestas y la app decía «ese puerto no es
+# el de video», cuando otra cámara del mismo grabador abría por ese mismo puerto. Y la app reintentaba cada minuto con
+# la clave mal: cada intento cuenta como uno fallido y el bloqueo no se terminaba nunca.
+
+def test_clave_mal_no_se_reintenta_enseguida(grabador):
+    from agent.cameras import AUTH_HOLD_S, retry_wait
+
+    msg = rtsp_diagnose(url(grabador, password="otra"))
+    assert msg.hold and "usuario o la clave" in msg and "30 minutos" in msg
+    assert retry_wait(msg, 4.0) == AUTH_HOLD_S
+    bien = rtsp_diagnose(url(grabador, "/Streaming/Channels/902"))  # (otra falla: se reintenta como siempre)
+    assert not getattr(bien, "hold", False) and retry_wait(bien, 4.0) == 4.0
+    assert retry_wait(None, 8.0) == 8.0 and retry_wait("un texto", 8.0) == 8.0
+
+
+def _bloqueado(srv, pedidos):
+    """Un Hikvision que bloqueó a esta IP: contesta como video y pide la clave, y corta cuando se la mandan."""
+    import struct
+
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        req = conn.recv(4096).decode()
+        pedidos.append(req)
+        if "Authorization" not in req:
+            conn.sendall((f'RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm="{REALM}", '
+                          f'nonce="{NONCE}"\r\n\r\n').encode())
+            conn.close()
+        else:
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            conn.close()
+
+
+def test_grabador_que_corta_al_recibir_la_clave_es_un_bloqueo():
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    pedidos = []
+    threading.Thread(target=_bloqueado, args=(srv, pedidos), daemon=True).start()
+    msg = rtsp_diagnose(url(srv.getsockname()[1], "/Streaming/Channels/102"), timeout=2.0)
+    srv.close()
+    assert len(pedidos) == 2  # el pedido sin clave (contestó como video) y el con clave (ahí cortó)
+    assert msg.hold and "contesta como video" in msg and "bloqueó a esta PC" in msg
+    assert "no es el de video" not in msg
+    assert len(msg) <= 300  # (el estado de las máquinas se corta a 300 letras)
+
+
+def test_corta_sin_contestar_nada_puede_ser_un_corte_solo_para_esta_pc():
+    """Cierra la conexión sin mandar nada (antes: «contesta pero no como video»): o no es el puerto de video, o el corte
+    es solo para esta PC (bloqueada, o dentro de la red del local)."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def cierra():
+        conn, _ = srv.accept()
+        conn.recv(4096)
+        conn.close()
+    threading.Thread(target=cierra, daemon=True).start()
+    msg = rtsp_diagnose(f"rtsp://a:b@127.0.0.1:{srv.getsockname()[1]}/Streaming/Channels/102", timeout=2.0)
+    srv.close()
+    assert "corta la conexión al pedir el video" in msg and "no es el de video" in msg
+    assert "celular con datos" in msg and "red del local" in msg
+    assert not msg.hold  # (no se mandó ninguna clave: reintentar no alarga ningún bloqueo)
+
+
+def test_la_vista_no_insiste_con_la_clave_mal(grabador, monkeypatch):
+    """«En vivo» de la app: con la clave rechazada espera 30 minutos (no 2, 4, 8… segundos) antes de volver a probar."""
+    from agent import vista
+    from agent.cameras import AUTH_HOLD_S
+
+    esperas = []
+    cfg = {"id": 9, "name": "Fiambrería", "connection": {
+        "brand": "hikvision", "host": "127.0.0.1", "rtsp_port": grabador, "username": USER, "password": "otra",
+        "channel": 1, "stream": "sub"}}
+    v = vista.ViewWorker(cfg)
+    monkeypatch.setattr(vista.cv2, "VideoCapture", lambda *a, **k: _Cerrado())
+
+    def wait(t):
+        esperas.append(t)
+        v._stop.set()  # (una vuelta alcanza)
+        return True
+    monkeypatch.setattr(v._stop, "wait", wait)
+    v.run()
+    assert esperas == [AUTH_HOLD_S]
+    assert v.state == "detenida" and "30 minutos" in (v.error or "")
+
+
+class _Cerrado:
+    def isOpened(self):  # noqa: N802 - la cara de cv2.VideoCapture
+        return False
+
+    def release(self):
+        pass
+
+
+def test_al_corregir_la_clave_la_vista_se_vuelve_a_abrir():
+    """Guardada la clave nueva en «Editar», la cámara que se mira se reabre ya (no espera los 30 minutos)."""
+    import queue
+    from types import SimpleNamespace
+
+    from agent.__main__ import Agent
+    from agent.vista import ViewWorker
+
+    vieja = {"id": 9, "name": "Fiambrería", "connection": {"brand": "hikvision", "host": "h", "password": "mal"}}
+    nueva = {**vieja, "connection": {**vieja["connection"], "password": "bien"}}
+    hechos = []
+
+    class Vista(ViewWorker):
+        def start(self):
+            hechos.append(("abre", self.conn_key))
+
+        def stop(self):
+            hechos.append(("cierra", self.conn_key))
+
+    v = Vista(vieja)
+    fake = SimpleNamespace(_view_updates=queue.Queue(), viewers={9: v}, _ai_view=False, _views_stale=False,
+                           _viewer=lambda cfg, ai: Vista(cfg))
+    fake._view_updates.put([vieja])  # lo mismo: no se toca
+    Agent._refresh_views(fake)
+    assert fake.viewers[9] is v and hechos == []
+    fake._view_updates.put([nueva])
+    Agent._refresh_views(fake)
+    assert fake.viewers[9] is not v and [h[0] for h in hechos] == ["cierra", "abre"]
+    assert '"bien"' in fake.viewers[9].conn_key
+
+
+def test_la_maquina_no_insiste_con_la_clave_mal(grabador, tmp_path, monkeypatch):
+    """En una máquina de análisis es peor: el bloqueo es para la IP de la máquina y tira todas las cámaras de ese
+    grabador, no solo la de la clave mal."""
+    import agent.worker as worker_mod
+    from agent.cameras import AUTH_HOLD_S
+    from tests.test_video_placa import Counter
+
+    cfg = {"id": 7, "name": "Fiambrería", "process_fps": 5, "analysis": {},
+           "connection": {"brand": "hikvision", "host": "127.0.0.1", "rtsp_port": grabador, "username": USER,
+                          "password": "Secreta9", "channel": 1}}
+    w = worker_mod.CameraWorker(cfg, Counter(), None, worker_mod.Outbox(tmp_path / "outbox", None), None, None,
+                                {"clip_pre_seconds": 1, "clip_max_seconds": 30})
+    monkeypatch.setattr(worker_mod, "open_video", lambda *a, **k: _Cerrado())
+    monkeypatch.setattr(w, "_open_gpu", lambda url: None)
+    monkeypatch.setattr(w, "_open_av", lambda url: None)
+    esperas = []
+
+    def wait(t):
+        esperas.append(t)
+        w._stop.set()
+        return True
+    monkeypatch.setattr(w._stop, "wait", wait)
+    w.run()
+    assert esperas == [AUTH_HOLD_S]
+    assert "30 minutos" in w.error and "Secreta9" not in w.error and "rtsp://" not in w.error  # (ni clave ni link)

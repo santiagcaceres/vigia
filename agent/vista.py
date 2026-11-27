@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -31,7 +32,7 @@ import numpy as np
 from core.deteccion import DEFAULT_SENSITIVITY, FAR_PASSES, DetectionConfig
 from core.imagen import pixel_aspect, square_pixels
 
-from .cameras import build_camera
+from .cameras import build_camera, retry_wait
 from .worker import MediaClock, bursty, theft_spec, without_detection, without_keys
 
 log = logging.getLogger("vigia.vista")
@@ -93,6 +94,11 @@ def _name(cfg: dict) -> str:
     return f"{cfg['client_name']} · {cfg['name']}" if cfg.get("client_name") else cfg["name"]
 
 
+def conn_key(cfg: dict) -> str:
+    """Cómo se conecta la cámara (dirección, puertos, usuario, clave, canal, link): si cambia, se vuelve a abrir."""
+    return json.dumps(cfg.get("connection") or {}, sort_keys=True, default=str)
+
+
 class ViewWorker:
     """Mirar una cámara que no se analiza."""
 
@@ -101,6 +107,7 @@ class ViewWorker:
     def __init__(self, cfg: dict):
         self.id: int = cfg["id"]
         self.name = _name(cfg)
+        self.conn_key = conn_key(cfg)
         self.hik = build_camera(cfg["connection"])
         self._sar: float | None = None
         self.state = "conectando"
@@ -148,7 +155,7 @@ class ViewWorker:
                 self.state, self.error = "sin_conexion", why or "no se pudo abrir el video"
                 log.warning("[%s] Para mirar: %s", self.name, self.error)
                 cap.release()
-                self._stop.wait(backoff)
+                self._stop.wait(retry_wait(why, backoff))  # (clave rechazada: no insistir, el grabador bloquea)
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error, backoff = "en_linea", None, 2.0

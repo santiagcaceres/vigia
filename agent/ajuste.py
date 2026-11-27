@@ -57,7 +57,7 @@ from core.rules import (BAG_LABELS, HURTO_IA, SALIDA_SIN_PAGO, VEHICLE_LABEL, Ru
 from core.scorer import Scorer
 from core.tracker import CentroidTracker, Track
 
-from .cameras import build_camera
+from .cameras import build_camera, retry_wait
 from .worker import MediaClock, bursty, theft_spec
 
 log = logging.getLogger("vigia.ajuste")
@@ -570,9 +570,10 @@ class Tuner:
                 continue
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             if not cap.isOpened():
-                self.state, self.error = "sin_conexion", cam.open_failure(url) or "No se pudo abrir el video"
+                why = cam.open_failure(url)
+                self.state, self.error = "sin_conexion", why or "No se pudo abrir el video"
                 cap.release()
-                self._stop.wait(backoff)
+                self._stop.wait(retry_wait(why, backoff))  # (clave rechazada: no insistir, el grabador bloquea)
                 backoff = min(backoff * 2, 60.0)
                 continue
             self.state, self.error, backoff = "en_linea", None, 2.0

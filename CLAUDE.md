@@ -718,6 +718,20 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
   como operador + una máquina dada de alta): «Playa surtidores» solo Estación (2 cuadros/s, sin alertas, vehículos),
   «Tienda» y «Caja» Hurto + Comercio (5 cuadros/s, reglas y gestos); con 10 personas y 7 vehículos en la playa y 25
   personas y 2 vehículos en la tienda, el cliente suma 25 personas y 7 vehículos. Prueba: `tests/test_planes_por_camara.py`.
+- **Clave mal y grabador que bloquea (27 nov, Mayorista Alberto · Fiambrería; app 1.52.1).** Desde la PC del dueño el
+  link no abría (ni la app ni VLC) y desde el celular sí, pidiendo la clave aparte; la app decía «ese puerto no es el de
+  video» aunque Showroom, del mismo grabador, abría por ese mismo puerto desde AWS. Lo más probable: la clave guardada no
+  era exacta (mayúsculas), el Hikvision **bloqueó a la IP de la PC** por intentos fallidos (~30 min) y la app lo mantenía
+  bloqueado reintentando cada minuto (cada reintento con la clave mal es otro intento fallido, más el pedido del
+  diagnóstico). Bloqueada, ni la clave buena entra desde esa IP; en una máquina de análisis tiraría todas las cámaras de
+  ese grabador. Ahora: `rtsp_diagnose` devuelve un `Diagnosis` (str) con `hold`; con 401 (clave rechazada) o un grabador
+  que contesta como video, pide la clave y **corta al recibirla** (bloqueo), no se reintenta solo por 30 minutos
+  (`AUTH_HOLD_S`, `retry_wait`, en la app, «Configurar…», las máquinas y el vivo de las alarmas) y lo dice; al corregir la
+  clave se reabre ya (máquinas por `fingerprint_of`; en «En vivo» de la app, `_refresh_views` compara `conn_key` y reabre
+  la vista). Una conexión que se cierra sin mandar nada (antes «contesta pero no como video») va como un corte, y el corte
+  antes de pedir la clave ya no afirma que el puerto está mal: dice que también puede ser un corte solo para esa PC
+  (bloqueada o dentro de la red del local) si el link anda desde el celular con datos u otra PC. Sin probar con el
+  grabador real. Prueba: `tests/test_diagnostico_rtsp.py`.
 - **Usuarios con cámaras asignadas, sin elegir PC (24 oct, decisión del dueño; app 1.13.0):** el admin crea usuarios
   (admin o empleado) y **les asigna cámaras** (Administración → «Editar y asignar cámaras», o «Asignada a» en la
   cámara). Cada usuario entra a la app con su usuario y clave y su PC **analiza y muestra solo sus cámaras**; ya no

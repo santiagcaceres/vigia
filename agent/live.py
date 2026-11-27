@@ -30,7 +30,7 @@ from core.geometry import bbox_foot
 from core.rules import Zone, parse_zones
 from core.tracker import CentroidTracker, Track
 
-from .cameras import build_camera
+from .cameras import build_camera, retry_wait
 from .outbox import ServerClient
 
 log = logging.getLogger("vigia.live")
@@ -220,7 +220,7 @@ class LiveWorker:
                     self.error += f" — {why}"
                 log.warning("[%s] vivo: %s", self.name, self.error)
                 cap.release()
-                self._stop.wait(5.0)
+                self._stop.wait(retry_wait(why, 5.0))  # (clave rechazada: no insistir, el grabador bloquea)
                 continue
             self.state, self.error = "en_linea", None
             self.cam.opened()

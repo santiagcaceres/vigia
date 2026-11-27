@@ -43,7 +43,7 @@ from .live import LiveWorker
 from .marca import NOMBRE
 from .outbox import Outbox, ServerClient, login_pc
 from .ventana import ESTADOS, Ventana, default_pc_name
-from .vista import AIViewWorker, RemoteView, ViewWorker
+from .vista import AIViewWorker, RemoteView, ViewWorker, conn_key
 from .worker import METRICS_EVERY_SECONDS, CameraWorker, MetricsQueue
 
 log = logging.getLogger("vigia.agent")
@@ -510,12 +510,20 @@ class Agent:
                 break
             for cfg in cfgs:
                 v = self.viewers.get(cfg.get("id"))
-                if isinstance(v, AIViewWorker):
+                if (isinstance(v, ViewWorker) and "connection" in cfg
+                        and getattr(v, "conn_key", None) not in (None, conn_key(cfg))):
+                    # cambió cómo se conecta (otra clave, puerto o canal): se vuelve a abrir ya. Sobre todo tras una
+                    # clave rechazada, que no se reintenta sola por 30 minutos (`cameras.AUTH_HOLD_S`)
+                    v.stop()
+                    nv = self._viewer(cfg, self._ai_view)
+                    nv.start()
+                    self.viewers[cfg["id"]] = nv
+                elif isinstance(v, AIViewWorker):
                     v.set_analysis(cfg.get("analysis") or {}, cfg.get("process_fps"))
         if not self._views_stale:
             return
         self._views_stale = False
-        ids = sorted(cid for cid, v in self.viewers.items() if isinstance(v, AIViewWorker))
+        ids = sorted(cid for cid, v in self.viewers.items() if isinstance(v, ViewWorker))
         if ids:
             self.clip_pool.submit(self._fetch_view_update, ids)
 
