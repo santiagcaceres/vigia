@@ -1430,6 +1430,22 @@ DVR Hikvision --RTSP--> agente (Python) --HTTPS--> servidor FastAPI en Vercel --
     «Todas sus cámaras»; con dos máquinas, si se cae una sus cámaras van igual a la otra. El 30 no está medido en la
     hora pico: con el aviso de «no da abasto» ya corregido, bajarlo o subirlo según lo que muestre. Pruebas:
     `tests/test_tope_maquinas.py`.
+  - **Recomendación con colores en vez de tope (27 nov, el dueño: «no pongas límite por cámara; avisá y ponelo con
+    colores, una recomendación de cuántas aguanta esa PC, y permití poner las que sea; si está en rojo mostrá un
+    cartel»; app 1.52.0).** Reemplaza lo de arriba: `room_warning` (ex `check_room`) ya no da 409 ni deshace nada; al
+    marcar (`set_analyzed`: «▶ Empezar a analizar», «Aprobar», las zonas) la respuesta trae `warning` {level, used,
+    recommended, message} si las máquinas quedan al 85 % o más (`pool.level`: «ok» verde, «alto» naranja, «pasada»
+    rojo). **Cuántas se recomiendan** (`pool.recommended`, `machine_recs`): con placa de video 12 por vCPU y hasta 140
+    (la xlarge 48, la 2xlarge 96, la 4xlarge 140: la misma placa), sin placa lo que midieron sus procesos, o el número que
+    ponga un admin en Máquinas → «Cámaras recomendadas por máquina» (`app_settings.machine_recommended`, `PUT
+    /api/analysis {"recommended"}`; 0 = automático; el viejo «Tope» `pool_capacity` ya no limita nada, queda para el
+    plan sin máquinas y el freno a una máquina que dice aguantar de más). Los procesos reciben su parte de lo recomendado
+    para el reparto (`pool_servers`). `/api/analysis`: `recommended`, `room.level` y `level` por máquina. App:
+    «Ocupado / recomendado» («42 / 48 · queda poco», «52,6 / 48 · ⚠ pasada»), la fila de la máquina en naranja o rojo
+    (`worse_tag`), el renglón de lo recomendado con su color (`room_text`, `room_level`) y, al marcar, en rojo un cartel
+    con qué hacer y en naranja un aviso abajo a la derecha (`Oficina.room_warning`, `Toasts` «warn»). El 12 por vCPU sale
+    de lo medido el 27 nov (~0,065 procesadores por cámara con todo en la placa): confirmarlo con una prueba de llenado.
+    Pruebas: `tests/test_tope_maquinas.py`.
   - **Qué video manda cada cámara (app 1.50.3):** la máquina informa códec, tamaño y cuadros por segundo contados
     (`video_info`, `video_codec/w/h/fps` en el estado; las máquinas, desde la actualización de la noche). La app lo
     muestra en el detalle de la cámara («Video que llega») y en «Máquinas» (última columna), y marca «⚠ pesado ×N» si

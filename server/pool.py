@@ -7,8 +7,10 @@ máquinas hacen falta prendidas. Solo funciones puras: la base de datos la manej
 - **Reparto**: cada cámara se queda en su máquina mientras esa máquina esté en línea y le entre (los procesos de una
   máquina comparten su lugar); las demás van a la menos cargada. Si una máquina se cae (90 s sin noticias), sus
   cámaras pasan a las otras.
-- **Tope**: lo que aguanta cada máquina (lo que midió, y no más que «Tope de cámaras por máquina»). Al marcar una
-  cámara para analizar, si no entra no se la marca (server/main.py, `check_room`).
+- **Recomendación** (`recommended`): cuántas cámaras aguanta bien cada máquina. Con placa de video, 12 por procesador
+  (vCPU) y hasta 140 (la placa es la misma en todos los tamaños); sin placa, lo que midió; o el número que ponga un
+  administrador. No es un tope: al marcar una cámara para analizar se la marca igual y, si la máquina queda al 85 % o
+  más, se avisa (`level`: «alto» en naranja; «pasada» en rojo, con un cartel en la app).
 - **Plan**: cuántas máquinas tienen que estar prendidas (mirando también los próximos 20 min, para
   prenderlas antes de que abran los locales) y cuáles se pueden apagar (ya sin cámaras).
 - **Máquina fija** (`Machine.fixed`, la avisa la máquina con `VIGIA_FIJA=si`): siempre prendida (la de la reserva
@@ -65,10 +67,16 @@ def camera_weight(*, fps: float, mode: str, brand: str, hours: dict | None, tz: 
     return base
 
 
-# Tope de las máquinas (24 nov, decisión del dueño: «meterle cámaras para que las analice mal no tiene sentido»). El tope
-# se aplica **al marcar una cámara para analizar** (server/main.py, `check_room`): si no entra, no se la marca y se
-# explica. El reparto nunca le saca la máquina a una cámara que ya se analiza (un reinicio o un corte no pueden dejar
-# afuera a las que andan): si igual quedara pasada (bajaron el tope, o volvió una cámara que no andaba), se ve en la app.
+# Cuántas cámaras aguanta cada máquina (27 nov, el dueño: «no pongas límite por cámara; avisá y ponelo con colores, una
+# recomendación de cuántas aguanta esa PC, y permití poner las que sea; si está en rojo mostrá un cartel»). Antes (24
+# nov) era un tope que no dejaba marcar más. Con todo lo pasado a la placa (video dentro del proceso, TensorRT, clips
+# con NVENC) una g4dn.xlarge de 4 vCPU gasta ~0,065 procesadores por cámara de hurto: al 85 % son ~50, unas 12 por
+# vCPU; la 2xlarge el doble; la 4xlarge tiene la misma placa, que pasa a ser el límite (~140). Es una estimación: la
+# confirma una prueba de llenado y, si hace falta, el administrador pone otro número en la app. El reparto nunca le saca
+# la máquina a una cámara que ya se analiza (un reinicio o un corte no pueden dejar afuera a las que andan).
+GPU_PER_VCPU = 12.0
+GPU_MAX = 140.0
+LEVEL_HIGH = HEADROOM  # desde el 85 % de lo recomendado, «alto» (naranja); pasado el 100 %, «pasada» (rojo)
 ALIVE_S = 72 * 3600.0  # una cámara que dio imagen en los últimos 3 días ocupa su lugar (aguanta un fin de semana cerrado)
 RECENT_S = 30 * 60.0  # dio imagen hace menos de media hora: se la está analizando
 OVERFILL = 1.25  # un proceso puede pasarse un 25 % de su parte si la máquina entera tiene lugar (no mover cámaras)
@@ -83,10 +91,31 @@ def life_rank(image_age_s: float | None) -> int:
     return 0 if image_age_s < RECENT_S else 1 if image_age_s < ALIVE_S else 2
 
 
+def recommended(measured: float, cores: float | None, gpu: bool, override: float | None = None) -> float:
+    """Cuántas cámaras (de hurto a 5 cuadros/s; con gestos cuentan 1,3, solo métricas 0,5) aguanta bien una máquina:
+    lo que puso el administrador (`override`) o, si no, con placa de video 12 por procesador y hasta 140, y sin placa lo
+    que midieron sus procesos al instalarse (`measured`, la suma)."""
+    if override and override > 0:
+        return float(override)
+    if gpu and cores and cores > 0:
+        return min(float(cores) * GPU_PER_VCPU, GPU_MAX)
+    return float(measured)
+
+
+def level(used: float, rec: float) -> str:
+    """«ok» (verde), «alto» (desde el 85 %, naranja) o «pasada» (más de lo recomendado, rojo). Vacío sin
+    recomendación (ninguna máquina en línea)."""
+    if rec <= 0:
+        return ""
+    if used > rec + 0.05:
+        return "pasada"
+    return "alto" if used >= rec * LEVEL_HIGH - 1e-9 else "ok"
+
+
 def machine_caps(servers: dict[int, float], groups: dict[int, str] | None = None,
                  cap: float | None = None) -> dict[str, float]:
-    """Lo que aguanta cada máquina: la suma de sus procesos (comparten el procesador y la placa), con el tope `cap`
-    («Tope de cámaras por máquina») si es menor."""
+    """Lo que aguanta cada máquina: la suma de sus procesos (comparten el procesador y la placa), con `cap` si es
+    menor (las pruebas; el servidor ya les pasa a los procesos su parte de lo recomendado)."""
     out: dict[str, float] = {}
     for a, c in servers.items():
         key = (groups or {}).get(a) or f"agente-{a}"
@@ -98,11 +127,11 @@ def assign(cameras: list[tuple[int, float, int | None]], servers: dict[int, floa
            groups: dict[int, str] | None = None, rank: dict[int, int] | None = None,
            cap: float | None = None) -> dict[int, int]:
     """`cameras`: (id, peso, proceso actual). `servers`: proceso en línea → capacidad. `groups`: proceso → máquina
-    (sin eso, cada proceso es una máquina). `rank`: id → `life_rank` (las que andan se acomodan primero). `cap`: tope
-    por máquina. Devuelve id → proceso, para todas.
+    (sin eso, cada proceso es una máquina). `rank`: id → `life_rank` (las que andan se acomodan primero). `cap`: lo que
+    aguanta como mucho cada máquina (opcional). Devuelve id → proceso, para todas.
     Las cámaras se quedan donde están mientras su máquina tenga lugar (no se reconecta nada); las demás van a una
     máquina donde entren y, si no entran en ninguna, igual a la menos cargada (el reparto no deja a ninguna sin
-    mirar: de que no se marquen de más se ocupa el tope, al marcarlas)."""
+    mirar: si quedan de más, la app lo avisa en rojo)."""
     if not servers:
         return {}
     rank = rank or {}

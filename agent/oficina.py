@@ -1014,7 +1014,7 @@ class Toasts:
     LIFE_MS = 3200
     ERROR_LIFE_MS = 20000
     MAX = 4
-    KINDS = {"ok": ("✔", "#1a7f43"), "error": ("⚠", "#b42318")}
+    KINDS = {"ok": ("✔", "#1a7f43"), "warn": ("⚠", "#a35c00"), "error": ("⚠", "#b42318")}
 
     def __init__(self, tk, root):
         self.tk, self.root = tk, root
@@ -1022,7 +1022,7 @@ class Toasts:
 
     def show(self, text: str, kind: str = "ok", on_click: Callable[[], None] | None = None) -> None:
         icon, color = self.KINDS.get(kind, self.KINDS["ok"])
-        life = self.ERROR_LIFE_MS if kind == "error" else self.LIFE_MS
+        life = self.ERROR_LIFE_MS if kind in ("error", "warn") else self.LIFE_MS
         for it in self.items:
             if it["text"] == text:
                 it["count"] += 1
@@ -1166,14 +1166,45 @@ def num_es(x: float) -> str:
     return f"{float(x):.1f}".replace(".", ",").removesuffix(",0")
 
 
+LEVEL_HIGH = 0.85  # desde el 85 % de lo recomendado, naranja (como server/pool.py)
+
+
+def load_level(used: float, cap: float) -> str:
+    """«ok» (verde), «alto» (desde el 85 % de lo recomendado, naranja) o «pasada» (rojo); vacío sin recomendación.
+    Lo mismo que calcula el servidor (`pool.level`), para un servidor que todavía no lo manda."""
+    if cap <= 0:
+        return ""
+    if used > cap + 0.05:
+        return "pasada"
+    return "alto" if used >= cap * LEVEL_HIGH - 1e-9 else "ok"
+
+
+LEVEL_COLORS = {"ok": "#1b7d3a", "alto": "#a35c00", "pasada": "#b3261e"}  # verde, naranja, rojo
+_TAG_RANK = {"ok": 0, "busy": 1, "off": 1, "warn": 2, "bad": 3}
+
+
+def worse_tag(tag: str, level: str) -> str:
+    """El color de la fila de una máquina: el peor entre su estado y lo cargada que está («alto» → naranja,
+    «pasada» → rojo)."""
+    by_level = {"alto": "warn", "pasada": "bad"}.get(level)
+    if by_level and _TAG_RANK.get(by_level, 0) > _TAG_RANK.get(tag, 0):
+        return by_level
+    return tag
+
+
+def machine_level(m: dict | None) -> str:
+    if not m or "reserved" not in m or not m.get("online", True):
+        return ""
+    return m.get("level") or load_level(float(m.get("reserved") or 0), float(m.get("capacity") or 0))
+
+
 def machine_load(m: dict) -> str:
-    """«Ocupado / tope» de una máquina: lo que ocupan sus cámaras para el tope (con el local abierto; las que no dan
-    imagen hace días no cuentan). Un servidor sin actualizar manda solo lo que pesan ahora."""
+    """«Ocupado / recomendado» de una máquina: lo que ocupan sus cámaras (con el local abierto; las que no dan imagen
+    hace días no cuentan) contra las que se recomiendan para esa máquina. No es un tope: se pueden poner más, y la app
+    lo marca en naranja (desde el 85 %) o en rojo (pasada). Un servidor sin actualizar manda solo lo que pesan ahora."""
     used = float(m.get("reserved", m.get("load", 0)) or 0)
     cap = float(m.get("capacity") or 0)
-    mark = ""
-    if "reserved" in m and cap:
-        mark = " · pasada" if used > cap + 0.05 else " · al tope" if cap - used < 0.5 else ""
+    mark = {"pasada": " · ⚠ pasada", "alto": " · queda poco"}.get(machine_level(m), "")
     return f"{num_es(used)} / {num_es(cap)}{mark}"
 
 
@@ -1211,22 +1242,36 @@ def cpu_text(m: dict | None, short: bool = False) -> str:
     return text
 
 
+def room_level(a: dict) -> str:
+    r = a.get("room") or {}
+    if not r.get("capacity"):
+        return ""
+    return r.get("level") or load_level(float(r.get("reserved") or 0), float(r["capacity"]))
+
+
 def room_text(a: dict) -> str:
-    """El tope de las máquinas, en una línea: cuánto aguantan las que están en línea, cuánto hay ocupado y cuánto
-    queda. Vacío si el servidor todavía no lo manda."""
+    """Cuántas cámaras se recomiendan para las máquinas en línea y cuánto hay ocupado, en una línea (en verde, naranja
+    o rojo: `room_level`). No es un tope: se pueden marcar más, y si quedan pasadas se avisa. Vacío si el servidor
+    todavía no lo manda."""
     r = a.get("room")
     if not r:
         return ""
     if not r.get("capacity"):
         return "No hay ninguna máquina de análisis en línea: las cámaras marcadas para analizar esperan."
     cap, used = float(r["capacity"]), float(r.get("reserved") or 0)
-    txt = f"Tope: las máquinas en línea aguantan {num_es(cap)} · ocupado {num_es(used)} · "
-    if used > cap + 0.05:
-        txt = ("⚠ " + txt + f"pasadas por {num_es(used - cap)}: no se agregan cámaras hasta bajar de ahí (dejá de "
-               "analizar alguna o subí el tope).")
+    how = ("puesto a mano" if a.get("recommended") else
+           "automático: con placa de video, 12 por procesador")
+    txt = (f"Recomendado: las máquinas en línea aguantan bien {num_es(cap)} ({how}) · ocupado {num_es(used)} "
+           f"({round(100 * used / cap)} %) · ")
+    lvl = room_level(a)
+    if lvl == "pasada":
+        txt = ("⚠ " + txt + f"pasadas por {num_es(used - cap)}: todas las cámaras analizan menos cuadros por segundo y "
+               "se pueden perder alertas. Dejá de analizar alguna, sacales los gestos a las que no los necesitan, o "
+               "sumá o agrandá una máquina.")
+    elif lvl == "alto":
+        txt += f"queda poco lugar (libre {num_es(cap - used)})."
     else:
-        txt += (f"libre {num_es(cap - used)}. Con las máquinas al tope no se agregan cámaras (analizarían mal todas): "
-                "«Empezar a analizar» avisa.")
+        txt += f"libre {num_es(cap - used)}."
     txt += "  Cuenta 1 una cámara de hurto; con gestos 1,3; solo métricas 0,5."
     n = r.get("idle") or 0
     if n:
@@ -2966,12 +3011,25 @@ class Oficina:
                 names = sorted({c.get("analyzer_name") or "una máquina" for c in now})
                 log.info("%s: se empieza a analizar en %s (en menos de un minuto)", who, ", ".join(names))
 
-        def done(_res) -> None:
+        def done(res) -> None:
             self.refresh_all(on_done=lambda: self.v.root.after(0, told))
             if self.on_config_saved:
                 self.on_config_saved()
+            self.room_warning(res)
         self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": ids, "analyze": analyze}), done,
                     self.err)
+
+    def room_warning(self, res, parent=None) -> None:
+        """Lo que avisó el servidor al marcar cámaras para analizar (no es un tope: quedan marcadas igual): con las
+        máquinas pasadas (rojo), un cartel con qué hacer; con poco lugar (naranja), un aviso abajo a la derecha."""
+        w = (res or {}).get("warning") if isinstance(res, dict) else None
+        if not isinstance(w, dict) or not w.get("message"):
+            return
+        log.warning("Máquinas de análisis: %s", w["message"].split("\n")[0])
+        if w.get("level") == "pasada":
+            self.mb.showwarning(NOMBRE, "⚠ " + w["message"], **({"parent": parent} if parent else {}))
+        elif self.toasts is not None:
+            self.toasts.show(w["message"], kind="warn")
 
     def watch_live(self, cam: dict | None) -> None:
         """«Ver en la pestaña «En vivo»»: pasa a esa pestaña con la cámara elegida (se mira; no cambia si se analiza)."""
@@ -3326,9 +3384,10 @@ class Oficina:
                                         "con «▶ Empezar a analizar»."):
             return
 
-        def done(_res) -> None:
+        def done(res) -> None:
             self.config_saved()
             log.info("«%s»: se empieza a analizar (en menos de un minuto)", cam["name"])
+            self.room_warning(res)
         self.bg.run(lambda: self.api.post("/api/cameras/analyze", {"camera_ids": [cam["id"]], "analyze": True}), done,
                     self.err)
 
@@ -3791,7 +3850,7 @@ class Oficina:
         # lo que sobra de ancho va a «Máquina» y «Estado», así los números quedan cerca de su título
         self.mq_tree.heading("#0", text="Máquina", anchor="w")
         self.mq_tree.column("#0", width=250)
-        for col, txt, w in (("estado", "Estado", 300), ("camaras", "Cámaras", 80), ("carga", "Ocupado / tope", 200),
+        for col, txt, w in (("estado", "Estado", 300), ("camaras", "Cámaras", 80), ("carga", "Ocupado / recomendado", 220),
                             ("tipo", "Tipo", 110), ("desde", "Desde · video que llega", 340)):
             self.mq_tree.heading(col, text=txt, anchor="w")
             self.mq_tree.column(col, width=w, anchor="w", stretch=col == "estado")
@@ -3806,18 +3865,20 @@ class Oficina:
         top = ttk.Frame(an)
         top.pack(fill="x")
         self.an_mode = tk.StringVar()
-        self.an_cap = tk.StringVar(value="30")
+        self.an_cap = tk.StringVar(value="0")  # cámaras recomendadas por máquina (0 = automático)
         self.an_spare = tk.StringVar(value="0")
         ttk.Label(top, text="Se analizan").pack(side="left", padx=(0, 6))
         ttk.Combobox(top, textvariable=self.an_mode, values=list(ANALYSIS_MODES.values()), state="readonly",
                      width=34).pack(side="left")
-        ttk.Label(top, text="  Tope de cámaras por máquina").pack(side="left")
-        ttk.Spinbox(top, from_=5, to=500, textvariable=self.an_cap, width=5).pack(side="left", padx=4)
+        ttk.Label(top, text="  Cámaras recomendadas por máquina").pack(side="left")
+        ttk.Spinbox(top, from_=0, to=500, textvariable=self.an_cap, width=5).pack(side="left", padx=4)
+        ttk.Label(top, text="(0 = automático)", style="Suave.TLabel").pack(side="left", padx=(0, 8))
         ttk.Label(top, text="Máquinas de reserva").pack(side="left")
         ttk.Spinbox(top, from_=0, to=5, textvariable=self.an_spare, width=3).pack(side="left", padx=4)
         ttk.Button(top, text="Guardar", command=self.save_analysis).pack(side="left", padx=6)
-        self.an_room = tk.StringVar(value="")  # el tope: cuánto hay ocupado y cuántas cámaras esperan lugar
-        ttk.Label(an, textvariable=self.an_room, wraplength=1100, justify="left").pack(anchor="w", pady=(4, 0))
+        self.an_room = tk.StringVar(value="")  # lo recomendado, cuánto hay ocupado (en verde, naranja o rojo)
+        self.an_room_lbl = ttk.Label(an, textvariable=self.an_room, wraplength=1100, justify="left")
+        self.an_room_lbl.pack(anchor="w", pady=(4, 0))
         self.an_info = tk.StringVar(value="")
         ttk.Label(an, textvariable=self.an_info, style="Suave.TLabel", wraplength=1100, justify="left").pack(
             anchor="w", pady=(2, 0))
@@ -3879,7 +3940,7 @@ class Oficina:
                 return
             a, cameras, agents, cloud = res
             self.analysis, self.cloud = a, cloud
-            server = (ANALYSIS_MODES.get(a.get("mode"), ANALYSIS_MODES["pcs"]), str(int(a.get("capacity") or 30)),
+            server = (ANALYSIS_MODES.get(a.get("mode"), ANALYSIS_MODES["pcs"]), str(int(a.get("recommended") or 0)),
                       str(a.get("spare") or 0))
             shown = (self.an_mode.get(), self.an_cap.get(), self.an_spare.get())
             if settings or shown == getattr(self, "_an_server", shown) or not any(shown):
@@ -3889,7 +3950,8 @@ class Oficina:
             self._an_server = server
             p = a.get("plan") or {}
             self.an_room.set(room_text(a))
-            # (con el tope a la vista —renglón de arriba— no se repite la cuenta del encendedor, que deja un 15 % libre
+            self.an_room_lbl.configure(foreground=LEVEL_COLORS.get(room_level(a), ""))
+            # (con lo recomendado a la vista —renglón de arriba— no se repite la cuenta del encendedor, que deja un 15 % libre
             # y diría «hacen falta 2 máquinas» con lugar todavía)
             need = ("" if a.get("room") else f" · carga {p.get('units', 0)} · hacen falta {p.get('desired', 0)} "
                                              "máquina(s)") + f" · {p.get('online', 0)} en línea."
@@ -3958,6 +4020,7 @@ class Oficina:
                     "SUSPENDED": ("suspendida ", vm.get("last_suspend"))}.get(status)
             since = (when[0] + hace(when[1], now)) if when and when[1] else ""
             carga = " · ".join(x for x in (machine_load(m), cpu_text(m, short=True)) if x) if m else "—"
+            tag = worse_tag(tag, machine_level(m))
             groups.append((key, vm["name"], (text, "", carga, tipo, since), tag, set(m["agent_ids"]) if m else set()))
             self._mq_rows[key] = {"vm": vm, "m": m}
         for m in machines:  # las del sistema que no están en Google Cloud (otra nube, o Google sin conectar)
@@ -3966,6 +4029,7 @@ class Oficina:
             name = m["names"][0] if len(m["names"]) == 1 else (
                 m["names"][0].rsplit("-", 1)[0] + f" ({len(m['names'])} procesos)")
             text, tag, _hint = self._mq_state(m["key"], None, m, now, listed)
+            tag = worse_tag(tag, machine_level(m))
             tipo = "otra nube" if (m.get("instance_id") or "").startswith("i-") else "—"
             groups.append((m["key"], name, (text, "", " · ".join(x for x in (machine_load(m), cpu_text(m, short=True))
                                                                   if x), tipo,
@@ -4158,9 +4222,11 @@ class Oficina:
     def save_analysis(self) -> None:
         mode = next((k for k, t in ANALYSIS_MODES.items() if t == self.an_mode.get()), "pcs")
         try:
-            body = {"mode": mode, "capacity": float(self.an_cap.get()), "spare": int(self.an_spare.get())}
+            body = {"mode": mode, "recommended": max(0.0, float(self.an_cap.get() or 0)),
+                    "spare": int(self.an_spare.get())}
         except ValueError:
-            return self.mb.showwarning(NOMBRE, "El tope por máquina y la reserva tienen que ser números.")
+            return self.mb.showwarning(NOMBRE, "Las cámaras recomendadas por máquina y la reserva tienen que ser "
+                                                "números (0 = automático).")
         if mode != (self.analysis.get("mode") or "pcs"):
             msg = ("Las cámaras pasan a analizarse en las máquinas de análisis. Mientras no haya ninguna en línea, "
                    "siguen en la PC de cada usuario.") if mode == "servidores" else (
@@ -6296,6 +6362,7 @@ class TuneWindow:
 
             def done(res):
                 self.app.config_saved()
+                self.app.room_warning(res, parent=self.top)
                 where = (res or {}).get("analyzer_name")
                 self.app.mb.showinfo(NOMBRE, f"«{self.cam['name']}» quedó aprobada " + (
                     f"y la tiene la máquina «{where}»: empieza a analizarla en menos de un minuto." if where else

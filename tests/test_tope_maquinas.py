@@ -1,6 +1,8 @@
-"""Tope de las máquinas (24 nov, decisión del dueño: «para mí lo mejor es poner un tope a las máquinas; meterle cámaras
-para que las analice mal no tiene sentido»). El tope se aplica al marcar una cámara para analizar: si no entra, no se
-la marca y se explica. El reparto nunca le saca la máquina a una cámara que ya se analiza (un reinicio no puede dejar
+"""Cuántas cámaras aguanta cada máquina. Del 24 al 27 nov fue un tope que no dejaba marcar más («meterle cámaras para
+que las analice mal no tiene sentido»); desde el 27 nov es una recomendación (el dueño: «no pongas límite por cámara;
+avisá y ponelo con colores… permití poner las que sea, pero avisá; si está en rojo mostrá un cartel»): al marcar una
+cámara para analizar se la marca igual y, si la máquina queda al 85 % o más, el servidor avisa (naranja) y pasada
+(rojo) con qué hacer. El reparto nunca le saca la máquina a una cámara que ya se analiza (un reinicio no puede dejar
 afuera a las que andan), y una cámara que no da imagen hace días no ocupa lugar."""
 
 from __future__ import annotations
@@ -103,70 +105,102 @@ def _old(app, cam_id: int, **days) -> None:
         s.commit()
 
 
-def test_empezar_a_analizar_con_la_maquina_llena_avisa_y_no_la_marca(app):
+def test_empezar_a_analizar_con_la_maquina_llena_avisa_y_la_marca_igual(app):
     with TestClient(app) as a:
         a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
         ids = _cams(a, a.post("/api/clients", json={"name": "Farmacia"}).json(), 5)
         key = a.post("/api/analysis/pool-key").json()["key"]
-        # sin ninguna máquina en línea no se frena nada (empieza sola cuando se prenda una)
-        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[:1], "analyze": True}).status_code == 200
-        # una máquina de 2 procesos de 2: aguanta 4 (3 cámaras con gestos de 1,3 = 3,9)
+        # sin ninguna máquina en línea no se avisa nada (empieza sola cuando se prenda una)
+        r = a.post("/api/cameras/analyze", json={"camera_ids": ids[:1], "analyze": True})
+        assert r.status_code == 200 and r.json()["warning"] is None
+        # una máquina de 2 procesos de 2, sin placa: se recomiendan 4 (lo que midió); 2 cámaras con gestos = 2,6
         procs = [_machine(app, key, f"maq-{n}", "i-1", 2) for n in (1, 2)]
-        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[1:3], "analyze": True}).status_code == 200
-        got = {c["id"]: c for c in a.get("/api/cameras").json()}
-        assert all(got[i]["agent_id"] for i in ids[:3])
+        r = a.post("/api/cameras/analyze", json={"camera_ids": ids[1:2], "analyze": True})
+        assert r.status_code == 200 and r.json()["warning"] is None  # (2,6 de 4: 65 %, verde)
         an = a.get("/api/analysis").json()
-        assert an["room"] == {"capacity": 4.0, "reserved": 3.9, "idle": 0}
+        assert an["room"] == {"capacity": 4.0, "reserved": 2.6, "idle": 0, "level": "ok"}
+        assert an["recommended"] is None  # automático
+        # la tercera deja la máquina al 98 %: se marca y avisa en naranja
+        r = a.post("/api/cameras/analyze", json={"camera_ids": ids[2:3], "analyze": True})
+        w = r.json()["warning"]
+        assert r.status_code == 200 and w["level"] == "alto" and "98 % de lo recomendado (3,9 de 4)" in w["message"]
+        an = a.get("/api/analysis").json()
+        assert an["room"]["level"] == "alto" and an["machines"][0]["level"] == "alto"
         assert an["machines"][0]["reserved"] == 3.9 and an["machines"][0]["capacity"] == 4.0
-        # la cuarta no entra: 409 con la explicación, y no queda marcada
+        # la cuarta la deja pasada: se marca igual (ya no hay tope), con máquina, y el aviso en rojo dice qué hacer
         r = a.post("/api/cameras/analyze", json={"camera_ids": [ids[3]], "analyze": True})
-        assert r.status_code == 409, r.text
-        msg = r.json()["detail"]
-        assert "No hay lugar" in msg and "el tope es 4" in msg and "3,9 ocupado" in msg and "ocupa 1,3" in msg
+        assert r.status_code == 200, r.text
+        w = r.json()["warning"]
+        assert w["level"] == "pasada" and w["used"] == 5.2 and w["recommended"] == 4.0
+        assert "se recomiendan hasta 4" in w["message"] and "5,2 ocupado" in w["message"]
+        assert "Quedó marcada para analizar igual" in w["message"] and "sumá o agrandá una máquina" in w["message"]
         c4 = a.get(f"/api/cameras/{ids[3]}").json()
-        assert not c4["analyzed"] and c4["agent_id"] is None
-        # tampoco entran dos juntas; volver a marcar las que ya se analizan no se niega
-        r = a.post("/api/cameras/analyze", json={"camera_ids": ids[3:], "analyze": True})
-        assert r.status_code == 409 and "estas 2 cámaras ocupan 2,6" in r.json()["detail"]
-        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[:3], "analyze": True}).status_code == 200
+        assert c4["analyzed"] and c4["agent_id"]
+        assert a.get("/api/analysis").json()["room"]["level"] == "pasada"
+        # volver a marcar las que ya se analizan no avisa (no suman)
+        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[:3], "analyze": True}).json()["warning"] is None
 
-        # una de las tres no anda desde ayer: sigue ocupando su lugar (puede volver) y el aviso la nombra
+        # una no anda desde ayer: sigue ocupando su lugar (puede volver) y el aviso rojo la nombra
         _old(app, ids[2], image=1, since=10)
-        for i in ids[:2]:
+        for i in (ids[1], ids[3]):
             _old(app, i, image=0, since=10)
         owner = {c["id"]: c["agent_id"] for c in a.get("/api/cameras").json()}
         for p in procs:
             aid = p.get("/api/agent/config").json()["agent_id"]
             p.post("/api/agent/status", json={"instance_id": "i-1", "capacity": 2, "cameras": [
                 {"camera_id": i, "state": "sin_conexion" if i == ids[2] else "en_linea", "state_age_s": 90000}
-                for i in ids[:3] if owner[i] == aid]})
-        r = a.post("/api/cameras/analyze", json={"camera_ids": [ids[3]], "analyze": True})
-        assert r.status_code == 409
-        assert "«Farmacia · Canal 3» (sin imagen hace 1 día, ocupa 1,3)" in r.json()["detail"]
-        # pasan los días sin dar imagen: deja de ocupar lugar (sigue asignada: si vuelve, arranca sola) y la cuarta entra
+                for i in ids[1:4] if owner[i] == aid]})
+        r = a.post("/api/cameras/analyze", json={"camera_ids": [ids[4]], "analyze": True})
+        assert r.status_code == 200 and r.json()["warning"]["level"] == "pasada"
+        assert "«Farmacia · Canal 3» (sin imagen hace 1 día, ocupa 1,3)" in r.json()["warning"]["message"]
+        # pasan los días sin dar imagen: deja de ocupar lugar (sigue asignada: si vuelve, arranca sola)
         _old(app, ids[2], image=4)
         an = a.get("/api/analysis").json()
-        assert an["room"] == {"capacity": 4.0, "reserved": 2.6, "idle": 1}
-        assert a.post("/api/cameras/analyze", json={"camera_ids": [ids[3]], "analyze": True}).status_code == 200
+        assert an["room"]["reserved"] == 5.2 and an["room"]["idle"] == 1
         got = {c["id"]: c for c in a.get("/api/cameras").json()}
-        assert got[ids[3]]["agent_id"] and got[ids[2]]["agent_id"]  # las dos con máquina
-        # si la que no andaba vuelve, la máquina queda pasada: se ve, y no se agregan más hasta bajar
-        _old(app, ids[2], image=0)
-        an = a.get("/api/analysis").json()
-        assert an["room"] == {"capacity": 4.0, "reserved": 5.2, "idle": 0}
-        assert a.post("/api/cameras/analyze", json={"camera_ids": [ids[4]], "analyze": True}).status_code == 409
-        # se saca una de análisis: deja el lugar
-        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[2:4], "analyze": False}).status_code == 200
-        assert a.post("/api/cameras/analyze", json={"camera_ids": [ids[4]], "analyze": True}).status_code == 200
+        assert all(got[i]["agent_id"] for i in ids[1:])  # todas con máquina
+        # sacar de análisis deja el lugar
+        assert a.post("/api/cameras/analyze", json={"camera_ids": ids[3:], "analyze": False}).status_code == 200
+        assert a.get("/api/analysis").json()["room"]["level"] == "ok"
 
-        # bajar el tope desde la app no le saca la máquina a ninguna: solo frena las nuevas
-        an = a.put("/api/analysis", json={"capacity": 3}).json()
-        assert an["room"] == {"capacity": 3.0, "reserved": 3.9, "idle": 0}
-        assert sum(len(p.get("/api/agent/config").json()["cameras"]) for p in procs) == 3
+        # el número a mano en la app (Máquinas → «Cámaras recomendadas por máquina»): 2 → pasada; 0 = automático
+        an = a.put("/api/analysis", json={"recommended": 2}).json()
+        assert an["recommended"] == 2 and an["room"]["capacity"] == 2.0 and an["room"]["level"] == "pasada"
+        assert sum(len(p.get("/api/agent/config").json()["cameras"]) for p in procs) == 3  # no le saca la máquina a ninguna
+        an = a.put("/api/analysis", json={"recommended": 0}).json()
+        assert an["recommended"] is None and an["room"]["capacity"] == 4.0
+
+
+def test_con_placa_de_video_se_recomiendan_12_por_procesador(app):
+    """La máquina de AWS (g4dn.xlarge, 4 vCPU y una T4): con todo lo pasado a la placa gasta ~0,065 procesadores por
+    cámara; al 85 % son unas 50. Se recomienda 12 por procesador (48) y, con la misma placa, nunca más de 140."""
+    assert pool.recommended(32, 4, True) == 48 and pool.recommended(32, 8, True) == 96
+    assert pool.recommended(32, 16, True) == 140  # la 4xlarge: la placa es el límite
+    assert pool.recommended(32, 4, False) == 32 and pool.recommended(4, None, True) == 4  # sin placa: lo medido
+    assert pool.recommended(32, 4, True, override=30) == 30
+    assert [pool.level(u, 40) for u in (10, 33.9, 34, 40, 40.1)] == ["ok", "ok", "alto", "alto", "pasada"]
+    assert pool.level(5, 0) == ""
+    with TestClient(app) as a:
+        a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
+        key = a.post("/api/analysis/pool-key").json()["key"]
+        for n in (1, 2, 3, 4):  # 4 procesos de 8, como la de AWS
+            m = _machine(app, key, f"maq-{n}", "i-aws", 8)
+            m.post("/api/agent/status", json={"instance_id": "i-aws", "capacity": 8, "cameras": [],
+                                              "cpu": {"total": 0.3, "cores": 4, "gpu": 15, "gpu_gb": 2.2}})
+        an = a.get("/api/analysis").json()
+        assert an["room"]["capacity"] == 48.0 and an["machines"][0]["capacity"] == 48.0
+        # 40 cámaras de hurto (sin gestos): entran todas, repartidas entre los 4 procesos, en verde
+        ids = _cams(a, a.post("/api/clients", json={"name": "Grande"}).json(), 40)
+        for cid in ids:
+            a.put(f"/api/cameras/{cid}/analysis", json={"zones": [], "rules": {}, "gestures": {"enabled": []}})
+        r = a.post("/api/cameras/analyze", json={"camera_ids": ids, "analyze": True})
+        assert r.status_code == 200 and r.json()["warning"] is None
+        owners = [c["agent_id"] for c in a.get("/api/cameras").json() if c["id"] in ids]
+        assert all(owners) and len(set(owners)) == 4 and max(owners.count(x) for x in set(owners)) <= 12
 
 
 def test_el_local_cerrado_no_le_deja_su_lugar_a_otra(app):
-    """El tope se cuenta con el local abierto: una cámara que hoy no se mira porque el local está cerrado mañana
+    """Lo ocupado se cuenta con el local abierto: una cámara que hoy no se mira porque el local está cerrado mañana
     vuelve a necesitar su lugar."""
     with TestClient(app) as a:
         a.post("/api/login", json={"username": ADMIN[0], "password": ADMIN[1]})
@@ -178,7 +212,8 @@ def test_el_local_cerrado_no_le_deja_su_lugar_a_otra(app):
         assert a.post("/api/cameras/analyze", json={"camera_ids": [c1, c2], "analyze": True}).status_code == 200
         an = a.get("/api/analysis").json()
         assert an["cameras_active"] == 0 and an["room"]["reserved"] == 2.6  # ahora no pesan, pero ocupan su lugar
-        assert a.post("/api/cameras/analyze", json={"camera_ids": [c3], "analyze": True}).status_code == 409
+        r = a.post("/api/cameras/analyze", json={"camera_ids": [c3], "analyze": True})
+        assert r.status_code == 200 and r.json()["warning"]["level"] == "pasada"  # (3,9 de 3)
 
 
 def test_un_reinicio_no_le_saca_la_maquina_a_ninguna(app):
@@ -206,18 +241,29 @@ def test_un_reinicio_no_le_saca_la_maquina_a_ninguna(app):
 
 
 # ---------------------------------------------------------------- en la app
-def test_la_app_muestra_el_tope():
-    from agent.oficina import machine_load, room_text
+def test_la_app_muestra_lo_recomendado_con_colores():
+    from agent.oficina import (
+        machine_level,
+        machine_load,
+        room_level,
+        room_text,
+        worse_tag,
+    )
 
-    assert machine_load({"load": 26.0, "reserved": 29.9, "capacity": 30.0}) == "29,9 / 30 · al tope"
-    assert machine_load({"load": 26.0, "reserved": 26.0, "capacity": 30.0}) == "26 / 30"
-    assert machine_load({"load": 26.0, "reserved": 31.2, "capacity": 30.0}) == "31,2 / 30 · pasada"
+    assert machine_load({"load": 26.0, "reserved": 26.0, "capacity": 48.0, "level": "ok"}) == "26 / 48"
+    assert machine_load({"load": 26.0, "reserved": 42.0, "capacity": 48.0, "level": "alto"}) == "42 / 48 · queda poco"
+    assert machine_load({"load": 26.0, "reserved": 52.6, "capacity": 48.0}) == "52,6 / 48 · ⚠ pasada"  # (sin «level»)
     assert machine_load({"load": 9.1, "capacity": 8.0}) == "9,1 / 8"  # (servidor sin actualizar)
-    txt = room_text({"room": {"capacity": 30.0, "reserved": 28.34, "idle": 5}})
-    assert txt.startswith("Tope: las máquinas en línea aguantan 30 · ocupado 28,3 · libre 1,7.")
+    assert machine_level({"reserved": 50, "capacity": 48, "online": False}) == ""  # apagada: sin color por la carga
+    assert worse_tag("ok", "pasada") == "bad" and worse_tag("bad", "alto") == "bad" and worse_tag("ok", "alto") == "warn"
+    assert worse_tag("off", "ok") == "off"
+    txt = room_text({"room": {"capacity": 48.0, "reserved": 28.34, "idle": 5, "level": "ok"}})
+    assert txt.startswith("Recomendado: las máquinas en línea aguantan bien 48 (automático") and "libre 19,7." in txt
     assert "5 cámaras marcadas para analizar no dan imagen hace más de 3 días: no ocupan lugar." in txt
-    over = room_text({"room": {"capacity": 30.0, "reserved": 31.2, "idle": 1}})
-    assert over.startswith("⚠ Tope:") and "pasadas por 1,2" in over and "1 cámara marcada para analizar no da imagen" in over
+    assert "queda poco lugar" in room_text({"room": {"capacity": 48.0, "reserved": 44.0, "idle": 0}})
+    over = room_text({"recommended": 40, "room": {"capacity": 40.0, "reserved": 45.2, "idle": 1}})
+    assert over.startswith("⚠ Recomendado:") and "(puesto a mano)" in over and "pasadas por 5,2" in over
+    assert room_level({"room": {"capacity": 40.0, "reserved": 45.2}}) == "pasada"
     assert "ninguna máquina de análisis en línea" in room_text({"room": {"capacity": 0, "reserved": 5, "idle": 0}})
     assert room_text({}) == ""
 
@@ -248,3 +294,18 @@ def test_el_video_que_llega_y_cuales_pesan_de_mas():
     assert video_info(Cap("\x00\x00\x00\x00", 0, 0, 90000.0)) == {}
     assert video_text({}) == ("", 0) and video_text(None) == ("", 0)
     assert video_text({"video_w": 1280, "video_h": 720}) == ("1280×720", 0)
+
+
+def test_la_app_avisa_con_un_cartel_en_rojo_y_un_aviso_en_naranja():
+    from types import SimpleNamespace
+
+    from agent.oficina import Oficina
+
+    seen = []
+    stub = SimpleNamespace(mb=SimpleNamespace(showwarning=lambda title, msg, **k: seen.append(("cartel", msg))),
+                           toasts=SimpleNamespace(show=lambda msg, kind="ok": seen.append((kind, msg))))
+    Oficina.room_warning(stub, {"warning": {"level": "pasada", "message": "Las máquinas quedan pasadas…"}})
+    Oficina.room_warning(stub, {"warning": {"level": "alto", "message": "Quedan al 90 %…"}})
+    Oficina.room_warning(stub, {"warning": None})
+    Oficina.room_warning(stub, {"changed": 1})  # (un servidor viejo no manda el aviso)
+    assert seen == [("cartel", "⚠ Las máquinas quedan pasadas…"), ("warn", "Quedan al 90 %…")]
