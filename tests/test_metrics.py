@@ -290,15 +290,17 @@ def test_puerta_sin_sentido_sigue_como_antes_y_las_zonas_de_personal_van_aparte(
         assert cfg["process_fps"] == 5
         zones_ok, _ = parse_config(an)
         assert {z.type for z in zones_ok} == {"entrance", "staff"}
-        # las métricas nuevas llegan, se suman y salen en el CSV
+        # las métricas nuevas llegan, se suman y salen en el CSV (ayer a las 10, hora del local: el servidor acepta
+        # cubos de hasta 40 días y la consulta mira los últimos 30; con una fecha fija la prueba se vencía sola)
+        day = (datetime.now(ZoneInfo("America/Montevideo")) - timedelta(days=1)).strftime("%Y-%m-%d")
         r = c.post("/api/agent/metrics", headers={"X-Agent-Token": tok},
-                   json={"buckets": [{"camera_id": cam, "bucket_start": "2026-10-28T10:00:00",
+                   json={"buckets": [{"camera_id": cam, "bucket_start": f"{day}T10:00:00",
                                       "data": {**empty_bucket(), "people": 9, "entries": 7, "exits": 5, "door": 1,
                                                "staff": 2, "staff_entries": 2, "frames": 10}}]})
         assert r.status_code == 200, r.text
         m = c.get(f"/api/metrics?client_id={cid}&days=30").json()
         assert (m["total"]["entries"], m["total"]["exits"], m["total"]["door"], m["total"]["staff"]) == (7, 5, 1, 2)
-        csv = c.get(f"/api/metrics/export?client_id={cid}&desde=2026-10-28&hasta=2026-10-28").text
+        csv = c.get(f"/api/metrics/export?client_id={cid}&desde={day}&hasta={day}").text
         assert "Egresos;Empleados" in csv and ";7;5;2;" in csv
 
 
